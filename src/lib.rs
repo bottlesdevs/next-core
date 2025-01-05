@@ -1,4 +1,7 @@
 mod error;
-mod wine;
 pub use error::Error;
-pub use wine::bridge::{Payload, WineBridge, WineBridgeAction};
+
+pub mod proto {
+    tonic::include_proto!("winebridge");
+    tonic::include_proto!("bottles");
+}

@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package bottles;
+
+service Bottles {
+    rpc Health (BottlesRequest) returns (BottlesResponse);
+}
+
+message BottlesRequest {}
+
+message BottlesResponse {
+    bool ok = 1;
+}

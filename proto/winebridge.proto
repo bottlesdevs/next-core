@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package winebridge;
+
+service WineBridge {
+    rpc Message (MessageRequest) returns (MessageResponse);
+}
+
+message MessageRequest {
+    string message = 1;
+}
+
+message MessageResponse {
+    bool success = 1;
+}
