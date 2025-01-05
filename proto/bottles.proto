@@ -4,10 +4,19 @@ package bottles;
 
 service Bottles {
     rpc Health (HealthRequest) returns (HealthResponse);
+    rpc Notify (NotifyRequest) returns (NotifyResponse);
 }
 
 message HealthRequest {}
 
 message HealthResponse {
     bool ok = 1;
+}
+
+message NotifyRequest {
+    string message = 1;
+}
+
+message NotifyResponse {
+    bool success = 1;
 }
