@@ -3,6 +3,11 @@ name = "bottles-core"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+winebridge = ["dep:windows"]
+server = ["default"]
+
 [dependencies]
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.134"
@@ -11,6 +16,17 @@ tracing = "0.1.41"
 tonic = "0.12.3"
 tokio = { version = "1.28.2", features = ["full"] }
 prost = "0.13.4"
+
+[dependencies.windows]
+version = "0.58.0"
+optional = true
+features = [
+    "Data_Xml_Dom",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+]
 
 [build-dependencies]
 tonic-build = "0.12.3"
