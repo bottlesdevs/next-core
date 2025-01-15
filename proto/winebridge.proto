@@ -4,6 +4,9 @@ package winebridge;
 
 service WineBridge {
     rpc Message (MessageRequest) returns (MessageResponse);
+    rpc RunningProcesses (RunningProcessesRequest) returns (RunningProcessesResponse);
+    rpc CreateProcess (CreateProcessRequest) returns (CreateProcessResponse);
+    rpc KillProcess (KillProcessRequest) returns (KillProcessResponse);
 }
 
 message MessageRequest {
@@ -12,4 +15,33 @@ message MessageRequest {
 
 message MessageResponse {
     bool success = 1;
+}
+
+message Process {
+    uint32 pid = 1;
+    string name = 2;
+    uint32 threads = 3;
+}
+
+message RunningProcessesRequest {
+}
+
+message RunningProcessesResponse {
+    repeated Process processes = 1;
+}
+
+message CreateProcessRequest {
+    string command = 1;
+    repeated string args = 2;
+}
+
+message CreateProcessResponse {
+    uint32 pid = 1;
+}
+
+message KillProcessRequest {
+    uint32 pid = 1;
+}
+
+message KillProcessResponse {
 }
