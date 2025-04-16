@@ -7,6 +7,65 @@ service WineBridge {
     rpc RunningProcesses (RunningProcessesRequest) returns (RunningProcessesResponse);
     rpc CreateProcess (CreateProcessRequest) returns (CreateProcessResponse);
     rpc KillProcess (KillProcessRequest) returns (KillProcessResponse);
+
+    rpc CreateRegistryKey (CreateRegistryKeyRequest) returns (MessageResponse);
+    rpc DeleteRegistryKey (DeleteRegistryKeyRequest) returns (MessageResponse);
+    rpc GetRegistryKey (GetRegistryKeyRequest) returns (RegistryKey);
+    rpc GetRegistryKeyValue (RegistryKeyRequest) returns (RegistryValue);
+    rpc SetRegistryKeyValue (SetRegistryKeyValueRequest) returns (MessageResponse);
+    rpc DeleteRegistryKeyValue (RegistryKeyRequest) returns (MessageResponse);
+}
+
+enum RegistryValueType {
+    REG_NONE = 0;
+    REG_BINARY = 1;
+    REG_DWORD = 2;
+    REG_QWORD = 3;
+    REG_EXPAND_SZ = 4;
+    REG_MULTI_SZ = 5;
+    REG_SZ = 6;
+}
+
+message RegistryValue {
+    RegistryValueType type = 2;
+    bytes data = 3;
+}
+
+message RegistryKeyValue {
+    string name = 1;
+    RegistryValue value = 2;
+}
+
+message RegistryKey {
+    string hive = 1;
+    string subkey = 2;
+    repeated RegistryKeyValue values = 3;
+}
+
+message GetRegistryKeyRequest {
+    string hive = 1;
+    string subkey = 2;
+}
+
+message CreateRegistryKeyRequest {
+    string hive = 1;
+    string subkey = 2;
+}
+
+message RegistryKeyRequest {
+    string hive = 1;
+    string subkey = 2;
+    string name = 3;
+}
+
+message SetRegistryKeyValueRequest {
+    RegistryKeyRequest key = 1;
+    RegistryValue value = 4;
+}
+
+message DeleteRegistryKeyRequest {
+    string hive = 1;
+    string subkey = 2;
 }
 
 message MessageRequest {
