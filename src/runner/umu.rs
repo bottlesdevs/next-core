@@ -11,7 +11,7 @@ impl TryFrom<&Path> for UMU {
     type Error = Box<dyn std::error::Error>;
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
-        let executable = PathBuf::from(Self::EXECUTABLE);
+        let executable = PathBuf::from("./umu-run");
         let mut info = RunnerInfo::try_from(path, &executable)?;
         let pretty_version = info
             .version
@@ -28,7 +28,6 @@ impl TryFrom<&Path> for UMU {
 }
 
 impl Runner for UMU {
-    const EXECUTABLE: &'static str = "umu-run";
     fn info(&self) -> &RunnerInfo {
         &self.info
     }

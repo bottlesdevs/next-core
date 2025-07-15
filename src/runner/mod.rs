@@ -18,6 +18,7 @@ pub struct RunnerInfo {
     name: String,
     version: String,
     directory: PathBuf,
+    executable: PathBuf,
 }
 
 impl RunnerInfo {
@@ -66,8 +67,14 @@ impl RunnerInfo {
         Ok(RunnerInfo {
             name,
             directory: directory.to_path_buf(),
+            executable: executable.to_path_buf(),
             version,
         })
+    }
+
+    /// Get the full path to the executable for the runner
+    pub fn executable_path(&self) -> PathBuf {
+        self.directory.join(&self.executable)
     }
 }
 
@@ -89,13 +96,12 @@ impl RunnerInfo {
 }
 
 pub trait Runner {
-    const EXECUTABLE: &'static str;
     /// Get the common runner information
     fn info(&self) -> &RunnerInfo;
 
     /// Check if the runner executable is available and functional
     fn is_available(&self) -> bool {
-        let executable_path = self.info().directory().join(Self::EXECUTABLE);
+        let executable_path = self.info().executable_path();
         executable_path.exists() && executable_path.is_file()
     }
 }
