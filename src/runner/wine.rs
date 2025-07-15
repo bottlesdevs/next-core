@@ -21,14 +21,13 @@ impl TryFrom<&Path> for Wine {
     type Error = Box<dyn std::error::Error>;
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
-        let executable = PathBuf::from(Self::EXECUTABLE);
+        let executable = PathBuf::from("./bin/wine");
         let info = RunnerInfo::try_from(path, &executable)?;
         Ok(Wine { info })
     }
 }
 
 impl Runner for Wine {
-    const EXECUTABLE: &'static str = "bin/wine";
     fn info(&self) -> &RunnerInfo {
         &self.info
     }

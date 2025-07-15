@@ -13,14 +13,13 @@ impl TryFrom<&Path> for Proton {
     type Error = Box<dyn std::error::Error>;
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
-        let executable = PathBuf::from(Self::EXECUTABLE);
+        let executable = PathBuf::from("./proton");
         let info = RunnerInfo::try_from(path, &executable)?;
         Ok(Proton { info })
     }
 }
 
 impl Runner for Proton {
-    const EXECUTABLE: &'static str = "proton";
     fn info(&self) -> &RunnerInfo {
         &self.info
     }
