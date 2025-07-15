@@ -22,24 +22,26 @@ pub struct RunnerInfo {
 
 impl RunnerInfo {
     // This fuction is only meant to be called by the runners themselves hence this is not public
-    fn try_from(directory: &Path, executable: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    fn try_from(directory: &Path, executable: &Path) -> Result<Self, Error> {
         if !directory.exists() {
-            return Err(Box::new(std::io::Error::new(
+            return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("'{}' does not exist", directory.display()),
-            )));
+            )
+            .into());
         }
         let full_path = directory.join(executable);
 
         if !full_path.exists() || !full_path.is_file() {
-            return Err(Box::new(Error::Io(std::io::Error::new(
+            return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!(
                     "Executable '{}' not found in directory '{}'",
                     executable.display(),
                     directory.display()
                 ),
-            ))));
+            )
+            .into());
         }
 
         let name = directory
@@ -59,7 +61,7 @@ impl RunnerInfo {
                     ver
                 }
             })
-            .map_err(|e| Error::Io(e))?;
+            .map_err(Error::Io)?;
 
         Ok(RunnerInfo {
             name,
