@@ -1,0 +1,35 @@
+use super::{Runner, RunnerInfo};
+use std::path::{Path, PathBuf};
+
+#[derive(Debug)]
+pub struct Wine {
+    info: RunnerInfo,
+}
+
+pub enum PrefixArch {
+    Win32,
+    Win64,
+}
+
+pub enum WindowsVersion {
+    Win7,
+    Win8,
+    Win10,
+}
+
+impl TryFrom<&Path> for Wine {
+    type Error = Box<dyn std::error::Error>;
+
+    fn try_from(path: &Path) -> Result<Self, Self::Error> {
+        let executable = PathBuf::from(Self::EXECUTABLE);
+        let info = RunnerInfo::try_from(path, &executable)?;
+        Ok(Wine { info })
+    }
+}
+
+impl Runner for Wine {
+    const EXECUTABLE: &'static str = "bin/wine";
+    fn info(&self) -> &RunnerInfo {
+        &self.info
+    }
+}

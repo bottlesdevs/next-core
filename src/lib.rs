@@ -1,4 +1,5 @@
 mod error;
+pub mod runner;
 pub use error::Error;
 
 pub mod proto {
