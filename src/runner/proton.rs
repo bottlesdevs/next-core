@@ -1,4 +1,4 @@
-use super::{Runner, RunnerInfo};
+use super::{Runner, RunnerInfo, Wine};
 use std::path::{Path, PathBuf};
 
 // TODO: These need to be set to use proton outside steam
@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug)]
 pub struct Proton {
     info: RunnerInfo,
+    wine: Wine,
 }
 
 impl TryFrom<&Path> for Proton {
@@ -15,11 +16,16 @@ impl TryFrom<&Path> for Proton {
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
         let executable = PathBuf::from("./proton");
         let info = RunnerInfo::try_from(path, &executable)?;
-        Ok(Proton { info })
+        let mut wine = Wine::try_from(path.join("files").as_path())?;
+        Ok(Proton { wine, info })
     }
 }
 
 impl Runner for Proton {
+    fn wine(&self) -> &Wine {
+        &self.wine
+    }
+
     fn info(&self) -> &RunnerInfo {
         &self.info
     }

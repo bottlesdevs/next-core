@@ -28,6 +28,10 @@ impl TryFrom<&Path> for Wine {
 }
 
 impl Runner for Wine {
+    fn wine(&self) -> &Wine {
+        self
+    }
+
     fn info(&self) -> &RunnerInfo {
         &self.info
     }
