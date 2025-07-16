@@ -1,16 +1,17 @@
-use super::{Runner, RunnerInfo};
+use super::{Proton, Runner, RunnerInfo, Wine};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub struct UMU {
     info: RunnerInfo,
-    proton_path: Option<PathBuf>,
+    proton: Option<Proton>,
 }
 
-impl TryFrom<&Path> for UMU {
-    type Error = Box<dyn std::error::Error>;
-
-    fn try_from(path: &Path) -> Result<Self, Self::Error> {
+impl UMU {
+    pub fn try_from(
+        path: &Path,
+        proton: Option<Proton>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let executable = PathBuf::from("./umu-run");
         let mut info = RunnerInfo::try_from(path, &executable)?;
         let pretty_version = info
@@ -20,14 +21,16 @@ impl TryFrom<&Path> for UMU {
             .unwrap_or("unknown")
             .to_string();
         info.version = pretty_version;
-        Ok(UMU {
-            info,
-            proton_path: None,
-        })
+        Ok(UMU { info, proton })
     }
 }
 
 impl Runner for UMU {
+    fn wine(&self) -> &Wine {
+        // TODO: Make sure an unwrap is possible
+        self.proton.as_ref().unwrap().wine()
+    }
+
     fn info(&self) -> &RunnerInfo {
         &self.info
     }

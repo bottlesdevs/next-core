@@ -96,6 +96,11 @@ impl RunnerInfo {
 }
 
 pub trait Runner {
+    /// Get the Wine runner associated with this runner
+    ///
+    /// This is possible because all runners are built on top of Wine
+    fn wine(&self) -> &Wine;
+
     /// Get the common runner information
     fn info(&self) -> &RunnerInfo;
 
