@@ -1,9 +1,19 @@
 use super::{Proton, Runner, RunnerInfo, Wine};
 use std::path::{Path, PathBuf};
 
+/// UMU (Unified Launcher) runner implementation
+///
+/// UMU is a universal compatibility layer that wraps other runners like Proton
+/// to provide enhanced game compatibility and launcher functionality. It can
+/// automatically configure optimal settings for different games and provides
+/// a unified interface for various Windows compatibility tools.
 #[derive(Debug)]
 pub struct UMU {
     info: RunnerInfo,
+    /// Underlying Proton runner that UMU wraps
+    ///
+    /// When present, UMU will use this Proton instance to run applications.
+    /// If None, UMU will download the latest Proton version it can find and set that up.
     proton: Option<Proton>,
 }
 

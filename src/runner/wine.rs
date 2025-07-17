@@ -1,16 +1,35 @@
 use super::{Runner, RunnerInfo};
 use std::path::{Path, PathBuf};
 
+/// Wine runner implementation
+///
+/// Wine is the base compatibility layer that all other runners build upon. It provides
+/// the core Windows API translation functionality that allows Windows applications
+/// to run on Unix-like systems.
 #[derive(Debug)]
 pub struct Wine {
     info: RunnerInfo,
 }
 
+/// Architecture for Wine prefix creation
+///
+/// Determines whether a Wine prefix should be configured for 32-bit or 64-bit
+/// Windows compatibility. This affects which Windows applications can run
+/// in the prefix
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrefixArch {
+    /// 32-bit Windows prefix architecture
     Win32,
+    /// 64-bit Windows prefix architecture (recommended)
     Win64,
 }
 
+/// Windows version compatibility settings
+///
+/// Specifies which version of Windows the Wine prefix should emulate.
+/// Different applications may require specific Windows versions for
+/// optimal compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsVersion {
     Win7,
     Win8,
