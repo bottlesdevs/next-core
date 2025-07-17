@@ -34,4 +34,8 @@ impl Runner for UMU {
     fn info(&self) -> &RunnerInfo {
         &self.info
     }
+
+    fn info_mut(&mut self) -> &mut RunnerInfo {
+        &mut self.info
+    }
 }
