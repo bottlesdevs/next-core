@@ -5,7 +5,15 @@ use std::path::{Path, PathBuf};
 ///
 /// GPTK is Apple's translation layer that allows running Windows games on macOS,
 /// particularly on Apple Silicon Macs. It combines Wine with Apple's D3DMetal
-/// to support DirectX 11 and 12 games.
+/// to support DirectX 11 and 12 games with hardware acceleration.
+///
+/// # Features
+///
+/// - DirectX 11 and 12 support through D3DMetal translation
+/// - Optimized for Apple Silicon architecture
+/// - Integration with macOS graphics stack
+/// - Metal Performance Shaders acceleration
+/// - Enhanced gaming compatibility on macOS
 ///
 /// # Requirements
 /// - macOS 14 Sonoma or later
