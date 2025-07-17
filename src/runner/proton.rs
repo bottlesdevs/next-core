@@ -1,9 +1,16 @@
 use super::{Runner, RunnerInfo, Wine};
 use std::path::{Path, PathBuf};
 
-// TODO: These need to be set to use proton outside steam
-// STEAM_COMPAT_DATA_PATH
-// STEAM_COMPAT_CLIENT_INSTALL_PATH
+/// Proton runner implementation
+///
+/// Proton is Valve's Wine fork designed specifically for gaming on Linux. It includes
+/// numerous patches and enhancements over standard Wine, making it particularly
+/// effective for running Windows games through Steam or standalone.
+///
+/// # Note
+/// When used outside of Steam, Proton requires specific environment variables:
+/// - `STEAM_COMPAT_DATA_PATH`: Path to store compatibility data
+/// - `STEAM_COMPAT_CLIENT_INSTALL_PATH`: Steam installation directory
 #[derive(Debug)]
 pub struct Proton {
     info: RunnerInfo,
