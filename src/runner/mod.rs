@@ -1,7 +1,11 @@
+#[cfg(target_os = "macos")]
+mod gptk;
 mod proton;
 mod umu;
 mod wine;
 
+#[cfg(target_os = "macos")]
+pub use gptk::GPTK;
 pub use proton::Proton;
 pub use umu::UMU;
 pub use wine::Wine;
