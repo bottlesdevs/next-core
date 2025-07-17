@@ -17,6 +17,7 @@ impl TryFrom<&Path> for Proton {
         let executable = PathBuf::from("./proton");
         let info = RunnerInfo::try_from(path, &executable)?;
         let mut wine = Wine::try_from(path.join("files").as_path())?;
+        wine.info_mut().name = info.name.clone();
         Ok(Proton { wine, info })
     }
 }
@@ -28,5 +29,9 @@ impl Runner for Proton {
 
     fn info(&self) -> &RunnerInfo {
         &self.info
+    }
+
+    fn info_mut(&mut self) -> &mut RunnerInfo {
+        &mut self.info
     }
 }

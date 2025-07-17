@@ -35,4 +35,8 @@ impl Runner for Wine {
     fn info(&self) -> &RunnerInfo {
         &self.info
     }
+
+    fn info_mut(&mut self) -> &mut RunnerInfo {
+        &mut self.info
+    }
 }

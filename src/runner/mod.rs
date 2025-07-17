@@ -108,6 +108,9 @@ pub trait Runner {
     /// Get the common runner information
     fn info(&self) -> &RunnerInfo;
 
+    /// Get the common runner information
+    fn info_mut(&mut self) -> &mut RunnerInfo;
+
     /// Check if the runner executable is available and functional
     fn is_available(&self) -> bool {
         let executable_path = self.info().executable_path();
