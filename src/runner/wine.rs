@@ -1,5 +1,6 @@
 use super::{Runner, RunnerInfo};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Wine runner implementation
 ///
@@ -57,5 +58,15 @@ impl Runner for Wine {
 
     fn info_mut(&mut self) -> &mut RunnerInfo {
         &mut self.info
+    }
+
+    fn initialize(&self, prefix: impl AsRef<Path>) -> Result<(), crate::Error> {
+        Command::new(self.info().executable_path())
+            .arg("wineboot")
+            .arg("--init")
+            .env("WINEPREFIX", prefix.as_ref())
+            .output()?;
+
+        Ok(())
     }
 }

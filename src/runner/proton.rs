@@ -1,5 +1,8 @@
 use super::{Runner, RunnerInfo, Wine};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 /// Proton runner implementation
 ///
@@ -40,5 +43,17 @@ impl Runner for Proton {
 
     fn info_mut(&mut self) -> &mut RunnerInfo {
         &mut self.info
+    }
+
+    fn initialize(&self, prefix: impl AsRef<Path>) -> Result<(), crate::Error> {
+        Command::new(self.info().executable_path())
+            .arg("run")
+            .arg("wineboot")
+            .env("WINEPREFIX", prefix.as_ref())
+            .env("STEAM_COMPAT_DATA_PATH", prefix.as_ref())
+            .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", "")
+            .output()?;
+
+        Ok(())
     }
 }

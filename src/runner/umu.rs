@@ -1,5 +1,8 @@
 use super::{Proton, Runner, RunnerInfo, Wine};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 /// UMU (Unified Launcher) runner implementation
 ///
@@ -47,5 +50,15 @@ impl Runner for UMU {
 
     fn info_mut(&mut self) -> &mut RunnerInfo {
         &mut self.info
+    }
+
+    fn initialize(&self, prefix: impl AsRef<Path>) -> Result<(), crate::Error> {
+        let proton_path = self.proton.as_ref().unwrap().info().directory();
+        Command::new(self.info().executable_path())
+            .arg("wineboot") // This is wrong but it'll anyways initialize the prefix
+            .env("WINEPREFIX", prefix.as_ref())
+            .env("PROTONPATH", proton_path)
+            .output()?;
+        Ok(())
     }
 }
