@@ -53,6 +53,7 @@ impl Runner for UMU {
     }
 
     fn initialize(&self, prefix: impl AsRef<Path>) -> Result<(), crate::Error> {
+        // FIXME: Launch winebridge to initialize the prefix
         let proton_path = self.proton.as_ref().unwrap().info().directory();
         Command::new(self.info().executable_path())
             .arg("wineboot") // This is wrong but it'll anyways initialize the prefix
