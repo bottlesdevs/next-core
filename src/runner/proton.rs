@@ -46,6 +46,7 @@ impl Runner for Proton {
     }
 
     fn initialize(&self, prefix: impl AsRef<Path>) -> Result<(), crate::Error> {
+        // FIXME: Launch winebridge to initialize the prefix
         Command::new(self.info().executable_path())
             .arg("run")
             .arg("wineboot")
