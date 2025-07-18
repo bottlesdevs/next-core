@@ -207,4 +207,12 @@ pub trait Runner {
         let executable_path = self.info().executable_path();
         executable_path.exists() && executable_path.is_file()
     }
+
+    /// Initialize a prefix at the specified path using the runner's executable.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - Path where the new prefix should be created. The directory will be
+    ///   created if it doesn't exist.
+    fn initialize(&self, prefix: impl AsRef<Path>) -> Result<(), Error>;
 }
