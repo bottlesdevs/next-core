@@ -1,11 +1,10 @@
 use reqwest::{Client, Url};
-use std::{
+use std::{path::PathBuf, sync::Arc};
+use tokio::{
     fs::File,
-    io::{Seek, SeekFrom, Write},
-    path::PathBuf,
-    sync::Arc,
+    io::AsyncWriteExt,
+    sync::{mpsc, oneshot, watch, Semaphore},
 };
-use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 
 use crate::Error;
 
@@ -36,7 +35,7 @@ pub struct DownloadHandle {
 }
 
 impl DownloadHandle {
-    pub async fn r#await(self) -> Result<std::fs::File, Error> {
+    pub async fn r#await(self) -> Result<File, Error> {
         match self.result.await {
             Ok(result) => result,
             Err(_) => todo!(),
@@ -173,23 +172,26 @@ async fn dispatcher_thread(
 }
 
 async fn download_thread(client: Client, req: &DownloadRequest) -> Result<File, Error> {
-    let mut resp = client.get(req.url.as_ref()).send().await?;
-    let total_bytes = resp.content_length();
+    let mut response = client.get(req.url.as_ref()).send().await?;
+    let total_bytes = response.content_length();
     let mut bytes_downloaded = 0u64;
-    let mut cancelled = false;
-    let mut file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(&req.destination)?;
 
-    while let Some(chunk) = resp.chunk().await.transpose() {
-        cancelled = !req.cancel.is_empty();
-        if cancelled {
-            break;
+    // Create the destination directory if it doesn't exist
+    if let Some(parent) = req.destination.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut file = File::create(&req.destination).await?;
+
+    while let Some(chunk) = response.chunk().await.transpose() {
+        if !req.cancel.is_empty() {
+            tokio::fs::remove_file(&req.destination).await?;
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Download cancelled",
+            )));
         }
         let chunk = chunk?;
-        file.write_all(&chunk)?;
+        file.write_all(&chunk).await?;
         bytes_downloaded += chunk.len() as u64;
         let _ = req.status.send(Status::InProgress(DownloadProgress {
             bytes_downloaded,
@@ -197,15 +199,9 @@ async fn download_thread(client: Client, req: &DownloadRequest) -> Result<File, 
         }));
     }
 
-    if cancelled {
-        std::fs::remove_file(&req.destination)?;
-        Err(Error::Io(std::io::Error::new(
-            std::io::ErrorKind::Interrupted,
-            "Download cancelled",
-        )))
-    } else {
-        // Reset the cursor to the beginning of the file
-        file.seek(SeekFrom::Start(0))?;
-        Ok(file)
-    }
+    // Ensure the data is written to disk
+    file.sync_all().await?;
+    // Open a new file handle with RO permissions
+    let file = File::options().read(true).open(&req.destination).await?;
+    Ok(file)
 }
