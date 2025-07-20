@@ -17,6 +17,7 @@ struct DownloadRequest {
     destination: PathBuf,
     result: oneshot::Sender<Result<File, Error>>,
     status: watch::Sender<Status>,
+    cancel: oneshot::Receiver<()>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +30,7 @@ pub struct DownloadProgress {
 pub struct DownloadHandle {
     result: oneshot::Receiver<Result<File, Error>>,
     status: watch::Receiver<Status>,
+    cancel: oneshot::Sender<()>,
 }
 
 impl DownloadHandle {
@@ -42,6 +44,10 @@ impl DownloadHandle {
     pub fn status(&self) -> Status {
         self.status.borrow().clone()
     }
+
+    pub fn cancel(self) {
+        self.cancel.send(()).ok();
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -49,6 +55,7 @@ pub enum Status {
     Pending,
     InProgress(DownloadProgress),
     Completed,
+    Cancelled,
     Failed,
 }
 
@@ -94,12 +101,14 @@ impl DownloadManager {
     pub fn add_request(&self, url: Url, destination: PathBuf) -> DownloadHandle {
         let (result_tx, result_rx) = oneshot::channel();
         let (status_tx, status_rx) = watch::channel(Status::Pending);
+        let (cancel_tx, cancel_rx) = oneshot::channel();
 
         let req = DownloadRequest {
             url,
             destination,
             result: result_tx,
             status: status_tx,
+            cancel: cancel_rx,
         };
 
         let _ = self.queue.try_send(req);
@@ -107,6 +116,7 @@ impl DownloadManager {
         DownloadHandle {
             result: result_rx,
             status: status_rx,
+            cancel: cancel_tx,
         }
     }
 }
@@ -131,7 +141,17 @@ async fn dispatcher_thread(
                     let _ = request.result.send(Ok(file));
                 }
                 Err(e) => {
-                    let _ = request.status.send(Status::Failed);
+                    let status = match e {
+                        Error::Io(ref io_err) => {
+                            if io_err.kind() == std::io::ErrorKind::Interrupted {
+                                Status::Cancelled
+                            } else {
+                                Status::Failed
+                            }
+                        }
+                        _ => Status::Failed,
+                    };
+                    let _ = request.status.send(status);
                     let _ = request.result.send(Err(e));
                 }
             }
@@ -143,6 +163,7 @@ async fn download_thread(client: Client, req: &DownloadRequest) -> Result<File, 
     let mut resp = client.get(req.url.as_ref()).send().await?;
     let total_bytes = resp.content_length();
     let mut bytes_downloaded = 0u64;
+    let mut cancelled = false;
     let mut file = File::options()
         .read(true)
         .write(true)
@@ -150,6 +171,10 @@ async fn download_thread(client: Client, req: &DownloadRequest) -> Result<File, 
         .open(&req.destination)?;
 
     while let Some(chunk) = resp.chunk().await.transpose() {
+        cancelled = !req.cancel.is_empty();
+        if cancelled {
+            break;
+        }
         let chunk = chunk?;
         file.write_all(&chunk)?;
         bytes_downloaded += chunk.len() as u64;
@@ -159,7 +184,15 @@ async fn download_thread(client: Client, req: &DownloadRequest) -> Result<File, 
         }));
     }
 
-    // Reset the cursor to the beginning of the file
-    file.seek(SeekFrom::Start(0))?;
-    Ok(file)
+    if cancelled {
+        std::fs::remove_file(&req.destination)?;
+        Err(Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "Download cancelled",
+        )))
+    } else {
+        // Reset the cursor to the beginning of the file
+        file.seek(SeekFrom::Start(0))?;
+        Ok(file)
+    }
 }
