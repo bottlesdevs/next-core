@@ -209,6 +209,7 @@ async fn download_thread(client: Client, req: &mut DownloadRequest) -> Result<Fi
     loop {
         tokio::select! {
             _ = &mut req.cancel => {
+                drop(file); // Manually drop the file handle to ensure that deletion doesn't fail
                 tokio::fs::remove_file(&req.destination).await?;
                 return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::Interrupted,
@@ -223,7 +224,11 @@ async fn download_thread(client: Client, req: &mut DownloadRequest) -> Result<Fi
                         update_progress(bytes_downloaded, total_bytes);
                     }
                     Ok(None) => break,
-                    Err(e) => return Err(Error::Reqwest(e)),
+                    Err(e) => {
+                        drop(file); // Manually drop the file handle to ensure that deletion doesn't fail
+                        tokio::fs::remove_file(&req.destination).await?;
+                        return Err(Error::Reqwest(e))
+                    },
                 }
 
             }
