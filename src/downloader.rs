@@ -172,7 +172,11 @@ async fn dispatcher_thread(
 }
 
 async fn download_thread(client: Client, req: &mut DownloadRequest) -> Result<File, Error> {
-    let mut response = client.get(req.url.as_ref()).send().await?;
+    let mut response = client
+        .get(req.url.as_ref())
+        .send()
+        .await?
+        .error_for_status()?;
     let total_bytes = response.content_length();
     let mut bytes_downloaded = 0u64;
 
@@ -181,7 +185,12 @@ async fn download_thread(client: Client, req: &mut DownloadRequest) -> Result<Fi
         tokio::fs::create_dir_all(parent).await?;
     }
     let mut file = File::create(&req.destination).await?;
-
+    req.status
+        .send(Status::InProgress(DownloadProgress {
+            bytes_downloaded,
+            total_bytes,
+        }))
+        .ok();
     loop {
         tokio::select! {
             _ = &mut req.cancel => {
@@ -196,10 +205,10 @@ async fn download_thread(client: Client, req: &mut DownloadRequest) -> Result<Fi
                     Ok(Some(chunk)) => {
                         file.write_all(&chunk).await?;
                         bytes_downloaded += chunk.len() as u64;
-                        let _ = req.status.send(Status::InProgress(DownloadProgress {
+                        req.status.send(Status::InProgress(DownloadProgress {
                             bytes_downloaded,
                             total_bytes,
-                        }));
+                        })).ok();
                     }
                     Ok(None) => break,
                     Err(e) => return Err(Error::Reqwest(e)),
