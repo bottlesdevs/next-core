@@ -139,7 +139,7 @@ async fn dispatcher_thread(
             // Move the permit into the worker thread so it's automatically released when the thread finishes
             let _permit = permit;
             loop {
-                match download_thread(client.clone(), &request).await {
+                match download_thread(client.clone(), &mut request).await {
                     Ok(file) => {
                         let _ = request.status.send(Status::Completed);
                         let _ = request.result.send(Ok(file));
@@ -171,7 +171,7 @@ async fn dispatcher_thread(
     }
 }
 
-async fn download_thread(client: Client, req: &DownloadRequest) -> Result<File, Error> {
+async fn download_thread(client: Client, req: &mut DownloadRequest) -> Result<File, Error> {
     let mut response = client.get(req.url.as_ref()).send().await?;
     let total_bytes = response.content_length();
     let mut bytes_downloaded = 0u64;
@@ -182,21 +182,31 @@ async fn download_thread(client: Client, req: &DownloadRequest) -> Result<File, 
     }
     let mut file = File::create(&req.destination).await?;
 
-    while let Some(chunk) = response.chunk().await.transpose() {
-        if !req.cancel.is_empty() {
-            tokio::fs::remove_file(&req.destination).await?;
-            return Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "Download cancelled",
-            )));
+    loop {
+        tokio::select! {
+            _ = &mut req.cancel => {
+                tokio::fs::remove_file(&req.destination).await?;
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "Download cancelled",
+                )));
+            }
+            chunk = response.chunk() => {
+                match chunk {
+                    Ok(Some(chunk)) => {
+                        file.write_all(&chunk).await?;
+                        bytes_downloaded += chunk.len() as u64;
+                        let _ = req.status.send(Status::InProgress(DownloadProgress {
+                            bytes_downloaded,
+                            total_bytes,
+                        }));
+                    }
+                    Ok(None) => break,
+                    Err(e) => return Err(Error::Reqwest(e)),
+                }
+
+            }
         }
-        let chunk = chunk?;
-        file.write_all(&chunk).await?;
-        bytes_downloaded += chunk.len() as u64;
-        let _ = req.status.send(Status::InProgress(DownloadProgress {
-            bytes_downloaded,
-            total_bytes,
-        }));
     }
 
     // Ensure the data is written to disk
