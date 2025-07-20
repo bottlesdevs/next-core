@@ -1,6 +1,13 @@
 use reqwest::{Client, Url};
-use std::{fs::File, io::Write, path::PathBuf, sync::Arc};
-use tokio::sync::{broadcast, mpsc, oneshot, watch, Semaphore};
+use std::{
+    fs::File,
+    io::{Seek, SeekFrom, Write},
+    path::PathBuf,
+    sync::Arc,
+};
+use tokio::sync::{mpsc, oneshot, watch, Semaphore};
+
+use crate::Error;
 
 const QUEUE_SIZE: usize = 100;
 
@@ -8,12 +15,11 @@ const QUEUE_SIZE: usize = 100;
 struct DownloadRequest {
     url: Url,
     destination: PathBuf,
-    result: oneshot::Sender<Result<File, reqwest::Error>>,
+    result: oneshot::Sender<Result<File, Error>>,
     status: watch::Sender<Status>,
-    progress: broadcast::Sender<DownloadProgress>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DownloadProgress {
     pub bytes_downloaded: u64,
     pub total_bytes: Option<u64>,
@@ -21,13 +27,12 @@ pub struct DownloadProgress {
 
 #[derive(Debug)]
 pub struct DownloadHandle {
-    result: oneshot::Receiver<Result<File, reqwest::Error>>,
+    result: oneshot::Receiver<Result<File, Error>>,
     status: watch::Receiver<Status>,
-    progress: broadcast::Receiver<DownloadProgress>,
 }
 
 impl DownloadHandle {
-    pub async fn r#await(self) -> Result<std::fs::File, reqwest::Error> {
+    pub async fn r#await(self) -> Result<std::fs::File, Error> {
         match self.result.await {
             Ok(result) => result,
             Err(_) => todo!(),
@@ -37,16 +42,12 @@ impl DownloadHandle {
     pub fn status(&self) -> Status {
         self.status.borrow().clone()
     }
-
-    pub fn subscribe_progress(&self) -> &broadcast::Receiver<DownloadProgress> {
-        &self.progress
-    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Status {
     Pending,
-    InProgress,
+    InProgress(DownloadProgress),
     Completed,
     Failed,
 }
@@ -93,14 +94,12 @@ impl DownloadManager {
     pub fn add_request(&self, url: Url, destination: PathBuf) -> DownloadHandle {
         let (result_tx, result_rx) = oneshot::channel();
         let (status_tx, status_rx) = watch::channel(Status::Pending);
-        let (progress_tx, progress_rx) = broadcast::channel(16);
 
         let req = DownloadRequest {
             url,
             destination,
             result: result_tx,
             status: status_tx,
-            progress: progress_tx,
         };
 
         let _ = self.queue.try_send(req);
@@ -108,7 +107,6 @@ impl DownloadManager {
         DownloadHandle {
             result: result_rx,
             status: status_rx,
-            progress: progress_rx,
         }
     }
 }
@@ -127,28 +125,41 @@ async fn dispatcher_thread(
         tokio::spawn(async move {
             // Move the permit into the worker thread so it's automatically released when the thread finishes
             let _permit = permit;
-            let _ = download_thread(client, request).await;
+            match download_thread(client, &request).await {
+                Ok(file) => {
+                    let _ = request.status.send(Status::Completed);
+                    let _ = request.result.send(Ok(file));
+                }
+                Err(e) => {
+                    let _ = request.status.send(Status::Failed);
+                    let _ = request.result.send(Err(e));
+                }
+            }
         });
     }
 }
 
-async fn download_thread(
-    client: Client,
-    req: DownloadRequest,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut resp = client.get(req.url).send().await?;
-    let total = resp.content_length();
-    let mut file = File::create(&req.destination)?;
-    // let mut stream = resp.bytes().await?;
-    let mut downloaded = 0u64;
+async fn download_thread(client: Client, req: &DownloadRequest) -> Result<File, Error> {
+    let mut resp = client.get(req.url.as_ref()).send().await?;
+    let total_bytes = resp.content_length();
+    let mut bytes_downloaded = 0u64;
+    let mut file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&req.destination)?;
+
     while let Some(chunk) = resp.chunk().await.transpose() {
         let chunk = chunk?;
         file.write_all(&chunk)?;
-        downloaded += chunk.len() as u64;
-        let _ = req.progress.send(DownloadProgress {
-            bytes_downloaded: downloaded,
-            total_bytes: total,
-        });
+        bytes_downloaded += chunk.len() as u64;
+        let _ = req.status.send(Status::InProgress(DownloadProgress {
+            bytes_downloaded,
+            total_bytes,
+        }));
     }
-    Ok(())
+
+    // Reset the cursor to the beginning of the file
+    file.seek(SeekFrom::Start(0))?;
+    Ok(file)
 }
