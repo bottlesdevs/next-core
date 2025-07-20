@@ -6,4 +6,6 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("Serde: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("Reqwest: {0}")]
+    Reqwest(#[from] reqwest::Error),
 }
