@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, oneshot, watch, Semaphore};
 use crate::Error;
 
 const QUEUE_SIZE: usize = 100;
+const MAX_RETRIES: usize = 3;
 
 #[derive(Debug)]
 struct DownloadRequest {
@@ -18,6 +19,7 @@ struct DownloadRequest {
     result: oneshot::Sender<Result<File, Error>>,
     status: watch::Sender<Status>,
     cancel: oneshot::Receiver<()>,
+    remaining_retries: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +57,7 @@ pub enum Status {
     Pending,
     InProgress(DownloadProgress),
     Completed,
+    Retrying,
     Cancelled,
     Failed,
 }
@@ -109,6 +112,7 @@ impl DownloadManager {
             result: result_tx,
             status: status_tx,
             cancel: cancel_rx,
+            remaining_retries: MAX_RETRIES,
         };
 
         let _ = self.queue.try_send(req);
@@ -126,7 +130,7 @@ async fn dispatcher_thread(
     mut rx: mpsc::Receiver<DownloadRequest>,
     sem: Arc<Semaphore>,
 ) {
-    while let Some(request) = rx.recv().await {
+    while let Some(mut request) = rx.recv().await {
         let permit = match sem.clone().acquire_owned().await {
             Ok(permit) => permit,
             Err(_) => break,
@@ -135,24 +139,33 @@ async fn dispatcher_thread(
         tokio::spawn(async move {
             // Move the permit into the worker thread so it's automatically released when the thread finishes
             let _permit = permit;
-            match download_thread(client, &request).await {
-                Ok(file) => {
-                    let _ = request.status.send(Status::Completed);
-                    let _ = request.result.send(Ok(file));
-                }
-                Err(e) => {
-                    let status = match e {
-                        Error::Io(ref io_err) => {
-                            if io_err.kind() == std::io::ErrorKind::Interrupted {
-                                Status::Cancelled
-                            } else {
-                                Status::Failed
-                            }
+            loop {
+                match download_thread(client.clone(), &request).await {
+                    Ok(file) => {
+                        let _ = request.status.send(Status::Completed);
+                        let _ = request.result.send(Ok(file));
+                        break;
+                    }
+                    Err(e) => {
+                        if request.remaining_retries > 0 {
+                            let _ = request.status.send(Status::Retrying);
+                            request.remaining_retries -= 1;
+                        } else {
+                            let status = match e {
+                                Error::Io(ref io_err) => {
+                                    if io_err.kind() == std::io::ErrorKind::Interrupted {
+                                        Status::Cancelled
+                                    } else {
+                                        Status::Failed
+                                    }
+                                }
+                                _ => Status::Failed,
+                            };
+                            let _ = request.status.send(status);
+                            let _ = request.result.send(Err(e));
+                            break;
                         }
-                        _ => Status::Failed,
-                    };
-                    let _ = request.status.send(status);
-                    let _ = request.result.send(Err(e));
+                    }
                 }
             }
         });
