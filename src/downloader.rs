@@ -34,14 +34,24 @@ pub struct DownloadHandle {
     cancel: oneshot::Sender<()>,
 }
 
-impl DownloadHandle {
-    pub async fn r#await(self) -> Result<File, Error> {
-        match self.result.await {
-            Ok(result) => result,
-            Err(_) => todo!(),
+impl std::future::Future for DownloadHandle {
+    type Output = Result<tokio::fs::File, Error>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        use std::pin::Pin;
+        use std::task::Poll;
+        match Pin::new(&mut self.result).poll(cx) {
+            Poll::Ready(Ok(result)) => Poll::Ready(result),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(Error::Oneshot(e))),
+            Poll::Pending => Poll::Pending,
         }
     }
+}
 
+impl DownloadHandle {
     pub fn status(&self) -> Status {
         self.status.borrow().clone()
     }

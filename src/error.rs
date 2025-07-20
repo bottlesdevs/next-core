@@ -8,4 +8,6 @@ pub enum Error {
     Serde(#[from] serde_json::Error),
     #[error("Reqwest: {0}")]
     Reqwest(#[from] reqwest::Error),
+    #[error("Oneshot: {0}")]
+    Oneshot(#[from] tokio::sync::oneshot::error::RecvError),
 }
