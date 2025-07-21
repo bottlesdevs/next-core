@@ -77,6 +77,7 @@ pub enum Status {
 pub struct DownloadManager {
     queue: mpsc::Sender<DownloadRequest>,
     semaphore: Arc<Semaphore>,
+    cancel: CancellationToken,
 }
 
 impl Drop for DownloadManager {
@@ -94,6 +95,7 @@ impl DownloadManager {
         let manager = Self {
             queue: tx,
             semaphore: semaphore.clone(),
+            cancel: CancellationToken::new(),
         };
         // Spawn the dispatcher thread to handle download requests
         tokio::spawn(async move { dispatcher_thread(client, rx, semaphore).await });
@@ -115,7 +117,7 @@ impl DownloadManager {
     pub fn add_request(&self, url: Url, destination: PathBuf) -> DownloadHandle {
         let (result_tx, result_rx) = oneshot::channel();
         let (status_tx, status_rx) = watch::channel(Status::Pending);
-        let cancel = CancellationToken::new();
+        let cancel = self.cancel.child_token();
 
         let req = DownloadRequest {
             url,
@@ -132,6 +134,10 @@ impl DownloadManager {
             status: status_rx,
             cancel,
         }
+    }
+
+    pub fn cancel_all(&self) {
+        self.cancel.cancel();
     }
 }
 
