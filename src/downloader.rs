@@ -53,7 +53,7 @@ impl std::future::Future for DownloadHandle {
 
 impl DownloadHandle {
     pub fn status(&self) -> Status {
-        self.status.borrow().clone()
+        *self.status.borrow()
     }
 
     pub fn cancel(self) {

@@ -17,6 +17,7 @@ pub struct Wine {
 /// Determines whether a Wine prefix should be configured for 32-bit or 64-bit
 /// Windows compatibility. This affects which Windows applications can run
 /// in the prefix
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrefixArch {
     /// 32-bit Windows prefix architecture
@@ -30,6 +31,7 @@ pub enum PrefixArch {
 /// Specifies which version of Windows the Wine prefix should emulate.
 /// Different applications may require specific Windows versions for
 /// optimal compatibility.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsVersion {
     Win7,

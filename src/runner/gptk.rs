@@ -78,4 +78,12 @@ impl Runner for GPTK {
         // GPTK requires either x86_64 (Rosetta) or arm64 (Apple Silicon)
         arch_output == "i386" || arch_output == "arm64"
     }
+
+    fn info_mut(&mut self) -> &mut RunnerInfo {
+        &mut self.info
+    }
+
+    fn initialize(&self, _prefix: impl AsRef<Path>) -> Result<(), crate::Error> {
+        todo!()
+    }
 }
