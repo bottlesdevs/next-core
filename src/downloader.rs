@@ -171,7 +171,7 @@ async fn download_thread(client: Client, mut req: DownloadRequest) {
     }
 
     let mut last_error = None;
-    for attempt in 0..=(MAX_RETRIES) {
+    for attempt in 0..=(MAX_RETRIES + 1) {
         if attempt > MAX_RETRIES {
             req.status.send(Status::Failed).ok();
             req.result
