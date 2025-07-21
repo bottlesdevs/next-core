@@ -1,12 +1,11 @@
+use crate::{error::DownloadError, Error};
 use reqwest::{Client, Url};
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::{
     fs::File,
     io::AsyncWriteExt,
     sync::{mpsc, oneshot, watch, Semaphore},
 };
-
-use crate::Error;
 
 const QUEUE_SIZE: usize = 100;
 const MAX_RETRIES: usize = 3;
@@ -18,7 +17,6 @@ struct DownloadRequest {
     result: oneshot::Sender<Result<File, Error>>,
     status: watch::Sender<Status>,
     cancel: oneshot::Receiver<()>,
-    remaining_retries: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +65,6 @@ pub enum Status {
     InProgress(DownloadProgress),
     Completed,
     Retrying,
-    Cancelled,
     Failed,
 }
 
@@ -121,7 +118,6 @@ impl DownloadManager {
             result: result_tx,
             status: status_tx,
             cancel: cancel_rx,
-            remaining_retries: MAX_RETRIES,
         };
 
         let _ = self.queue.try_send(req);
@@ -139,7 +135,7 @@ async fn dispatcher_thread(
     mut rx: mpsc::Receiver<DownloadRequest>,
     sem: Arc<Semaphore>,
 ) {
-    while let Some(mut request) = rx.recv().await {
+    while let Some(request) = rx.recv().await {
         let permit = match sem.clone().acquire_owned().await {
             Ok(permit) => permit,
             Err(_) => break,
@@ -148,40 +144,79 @@ async fn dispatcher_thread(
         tokio::spawn(async move {
             // Move the permit into the worker thread so it's automatically released when the thread finishes
             let _permit = permit;
-            loop {
-                match download_thread(client.clone(), &mut request).await {
-                    Ok(file) => {
-                        let _ = request.status.send(Status::Completed);
-                        let _ = request.result.send(Ok(file));
-                        break;
-                    }
-                    Err(e) => {
-                        if request.remaining_retries > 0 {
-                            let _ = request.status.send(Status::Retrying);
-                            request.remaining_retries -= 1;
-                        } else {
-                            let status = match e {
-                                Error::Io(ref io_err) => {
-                                    if io_err.kind() == std::io::ErrorKind::Interrupted {
-                                        Status::Cancelled
-                                    } else {
-                                        Status::Failed
-                                    }
-                                }
-                                _ => Status::Failed,
-                            };
-                            let _ = request.status.send(status);
-                            let _ = request.result.send(Err(e));
-                            break;
-                        }
-                    }
-                }
-            }
+            download_thread(client.clone(), request).await;
         });
     }
 }
 
-async fn download_thread(client: Client, req: &mut DownloadRequest) -> Result<File, Error> {
+async fn download_thread(client: Client, mut req: DownloadRequest) {
+    fn should_retry(e: &Error) -> bool {
+        match e {
+            Error::Reqwest(network_err) => {
+                network_err.is_timeout()
+                    || network_err.is_connect()
+                    || network_err.is_request()
+                    || network_err
+                        .status()
+                        .map(|status_code| status_code.is_server_error())
+                        .unwrap_or(true)
+            }
+            Error::Download(DownloadError::Cancelled) | Error::Io(_) => false,
+            _ => false,
+        }
+    }
+
+    let mut last_error = None;
+    for attempt in 0..=(MAX_RETRIES) {
+        if attempt > MAX_RETRIES {
+            req.status.send(Status::Failed).ok();
+            req.result
+                .send(Err(Error::Download(DownloadError::RetriesExhausted {
+                    last_error_msg: last_error
+                        .as_ref()
+                        .map(|e: &crate::Error| e.to_string())
+                        .unwrap_or_else(|| "Unknown Error".to_string()),
+                })))
+                .ok();
+            return;
+        }
+
+        if attempt > 0 {
+            req.status.send(Status::Retrying).ok();
+            // Basic exponential backoff
+            let delay_ms = 1000 * 2u64.pow(attempt as u32 - 1);
+            let delay = Duration::from_millis(delay_ms);
+
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {},
+                _ = &mut req.cancel => {
+                    req.status.send(Status::Failed).ok();
+                    req.result.send(Err(Error::Download(DownloadError::Cancelled))).ok();
+                    return;
+                }
+            }
+        }
+
+        match download(client.clone(), &mut req).await {
+            Ok(file) => {
+                req.status.send(Status::Completed).ok();
+                req.result.send(Ok(file)).ok();
+                return;
+            }
+            Err(e) => {
+                if should_retry(&e) {
+                    last_error = Some(e);
+                    continue;
+                }
+                req.status.send(Status::Failed).ok();
+                req.result.send(Err(e)).ok();
+                return;
+            }
+        }
+    }
+}
+
+async fn download(client: Client, req: &mut DownloadRequest) -> Result<File, Error> {
     let update_progress = |bytes_downloaded: u64, total_bytes: Option<u64>| {
         req.status
             .send(Status::InProgress(DownloadProgress {
@@ -211,10 +246,7 @@ async fn download_thread(client: Client, req: &mut DownloadRequest) -> Result<Fi
             _ = &mut req.cancel => {
                 drop(file); // Manually drop the file handle to ensure that deletion doesn't fail
                 tokio::fs::remove_file(&req.destination).await?;
-                return Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "Download cancelled",
-                )));
+                return Err(Error::Download(DownloadError::Cancelled));
             }
             chunk = response.chunk() => {
                 match chunk {
@@ -230,7 +262,6 @@ async fn download_thread(client: Client, req: &mut DownloadRequest) -> Result<Fi
                         return Err(Error::Reqwest(e))
                     },
                 }
-
             }
         }
     }

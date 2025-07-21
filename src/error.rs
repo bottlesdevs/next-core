@@ -10,4 +10,14 @@ pub enum Error {
     Reqwest(#[from] reqwest::Error),
     #[error("Oneshot: {0}")]
     Oneshot(#[from] tokio::sync::oneshot::error::RecvError),
+    #[error("Download: {0}")]
+    Download(#[from] DownloadError),
+}
+
+#[derive(Error, Debug, Clone)]
+pub enum DownloadError {
+    #[error("Download was cancelled")]
+    Cancelled,
+    #[error("Retry limit exceeded")]
+    RetriesExhausted { last_error_msg: String },
 }
