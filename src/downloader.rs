@@ -54,6 +54,10 @@ impl DownloadHandle {
         *self.status.borrow()
     }
 
+    pub async fn wait_for_status_update(&mut self) -> Result<(), watch::error::RecvError> {
+        self.status.changed().await
+    }
+
     pub fn cancel(self) {
         self.cancel.send(()).ok();
     }
