@@ -6,6 +6,7 @@ use tokio::{
     io::AsyncWriteExt,
     sync::{mpsc, oneshot, watch, Semaphore},
 };
+use tokio_util::sync::CancellationToken;
 
 const QUEUE_SIZE: usize = 100;
 const MAX_RETRIES: usize = 3;
@@ -16,7 +17,7 @@ struct DownloadRequest {
     destination: PathBuf,
     result: oneshot::Sender<Result<File, Error>>,
     status: watch::Sender<Status>,
-    cancel: oneshot::Receiver<()>,
+    cancel: CancellationToken,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +30,7 @@ pub struct DownloadProgress {
 pub struct DownloadHandle {
     result: oneshot::Receiver<Result<File, Error>>,
     status: watch::Receiver<Status>,
-    cancel: oneshot::Sender<()>,
+    cancel: CancellationToken,
 }
 
 impl std::future::Future for DownloadHandle {
@@ -58,8 +59,8 @@ impl DownloadHandle {
         self.status.changed().await
     }
 
-    pub fn cancel(self) {
-        self.cancel.send(()).ok();
+    pub fn cancel(&self) {
+        self.cancel.cancel();
     }
 }
 
@@ -114,14 +115,14 @@ impl DownloadManager {
     pub fn add_request(&self, url: Url, destination: PathBuf) -> DownloadHandle {
         let (result_tx, result_rx) = oneshot::channel();
         let (status_tx, status_rx) = watch::channel(Status::Pending);
-        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let cancel = CancellationToken::new();
 
         let req = DownloadRequest {
             url,
             destination,
             result: result_tx,
             status: status_tx,
-            cancel: cancel_rx,
+            cancel: cancel.clone(),
         };
 
         let _ = self.queue.try_send(req);
@@ -129,7 +130,7 @@ impl DownloadManager {
         DownloadHandle {
             result: result_rx,
             status: status_rx,
-            cancel: cancel_tx,
+            cancel,
         }
     }
 }
@@ -193,7 +194,7 @@ async fn download_thread(client: Client, mut req: DownloadRequest) {
 
             tokio::select! {
                 _ = tokio::time::sleep(delay) => {},
-                _ = &mut req.cancel => {
+                _ = req.cancel.cancelled() => {
                     req.status.send(Status::Failed).ok();
                     req.result.send(Err(Error::Download(DownloadError::Cancelled))).ok();
                     return;
@@ -247,7 +248,7 @@ async fn download(client: Client, req: &mut DownloadRequest) -> Result<File, Err
     update_progress(bytes_downloaded, total_bytes);
     loop {
         tokio::select! {
-            _ = &mut req.cancel => {
+            _ = req.cancel.cancelled() => {
                 drop(file); // Manually drop the file handle to ensure that deletion doesn't fail
                 tokio::fs::remove_file(&req.destination).await?;
                 return Err(Error::Download(DownloadError::Cancelled));

@@ -12,6 +12,7 @@ tonic = { workspace = true }
 tokio = { workspace = true }
 prost = { workspace = true }
 reqwest = "0.12"
+tokio-util = "0.7"
 
 [build-dependencies]
 tonic-build = "0.12.3"
