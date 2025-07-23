@@ -27,6 +27,6 @@ pub enum DownloadError {
     ManagerShutdown,
     #[error("File already exists: {path}")]
     FileExists { path: PathBuf },
-    #[error("Invalid URL")]
-    InvalidUrl,
+    #[error("Invalid URL: {0}")]
+    InvalidUrl(#[from] url::ParseError),
 }

@@ -42,15 +42,8 @@ impl DownloadManager {
         manager
     }
 
-    pub fn download(
-        &self,
-        url: impl TryInto<Url>,
-        destination: impl AsRef<Path>,
-    ) -> Result<DownloadBuilder, Error> {
-        let url = url
-            .try_into()
-            .map_err(|_| Error::Download(DownloadError::InvalidUrl))?;
-        Ok(DownloadBuilder::new(self, url, destination))
+    pub fn download(&self, url: Url, destination: impl AsRef<Path>) -> DownloadBuilder {
+        DownloadBuilder::new(self, url, destination)
     }
 
     pub fn download_with_config(
@@ -58,9 +51,8 @@ impl DownloadManager {
         url: Url,
         destination: impl AsRef<Path>,
         config: DownloadConfig,
-    ) -> Result<DownloadBuilder, Error> {
-        self.download(url, destination)
-            .map(|builder| builder.with_config(config))
+    ) -> DownloadBuilder {
+        self.download(url, destination).with_config(config)
     }
 
     pub async fn set_max_parallel_downloads(&self, limit: usize) -> Result<(), Error> {
