@@ -1,17 +1,16 @@
-use super::{download_thread, DownloadHandle, DownloadRequest};
+use super::{config::DownloadManagerConfig, download_thread, DownloadHandle, DownloadRequest};
 use crate::{error::DownloadError, Error};
 use reqwest::{Client, Url};
 use std::{path::Path, sync::Arc};
 use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 
-const QUEUE_SIZE: usize = 100;
-
 #[derive(Debug)]
 pub struct DownloadManager {
     queue: mpsc::Sender<DownloadRequest>,
     semaphore: Arc<Semaphore>,
     cancel: CancellationToken,
+    config: DownloadManagerConfig,
 }
 
 impl Drop for DownloadManager {
@@ -21,15 +20,22 @@ impl Drop for DownloadManager {
     }
 }
 
+impl Default for DownloadManager {
+    fn default() -> Self {
+        Self::with_config(DownloadManagerConfig::default())
+    }
+}
+
 impl DownloadManager {
-    pub fn new(limit: usize) -> Self {
-        let (tx, rx) = mpsc::channel(QUEUE_SIZE);
+    pub fn with_config(config: DownloadManagerConfig) -> Self {
+        let (tx, rx) = mpsc::channel(config.queue_size());
         let client = Client::new();
-        let semaphore = Arc::new(Semaphore::new(limit));
+        let semaphore = Arc::new(Semaphore::new(config.max_concurrent()));
         let manager = Self {
             queue: tx,
             semaphore: semaphore.clone(),
             cancel: CancellationToken::new(),
+            config,
         };
         // Spawn the dispatcher thread to handle download requests
         tokio::spawn(async move { dispatcher_thread(client, rx, semaphore).await });
@@ -63,16 +69,24 @@ impl DownloadManager {
         Ok(handle)
     }
 
-    pub fn set_max_parallel_downloads(&self, limit: usize) {
-        let current = self.semaphore.available_permits();
+    pub async fn set_max_parallel_downloads(&self, limit: usize) -> Result<(), Error> {
+        let current = self.config.max_concurrent();
         if limit > current {
             self.semaphore.add_permits(limit - current);
         } else if limit < current {
             let to_remove = current - limit;
-            for _ in 0..to_remove {
-                let _ = self.semaphore.try_acquire();
-            }
+
+            let permits = self
+                .semaphore
+                .acquire_many(to_remove as u32)
+                .await
+                .map_err(|_| Error::Download(DownloadError::ManagerShutdown))?;
+
+            permits.forget();
         }
+        self.config.set_max_concurrent(limit);
+
+        Ok(())
     }
 
     pub fn cancel_all(&self) {
