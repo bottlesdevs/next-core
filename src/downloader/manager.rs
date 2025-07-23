@@ -1,5 +1,6 @@
 use super::{
-    download_thread, DownloadBuilder, DownloadConfig, DownloadManagerConfig, DownloadRequest,
+    worker::download_thread, DownloadBuilder, DownloadConfig, DownloadManagerConfig,
+    DownloadRequest,
 };
 use crate::{error::DownloadError, Error};
 use reqwest::{Client, Url};

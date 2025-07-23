@@ -10,4 +10,3 @@ pub use handle::DownloadHandle;
 pub use manager::DownloadManager;
 pub use progress::{DownloadProgress, Status};
 pub use request::{DownloadBuilder, DownloadRequest};
-pub(self) use worker::download_thread;
