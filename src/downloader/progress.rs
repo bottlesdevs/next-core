@@ -112,3 +112,13 @@ impl DownloadProgress {
         self.start_time.elapsed()
     }
 }
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Status {
+    Queued,
+    InProgress(DownloadProgress),
+    Retrying,
+    Completed,
+    Failed,
+    Cancelled,
+}

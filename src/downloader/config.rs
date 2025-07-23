@@ -53,6 +53,21 @@ impl Default for DownloadConfig {
 }
 
 impl DownloadConfig {
+    pub fn with_max_retries(mut self, retries: usize) -> Self {
+        self.max_retries = retries;
+        self
+    }
+
+    pub fn with_user_agent(mut self, user_agent: impl Into<String>) -> Self {
+        self.user_agent = Some(user_agent.into());
+        self
+    }
+
+    pub fn with_progress_interval(mut self, interval: Duration) -> Self {
+        self.progress_update_interval = interval;
+        self
+    }
+
     pub fn max_retries(&self) -> usize {
         self.max_retries
     }

@@ -1,5 +1,5 @@
 use super::{
-    config::DownloadManagerConfig, download_thread, DownloadConfig, DownloadHandle, DownloadRequest,
+    download_thread, DownloadBuilder, DownloadConfig, DownloadManagerConfig, DownloadRequest,
 };
 use crate::{error::DownloadError, Error};
 use reqwest::{Client, Url};
@@ -40,40 +40,25 @@ impl DownloadManager {
         manager
     }
 
+    pub fn download(
+        &self,
+        url: impl TryInto<Url>,
+        destination: impl AsRef<Path>,
+    ) -> Result<DownloadBuilder, Error> {
+        let url = url
+            .try_into()
+            .map_err(|_| Error::Download(DownloadError::InvalidUrl))?;
+        Ok(DownloadBuilder::new(self, url, destination))
+    }
+
     pub fn download_with_config(
         &self,
         url: Url,
         destination: impl AsRef<Path>,
         config: DownloadConfig,
-    ) -> Result<DownloadHandle, Error> {
-        if self.cancel.is_cancelled() {
-            return Err(Error::Download(DownloadError::ManagerShutdown));
-        }
-
-        let destination = destination.as_ref();
-        if destination.exists() {
-            return Err(Error::Download(DownloadError::FileExists {
-                path: destination.to_path_buf(),
-            }));
-        }
-
-        let cancel = self.cancel.child_token();
-        let (req, handle) = DownloadRequest::new(url, destination, cancel, config);
-
-        self.queue.try_send(req).map_err(|e| match e {
-            mpsc::error::TrySendError::Full(_) => Error::Download(DownloadError::QueueFull),
-            mpsc::error::TrySendError::Closed(_) => Error::Download(DownloadError::ManagerShutdown),
-        })?;
-
-        Ok(handle)
-    }
-
-    pub fn download(
-        &self,
-        url: Url,
-        destination: impl AsRef<Path>,
-    ) -> Result<DownloadHandle, Error> {
-        self.download_with_config(url, destination, DownloadConfig::default())
+    ) -> Result<DownloadBuilder, Error> {
+        self.download(url, destination)
+            .map(|builder| builder.with_config(config))
     }
 
     pub async fn set_max_parallel_downloads(&self, limit: usize) -> Result<(), Error> {
@@ -115,6 +100,21 @@ impl DownloadManager {
         self.tracker.wait().await;
         drop(self.queue);
         Ok(())
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
+    pub fn child_token(&self) -> CancellationToken {
+        self.cancel.child_token()
+    }
+
+    pub fn queue_request(&self, req: DownloadRequest) -> Result<(), Error> {
+        self.queue.try_send(req).map_err(|e| match e {
+            mpsc::error::TrySendError::Full(_) => Error::Download(DownloadError::QueueFull),
+            mpsc::error::TrySendError::Closed(_) => Error::Download(DownloadError::ManagerShutdown),
+        })
     }
 }
 
