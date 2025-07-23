@@ -1,6 +1,7 @@
+use super::DownloadProgress;
 use crate::Error;
 use reqwest::Url;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::{
     fs::File,
     sync::{oneshot, watch},
@@ -14,12 +15,6 @@ pub(crate) struct DownloadRequest {
     pub result: oneshot::Sender<Result<File, Error>>,
     pub status: watch::Sender<Status>,
     pub cancel: CancellationToken,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DownloadProgress {
-    pub bytes_downloaded: u64,
-    pub total_bytes: Option<u64>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

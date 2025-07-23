@@ -80,15 +80,6 @@ pub(super) async fn download_thread(client: Client, mut req: DownloadRequest) {
 }
 
 async fn download(client: Client, req: &mut DownloadRequest) -> Result<File, Error> {
-    let update_progress = |bytes_downloaded: u64, total_bytes: Option<u64>| {
-        req.status
-            .send(Status::InProgress(DownloadProgress {
-                bytes_downloaded,
-                total_bytes,
-            }))
-            .ok();
-    };
-
     let mut response = client
         .get(req.url.as_ref())
         .send()
@@ -103,7 +94,10 @@ async fn download(client: Client, req: &mut DownloadRequest) -> Result<File, Err
     }
     let mut file = File::create(&req.destination).await?;
 
-    update_progress(bytes_downloaded, total_bytes);
+    let update_interval = Duration::from_millis(250);
+    let mut progress = DownloadProgress::new(bytes_downloaded, total_bytes, update_interval);
+    req.status.send(Status::InProgress(progress)).ok();
+
     loop {
         tokio::select! {
             _ = req.cancel.cancelled() => {
@@ -116,7 +110,10 @@ async fn download(client: Client, req: &mut DownloadRequest) -> Result<File, Err
                     Ok(Some(chunk)) => {
                         file.write_all(&chunk).await?;
                         bytes_downloaded += chunk.len() as u64;
-                        update_progress(bytes_downloaded, total_bytes);
+                        if let Some(new_progress) = progress.update(bytes_downloaded) {
+                            progress = new_progress;
+                        }
+                        req.status.send(Status::InProgress(progress)).ok();
                     }
                     Ok(None) => break,
                     Err(e) => {
@@ -128,7 +125,6 @@ async fn download(client: Client, req: &mut DownloadRequest) -> Result<File, Err
             }
         }
     }
-    update_progress(bytes_downloaded, total_bytes);
 
     // Ensure the data is written to disk
     file.sync_all().await?;
