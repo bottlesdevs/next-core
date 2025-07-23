@@ -3,7 +3,7 @@ use crate::{error::DownloadError, Error};
 use reqwest::{Client, Url};
 use std::{path::Path, sync::Arc};
 use tokio::sync::{mpsc, Semaphore};
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[derive(Debug)]
 pub struct DownloadManager {
@@ -11,13 +11,7 @@ pub struct DownloadManager {
     semaphore: Arc<Semaphore>,
     cancel: CancellationToken,
     config: DownloadManagerConfig,
-}
-
-impl Drop for DownloadManager {
-    fn drop(&mut self) {
-        // Need to manually close the semaphore to make sure dispatcher_thread stops waiting for permits
-        self.semaphore.close();
-    }
+    tracker: TaskTracker,
 }
 
 impl Default for DownloadManager {
@@ -31,14 +25,16 @@ impl DownloadManager {
         let (tx, rx) = mpsc::channel(config.queue_size());
         let client = Client::new();
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent()));
+        let tracker = TaskTracker::new();
         let manager = Self {
             queue: tx,
             semaphore: semaphore.clone(),
             cancel: CancellationToken::new(),
             config,
+            tracker: tracker.clone(),
         };
         // Spawn the dispatcher thread to handle download requests
-        tokio::spawn(async move { dispatcher_thread(client, rx, semaphore).await });
+        tracker.spawn(dispatcher_thread(client, rx, semaphore, tracker.clone()));
         manager
     }
 
@@ -98,6 +94,7 @@ async fn dispatcher_thread(
     client: Client,
     mut rx: mpsc::Receiver<DownloadRequest>,
     sem: Arc<Semaphore>,
+    tracker: TaskTracker,
 ) {
     while let Some(request) = rx.recv().await {
         let permit = match sem.clone().acquire_owned().await {
@@ -105,7 +102,7 @@ async fn dispatcher_thread(
             Err(_) => break,
         };
         let client = client.clone();
-        tokio::spawn(async move {
+        tracker.spawn(async move {
             // Move the permit into the worker thread so it's automatically released when the thread finishes
             let _permit = permit;
             download_thread(client.clone(), request).await;
