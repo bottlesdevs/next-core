@@ -88,6 +88,23 @@ impl DownloadManager {
     pub fn cancel_all(&self) {
         self.cancel.cancel();
     }
+
+    pub fn queued_downloads(&self) -> usize {
+        self.queue.max_capacity() - self.queue.capacity()
+    }
+
+    pub fn active_downloads(&self) -> usize {
+        // -1 because the dispatcher thread is always running
+        self.tracker.len() - 1
+    }
+
+    pub async fn shutdown(self) -> Result<(), Error> {
+        self.cancel.cancel();
+        self.tracker.close();
+        self.tracker.wait().await;
+        drop(self.queue);
+        Ok(())
+    }
 }
 
 async fn dispatcher_thread(
