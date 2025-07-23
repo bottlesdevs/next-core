@@ -30,6 +30,14 @@ impl DownloadHandle {
         *self.status.borrow()
     }
 
+    pub fn is_completed(&self) -> bool {
+        matches!(self.status(), Status::Completed)
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self.status(), Status::Cancelled)
+    }
+
     pub async fn wait_for_status_update(&mut self) -> Result<(), watch::error::RecvError> {
         self.status.changed().await
     }
