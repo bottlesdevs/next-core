@@ -1,6 +1,5 @@
 use super::{DownloadConfig, DownloadHandle, DownloadManager, DownloadProgress, Status};
 use crate::{error::DownloadError, Error};
-use reqwest::Url;
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -10,6 +9,7 @@ use tokio::{
     sync::{oneshot, watch},
 };
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 #[derive(Debug)]
 pub struct DownloadRequest {

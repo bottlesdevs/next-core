@@ -3,10 +3,11 @@ use super::{
     DownloadRequest,
 };
 use crate::{error::DownloadError, Error};
-use reqwest::{Client, Url};
+use reqwest::Client;
 use std::{path::Path, sync::Arc};
 use tokio::sync::{mpsc, Semaphore};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use url::Url;
 
 #[derive(Debug)]
 pub struct DownloadManager {
