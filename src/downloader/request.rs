@@ -65,6 +65,32 @@ impl DownloadRequest {
             self.status.send(Status::InProgress(progress)).ok();
         }
     }
+
+    pub fn fail(self, e: Error) {
+        let status = if matches!(e, Error::Download(DownloadError::Cancelled)) {
+            Status::Cancelled
+        } else {
+            Status::Failed
+        };
+        self.status.send(status).ok();
+        self.result.send(Err(e)).ok();
+    }
+
+    pub fn retry(&self) {
+        self.status.send(Status::Retrying).ok();
+    }
+
+    pub fn cancel(self) {
+        self.status.send(Status::Cancelled).ok();
+        self.result
+            .send(Err(Error::Download(DownloadError::Cancelled)))
+            .ok();
+    }
+
+    pub fn complete(self, file: File) {
+        self.status.send(Status::Completed).ok();
+        self.result.send(Ok(file)).ok();
+    }
 }
 
 #[derive(Debug)]

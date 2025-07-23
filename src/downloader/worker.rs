@@ -1,5 +1,5 @@
 use super::{DownloadProgress, DownloadRequest};
-use crate::{downloader::Status, error::DownloadError, Error};
+use crate::{error::DownloadError, Error};
 use reqwest::Client;
 use std::time::Duration;
 use tokio::{fs::File, io::AsyncWriteExt};
@@ -25,20 +25,17 @@ pub(super) async fn download_thread(client: Client, mut req: DownloadRequest) {
     let max_attempts = req.config().max_retries();
     for attempt in 0..=(max_attempts + 1) {
         if attempt > max_attempts {
-            req.status.send(Status::Failed).ok();
-            req.result
-                .send(Err(Error::Download(DownloadError::RetriesExhausted {
-                    last_error_msg: last_error
-                        .as_ref()
-                        .map(ToString::to_string)
-                        .unwrap_or_else(|| "Unknown Error".to_string()),
-                })))
-                .ok();
+            req.fail(Error::Download(DownloadError::RetriesExhausted {
+                last_error_msg: last_error
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "Unknown Error".to_string()),
+            }));
             return;
         }
 
         if attempt > 0 {
-            req.status.send(Status::Retrying).ok();
+            req.retry();
             // Basic exponential backoff
             let delay_ms = 1000 * 2u64.pow(attempt as u32 - 1);
             let delay = Duration::from_millis(delay_ms);
@@ -46,8 +43,7 @@ pub(super) async fn download_thread(client: Client, mut req: DownloadRequest) {
             tokio::select! {
                 _ = tokio::time::sleep(delay) => {},
                 _ = req.cancel.cancelled() => {
-                    req.status.send(Status::Failed).ok();
-                    req.result.send(Err(Error::Download(DownloadError::Cancelled))).ok();
+                    req.cancel();
                     return;
                 }
             }
@@ -55,8 +51,7 @@ pub(super) async fn download_thread(client: Client, mut req: DownloadRequest) {
 
         match download(client.clone(), &mut req).await {
             Ok(file) => {
-                req.status.send(Status::Completed).ok();
-                req.result.send(Ok(file)).ok();
+                req.complete(file);
                 return;
             }
             Err(e) => {
@@ -65,13 +60,7 @@ pub(super) async fn download_thread(client: Client, mut req: DownloadRequest) {
                     continue;
                 }
 
-                let status = if matches!(e, Error::Download(DownloadError::Cancelled)) {
-                    Status::Cancelled
-                } else {
-                    Status::Failed
-                };
-                req.status.send(status).ok();
-                req.result.send(Err(e)).ok();
+                req.fail(e);
                 return;
             }
         }
