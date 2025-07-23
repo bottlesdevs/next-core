@@ -4,8 +4,6 @@ use reqwest::Client;
 use std::time::Duration;
 use tokio::{fs::File, io::AsyncWriteExt};
 
-const MAX_RETRIES: usize = 3;
-
 pub(super) async fn download_thread(client: Client, mut req: DownloadRequest) {
     fn should_retry(e: &Error) -> bool {
         match e {
@@ -24,8 +22,9 @@ pub(super) async fn download_thread(client: Client, mut req: DownloadRequest) {
     }
 
     let mut last_error = None;
-    for attempt in 0..=(MAX_RETRIES + 1) {
-        if attempt > MAX_RETRIES {
+    let max_attempts = req.config().max_retries();
+    for attempt in 0..=(max_attempts + 1) {
+        if attempt > max_attempts {
             req.status.send(Status::Failed).ok();
             req.result
                 .send(Err(Error::Download(DownloadError::RetriesExhausted {
@@ -81,7 +80,7 @@ pub(super) async fn download_thread(client: Client, mut req: DownloadRequest) {
 
 async fn download(client: Client, req: &mut DownloadRequest) -> Result<File, Error> {
     let mut response = client
-        .get(req.url.as_ref())
+        .get(req.url().as_ref())
         .send()
         .await?
         .error_for_status()?;
@@ -89,20 +88,19 @@ async fn download(client: Client, req: &mut DownloadRequest) -> Result<File, Err
     let mut bytes_downloaded = 0u64;
 
     // Create the destination directory if it doesn't exist
-    if let Some(parent) = req.destination.parent() {
+    if let Some(parent) = req.destination().parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let mut file = File::create(&req.destination).await?;
+    let mut file = File::create(&req.destination()).await?;
 
-    let update_interval = Duration::from_millis(250);
-    let mut progress = DownloadProgress::new(bytes_downloaded, total_bytes, update_interval);
-    req.status.send(Status::InProgress(progress)).ok();
+    let mut progress = DownloadProgress::new(bytes_downloaded, total_bytes);
+    req.send_progress(progress);
 
     loop {
         tokio::select! {
             _ = req.cancel.cancelled() => {
                 drop(file); // Manually drop the file handle to ensure that deletion doesn't fail
-                tokio::fs::remove_file(&req.destination).await?;
+                tokio::fs::remove_file(&req.destination()).await?;
                 return Err(Error::Download(DownloadError::Cancelled));
             }
             chunk = response.chunk() => {
@@ -110,15 +108,14 @@ async fn download(client: Client, req: &mut DownloadRequest) -> Result<File, Err
                     Ok(Some(chunk)) => {
                         file.write_all(&chunk).await?;
                         bytes_downloaded += chunk.len() as u64;
-                        if let Some(new_progress) = progress.update(bytes_downloaded) {
-                            progress = new_progress;
-                        }
-                        req.status.send(Status::InProgress(progress)).ok();
+
+                        progress.update(bytes_downloaded);
+                        req.send_progress(progress);
                     }
                     Ok(None) => break,
                     Err(e) => {
                         drop(file); // Manually drop the file handle to ensure that deletion doesn't fail
-                        tokio::fs::remove_file(&req.destination).await?;
+                        tokio::fs::remove_file(&req.destination()).await?;
                         return Err(Error::Reqwest(e))
                     },
                 }
@@ -129,6 +126,6 @@ async fn download(client: Client, req: &mut DownloadRequest) -> Result<File, Err
     // Ensure the data is written to disk
     file.sync_all().await?;
     // Open a new file handle with RO permissions
-    let file = File::options().read(true).open(&req.destination).await?;
+    let file = File::options().read(true).open(&req.destination()).await?;
     Ok(file)
 }

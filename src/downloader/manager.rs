@@ -1,4 +1,6 @@
-use super::{config::DownloadManagerConfig, download_thread, DownloadHandle, DownloadRequest};
+use super::{
+    config::DownloadManagerConfig, download_thread, DownloadConfig, DownloadHandle, DownloadRequest,
+};
 use crate::{error::DownloadError, Error};
 use reqwest::{Client, Url};
 use std::{path::Path, sync::Arc};
@@ -38,10 +40,11 @@ impl DownloadManager {
         manager
     }
 
-    pub fn download(
+    pub fn download_with_config(
         &self,
         url: Url,
         destination: impl AsRef<Path>,
+        config: DownloadConfig,
     ) -> Result<DownloadHandle, Error> {
         if self.cancel.is_cancelled() {
             return Err(Error::Download(DownloadError::ManagerShutdown));
@@ -55,7 +58,7 @@ impl DownloadManager {
         }
 
         let cancel = self.cancel.child_token();
-        let (req, handle) = DownloadRequest::new_req_handle_pair(url, destination, cancel);
+        let (req, handle) = DownloadRequest::new(url, destination, cancel, config);
 
         self.queue.try_send(req).map_err(|e| match e {
             mpsc::error::TrySendError::Full(_) => Error::Download(DownloadError::QueueFull),
@@ -63,6 +66,14 @@ impl DownloadManager {
         })?;
 
         Ok(handle)
+    }
+
+    pub fn download(
+        &self,
+        url: Url,
+        destination: impl AsRef<Path>,
+    ) -> Result<DownloadHandle, Error> {
+        self.download_with_config(url, destination, DownloadConfig::default())
     }
 
     pub async fn set_max_parallel_downloads(&self, limit: usize) -> Result<(), Error> {

@@ -1,5 +1,7 @@
 use std::time::{Duration, Instant};
 
+const SPEED_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DownloadProgress {
     bytes_downloaded: u64,
@@ -12,7 +14,6 @@ pub struct DownloadProgress {
     last_update: Instant,
     last_speed_update: Instant,
     last_bytes_for_speed: u64,
-    update_interval: Duration,
 }
 
 impl std::fmt::Display for DownloadProgress {
@@ -42,7 +43,7 @@ impl std::fmt::Display for DownloadProgress {
 }
 
 impl DownloadProgress {
-    pub fn new(bytes_downloaded: u64, total_bytes: Option<u64>, update_interval: Duration) -> Self {
+    pub fn new(bytes_downloaded: u64, total_bytes: Option<u64>) -> Self {
         let now = Instant::now();
         Self {
             bytes_downloaded,
@@ -54,53 +55,35 @@ impl DownloadProgress {
             last_update: now,
             last_speed_update: now,
             last_bytes_for_speed: bytes_downloaded,
-            update_interval,
         }
     }
 
-    pub fn update(&self, bytes_downloaded: u64) -> Option<Self> {
-        fn new_update(
-            progress: &DownloadProgress,
-            bytes_downloaded: u64,
-            instant: Instant,
-        ) -> DownloadProgress {
-            DownloadProgress {
-                eta: None,
-                last_update: instant,
-                bytes_downloaded,
-                total_bytes: progress.total_bytes,
-                speed_bps: progress.speed_bps,
-                start_time: progress.start_time,
-                last_speed_update: progress.last_speed_update,
-                last_bytes_for_speed: progress.last_bytes_for_speed,
-                update_interval: progress.update_interval,
-            }
-        }
+    pub fn update(&mut self, bytes_downloaded: u64) {
+        self.bytes_downloaded = bytes_downloaded;
+        self.update_speed(bytes_downloaded);
+        self.update_eta();
+    }
 
+    fn update_speed(&mut self, bytes_downloaded: u64) {
         let now = Instant::now();
 
-        if now.duration_since(self.last_update) < self.update_interval {
-            return None;
-        }
-        let mut new_update = new_update(self, bytes_downloaded, now);
-
-        if now.duration_since(self.last_speed_update) >= Duration::from_secs(1) {
+        if now.duration_since(self.last_speed_update) >= SPEED_UPDATE_INTERVAL {
             let byte_diff = (bytes_downloaded - self.last_bytes_for_speed) as f64;
             let time_diff = now.duration_since(self.last_speed_update).as_secs_f64();
 
-            new_update.last_speed_update = now;
-            new_update.last_bytes_for_speed = bytes_downloaded;
-            new_update.speed_bps = Some((byte_diff / time_diff) as u64);
+            self.last_speed_update = now;
+            self.last_bytes_for_speed = bytes_downloaded;
+            self.speed_bps = Some((byte_diff / time_diff) as u64);
         };
+    }
 
-        if let (Some(speed), Some(total)) = (new_update.speed_bps, self.total_bytes) {
+    fn update_eta(&mut self) {
+        if let (Some(speed), Some(total)) = (self.speed_bps, self.total_bytes) {
             if speed > 0 {
-                let remaining = total.saturating_sub(bytes_downloaded);
-                new_update.eta = Some(Duration::from_secs(remaining / speed));
+                let remaining = total.saturating_sub(self.bytes_downloaded);
+                self.eta = Some(Duration::from_secs(remaining / speed));
             }
-        };
-
-        Some(new_update)
+        }
     }
 
     pub fn percent(&self) -> Option<f64> {
