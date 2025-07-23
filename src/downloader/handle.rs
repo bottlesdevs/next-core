@@ -25,6 +25,18 @@ impl DownloadHandle {
             cancel,
         }
     }
+
+    pub fn status(&self) -> Status {
+        *self.status.borrow()
+    }
+
+    pub async fn wait_for_status_update(&mut self) -> Result<(), watch::error::RecvError> {
+        self.status.changed().await
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
 }
 
 impl std::future::Future for DownloadHandle {
@@ -41,19 +53,5 @@ impl std::future::Future for DownloadHandle {
             Poll::Ready(Err(e)) => Poll::Ready(Err(Error::Oneshot(e))),
             Poll::Pending => Poll::Pending,
         }
-    }
-}
-
-impl DownloadHandle {
-    pub fn status(&self) -> Status {
-        *self.status.borrow()
-    }
-
-    pub async fn wait_for_status_update(&mut self) -> Result<(), watch::error::RecvError> {
-        self.status.changed().await
-    }
-
-    pub fn cancel(&self) {
-        self.cancel.cancel();
     }
 }

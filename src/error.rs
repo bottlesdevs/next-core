@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -18,6 +19,12 @@ pub enum Error {
 pub enum DownloadError {
     #[error("Download was cancelled")]
     Cancelled,
-    #[error("Retry limit exceeded")]
+    #[error("Retry limit exceeded: {last_error_msg}")]
     RetriesExhausted { last_error_msg: String },
+    #[error("Download queue is full")]
+    QueueFull,
+    #[error("Download manager has been shut down")]
+    ManagerShutdown,
+    #[error("File already exists: {path}")]
+    FileExists { path: PathBuf },
 }

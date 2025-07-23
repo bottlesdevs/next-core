@@ -1,9 +1,9 @@
+use super::{download_thread, DownloadHandle, DownloadRequest};
+use crate::{error::DownloadError, Error};
 use reqwest::{Client, Url};
-use std::{path::PathBuf, sync::Arc};
-use tokio::sync::{mpsc, oneshot, watch, Semaphore};
+use std::{path::Path, sync::Arc};
+use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
-
-use super::{download_thread, DownloadHandle, DownloadRequest, Status};
 
 const QUEUE_SIZE: usize = 100;
 
@@ -36,6 +36,33 @@ impl DownloadManager {
         manager
     }
 
+    pub fn download(
+        &self,
+        url: Url,
+        destination: impl AsRef<Path>,
+    ) -> Result<DownloadHandle, Error> {
+        if self.cancel.is_cancelled() {
+            return Err(Error::Download(DownloadError::ManagerShutdown));
+        }
+
+        let destination = destination.as_ref();
+        if destination.exists() {
+            return Err(Error::Download(DownloadError::FileExists {
+                path: destination.to_path_buf(),
+            }));
+        }
+
+        let cancel = self.cancel.child_token();
+        let (req, handle) = DownloadRequest::new_req_handle_pair(url, destination, cancel);
+
+        self.queue.try_send(req).map_err(|e| match e {
+            mpsc::error::TrySendError::Full(_) => Error::Download(DownloadError::QueueFull),
+            mpsc::error::TrySendError::Closed(_) => Error::Download(DownloadError::ManagerShutdown),
+        })?;
+
+        Ok(handle)
+    }
+
     pub fn set_max_parallel_downloads(&self, limit: usize) {
         let current = self.semaphore.available_permits();
         if limit > current {
@@ -46,24 +73,6 @@ impl DownloadManager {
                 let _ = self.semaphore.try_acquire();
             }
         }
-    }
-
-    pub fn add_request(&self, url: Url, destination: PathBuf) -> DownloadHandle {
-        let (result_tx, result_rx) = oneshot::channel();
-        let (status_tx, status_rx) = watch::channel(Status::Queued);
-        let cancel = self.cancel.child_token();
-
-        let req = DownloadRequest {
-            url,
-            destination,
-            result: result_tx,
-            status: status_tx,
-            cancel: cancel.clone(),
-        };
-
-        let _ = self.queue.try_send(req);
-
-        DownloadHandle::new(result_rx, status_rx, cancel)
     }
 
     pub fn cancel_all(&self) {
