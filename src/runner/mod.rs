@@ -82,11 +82,7 @@ impl RunnerInfo {
             .output()
             .map(|output| {
                 let ver = String::from_utf8_lossy(&output.stdout).to_string();
-                if ver.is_empty() {
-                    name.clone()
-                } else {
-                    ver
-                }
+                if ver.is_empty() { name.clone() } else { ver }
             })
             .map_err(Error::Io)?;
 
@@ -197,9 +193,9 @@ pub trait Runner {
     /// let wine_path = Path::new("/usr/bin/wine");
     /// if let Ok(wine) = Wine::try_from(wine_path) {
     ///     if wine.is_available() {
-    ///         println!("Wine is ready to use");
+    ///         tracing::info!("Wine is ready to use");
     ///     } else {
-    ///         println!("Wine is not available");
+    ///         tracing::info!("Wine is not available");
     ///     }
     /// }
     /// ```
