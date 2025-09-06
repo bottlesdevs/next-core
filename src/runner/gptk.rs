@@ -1,3 +1,5 @@
+use crate::runner::Wine;
+
 use super::{Runner, RunnerInfo};
 use std::path::{Path, PathBuf};
 
@@ -40,25 +42,32 @@ use std::path::{Path, PathBuf};
 #[derive(Debug)]
 pub struct GPTK {
     info: RunnerInfo,
+    wine: Wine,
 }
 
 impl TryFrom<&Path> for GPTK {
     type Error = crate::Error;
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
-        let executable = PathBuf::from("./gameportingtoolkit");
+        let executable = PathBuf::from("./proton");
         let info = RunnerInfo::try_from(path, &executable)?;
-        Ok(GPTK { info })
+        let mut wine = Wine::try_from(path.join("files").as_path())?;
+        wine.info_mut().name = info.name.clone();
+        Ok(GPTK { wine, info })
     }
 }
 
 impl Runner for GPTK {
     fn wine(&self) -> &super::Wine {
-        todo!()
+        &self.wine
     }
 
     fn info(&self) -> &RunnerInfo {
         &self.info
+    }
+
+    fn info_mut(&mut self) -> &mut RunnerInfo {
+        &mut self.info
     }
 
     /// GPTK has special availability requirements - it only works on Apple Silicon Macs
@@ -77,10 +86,6 @@ impl Runner for GPTK {
 
         // GPTK requires either x86_64 (Rosetta) or arm64 (Apple Silicon)
         arch_output == "i386" || arch_output == "arm64"
-    }
-
-    fn info_mut(&mut self) -> &mut RunnerInfo {
-        &mut self.info
     }
 
     fn initialize(&self, _prefix: impl AsRef<Path>) -> Result<(), crate::Error> {

@@ -38,7 +38,7 @@ pub enum WindowsVersion {
 }
 
 impl TryFrom<&Path> for Wine {
-    type Error = Box<dyn std::error::Error>;
+    type Error = crate::Error;
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
         let executable = PathBuf::from("./bin/wine");
