@@ -30,11 +30,11 @@ use std::path::{Path, PathBuf};
 /// let gptk_path = Path::new("/opt/homebrew/bin");
 /// match GPTK::try_from(gptk_path) {
 ///     Ok(gptk) => {
-///         println!("GPTK Name: {}", gptk.info().name());
-///         println!("GPTK Version: {}", gptk.info().version());
-///         println!("GPTK Available: {}", gptk.is_available());
+///         tracing::info!("GPTK Name: {}", gptk.info().name());
+///         tracing::info!("GPTK Version: {}", gptk.info().version());
+///         tracing::info!("GPTK Available: {}", gptk.is_available());
 ///     }
-///     Err(e) => println!("Failed to create GPTK runner: {}", e),
+///     Err(e) => tracing::error!("Failed to create GPTK runner: {}", e),
 /// }
 /// ```
 #[derive(Debug)]
