@@ -1,18 +1,32 @@
 [package]
 name = "bottles-core"
 version = "0.1.0"
-edition.workspace = true
+edition = "2021"
 
 [dependencies]
-next-config.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
-tonic.workspace = true
-tokio.workspace = true
-prost.workspace = true
-tonic-prost = "*"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tonic = "0.14"
+tokio = { version = "1", features = ["full"] }
+prost = "0.14"
+tonic-prost = "0.14"
+
+# Download manager dependencies
+reqwest = { version = "0.12", features = ["stream", "rustls-tls"] }
+tokio-util = { version = "0.7", features = ["io", "codec"] }
+futures = "0.3"
+tokio-stream = "0.1"
+url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+async-trait = "0.1"
+dashmap = "6"
+fastrand = "2"
+bytes = "1"
 
 [build-dependencies]
 tonic-prost-build = "0.14"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

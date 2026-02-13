@@ -1,5 +1,6 @@
 mod error;
 pub mod runner;
+pub mod download;
 pub use error::Error;
 
 pub mod proto {
