@@ -42,15 +42,20 @@ message MessageRequest {
 
 message MessageResponse {
     bool success = 1;
-    string error = 2; // Optional error detail
+    optional string error = 2;
 }
 
 // System
 message ShutdownRequest {}
 
+enum WinebootMode {
+    NORMAL = 0;
+    SHUTDOWN = 1;
+    KILL = 2;
+}
+
 message WinebootRequest {
-    bool shutdown = 1; // If true, simpler shutdown
-    bool kill = 2; // If true, force kill
+    WinebootMode mode = 1;
 }
 
 message DriveInfoRequest {}

@@ -41,6 +41,14 @@ service System {
     rpc Notify (NotifyRequest) returns (NotifyResponse);
 }
 
+// --- Enums ---
+
+enum BottleType {
+    Custom = 0;
+    Gaming = 1;
+    Software = 2;
+}
+
 // --- Messages ---
 
 message ResultResponse {
@@ -51,7 +59,7 @@ message ResultResponse {
 // Requests
 message CreateBottleRequest {
     string name = 1;
-    string type = 2; // e.g., "Gaming", "Software", "Custom"
+    BottleType type = 2;
     string runner = 3; // Optional implementation/runner override
 }
 
@@ -77,20 +85,14 @@ message BottleRequest {
 message Bottle {
     string name = 1;
     string path = 2;
-    string type = 3;
+    BottleType type = 3;
     bool active = 4; // True if the Agent is running for this bottle
     BottleConfig config = 5;
 }
 
 message BottleConfig {
     string runner = 1;
-    string dxvk_version = 2;
-    string vkd3d_version = 3;
-    string latencyflex_version = 4; // Optional
-    bool dxvk_nvapi = 5;
-    bool esync = 6;
-    bool fsync = 7;
-    // Add other relevant settings
+    map<string, string> settings = 2;
 }
 
 message EnvironmentVariables {
