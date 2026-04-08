@@ -2,6 +2,7 @@ mod error;
 pub mod runner;
 pub mod bottle;
 pub mod persistence;
+pub mod diff;
 pub use error::Error;
 
 pub mod proto {

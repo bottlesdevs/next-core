@@ -12,6 +12,10 @@ tonic.workspace = true
 tokio.workspace = true
 prost.workspace = true
 tonic-prost = "*"
+walkdir = "2"
+
+[dependencies.regdiff-rs]
+git = "https://github.com/bottlesdevs/regdiff-rs"
 
 [build-dependencies]
 tonic-prost-build = "0.14"

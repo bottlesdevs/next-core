@@ -27,9 +27,23 @@ service WineBridge {
     rpc Exists (FileOperationRequest) returns (ExistsResponse);
     rpc ListDirectory (FileOperationRequest) returns (ListDirectoryResponse);
 
+    // Service Management
+    rpc ListServices (ListServicesRequest) returns (ListServicesResponse);
+    rpc GetServiceStatus (ServiceRequest) returns (ServiceStatusResponse);
+    rpc StartService (ServiceRequest) returns (MessageResponse);
+    rpc StopService (ServiceRequest) returns (MessageResponse);
+    rpc CreateService (CreateServiceRequest) returns (MessageResponse);
+    rpc DeleteService (ServiceRequest) returns (MessageResponse);
+
+    // DLL Overrides
+    rpc ListDllOverrides (ListDllOverridesRequest) returns (ListDllOverridesResponse);
+    rpc GetDllOverride (DllOverrideRequest) returns (DllOverrideResponse);
+    rpc SetDllOverride (SetDllOverrideRequest) returns (MessageResponse);
+    rpc DeleteDllOverride (DllOverrideRequest) returns (MessageResponse);
+
     // System / Lifecycle
     rpc Shutdown (ShutdownRequest) returns (MessageResponse); // Terminates the Agent
-    rpc Wineboot (WinebootRequest) returns (MessageResponse); // Simulates wineboot
+    rpc Wineboot (WinebootRequest) returns (MessageResponse);
     rpc GetDriveInfo (DriveInfoRequest) returns (DriveInfoResponse);
 }
 
@@ -186,3 +200,86 @@ message FileInfo {
     bool is_dir = 2;
     uint64 size = 3;
 }
+
+// Service Management
+enum ServiceState {
+    SERVICE_STOPPED = 0;
+    SERVICE_START_PENDING = 1;
+    SERVICE_STOP_PENDING = 2;
+    SERVICE_RUNNING = 3;
+    SERVICE_CONTINUE_PENDING = 4;
+    SERVICE_PAUSE_PENDING = 5;
+    SERVICE_PAUSED = 6;
+}
+
+enum ServiceStartType {
+    SERVICE_BOOT_START = 0;
+    SERVICE_SYSTEM_START = 1;
+    SERVICE_AUTO_START = 2;
+    SERVICE_DEMAND_START = 3;
+    SERVICE_DISABLED = 4;
+}
+
+message ServiceInfo {
+    string name = 1;
+    string display_name = 2;
+    ServiceState state = 3;
+    ServiceStartType start_type = 4;
+}
+
+message ListServicesRequest {}
+
+message ListServicesResponse {
+    repeated ServiceInfo services = 1;
+}
+
+message ServiceRequest {
+    string name = 1;
+}
+
+message ServiceStatusResponse {
+    string name = 1;
+    ServiceState state = 2;
+}
+
+message CreateServiceRequest {
+    string name = 1;
+    string display_name = 2;
+    string binary_path = 3;
+    ServiceStartType start_type = 4;
+}
+
+// DLL Overrides
+enum DllOverrideMode {
+    NATIVE_BUILTIN = 0;
+    BUILTIN_NATIVE = 1;
+    NATIVE = 2;
+    BUILTIN = 3;
+    DISABLED = 4;
+}
+
+message DllOverride {
+    string dll = 1;
+    DllOverrideMode mode = 2;
+}
+
+message ListDllOverridesRequest {}
+
+message ListDllOverridesResponse {
+    repeated DllOverride overrides = 1;
+}
+
+message DllOverrideRequest {
+    string dll = 1;
+}
+
+message DllOverrideResponse {
+    string dll = 1;
+    DllOverrideMode mode = 2;
+}
+
+message SetDllOverrideRequest {
+    string dll = 1;
+    DllOverrideMode mode = 2;
+}
+
