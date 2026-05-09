@@ -3,19 +3,100 @@ syntax = "proto3";
 package winebridge;
 
 service WineBridge {
+  // Basic Communication
+  rpc Health(BridgeHealthRequest) returns (BridgeHealthResponse);
   rpc Message(MessageRequest) returns (MessageResponse);
+
+  // Process Management
   rpc RunningProcesses(RunningProcessesRequest) returns (RunningProcessesResponse);
   rpc CreateProcess(CreateProcessRequest) returns (CreateProcessResponse);
   rpc KillProcess(KillProcessRequest) returns (KillProcessResponse);
 
+  // Registry Management
   rpc CreateRegistryKey(CreateRegistryKeyRequest) returns (MessageResponse);
   rpc DeleteRegistryKey(DeleteRegistryKeyRequest) returns (MessageResponse);
   rpc GetRegistryKey(GetRegistryKeyRequest) returns (RegistryKey);
   rpc GetRegistryKeyValue(RegistryKeyRequest) returns (RegistryValue);
   rpc SetRegistryKeyValue(SetRegistryKeyValueRequest) returns (MessageResponse);
   rpc DeleteRegistryKeyValue(RegistryKeyRequest) returns (MessageResponse);
+
+  // Prefix FS Operations
+  rpc CreateDirectory(FileOperationRequest) returns (FileOperationResponse);
+  rpc DeleteFile(FileOperationRequest) returns (FileOperationResponse);
+  rpc CopyFile(CopyMoveRequest) returns (FileOperationResponse);
+  rpc MoveFile(CopyMoveRequest) returns (FileOperationResponse);
+  rpc ListDirectory(FileOperationRequest) returns (ListDirectoryResponse);
+  rpc Exists(FileOperationRequest) returns (ExistsResponse);
+
+  // Service Management
+  rpc ListServices(ListServicesRequest) returns (ListServicesResponse);
+  rpc GetServiceStatus(ServiceRequest) returns (ServiceStatusResponse);
+  rpc StartService(ServiceRequest) returns (MessageResponse);
+  rpc StopService(ServiceRequest) returns (MessageResponse);
+  rpc CreateService(CreateServiceRequest) returns (MessageResponse);
+  rpc DeleteService(ServiceRequest) returns (MessageResponse);
+
+  // DLL Overrides
+  rpc ListDllOverrides(ListDllOverridesRequest) returns (ListDllOverridesResponse);
+  rpc GetDllOverride(DllOverrideRequest) returns (DllOverrideResponse);
+  rpc SetDllOverride(SetDllOverrideRequest) returns (MessageResponse);
+  rpc DeleteDllOverride(DllOverrideRequest) returns (MessageResponse);
+
+  // System
+  rpc Shutdown(ShutdownRequest) returns (MessageResponse); // Terminates the Agent
+  rpc Wineboot(WinebootRequest) returns (MessageResponse);
+  rpc GetDriveInfo(DriveInfoRequest) returns (DriveInfoResponse);
 }
 
+// Basic Communication
+message BridgeHealthRequest {}
+
+message BridgeHealthResponse {
+  bool ok = 1;
+}
+
+message MessageRequest {
+  string message = 1;
+}
+
+message MessageResponse {
+  bool success = 1;
+  optional string error = 2;
+}
+
+// Process
+message Process {
+  uint32 pid = 1;
+  string name = 2;
+  uint32 threads = 3;
+}
+
+message RunningProcessesRequest {}
+
+message RunningProcessesResponse {
+  repeated Process processes = 1;
+}
+
+message CreateProcessRequest {
+  string command = 1;
+  repeated string args = 2;
+  optional string work_dir = 3; // Optional working directory
+  bool terminal = 4;
+}
+
+message CreateProcessResponse {
+  uint32 pid = 1;
+}
+
+message KillProcessRequest {
+  uint32 pid = 1;
+}
+
+message KillProcessResponse {
+  bool success = 1;
+}
+
+// Registry
 enum RegistryValueType {
   REG_NONE = 0;
   REG_BINARY = 1;
@@ -68,37 +149,140 @@ message DeleteRegistryKeyRequest {
   string subkey = 2;
 }
 
-message MessageRequest {
-  string message = 1;
+// File System
+message FileOperationRequest {
+  string path = 1;
 }
 
-message MessageResponse {
+message FileOperationResponse {
   bool success = 1;
+  string error = 2;
 }
 
-message Process {
-  uint32 pid = 1;
-  string name = 2;
-  uint32 threads = 3;
+message CopyMoveRequest {
+  string source = 1;
+  string destination = 2;
 }
 
-message RunningProcessesRequest {}
-
-message RunningProcessesResponse {
-  repeated Process processes = 1;
+message FileInfo {
+  string name = 1;
+  bool is_dir = 2;
+  uint64 size = 3;
 }
 
-message CreateProcessRequest {
-  string command = 1;
-  repeated string args = 2;
+message ListDirectoryResponse {
+  repeated FileInfo files = 1;
 }
 
-message CreateProcessResponse {
-  uint32 pid = 1;
+message ExistsResponse {
+  bool exists = 1;
+  bool is_dir = 2;
 }
 
-message KillProcessRequest {
-  uint32 pid = 1;
+// Service API
+message ListServicesRequest {}
+
+message ServiceInfo {
+  string name = 1;
+  string display_name = 2;
+  int32 state = 3;
+  int32 start_type = 4;
 }
 
-message KillProcessResponse {}
+message ListServicesResponse {
+  repeated ServiceInfo services = 1;
+}
+
+message ServiceRequest {
+  string name = 1;
+}
+
+enum ServiceState {
+  SERVICE_STOPPED = 0;
+  SERVICE_START_PENDING = 1;
+  SERVICE_STOP_PENDING = 2;
+  SERVICE_RUNNING = 3;
+  SERVICE_CONTINUE_PENDING = 4;
+  SERVICE_PAUSE_PENDING = 5;
+  SERVICE_PAUSED = 6;
+}
+
+message ServiceStatusResponse {
+  string name = 1;
+  ServiceState state = 2;
+}
+
+enum ServiceStartType {
+  SERVICE_BOOT_START = 0;
+  SERVICE_SYSTEM_START = 1;
+  SERVICE_AUTO_START = 2;
+  SERVICE_DEMAND_START = 3;
+  SERVICE_DISABLED = 4;
+}
+
+message CreateServiceRequest {
+  string name = 1;
+  string display_name = 2;
+  string binary_path = 3;
+  ServiceStartType start_type = 4;
+}
+
+// DLL Overrides
+enum DllOverrideMode {
+  NATIVE_BUILTIN = 0;
+  BUILTIN_NATIVE = 1;
+  NATIVE = 2;
+  BUILTIN = 3;
+  DISABLED = 4;
+}
+
+message DllOverride {
+  string dll = 1;
+  DllOverrideMode mode = 2;
+}
+
+message ListDllOverridesRequest {}
+
+message ListDllOverridesResponse {
+  repeated DllOverride overrides = 1;
+}
+
+message DllOverrideRequest {
+  string dll = 1;
+}
+
+message DllOverrideResponse {
+  string dll = 1;
+  DllOverrideMode mode = 2;
+}
+
+message SetDllOverrideRequest {
+  string dll = 1;
+  DllOverrideMode mode = 2;
+}
+
+// System
+message ShutdownRequest {}
+
+enum WinebootMode {
+  NORMAL = 0;
+  SHUTDOWN = 1;
+  KILL = 2;
+}
+
+message WinebootRequest {
+  WinebootMode mode = 1;
+}
+
+message DriveInfoRequest {}
+
+message DriveInfoResponse {
+  repeated Drive drives = 1;
+}
+
+message Drive {
+  string letter = 1; // "C", "Z"
+  string label = 2;
+  uint64 total_space = 3;
+  uint64 free_space = 4;
+}
