@@ -6,4 +6,8 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("Serde: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("gRPC transport: {0}")]
+    Transport(#[from] tonic::transport::Error),
+    #[error("gRPC status: {0}")]
+    Status(#[from] tonic::Status),
 }
