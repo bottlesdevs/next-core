@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use crate::{runner::RunnerError, winebridge::BridgeError};
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Error, Debug)]
@@ -12,6 +13,10 @@ pub enum Error {
     Transport(#[from] tonic::transport::Error),
     #[error("gRPC status: {0}")]
     Status(#[from] tonic::Status),
+    #[error("WineBridge error: {0}")]
+    Bridge(#[from] BridgeError),
+    #[error("Runner error: {0}")]
+    Runner(#[from] RunnerError),
 }
 
 #[allow(dead_code)]
