@@ -11,6 +11,7 @@ thiserror.workspace = true
 tracing.workspace = true
 tonic.workspace = true
 tokio.workspace = true
+derive_builder.workspace = true
 prost = "0.14"
 tonic-prost = "0.14"
 
