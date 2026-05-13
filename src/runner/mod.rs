@@ -68,7 +68,14 @@ pub struct PrefixConfig {
 }
 
 impl PrefixConfig {
-    fn to_env(&self) -> HashMap<String, String> {
+    pub fn new(path: impl AsRef<Path>, arch: PrefixArch) -> Self {
+        Self {
+            path: path.as_ref().to_path_buf(),
+            arch,
+        }
+    }
+
+    pub fn to_env(&self) -> HashMap<String, String> {
         let mut env = HashMap::new();
 
         env.insert(String::from("WINEPREFIX"), self.path.display().to_string());

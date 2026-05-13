@@ -8,11 +8,13 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use tonic::transport::{Channel, Endpoint};
 
-use crate::proto::ShutdownRequest;
 use crate::runner::RunnerError;
 use crate::{
     error::Result,
-    proto::{BridgeHealthRequest, CreateProcessRequest, KillProcessRequest, wine_bridge_client},
+    proto::{
+        BridgeHealthRequest, CreateProcessRequest, KillProcessRequest, ShutdownRequest,
+        wine_bridge_client,
+    },
     runner::{PrefixConfig, Runner, RunnerCommand},
 };
 
