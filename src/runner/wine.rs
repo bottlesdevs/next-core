@@ -1,5 +1,5 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command},
 };
 
@@ -15,6 +15,15 @@ use super::{PrefixConfig, Runner, RunnerCommand};
 #[derive(Debug)]
 pub struct Wine {
     executable: PathBuf,
+}
+
+impl Wine {
+    /// Creates a new Wine runner with the specified executable path
+    pub fn new(executable: impl AsRef<Path>) -> Self {
+        Self {
+            executable: executable.as_ref().to_path_buf(),
+        }
+    }
 }
 
 impl Runner for Wine {
