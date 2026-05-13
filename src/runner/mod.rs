@@ -11,19 +11,13 @@ use std::{
     process::Child,
 };
 
+/// Errors produced by runner command construction and prefix setup.
 #[derive(Debug, Error)]
 pub enum RunnerError {
+    #[error("RunnerCommand could not be built from the provided builder fields: {0}")]
     Command(#[from] RunnerCommandBuilderError),
+    #[error("The runner process used for prefix initialization exited unsuccessfully.")]
     PrefixInitFailed,
-}
-
-impl std::fmt::Display for RunnerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RunnerError::Command(e) => write!(f, "{}", e),
-            RunnerError::PrefixInitFailed => write!(f, "Failed to initialzie prefix using runner"),
-        }
-    }
 }
 
 /// Architecture for Wine prefix creation
@@ -62,12 +56,20 @@ impl std::fmt::Display for PrefixArch {
     }
 }
 
+/// Configuration used when creating or running commands inside a Wine prefix.
+///
+/// Runners use this value to set process-level environment such as `WINEPREFIX` and
+/// `WINEARCH` before invoking Wine, Proton, UMU, or GPTK.
 pub struct PrefixConfig {
     path: PathBuf,
     arch: PrefixArch,
 }
 
 impl PrefixConfig {
+    /// Creates a prefix configuration for `path` and `arch`.
+    ///
+    /// This does not create the prefix on disk. Use [`Runner::initialize_prefix`]
+    /// to ask a runner to initialize the configured prefix.
     pub fn new(path: impl AsRef<Path>, arch: PrefixArch) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
@@ -75,6 +77,9 @@ impl PrefixConfig {
         }
     }
 
+    /// Converts the prefix configuration into runner process environment values.
+    ///
+    /// The returned map currently contains `WINEPREFIX` and `WINEARCH`.
     pub fn to_env(&self) -> HashMap<String, String> {
         let mut env = HashMap::new();
 
@@ -85,34 +90,49 @@ impl PrefixConfig {
     }
 }
 
+/// Command description passed to a [`Runner`].
+///
+/// `RunnerCommand` describes what should be executed by a compatibility runner.
 #[derive(Builder, Clone)]
 #[builder(pattern = "owned")]
 pub struct RunnerCommand {
+    /// Executable or runner subcommand to invoke.
     #[builder(setter(custom))]
     executable: PathBuf,
+
+    /// Positional arguments passed after the executable.
     #[builder(field(ty = "Vec<String>"), setter(custom))]
     args: Vec<String>,
+
+    /// Environment variables applied to the runner process.
     #[builder(field(ty = "HashMap<String, String>"), setter(custom))]
     envs: HashMap<String, String>,
 }
 
 impl RunnerCommand {
+    /// Creates a builder for a runner command.
     pub fn builder() -> RunnerCommandBuilder {
         RunnerCommandBuilder::default()
     }
 }
 
 impl RunnerCommandBuilder {
+    /// Sets the executable or runner subcommand to invoke.
+    ///
+    /// For Wine this is usually a Windows executable path or a Wine subcommand
+    /// e.g `wineboot`.
     pub fn executable(mut self, executable: impl AsRef<Path>) -> Self {
         self.executable = Some(executable.as_ref().to_path_buf());
         self
     }
 
+    /// Appends one positional argument.
     pub fn arg(mut self, arg: &str) -> Self {
         self.args.push(arg.to_string());
         self
     }
 
+    /// Appends multiple positional arguments in order.
     pub fn args<I, A>(mut self, args: I) -> Self
     where
         I: IntoIterator<Item = A>,
@@ -125,6 +145,7 @@ impl RunnerCommandBuilder {
         self
     }
 
+    /// Sets or replaces one environment variable for the runner process.
     pub fn env(mut self, key: &str, value: &str) -> Self {
         *self
             .envs
@@ -133,6 +154,7 @@ impl RunnerCommandBuilder {
         self
     }
 
+    /// Sets or replaces multiple environment variables for the runner process.
     pub fn envs<I, K, V>(mut self, envs: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -151,7 +173,16 @@ impl RunnerCommandBuilder {
 /// All runners in this module implement this trait, providing a unified way to interact
 /// with different compatibility layers like Wine, Proton, UMU, and GPTK.
 pub trait Runner {
+    /// Starts a runner command inside `prefix`.
+    ///
+    /// Implementations should translate [`RunnerCommand`] into the correct host
+    /// process invocation,  apply command environment overrides,
+    /// and return the spawned child process.
     fn run(&self, prefix: &PrefixConfig, command: RunnerCommand) -> Result<Child>;
 
+    /// Initializes the configured prefix on disk using the runner.
+    ///
+    /// This is host-side setup and should complete before a WineBridge server is
+    /// started for the prefix.
     fn initialize_prefix(&self, prefix: &PrefixConfig) -> Result<()>;
 }
