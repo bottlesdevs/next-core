@@ -23,22 +23,12 @@ static BRIDGE_ENDPOINT_MANAGER: LazyLock<BridgeEndpointManager> =
 
 #[derive(Error, Debug)]
 pub enum BridgeError {
+    #[error(
+        "The WineBridge process exited with status {0} before it reported readiness over gRPC."
+    )]
     BridgeExited(ExitStatus),
+    #[error("WineBridge did not report readiness before the startup timeout elapsed.")]
     Timeout,
-}
-
-impl std::fmt::Display for BridgeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BridgeError::BridgeExited(status) => {
-                write!(f, "WineBridge exited before becoming ready: {}", status)
-            }
-            BridgeError::Timeout => write!(
-                f,
-                "Timeout occured while waiting for Winebridge gRPC server to start"
-            ),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -62,12 +52,31 @@ impl BridgeEndpointManager {
     }
 }
 
+/// Managed client for a WineBridge server running inside a Wine prefix.
+///
+/// The wrapper starts WineBridge through a [`Runner`], waits until the gRPC
+/// health endpoint reports ready, and then exposes higher-level methods for
+/// process management through the generated WineBridge client.
+///
+/// Each client owns one spawned WineBridge process. Call [`shutdown`](Self::shutdown)
+/// when the bridge is no longer needed so the server can stop cleanly.
 pub struct WineBridgeClient {
     client: Mutex<wine_bridge_client::WineBridgeClient<Channel>>,
     process: Child,
 }
 
 impl WineBridgeClient {
+    /// Starts WineBridge inside `prefix` using `runner` and connects to it over gRPC.
+    ///
+    /// A loopback endpoint is allocated for the bridge and passed to the server
+    /// process through `WINEBRIDGE_HOST` and `WINEBRIDGE_PORT`. The method returns
+    /// only after WineBridge responds successfully to the health RPC.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runner command cannot be built, the bridge process
+    /// cannot be spawned, the process exits before readiness, the startup timeout
+    /// elapses, or the gRPC client cannot be created.
     pub async fn new(
         runner: &dyn Runner,
         prefix: &PrefixConfig,
@@ -130,6 +139,11 @@ impl WineBridgeClient {
     }
 
     // TODO: repalce `executable` with `LaunchRequest` struct that also contains args, work_dir etc.
+    /// Launches a process through WineBridge and returns the process id reported by the server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the gRPC request fails or WineBridge rejects the launch.
     pub async fn launch_process(&self, executable: PathBuf) -> Result<u32> {
         let mut client = self.client.lock().await;
         let response = client
@@ -142,6 +156,12 @@ impl WineBridgeClient {
         Ok(response.into_inner().pid)
     }
 
+    /// Requests WineBridge to terminate a process by pid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the gRPC request fails or WineBridge cannot kill the
+    /// target process.
     pub async fn kill_process(&self, pid: u32) -> Result<()> {
         let mut client = self.client.lock().await;
 
@@ -150,6 +170,13 @@ impl WineBridgeClient {
         Ok(())
     }
 
+    /// Requests the managed WineBridge server to shut down.
+    ///
+    /// This consumes the wrapper so callers cannot issue more RPCs after shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shutdown RPC fails.
     pub async fn shutdown(self) -> Result<()> {
         let mut client = self.client.lock().await;
 
