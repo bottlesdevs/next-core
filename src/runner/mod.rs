@@ -6,7 +6,7 @@ pub use proton::Proton;
 use thiserror::Error;
 pub use wine::Wine;
 
-use crate::error::Result;
+use crate::{error::Result, utils::absolute_path};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -21,9 +21,17 @@ pub enum RunnerError {
     #[error("The runner process used for prefix initialization exited unsuccessfully.")]
     PrefixInitFailed,
     #[error(
-        "Proton runner requires STEAM_COMPAT_DATA_PATH and STEAM_COMPAT_CLIENT_INSTALL_PATH environment variables to be set in the prefix configuration."
+        "Proton runner requires STEAM_COMPAT_DATA_PATH and STEAM_COMPAT_CLIENT_INSTALL_PATH in the prefix configuration."
     )]
     ProtonEnvVarsMissing,
+    #[error(
+        "PrefixConfig builder requires a prefix path unless STEAM_COMPAT_DATA_PATH is configured."
+    )]
+    PrefixPathMissing,
+    #[error(
+        "Prefix path cannot be configured separately when Proton compatibility paths are configured."
+    )]
+    PrefixPathConflict,
 }
 
 /// Architecture for Wine prefix creation
@@ -67,38 +75,104 @@ impl std::fmt::Display for PrefixArch {
 ///
 /// Runners use this value to set process-level environment such as `WINEPREFIX` and
 /// `WINEARCH` before invoking Wine, Proton, UMU, or GPTK.
-#[derive(Default, Debug)]
+#[derive(Builder, Debug)]
+#[builder(pattern = "owned", build_fn(skip))]
 pub struct PrefixConfig {
+    #[builder(setter(custom))]
     path: PathBuf,
+    #[builder(default)]
     arch: PrefixArch,
+    #[builder(field(ty = "Option<PathBuf>"), setter(custom))]
     compat_data_path: Option<PathBuf>,
+    #[builder(field(ty = "Option<PathBuf>"), setter(custom))]
     compat_client_install_path: Option<PathBuf>,
 }
 
-impl PrefixConfig {
-    /// Creates a prefix configuration for `path` and `arch`.
-    ///
-    /// This does not create the prefix on disk. Use [`Runner::initialize_prefix`]
-    /// to ask a runner to initialize the configured prefix.
-    pub fn new(path: impl AsRef<Path>, arch: PrefixArch) -> Self {
-        Self {
-            path: path.as_ref().to_path_buf(),
-            arch,
-            ..Default::default()
+impl PrefixConfigBuilder {
+    pub fn path(mut self, path: impl AsRef<Path>) -> Result<Self> {
+        if self.compat_client_install_path.is_some() || self.compat_data_path.is_some() {
+            return Err(RunnerError::PrefixPathConflict.into());
         }
+
+        self.path = Some(path.as_ref().to_path_buf());
+
+        Ok(self)
     }
 
-    pub fn with_compat_data_path(mut self, compat_data_path: impl AsRef<Path>) -> Self {
+    pub fn compat_data_path(mut self, compat_data_path: impl AsRef<Path>) -> Result<Self> {
+        if self.path.is_some() {
+            return Err(RunnerError::PrefixPathConflict.into());
+        }
+
+        self.path = Some(compat_data_path.as_ref().join("pfx/"));
         self.compat_data_path = Some(compat_data_path.as_ref().to_path_buf());
-        self
+
+        Ok(self)
     }
 
-    pub fn with_compat_client_install_path(
+    pub fn compat_client_install_path(
         mut self,
         compat_client_install_path: impl AsRef<Path>,
     ) -> Self {
         self.compat_client_install_path = Some(compat_client_install_path.as_ref().to_path_buf());
         self
+    }
+
+    /// Creates a prefix configuration
+    ///
+    /// This does not create the prefix on disk. Use [`Runner::initialize_prefix`]
+    /// to ask a runner to initialize the configured prefix.
+    pub fn build(self) -> Result<PrefixConfig> {
+        let PrefixConfigBuilder {
+            path,
+            arch,
+            compat_data_path,
+            compat_client_install_path,
+        } = self;
+
+        if compat_data_path.is_some() != compat_client_install_path.is_some() {
+            return Err(RunnerError::ProtonEnvVarsMissing.into());
+        }
+
+        let arch = arch.unwrap_or_default();
+        let compat_data_path = compat_data_path.map(absolute_path).transpose()?;
+        let compat_client_install_path =
+            compat_client_install_path.map(absolute_path).transpose()?;
+        let path = match &compat_data_path {
+            Some(compat_data_path) => compat_data_path.join("pfx/"),
+            None => absolute_path(path.ok_or(RunnerError::PrefixPathMissing)?)?,
+        };
+
+        Ok(PrefixConfig::new(
+            path,
+            arch,
+            compat_data_path,
+            compat_client_install_path,
+        ))
+    }
+}
+
+impl PrefixConfig {
+    pub fn builder() -> PrefixConfigBuilder {
+        PrefixConfigBuilder::default()
+    }
+
+    fn new(
+        path: PathBuf,
+        arch: PrefixArch,
+        compat_data_path: Option<PathBuf>,
+        compat_client_install_path: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            path,
+            arch,
+            compat_data_path,
+            compat_client_install_path,
+        }
+    }
+
+    fn is_proton(&self) -> bool {
+        self.compat_data_path.is_some() && self.compat_client_install_path.is_some()
     }
 
     /// Converts the prefix configuration into runner process environment values.
