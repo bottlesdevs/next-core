@@ -62,7 +62,7 @@ impl BridgeEndpointManager {
 /// when the bridge is no longer needed so the server can stop cleanly.
 pub struct WineBridgeClient {
     client: Mutex<wine_bridge_client::WineBridgeClient<Channel>>,
-    process: Child,
+    _process: Child,
 }
 
 impl WineBridgeClient {
@@ -97,11 +97,30 @@ impl WineBridgeClient {
         let mut child = runner.run(prefix, command)?;
 
         let grpc_client =
-            Self::wait_until_ready(endpoint, &mut child, Duration::from_secs(3)).await?;
+            match Self::wait_until_ready(endpoint, &mut child, Duration::from_secs(30)).await {
+                Ok(client) => client,
+                Err(error) => {
+                    if let Err(kill_error) = child.kill() {
+                        tracing::debug!(
+                            %kill_error,
+                            "Failed to kill WineBridge process after startup failure"
+                        );
+                    }
+
+                    if let Err(wait_error) = child.wait() {
+                        tracing::debug!(
+                            %wait_error,
+                            "Failed to wait for WineBridge process after startup failure"
+                        );
+                    }
+
+                    return Err(error);
+                }
+            };
 
         let client = Self {
             client: Mutex::new(grpc_client),
-            process: child,
+            _process: child,
         };
 
         Ok(client)
@@ -118,13 +137,21 @@ impl WineBridgeClient {
                     return Err(BridgeError::BridgeExited(status).into());
                 }
 
-                if let Ok(mut client) =
-                    wine_bridge_client::WineBridgeClient::connect(endpoint.clone()).await
-                {
-                    if let Ok(response) = client.health(BridgeHealthRequest {}).await {
-                        if response.into_inner().ok {
-                            return Ok(client);
+                match wine_bridge_client::WineBridgeClient::connect(endpoint.clone()).await {
+                    Ok(mut client) => match client.health(BridgeHealthRequest {}).await {
+                        Ok(response) => {
+                            if response.into_inner().ok {
+                                return Ok(client);
+                            }
+
+                            tracing::debug!("WineBridge health check returned not ready");
                         }
+                        Err(error) => {
+                            tracing::debug!(%error, "WineBridge health check failed");
+                        }
+                    },
+                    Err(error) => {
+                        tracing::debug!(%error, "WineBridge connection attempt failed");
                     }
                 }
 
