@@ -1,6 +1,7 @@
 mod error;
 pub mod runner;
 pub use error::Error;
+mod utils;
 mod winebridge;
 
 pub mod proto {
