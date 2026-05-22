@@ -73,6 +73,13 @@ impl Runner for Proton {
             return Err(RunnerError::ProtonEnvVarsMissing.into());
         }
 
+        // Safe to unwrap here since we already verified this is a proton prefix
+        let compat_data_path = prefix.compat_data_path.as_deref().unwrap();
+        if !compat_data_path.exists() {
+            // Proton will fail to run compat_data_path doesn't exist, so create it
+            std::fs::create_dir_all(compat_data_path)?;
+        }
+
         let command = RunnerCommand::builder()
             .executable("wineboot")
             .arg("--init")
