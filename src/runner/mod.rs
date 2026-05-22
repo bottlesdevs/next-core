@@ -1,3 +1,4 @@
+mod proton;
 mod wine;
 
 use derive_builder::Builder;
@@ -18,6 +19,10 @@ pub enum RunnerError {
     Command(#[from] RunnerCommandBuilderError),
     #[error("The runner process used for prefix initialization exited unsuccessfully.")]
     PrefixInitFailed,
+    #[error(
+        "Proton runner requires STEAM_COMPAT_DATA_PATH and STEAM_COMPAT_CLIENT_INSTALL_PATH environment variables to be set in the prefix configuration."
+    )]
+    ProtonEnvVarsMissing,
 }
 
 /// Architecture for Wine prefix creation
@@ -25,11 +30,12 @@ pub enum RunnerError {
 /// Determines whether a Wine prefix should be configured for 32-bit or 64-bit
 /// Windows compatibility. This affects which Windows applications can run
 /// in the prefix
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PrefixArch {
     /// 32-bit Windows prefix architecture
     Win32,
     /// 64-bit Windows prefix architecture (recommended)
+    #[default]
     Win64,
 }
 
@@ -60,9 +66,12 @@ impl std::fmt::Display for PrefixArch {
 ///
 /// Runners use this value to set process-level environment such as `WINEPREFIX` and
 /// `WINEARCH` before invoking Wine, Proton, UMU, or GPTK.
+#[derive(Default, Debug)]
 pub struct PrefixConfig {
     path: PathBuf,
     arch: PrefixArch,
+    compat_data_path: Option<PathBuf>,
+    compat_client_install_path: Option<PathBuf>,
 }
 
 impl PrefixConfig {
@@ -74,6 +83,7 @@ impl PrefixConfig {
         Self {
             path: path.as_ref().to_path_buf(),
             arch,
+            ..Default::default()
         }
     }
 
@@ -85,6 +95,20 @@ impl PrefixConfig {
 
         env.insert(String::from("WINEPREFIX"), self.path.display().to_string());
         env.insert(String::from("WINEARCH"), self.arch.to_string());
+
+        if let Some(path) = &self.compat_data_path {
+            env.insert(
+                String::from("STEAM_COMPAT_DATA_PATH"),
+                path.display().to_string(),
+            );
+        }
+
+        if let Some(path) = &self.compat_client_install_path {
+            env.insert(
+                String::from("STEAM_COMPAT_CLIENT_INSTALL_PATH"),
+                path.display().to_string(),
+            );
+        }
 
         env
     }
