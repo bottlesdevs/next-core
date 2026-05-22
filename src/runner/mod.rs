@@ -2,6 +2,7 @@ mod proton;
 mod wine;
 
 use derive_builder::Builder;
+pub use proton::Proton;
 use thiserror::Error;
 pub use wine::Wine;
 
@@ -85,6 +86,19 @@ impl PrefixConfig {
             arch,
             ..Default::default()
         }
+    }
+
+    pub fn with_compat_data_path(mut self, compat_data_path: impl AsRef<Path>) -> Self {
+        self.compat_data_path = Some(compat_data_path.as_ref().to_path_buf());
+        self
+    }
+
+    pub fn with_compat_client_install_path(
+        mut self,
+        compat_client_install_path: impl AsRef<Path>,
+    ) -> Self {
+        self.compat_client_install_path = Some(compat_client_install_path.as_ref().to_path_buf());
+        self
     }
 
     /// Converts the prefix configuration into runner process environment values.
