@@ -1,6 +1,7 @@
 use std::{
     io::{self, ErrorKind},
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use super::{PrefixConfig, Runner, RunnerCommand, RunnerError, Wine};
@@ -18,7 +19,7 @@ use crate::error::Result;
 /// - `STEAM_COMPAT_CLIENT_INSTALL_PATH`: Steam installation directory
 #[derive(Debug)]
 pub struct Proton {
-    wine: Wine,
+    _wine: Wine,
     executable: PathBuf,
 }
 
@@ -41,7 +42,7 @@ impl Proton {
         let wine = Wine::new(parent_directory.join("files/bin/wine"))?;
 
         Ok(Self {
-            wine,
+            _wine: wine,
             executable: executable.as_ref().to_path_buf(),
         })
     }
@@ -53,18 +54,36 @@ impl Runner for Proton {
         prefix: &PrefixConfig,
         command: RunnerCommand,
     ) -> crate::error::Result<std::process::Child> {
-        if prefix.compat_data_path.is_none() || prefix.compat_client_install_path.is_none() {
+        if !prefix.is_proton() {
             return Err(RunnerError::ProtonEnvVarsMissing.into());
         }
 
-        self.wine.run(prefix, command)
+        Command::new(&self.executable)
+            .arg("run")
+            .arg(command.executable)
+            .args(command.args)
+            .envs(prefix.to_env())
+            .envs(command.envs)
+            .spawn()
+            .map_err(Into::into)
     }
 
     fn initialize_prefix(&self, prefix: &PrefixConfig) -> Result<()> {
-        if prefix.compat_data_path.is_none() || prefix.compat_client_install_path.is_none() {
+        if !prefix.is_proton() {
             return Err(RunnerError::ProtonEnvVarsMissing.into());
         }
 
-        self.wine.initialize_prefix(prefix)
+        let command = RunnerCommand::builder()
+            .executable("wineboot")
+            .arg("--init")
+            .build()
+            .map_err(Into::<RunnerError>::into)?;
+
+        let status = self.run(prefix, command)?.wait()?;
+        if !status.success() {
+            return Err(RunnerError::PrefixInitFailed.into());
+        }
+
+        Ok(())
     }
 }
