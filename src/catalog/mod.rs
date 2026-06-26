@@ -1,9 +1,10 @@
 pub mod component;
 pub mod dependency;
 
-use std::num::NonZeroU32;
+use std::{collections::HashSet, num::NonZeroU32};
 
 use serde::{Deserialize, Deserializer, Serialize, de};
+use uuid::Uuid;
 
 pub trait Catalog {
     type Item;
@@ -14,6 +15,10 @@ pub trait Catalog {
     fn version(&self) -> NonZeroU32;
     fn query(&self) -> Self::Query<'_>;
     fn iter(&self) -> impl ExactSizeIterator<Item = &Self::Item> + DoubleEndedIterator;
+}
+
+pub(self) trait CatalogItem {
+    fn uuid(&self) -> Uuid;
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -97,6 +102,28 @@ where
     }
 
     Ok(schema_version)
+}
+
+pub(self) fn deserialize_unique_catalog_items<'de, D, T>(
+    deserializer: D,
+) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: CatalogItem + Deserialize<'de>,
+{
+    let items = Vec::<T>::deserialize(deserializer)?;
+    let mut ids = HashSet::new();
+
+    for item in &items {
+        if !ids.insert(item.uuid()) {
+            return Err(de::Error::custom(format!(
+                "duplicate catalog item id {}",
+                item.uuid()
+            )));
+        }
+    }
+
+    Ok(items)
 }
 
 pub(self) fn deserialize_non_empty_string<'de, D>(deserializer: D) -> Result<String, D::Error>

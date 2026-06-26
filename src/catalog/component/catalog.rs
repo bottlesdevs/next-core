@@ -1,7 +1,10 @@
 use super::{Component, ComponentKind, RunnerKind};
-use crate::catalog::{Catalog, Target, deserialize_supported_schema_version};
-use serde::{Deserialize, Deserializer, Serialize, de};
-use std::{collections::HashSet, num::NonZeroU32};
+use crate::catalog::{
+    Catalog, CatalogItem, Target, deserialize_supported_schema_version,
+    deserialize_unique_catalog_items,
+};
+use serde::{Deserialize, Serialize};
+use std::num::NonZeroU32;
 use uuid::Uuid;
 
 const CATALOG_VERSION: u32 = 1;
@@ -10,8 +13,14 @@ const CATALOG_VERSION: u32 = 1;
 pub struct ComponentCatalog {
     #[serde(deserialize_with = "deserialize_supported_schema_version::<_, CATALOG_VERSION>")]
     schema_version: NonZeroU32,
-    #[serde(deserialize_with = "deserialize_unique_components")]
+    #[serde(deserialize_with = "deserialize_unique_catalog_items")]
     components: Vec<Component>,
+}
+
+impl CatalogItem for Component {
+    fn uuid(&self) -> Uuid {
+        self.uuid()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -139,25 +148,6 @@ impl ComponentCatalog {
     pub fn query(&self) -> ComponentCatalogQuery<'_> {
         ComponentCatalogQuery::new(&self.components)
     }
-}
-
-fn deserialize_unique_components<'de, D>(deserializer: D) -> Result<Vec<Component>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let components = Vec::<Component>::deserialize(deserializer)?;
-    let mut keys = HashSet::new();
-
-    for component in &components {
-        if !keys.insert(component.uuid()) {
-            return Err(de::Error::custom(format!(
-                "duplicate component id {}",
-                component.uuid()
-            )));
-        }
-    }
-
-    Ok(components)
 }
 
 #[cfg(test)]

@@ -1,5 +1,8 @@
 use super::Dependency;
-use crate::catalog::{Architecture, Catalog, deserialize_supported_schema_version};
+use crate::catalog::{
+    Architecture, Catalog, CatalogItem, deserialize_supported_schema_version,
+    deserialize_unique_catalog_items,
+};
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU32;
 use uuid::Uuid;
@@ -10,7 +13,14 @@ const CATALOG_VERSION: u32 = 1;
 pub struct DependencyCatalog {
     #[serde(deserialize_with = "deserialize_supported_schema_version::<_, CATALOG_VERSION>")]
     schema_version: NonZeroU32,
+    #[serde(deserialize_with = "deserialize_unique_catalog_items")]
     components: Vec<Dependency>,
+}
+
+impl CatalogItem for Dependency {
+    fn uuid(&self) -> Uuid {
+        self.uuid()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -234,6 +244,54 @@ mod tests {
         let catalog = catalog();
 
         assert!(catalog.query().name("missing").is_empty());
+    }
+
+    #[test]
+    fn rejects_duplicate_dependency_ids() {
+        let result = serde_json::from_slice::<DependencyCatalog>(
+            br#"{
+                "schema_version": 1,
+                "components": [
+                    {
+                        "id": "00000000-0000-0000-0000-000000000001",
+                        "name": "vcrun2022",
+                        "version": "14.38.33135",
+                        "files": [
+                            {
+                                "file_name": "vcruntime140.dll",
+                                "destination": "drive_c/windows/system32/vcruntime140.dll",
+                                "url": "https://example.test/vcruntime140.dll",
+                                "checksum": {
+                                    "algorithm": "sha256",
+                                    "value": "abc"
+                                },
+                                "size": 123456,
+                                "arch": "x86_64"
+                            }
+                        ]
+                    },
+                    {
+                        "id": "00000000-0000-0000-0000-000000000001",
+                        "name": "dxvk-runtime",
+                        "version": "2.4",
+                        "artifacts": [
+                            {
+                                "file_name": "dxvk-runtime.tar.gz",
+                                "url": "https://example.test/dxvk-runtime.tar.gz",
+                                "checksum": {
+                                    "algorithm": "sha512",
+                                    "value": "def"
+                                },
+                                "size": 654321,
+                                "arch": "x86_64"
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]
