@@ -144,12 +144,6 @@ impl Catalog for ComponentCatalog {
     }
 }
 
-impl ComponentCatalog {
-    pub fn query(&self) -> ComponentCatalogQuery<'_> {
-        ComponentCatalogQuery::new(&self.components)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
