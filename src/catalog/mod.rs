@@ -6,11 +6,13 @@ use std::num::NonZeroU32;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 pub trait Catalog {
-    type Query;
     type Item;
+    type Query<'catalog>
+    where
+        Self: 'catalog;
 
     fn version(&self) -> NonZeroU32;
-    fn query(&self) -> Self::Query;
+    fn query(&self) -> Self::Query<'_>;
     fn iter(&self) -> impl ExactSizeIterator<Item = &Self::Item> + DoubleEndedIterator;
 }
 
@@ -76,6 +78,25 @@ pub enum Architecture {
     #[serde(rename = "x86_64")]
     X86_64,
     Aarch64,
+}
+
+pub(self) fn deserialize_supported_schema_version<'de, D, const SUPPORTED_VERSION: u32>(
+    deserializer: D,
+) -> Result<NonZeroU32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let schema_version = NonZeroU32::deserialize(deserializer)?;
+    let supported_schema_version = NonZeroU32::new(SUPPORTED_VERSION)
+        .ok_or_else(|| de::Error::custom("supported schema version cannot be zero"))?;
+
+    if schema_version != supported_schema_version {
+        return Err(de::Error::custom(format!(
+            "unsupported catalog schema version {schema_version}; expected {supported_schema_version}"
+        )));
+    }
+
+    Ok(schema_version)
 }
 
 pub(self) fn deserialize_non_empty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
