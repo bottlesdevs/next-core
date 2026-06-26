@@ -1,27 +1,55 @@
 use super::{Component, ComponentKind};
+use crate::catalog::Catalog;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::{collections::HashSet, num::NonZeroU32};
 
+static CATALOG_VERSION: NonZeroU32 = NonZeroU32::new(1).unwrap();
+
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Catalog {
+pub struct ComponentCatalog {
     schema_version: NonZeroU32,
     #[serde(deserialize_with = "deserialize_unique_components")]
     components: Vec<Component>,
 }
 
-impl Catalog {
-    pub fn schema_version(&self) -> u32 {
-        self.schema_version.get()
+pub struct ComponentCatalogQuery {}
+
+impl IntoIterator for ComponentCatalog {
+    type IntoIter = std::vec::IntoIter<Component>;
+    type Item = Component;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.components.into_iter()
+    }
+}
+
+impl<'catalog> IntoIterator for &'catalog ComponentCatalog {
+    type IntoIter = std::slice::Iter<'catalog, Component>;
+    type Item = &'catalog Component;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.components.iter()
+    }
+}
+
+impl Catalog for ComponentCatalog {
+    type Item = Component;
+    type Query = ComponentCatalogQuery;
+
+    fn version(&self) -> NonZeroU32 {
+        CATALOG_VERSION
     }
 
-    pub fn components(&self) -> &[Component] {
-        &self.components
-    }
-
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &Component> + DoubleEndedIterator {
+    fn iter(&self) -> impl ExactSizeIterator<Item = &Self::Item> + DoubleEndedIterator {
         self.components.iter()
     }
 
+    fn query(&self) -> Self::Query {
+        todo!()
+    }
+}
+
+impl ComponentCatalog {
     pub fn find(&self, kind: ComponentKind, version: &str) -> Option<&Component> {
         self.iter()
             .filter(|component| component.kind() == kind)
@@ -48,24 +76,6 @@ where
     Ok(components)
 }
 
-impl IntoIterator for Catalog {
-    type IntoIter = std::vec::IntoIter<Component>;
-    type Item = Component;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.components.into_iter()
-    }
-}
-
-impl<'catalog> IntoIterator for &'catalog Catalog {
-    type IntoIter = std::slice::Iter<'catalog, Component>;
-    type Item = &'catalog Component;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.components.iter()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,8 +90,8 @@ mod tests {
         uuid!("00000000-0000-0000-0000-000000000002")
     }
 
-    fn catalog() -> Catalog {
-        serde_json::from_slice::<Catalog>(
+    fn catalog() -> ComponentCatalog {
+        serde_json::from_slice::<ComponentCatalog>(
             br#"{
                 "schema_version": 1,
                 "components": [
@@ -152,7 +162,7 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_component_ids() {
-        let result = serde_json::from_slice::<Catalog>(
+        let result = serde_json::from_slice::<ComponentCatalog>(
             br#"{
                 "schema_version": 1,
                 "components": [
@@ -198,8 +208,38 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unsupported_schema_version() {
+        let result = serde_json::from_slice::<ComponentCatalog>(
+            br#"{
+                "schema_version": 2,
+                "components": [
+                    {
+                        "id": "00000000-0000-0000-0000-000000000001",
+                        "version": "2.4",
+                        "kind": {
+                            "type": "dxvk"
+                        },
+                        "artifacts": [
+                            {
+                                "url": "https://example.test/dxvk-2.4.tar.gz",
+                                "file_name": "dxvk-2.4.tar.gz",
+                                "checksum": {
+                                    "algorithm": "sha256",
+                                    "value": "abc"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }"#,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn decodes_catalog_from_json() {
-        let catalog = serde_json::from_slice::<Catalog>(
+        let catalog = serde_json::from_slice::<ComponentCatalog>(
             br#"{
                 "schema_version": 1,
                 "components": [
@@ -225,7 +265,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(catalog.schema_version(), 1);
-        assert_eq!(catalog.components()[0].uuid(), dxvk_2_4_id());
+        assert_eq!(catalog.version().get(), 1);
+        assert_eq!(
+            catalog.iter().next().map(Component::uuid),
+            Some(dxvk_2_4_id())
+        );
     }
 }
