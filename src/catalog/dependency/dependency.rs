@@ -31,6 +31,10 @@ impl Dependency {
     pub fn source(&self) -> &DependencySource {
         &self.source
     }
+
+    pub fn supports(&self, arch: Architecture) -> bool {
+        self.source.supports(arch)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -38,6 +42,15 @@ impl Dependency {
 pub enum DependencySource {
     Files { files: Vec<DependencyFile> },
     Artifacts { artifacts: Vec<DependencyArtifact> },
+}
+
+impl DependencySource {
+    pub fn supports(&self, arch: Architecture) -> bool {
+        match self {
+            Self::Files { files } => files.iter().any(|file| file.arch == arch),
+            Self::Artifacts { artifacts } => artifacts.iter().any(|artifact| artifact.arch == arch),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
