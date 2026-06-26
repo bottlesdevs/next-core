@@ -1,18 +1,104 @@
-use super::{Component, ComponentKind};
-use crate::catalog::Catalog;
+use super::{Component, ComponentKind, RunnerKind};
+use crate::catalog::{Catalog, Target, deserialize_supported_schema_version};
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::{collections::HashSet, num::NonZeroU32};
+use uuid::Uuid;
 
-static CATALOG_VERSION: NonZeroU32 = NonZeroU32::new(1).unwrap();
+const CATALOG_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ComponentCatalog {
+    #[serde(deserialize_with = "deserialize_supported_schema_version::<_, CATALOG_VERSION>")]
     schema_version: NonZeroU32,
     #[serde(deserialize_with = "deserialize_unique_components")]
     components: Vec<Component>,
 }
 
-pub struct ComponentCatalogQuery {}
+#[derive(Debug, Clone)]
+pub struct ComponentCatalogQuery<'catalog> {
+    components: &'catalog [Component],
+    uuid: Option<Uuid>,
+    kind: Option<ComponentKind>,
+    version: Option<String>,
+    target: Option<Target>,
+}
+
+impl<'catalog> ComponentCatalogQuery<'catalog> {
+    fn new(components: &'catalog [Component]) -> Self {
+        Self {
+            components,
+            uuid: None,
+            kind: None,
+            version: None,
+            target: None,
+        }
+    }
+
+    pub fn uuid(mut self, uuid: Uuid) -> Self {
+        self.uuid = Some(uuid);
+        self
+    }
+
+    pub fn kind(mut self, kind: ComponentKind) -> Self {
+        self.kind = Some(kind);
+        self
+    }
+
+    pub fn runner(self, kind: RunnerKind) -> Self {
+        self.kind(ComponentKind::Runner { kind })
+    }
+
+    pub fn version(mut self, version: impl Into<String>) -> Self {
+        self.version = Some(version.into());
+        self
+    }
+
+    pub fn target(mut self, target: Target) -> Self {
+        self.target = Some(target);
+        self
+    }
+
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &'catalog Component> + '_ {
+        self.components
+            .iter()
+            .filter(|component| self.matches(component))
+    }
+
+    pub fn first(&self) -> Option<&'catalog Component> {
+        self.iter().next()
+    }
+
+    pub fn last(&self) -> Option<&'catalog Component> {
+        self.iter().next_back()
+    }
+
+    pub fn count(&self) -> usize {
+        self.iter().count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.first().is_none()
+    }
+
+    fn matches(&self, component: &Component) -> bool {
+        self.uuid
+            .map(|uuid| component.uuid() == uuid)
+            .unwrap_or(true)
+            && self
+                .kind
+                .map(|kind| component.kind() == kind)
+                .unwrap_or(true)
+            && self
+                .version
+                .as_deref()
+                .map(|version| component.version() == version)
+                .unwrap_or(true)
+            && self
+                .target
+                .map(|target| component.supports(target))
+                .unwrap_or(true)
+    }
+}
 
 impl IntoIterator for ComponentCatalog {
     type IntoIter = std::vec::IntoIter<Component>;
@@ -34,26 +120,24 @@ impl<'catalog> IntoIterator for &'catalog ComponentCatalog {
 
 impl Catalog for ComponentCatalog {
     type Item = Component;
-    type Query = ComponentCatalogQuery;
+    type Query<'catalog> = ComponentCatalogQuery<'catalog>;
 
     fn version(&self) -> NonZeroU32 {
-        CATALOG_VERSION
+        self.schema_version
     }
 
     fn iter(&self) -> impl ExactSizeIterator<Item = &Self::Item> + DoubleEndedIterator {
         self.components.iter()
     }
 
-    fn query(&self) -> Self::Query {
-        todo!()
+    fn query(&self) -> Self::Query<'_> {
+        ComponentCatalogQuery::new(&self.components)
     }
 }
 
 impl ComponentCatalog {
-    pub fn find(&self, kind: ComponentKind, version: &str) -> Option<&Component> {
-        self.iter()
-            .filter(|component| component.kind() == kind)
-            .find(|component| component.version() == version)
+    pub fn query(&self) -> ComponentCatalogQuery<'_> {
+        ComponentCatalogQuery::new(&self.components)
     }
 }
 
@@ -145,19 +229,65 @@ mod tests {
     }
 
     #[test]
-    fn finds_catalog_component_by_kind_and_version() {
+    fn queries_catalog_component_by_kind_and_version() {
         let catalog = catalog();
 
         let component = catalog
-            .find(
-                ComponentKind::Runner {
-                    kind: RunnerKind::Proton,
-                },
-                "9-1",
-            )
+            .query()
+            .kind(ComponentKind::Runner {
+                kind: RunnerKind::Proton,
+            })
+            .version("9-1")
+            .first()
             .unwrap();
 
         assert_eq!(component.uuid(), ge_proton_9_1_id());
+    }
+
+    #[test]
+    fn query_filters_components_by_kind() {
+        let catalog = catalog();
+
+        let component = catalog.query().kind(ComponentKind::Dxvk).first().unwrap();
+
+        assert_eq!(component.uuid(), dxvk_2_4_id());
+    }
+
+    #[test]
+    fn query_filters_runner_components_by_runner_kind() {
+        let catalog = catalog();
+
+        let component = catalog
+            .query()
+            .runner(RunnerKind::Proton)
+            .version("9-1")
+            .first()
+            .unwrap();
+
+        assert_eq!(component.uuid(), ge_proton_9_1_id());
+    }
+
+    #[test]
+    fn query_filters_components_by_uuid() {
+        let catalog = catalog();
+
+        let component = catalog.query().uuid(dxvk_2_4_id()).first().unwrap();
+
+        assert_eq!(component.uuid(), dxvk_2_4_id());
+    }
+
+    #[test]
+    fn query_filters_components_by_target() {
+        let catalog = catalog();
+
+        assert_eq!(catalog.query().target(Target::linux_x86_64()).count(), 2);
+    }
+
+    #[test]
+    fn query_reports_when_no_components_match() {
+        let catalog = catalog();
+
+        assert!(catalog.query().kind(ComponentKind::Vkd3d).is_empty());
     }
 
     #[test]
