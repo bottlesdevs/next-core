@@ -1,3 +1,4 @@
+pub mod catalog;
 mod error;
 pub mod runner;
 pub use error::Error;
