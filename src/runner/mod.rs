@@ -284,7 +284,7 @@ impl RunnerCommandBuilder {
 ///
 /// All runners in this module implement this trait, providing a unified way to interact
 /// with different compatibility layers like Wine, Proton, UMU, and GPTK.
-pub trait Runner {
+pub trait Runner: Send + Sync {
     /// Starts a runner command inside `prefix`.
     ///
     /// Implementations should translate [`RunnerCommand`] into the correct host

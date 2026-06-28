@@ -1,4 +1,5 @@
 mod error;
+pub mod layers;
 pub mod runner;
 pub use error::Error;
 mod utils;

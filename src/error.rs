@@ -1,12 +1,14 @@
 use thiserror::Error;
 
-use crate::{runner::RunnerError, winebridge::BridgeError};
+use crate::{layers::LayersError, runner::RunnerError, winebridge::BridgeError};
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Layers error: {0}")]
+    Layers(#[from] LayersError),
     #[error("Serde: {0}")]
     Serde(#[from] serde_json::Error),
     #[error("gRPC transport: {0}")]
