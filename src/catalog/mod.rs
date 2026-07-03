@@ -132,7 +132,7 @@ where
 {
     let value = String::deserialize(deserializer)?;
 
-    if value.is_empty() {
+    if value.trim().is_empty() {
         return Err(de::Error::custom("value cannot be empty"));
     }
 

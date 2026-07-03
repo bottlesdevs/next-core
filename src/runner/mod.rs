@@ -3,6 +3,7 @@ mod wine;
 
 use derive_builder::Builder;
 pub use proton::Proton;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 pub use wine::Wine;
 
@@ -53,7 +54,8 @@ pub enum PrefixArch {
 /// Specifies which version of Windows the Wine prefix should emulate.
 /// Different applications may require specific Windows versions for
 /// optimal compatibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum WindowsVersion {
     Win7,
     Win8,

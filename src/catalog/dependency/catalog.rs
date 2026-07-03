@@ -10,6 +10,7 @@ use uuid::Uuid;
 const CATALOG_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DependencyCatalog {
     #[serde(deserialize_with = "deserialize_supported_schema_version::<_, CATALOG_VERSION>")]
     schema_version: NonZeroU32,
@@ -163,17 +164,22 @@ mod tests {
                         "id": "00000000-0000-0000-0000-000000000001",
                         "name": "vcrun2022",
                         "version": "14.38.33135",
-                        "files": [
+                        "resources": [
                             {
-                                "file_name": "vcruntime140.dll",
-                                "destination": "drive_c/windows/system32/vcruntime140.dll",
-                                "url": "https://example.test/vcruntime140.dll",
+                                "file_name": "vc_redist.x86.exe",
+                                "url": "https://example.test/vc_redist.x86.exe",
                                 "checksum": {
                                     "algorithm": "sha256",
                                     "value": "abc"
                                 },
                                 "size": 123456,
-                                "arch": "x86_64"
+                                "target_arch": "x86",
+                                "steps": [
+                                    {
+                                        "action": "execute",
+                                        "arguments": ["/quiet", "/norestart"]
+                                    }
+                                ]
                             }
                         ]
                     },
@@ -181,16 +187,22 @@ mod tests {
                         "id": "00000000-0000-0000-0000-000000000002",
                         "name": "dxvk-runtime",
                         "version": "2.4",
-                        "artifacts": [
+                        "resources": [
                             {
-                                "file_name": "dxvk-runtime.tar.gz",
-                                "url": "https://example.test/dxvk-runtime.tar.gz",
+                                "file_name": "dxvk.dll",
+                                "url": "https://example.test/dxvk.dll",
                                 "checksum": {
                                     "algorithm": "sha512",
                                     "value": "def"
                                 },
                                 "size": 654321,
-                                "arch": "x86_64"
+                                "target_arch": "x86_64",
+                                "steps": [
+                                    {
+                                        "action": "copy",
+                                        "destination": "drive_c/windows/system32/dxvk.dll"
+                                    }
+                                ]
                             }
                         ]
                     }
@@ -235,8 +247,9 @@ mod tests {
     fn query_filters_dependencies_by_architecture() {
         let catalog = catalog();
 
-        assert_eq!(catalog.query().arch(Architecture::X86_64).count(), 2);
-        assert!(catalog.query().arch(Architecture::X86).is_empty());
+        assert_eq!(catalog.query().arch(Architecture::X86_64).count(), 1);
+        assert_eq!(catalog.query().arch(Architecture::X86).count(), 1);
+        assert!(catalog.query().arch(Architecture::Aarch64).is_empty());
     }
 
     #[test]
@@ -256,17 +269,17 @@ mod tests {
                         "id": "00000000-0000-0000-0000-000000000001",
                         "name": "vcrun2022",
                         "version": "14.38.33135",
-                        "files": [
+                        "resources": [
                             {
-                                "file_name": "vcruntime140.dll",
-                                "destination": "drive_c/windows/system32/vcruntime140.dll",
-                                "url": "https://example.test/vcruntime140.dll",
+                                "file_name": "vc_redist.x86.exe",
+                                "url": "https://example.test/vc_redist.x86.exe",
                                 "checksum": {
                                     "algorithm": "sha256",
                                     "value": "abc"
                                 },
                                 "size": 123456,
-                                "arch": "x86_64"
+                                "target_arch": "x86",
+                                "steps": [{ "action": "execute" }]
                             }
                         ]
                     },
@@ -274,16 +287,22 @@ mod tests {
                         "id": "00000000-0000-0000-0000-000000000001",
                         "name": "dxvk-runtime",
                         "version": "2.4",
-                        "artifacts": [
+                        "resources": [
                             {
-                                "file_name": "dxvk-runtime.tar.gz",
-                                "url": "https://example.test/dxvk-runtime.tar.gz",
+                                "file_name": "dxvk.dll",
+                                "url": "https://example.test/dxvk.dll",
                                 "checksum": {
                                     "algorithm": "sha512",
                                     "value": "def"
                                 },
                                 "size": 654321,
-                                "arch": "x86_64"
+                                "target_arch": "x86_64",
+                                "steps": [
+                                    {
+                                        "action": "copy",
+                                        "destination": "drive_c/windows/system32/dxvk.dll"
+                                    }
+                                ]
                             }
                         ]
                     }
@@ -304,17 +323,17 @@ mod tests {
                         "id": "00000000-0000-0000-0000-000000000001",
                         "name": "vcrun2022",
                         "version": "14.38.33135",
-                        "files": [
+                        "resources": [
                             {
-                                "file_name": "vcruntime140.dll",
-                                "destination": "drive_c/windows/system32/vcruntime140.dll",
-                                "url": "https://example.test/vcruntime140.dll",
+                                "file_name": "vc_redist.x86.exe",
+                                "url": "https://example.test/vc_redist.x86.exe",
                                 "checksum": {
                                     "algorithm": "sha256",
                                     "value": "abc"
                                 },
                                 "size": 123456,
-                                "arch": "x86_64"
+                                "target_arch": "x86",
+                                "steps": [{ "action": "execute" }]
                             }
                         ]
                     }
