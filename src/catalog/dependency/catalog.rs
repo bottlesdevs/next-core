@@ -14,7 +14,7 @@ pub struct DependencyCatalog {
     #[serde(deserialize_with = "deserialize_supported_schema_version::<_, CATALOG_VERSION>")]
     schema_version: NonZeroU32,
     #[serde(deserialize_with = "deserialize_unique_catalog_items")]
-    components: Vec<Dependency>,
+    dependencies: Vec<Dependency>,
 }
 
 impl CatalogItem for Dependency {
@@ -111,7 +111,7 @@ impl IntoIterator for DependencyCatalog {
     type Item = Dependency;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.components.into_iter()
+        self.dependencies.into_iter()
     }
 }
 
@@ -120,7 +120,7 @@ impl<'catalog> IntoIterator for &'catalog DependencyCatalog {
     type Item = &'catalog Dependency;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.components.iter()
+        self.dependencies.iter()
     }
 }
 
@@ -133,11 +133,11 @@ impl Catalog for DependencyCatalog {
     }
 
     fn iter(&self) -> impl ExactSizeIterator<Item = &Self::Item> + DoubleEndedIterator {
-        self.components.iter()
+        self.dependencies.iter()
     }
 
     fn query(&self) -> Self::Query<'_> {
-        DependencyCatalogQuery::new(&self.components)
+        DependencyCatalogQuery::new(&self.dependencies)
     }
 }
 
@@ -158,7 +158,7 @@ mod tests {
         serde_json::from_slice::<DependencyCatalog>(
             br#"{
                 "schema_version": 1,
-                "components": [
+                "dependencies": [
                     {
                         "id": "00000000-0000-0000-0000-000000000001",
                         "name": "vcrun2022",
@@ -251,7 +251,7 @@ mod tests {
         let result = serde_json::from_slice::<DependencyCatalog>(
             br#"{
                 "schema_version": 1,
-                "components": [
+                "dependencies": [
                     {
                         "id": "00000000-0000-0000-0000-000000000001",
                         "name": "vcrun2022",
@@ -299,7 +299,7 @@ mod tests {
         let result = serde_json::from_slice::<DependencyCatalog>(
             br#"{
                 "schema_version": 2,
-                "components": [
+                "dependencies": [
                     {
                         "id": "00000000-0000-0000-0000-000000000001",
                         "name": "vcrun2022",
