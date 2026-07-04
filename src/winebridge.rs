@@ -9,7 +9,6 @@ use std::{
 
 use std::net::{IpAddr, Ipv4Addr};
 use thiserror::Error;
-use tokio::sync::Mutex;
 use tonic::transport::{Channel, Endpoint};
 
 use crate::proto::{self, wine_bridge_client::WineBridgeClient as GrpcClient};
@@ -141,7 +140,7 @@ fn check_file_operation(response: proto::FileOperationResponse) -> Result<()> {
 /// Each client owns one spawned WineBridge process. Call [`shutdown`](Self::shutdown)
 /// when the bridge is no longer needed so the server can stop cleanly.
 pub struct WineBridgeClient {
-    client: Mutex<GrpcClient<Channel>>,
+    client: GrpcClient<Channel>,
     _process: Child,
 }
 
@@ -201,7 +200,7 @@ impl WineBridgeClient {
             };
 
         let client = Self {
-            client: Mutex::new(grpc_client),
+            client: grpc_client,
             _process: child,
         };
 
@@ -255,7 +254,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn message(&self, message: impl Into<String>) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .message(proto::MessageRequest {
                 message: message.into(),
@@ -274,7 +273,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails.
     pub async fn running_processes(&self) -> Result<Vec<proto::Process>> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .running_processes(proto::RunningProcessesRequest {})
             .await?
@@ -289,7 +288,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails or WineBridge rejects the launch.
     pub async fn launch_process(&self, request: LaunchRequest) -> Result<u32> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .create_process(proto::CreateProcessRequest::from(request))
             .await?;
@@ -304,7 +303,7 @@ impl WineBridgeClient {
     /// Returns an error if the gRPC request fails or WineBridge cannot kill the
     /// target process.
     pub async fn kill_process(&self, pid: u32) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
 
         client
             .kill_process(proto::KillProcessRequest { pid })
@@ -325,7 +324,7 @@ impl WineBridgeClient {
         hive: impl Into<String>,
         subkey: impl Into<String>,
     ) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .create_registry_key(proto::CreateRegistryKeyRequest {
                 hive: hive.into(),
@@ -347,7 +346,7 @@ impl WineBridgeClient {
         hive: impl Into<String>,
         subkey: impl Into<String>,
     ) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .delete_registry_key(proto::DeleteRegistryKeyRequest {
                 hive: hive.into(),
@@ -369,7 +368,7 @@ impl WineBridgeClient {
         hive: impl Into<String>,
         subkey: impl Into<String>,
     ) -> Result<proto::RegistryKey> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .get_registry_key(proto::GetRegistryKeyRequest {
                 hive: hive.into(),
@@ -391,7 +390,7 @@ impl WineBridgeClient {
         subkey: impl Into<String>,
         name: impl Into<String>,
     ) -> Result<proto::RegistryValue> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .get_registry_key_value(proto::RegistryKeyRequest {
                 hive: hive.into(),
@@ -416,7 +415,7 @@ impl WineBridgeClient {
         value_type: proto::RegistryValueType,
         data: Vec<u8>,
     ) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .set_registry_key_value(proto::SetRegistryKeyValueRequest {
                 key: Some(proto::RegistryKeyRequest {
@@ -446,7 +445,7 @@ impl WineBridgeClient {
         subkey: impl Into<String>,
         name: impl Into<String>,
     ) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .delete_registry_key_value(proto::RegistryKeyRequest {
                 hive: hive.into(),
@@ -467,7 +466,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn create_directory(&self, path: impl Into<String>) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .create_directory(proto::FileOperationRequest { path: path.into() })
             .await?
@@ -482,7 +481,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn delete_file(&self, path: impl Into<String>) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .delete_file(proto::FileOperationRequest { path: path.into() })
             .await?
@@ -501,7 +500,7 @@ impl WineBridgeClient {
         source: impl Into<String>,
         destination: impl Into<String>,
     ) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .copy_file(proto::CopyMoveRequest {
                 source: source.into(),
@@ -523,7 +522,7 @@ impl WineBridgeClient {
         source: impl Into<String>,
         destination: impl Into<String>,
     ) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .move_file(proto::CopyMoveRequest {
                 source: source.into(),
@@ -541,7 +540,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails.
     pub async fn list_directory(&self, path: impl Into<String>) -> Result<Vec<proto::FileInfo>> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .list_directory(proto::FileOperationRequest { path: path.into() })
             .await?
@@ -556,7 +555,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails.
     pub async fn exists(&self, path: impl Into<String>) -> Result<(bool, bool)> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .exists(proto::FileOperationRequest { path: path.into() })
             .await?
@@ -573,7 +572,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails.
     pub async fn list_services(&self) -> Result<Vec<proto::ServiceInfo>> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .list_services(proto::ListServicesRequest {})
             .await?
@@ -588,7 +587,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails.
     pub async fn get_service_status(&self, name: impl Into<String>) -> Result<proto::ServiceState> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .get_service_status(proto::ServiceRequest { name: name.into() })
             .await?
@@ -603,7 +602,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn start_service(&self, name: impl Into<String>) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .start_service(proto::ServiceRequest { name: name.into() })
             .await?
@@ -618,7 +617,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn stop_service(&self, name: impl Into<String>) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .stop_service(proto::ServiceRequest { name: name.into() })
             .await?
@@ -639,7 +638,7 @@ impl WineBridgeClient {
         binary_path: impl Into<String>,
         start_type: proto::ServiceStartType,
     ) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .create_service(proto::CreateServiceRequest {
                 name: name.into(),
@@ -659,7 +658,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn delete_service(&self, name: impl Into<String>) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .delete_service(proto::ServiceRequest { name: name.into() })
             .await?
@@ -676,7 +675,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails.
     pub async fn list_dll_overrides(&self) -> Result<Vec<proto::DllOverride>> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .list_dll_overrides(proto::ListDllOverridesRequest {})
             .await?
@@ -694,7 +693,7 @@ impl WineBridgeClient {
         &self,
         dll: impl Into<String>,
     ) -> Result<proto::DllOverrideResponse> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .get_dll_override(proto::DllOverrideRequest { dll: dll.into() })
             .await?;
@@ -712,7 +711,7 @@ impl WineBridgeClient {
         dll: impl Into<String>,
         mode: proto::DllOverrideMode,
     ) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .set_dll_override(proto::SetDllOverrideRequest {
                 dll: dll.into(),
@@ -730,7 +729,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn delete_dll_override(&self, dll: impl Into<String>) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .delete_dll_override(proto::DllOverrideRequest { dll: dll.into() })
             .await?
@@ -747,7 +746,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn wineboot(&self, mode: proto::WinebootMode) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .wineboot(proto::WinebootRequest { mode: mode as i32 })
             .await?
@@ -762,7 +761,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the gRPC request fails.
     pub async fn get_drive_info(&self) -> Result<Vec<proto::Drive>> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
         let response = client
             .get_drive_info(proto::DriveInfoRequest {})
             .await?
@@ -779,7 +778,7 @@ impl WineBridgeClient {
     ///
     /// Returns an error if the shutdown RPC fails.
     pub async fn shutdown(self) -> Result<()> {
-        let mut client = self.client.lock().await;
+        let mut client = self.client.clone();
 
         client.shutdown(proto::ShutdownRequest {}).await?;
 
