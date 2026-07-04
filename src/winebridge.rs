@@ -1,7 +1,11 @@
 use std::process::ExitStatus;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::{path::PathBuf, process::Child, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::Child,
+    time::Duration,
+};
 
 use std::net::{IpAddr, Ipv4Addr};
 use thiserror::Error;
@@ -57,26 +61,21 @@ impl BridgeEndpointManager {
 /// builder-style setters to attach arguments, a working directory, or request a
 /// dedicated console. The request maps directly onto the WineBridge
 /// `CreateProcess` RPC.
-#[derive(Debug, Clone, Default)]
-pub struct LaunchRequest {
-    executable: PathBuf,
-    args: Vec<String>,
-    work_dir: Option<PathBuf>,
-    terminal: bool,
-}
+#[derive(Debug, Clone)]
+pub struct LaunchRequest(proto::CreateProcessRequest);
 
 impl LaunchRequest {
     /// Creates a launch request for `executable` with no arguments.
-    pub fn new(executable: impl Into<PathBuf>) -> Self {
-        Self {
-            executable: executable.into(),
+    pub fn new(executable: impl AsRef<Path>) -> Self {
+        Self(proto::CreateProcessRequest {
+            command: executable.as_ref().display().to_string(),
             ..Default::default()
-        }
+        })
     }
 
     /// Appends a single argument passed after the executable.
     pub fn arg(mut self, arg: impl Into<String>) -> Self {
-        self.args.push(arg.into());
+        self.0.args.push(arg.into());
         self
     }
 
@@ -86,35 +85,32 @@ impl LaunchRequest {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.args.extend(args.into_iter().map(Into::into));
+        self.0.args.extend(args.into_iter().map(Into::into));
         self
     }
 
     /// Sets the working directory the process is started in.
-    pub fn work_dir(mut self, work_dir: impl Into<PathBuf>) -> Self {
-        self.work_dir = Some(work_dir.into());
+    pub fn work_dir(mut self, work_dir: impl AsRef<Path>) -> Self {
+        self.0.work_dir = Some(work_dir.as_ref().display().to_string());
         self
     }
 
     /// Sets the working directory from an optional value, leaving it unset on `None`.
     pub fn maybe_work_dir(mut self, work_dir: Option<PathBuf>) -> Self {
-        self.work_dir = work_dir;
+        self.0.work_dir = work_dir.map(|dir| dir.display().to_string());
         self
     }
 
     /// Requests the process be launched with a new console window.
     pub fn terminal(mut self, terminal: bool) -> Self {
-        self.terminal = terminal;
+        self.0.terminal = terminal;
         self
     }
+}
 
-    fn into_proto(self) -> proto::CreateProcessRequest {
-        proto::CreateProcessRequest {
-            command: self.executable.display().to_string(),
-            args: self.args,
-            work_dir: self.work_dir.map(|dir| dir.display().to_string()),
-            terminal: self.terminal,
-        }
+impl From<LaunchRequest> for proto::CreateProcessRequest {
+    fn from(request: LaunchRequest) -> Self {
+        request.0
     }
 }
 
@@ -294,7 +290,9 @@ impl WineBridgeClient {
     /// Returns an error if the gRPC request fails or WineBridge rejects the launch.
     pub async fn launch_process(&self, request: LaunchRequest) -> Result<u32> {
         let mut client = self.client.lock().await;
-        let response = client.create_process(request.into_proto()).await?;
+        let response = client
+            .create_process(proto::CreateProcessRequest::from(request))
+            .await?;
 
         Ok(response.into_inner().pid)
     }
@@ -589,10 +587,7 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn get_service_status(
-        &self,
-        name: impl Into<String>,
-    ) -> Result<proto::ServiceState> {
+    pub async fn get_service_status(&self, name: impl Into<String>) -> Result<proto::ServiceState> {
         let mut client = self.client.lock().await;
         let response = client
             .get_service_status(proto::ServiceRequest { name: name.into() })
@@ -804,7 +799,7 @@ mod tests {
             .work_dir("C:\\work")
             .terminal(true);
 
-        let proto = request.into_proto();
+        let proto: proto::CreateProcessRequest = request.into();
 
         assert_eq!(proto.command, "C:\\app.exe");
         assert_eq!(proto.args, vec!["--flag", "a", "b"]);
@@ -814,7 +809,7 @@ mod tests {
 
     #[test]
     fn launch_request_defaults_leave_work_dir_unset() {
-        let proto = LaunchRequest::new("game.exe").into_proto();
+        let proto: proto::CreateProcessRequest = LaunchRequest::new("game.exe").into();
 
         assert_eq!(proto.command, "game.exe");
         assert!(proto.args.is_empty());
@@ -824,10 +819,10 @@ mod tests {
 
     #[test]
     fn maybe_work_dir_overrides_with_none() {
-        let proto = LaunchRequest::new("game.exe")
+        let proto: proto::CreateProcessRequest = LaunchRequest::new("game.exe")
             .work_dir("C:\\work")
             .maybe_work_dir(None)
-            .into_proto();
+            .into();
 
         assert_eq!(proto.work_dir, None);
     }
