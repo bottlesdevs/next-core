@@ -30,13 +30,6 @@ pub enum BridgeError {
     OperationFailed(String),
 }
 
-/// Connection details for a freshly allocated WineBridge endpoint.
-struct BridgeEndpoint {
-    endpoint: Endpoint,
-    host: IpAddr,
-    port: u16,
-}
-
 #[derive(Debug)]
 struct BridgeEndpointManager {
     host: IpAddr,
@@ -51,16 +44,10 @@ impl BridgeEndpointManager {
         }
     }
 
-    fn next(&self) -> Result<BridgeEndpoint> {
+    fn next(&self) -> Result<Endpoint> {
         let host = self.host;
         let port = self.next_port.fetch_add(1, Ordering::Relaxed);
-        let endpoint = Endpoint::from_shared(format!("http://{host}:{port}"))?;
-
-        Ok(BridgeEndpoint {
-            endpoint,
-            host,
-            port,
-        })
+        Ok(Endpoint::from_shared(format!("http://{host}:{port}"))?)
     }
 }
 
@@ -179,15 +166,16 @@ impl WineBridgeClient {
         prefix: &PrefixConfig,
         winebridge_executable: PathBuf,
     ) -> Result<Self> {
-        let BridgeEndpoint {
-            endpoint,
-            host,
-            port,
-        } = BRIDGE_ENDPOINT_MANAGER.next()?;
+        let endpoint = BRIDGE_ENDPOINT_MANAGER.next()?;
+        let host = endpoint.uri().host().expect("bridge endpoint has a host");
+        let port = endpoint
+            .uri()
+            .port_u16()
+            .expect("bridge endpoint has a port");
 
         let command = RunnerCommand::builder()
             .executable(winebridge_executable.display().to_string())
-            .env("WINEBRIDGE_HOST", &host.to_string())
+            .env("WINEBRIDGE_HOST", host)
             .env("WINEBRIDGE_PORT", &port.to_string())
             .build()
             .map_err(Into::<RunnerError>::into)?;
