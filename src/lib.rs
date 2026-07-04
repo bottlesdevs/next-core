@@ -10,4 +10,6 @@ pub mod proto {
     tonic::include_proto!("bottles");
 }
 
-pub use crate::winebridge::{LaunchRequest, WineBridgeClient};
+pub use crate::winebridge::{
+    LaunchRequest, RegistryHive, RegistryMultiString, RegistryValue, WineBridgeClient,
+};

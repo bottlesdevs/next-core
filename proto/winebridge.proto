@@ -97,19 +97,29 @@ message KillProcessResponse {
 }
 
 // Registry
-enum RegistryValueType {
-  REG_NONE = 0;
-  REG_BINARY = 1;
-  REG_DWORD = 2;
-  REG_QWORD = 3;
-  REG_EXPAND_SZ = 4;
-  REG_MULTI_SZ = 5;
-  REG_SZ = 6;
+enum RegistryHive {
+  REGISTRY_HIVE_UNSPECIFIED = 0;
+  REGISTRY_HIVE_CLASSES_ROOT = 1;
+  REGISTRY_HIVE_CURRENT_CONFIG = 2;
+  REGISTRY_HIVE_CURRENT_USER = 3;
+  REGISTRY_HIVE_LOCAL_MACHINE = 4;
+  REGISTRY_HIVE_USERS = 5;
+}
+
+message RegistryMultiString {
+  repeated string values = 1;
 }
 
 message RegistryValue {
-  RegistryValueType type = 2;
-  bytes data = 3;
+  oneof value {
+    bytes none = 1;
+    bytes binary = 2;
+    uint32 dword = 3;
+    uint64 qword = 4;
+    string expand_string = 5;
+    RegistryMultiString multi_string = 6;
+    string string = 7;
+  }
 }
 
 message RegistryKeyValue {
@@ -118,23 +128,23 @@ message RegistryKeyValue {
 }
 
 message RegistryKey {
-  string hive = 1;
+  RegistryHive hive = 1;
   string subkey = 2;
   repeated RegistryKeyValue values = 3;
 }
 
 message GetRegistryKeyRequest {
-  string hive = 1;
+  RegistryHive hive = 1;
   string subkey = 2;
 }
 
 message CreateRegistryKeyRequest {
-  string hive = 1;
+  RegistryHive hive = 1;
   string subkey = 2;
 }
 
 message RegistryKeyRequest {
-  string hive = 1;
+  RegistryHive hive = 1;
   string subkey = 2;
   string name = 3;
 }
@@ -145,7 +155,7 @@ message SetRegistryKeyValueRequest {
 }
 
 message DeleteRegistryKeyRequest {
-  string hive = 1;
+  RegistryHive hive = 1;
   string subkey = 2;
 }
 
