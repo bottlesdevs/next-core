@@ -36,10 +36,10 @@ service WineBridge {
   rpc DeleteService(ServiceRequest) returns (google.protobuf.Empty);
 
   // DLL Overrides
-  rpc ListDllOverrides(ListDllOverridesRequest) returns (ListDllOverridesResponse);
-  rpc GetDllOverride(DllOverrideRequest) returns (DllOverrideResponse);
-  rpc SetDllOverride(SetDllOverrideRequest) returns (MessageResponse);
-  rpc DeleteDllOverride(DllOverrideRequest) returns (MessageResponse);
+  rpc ListDllOverrides(google.protobuf.Empty) returns (ListDllOverridesResponse);
+  rpc GetDllOverride(DllOverrideRequest) returns (DllOverride);
+  rpc SetDllOverride(SetDllOverrideRequest) returns (google.protobuf.Empty);
+  rpc DeleteDllOverride(DllOverrideRequest) returns (google.protobuf.Empty);
 
   // System
   rpc Shutdown(ShutdownRequest) returns (MessageResponse); // Terminates the Agent
@@ -204,11 +204,12 @@ message CreateServiceRequest {
 
 // DLL Overrides
 enum DllOverrideMode {
-  NATIVE_BUILTIN = 0;
-  BUILTIN_NATIVE = 1;
-  NATIVE = 2;
-  BUILTIN = 3;
-  DISABLED = 4;
+  DLL_OVERRIDE_MODE_UNSPECIFIED = 0;
+  NATIVE_BUILTIN = 1;
+  BUILTIN_NATIVE = 2;
+  NATIVE = 3;
+  BUILTIN = 4;
+  DISABLED = 5;
 }
 
 message DllOverride {
@@ -216,19 +217,12 @@ message DllOverride {
   DllOverrideMode mode = 2;
 }
 
-message ListDllOverridesRequest {}
-
 message ListDllOverridesResponse {
   repeated DllOverride overrides = 1;
 }
 
 message DllOverrideRequest {
   string dll = 1;
-}
-
-message DllOverrideResponse {
-  string dll = 1;
-  DllOverrideMode mode = 2;
 }
 
 message SetDllOverrideRequest {
