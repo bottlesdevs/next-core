@@ -6,9 +6,9 @@ import "google/protobuf/empty.proto";
 
 service WineBridge {
   // Process Management
-  rpc RunningProcesses(RunningProcessesRequest) returns (RunningProcessesResponse);
-  rpc CreateProcess(CreateProcessRequest) returns (CreateProcessResponse);
-  rpc KillProcess(KillProcessRequest) returns (KillProcessResponse);
+  rpc ListProcesses(google.protobuf.Empty) returns (ListProcessesResponse);
+  rpc LaunchProcess(LaunchProcessRequest) returns (LaunchProcessResponse);
+  rpc KillProcess(KillProcessRequest) returns (google.protobuf.Empty);
 
   // Registry Management
   rpc CreateRegistryKey(RegistryKeyRequest) returns (google.protobuf.Empty);
@@ -58,29 +58,23 @@ message Process {
   uint32 threads = 3;
 }
 
-message RunningProcessesRequest {}
-
-message RunningProcessesResponse {
+message ListProcessesResponse {
   repeated Process processes = 1;
 }
 
-message CreateProcessRequest {
-  string command = 1;
-  repeated string args = 2;
-  optional string work_dir = 3; // Optional working directory
-  bool terminal = 4;
+message LaunchProcessRequest {
+  string executable = 1;
+  repeated string arguments = 2;
+  optional string working_directory = 3;
+  bool new_console = 4;
 }
 
-message CreateProcessResponse {
+message LaunchProcessResponse {
   uint32 pid = 1;
 }
 
 message KillProcessRequest {
   uint32 pid = 1;
-}
-
-message KillProcessResponse {
-  bool success = 1;
 }
 
 // Registry
