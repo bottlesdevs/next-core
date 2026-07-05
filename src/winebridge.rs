@@ -666,10 +666,7 @@ impl WineBridgeClient {
     /// Returns an error if the gRPC request fails.
     pub async fn list_dll_overrides(&self) -> Result<Vec<proto::DllOverride>> {
         let mut client = self.client.clone();
-        let response = client
-            .list_dll_overrides(proto::ListDllOverridesRequest {})
-            .await?
-            .into_inner();
+        let response = client.list_dll_overrides(()).await?.into_inner();
 
         Ok(response.overrides)
     }
@@ -679,10 +676,7 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn get_dll_override(
-        &self,
-        dll: impl Into<String>,
-    ) -> Result<proto::DllOverrideResponse> {
+    pub async fn get_dll_override(&self, dll: impl Into<String>) -> Result<proto::DllOverride> {
         let mut client = self.client.clone();
         let response = client
             .get_dll_override(proto::DllOverrideRequest { dll: dll.into() })
@@ -702,15 +696,14 @@ impl WineBridgeClient {
         mode: proto::DllOverrideMode,
     ) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
+        client
             .set_dll_override(proto::SetDllOverrideRequest {
                 dll: dll.into(),
                 mode: mode as i32,
             })
-            .await?
-            .into_inner();
+            .await?;
 
-        check_message(response)
+        Ok(())
     }
 
     /// Removes a DLL override.
@@ -720,12 +713,11 @@ impl WineBridgeClient {
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn delete_dll_override(&self, dll: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
+        client
             .delete_dll_override(proto::DllOverrideRequest { dll: dll.into() })
-            .await?
-            .into_inner();
+            .await?;
 
-        check_message(response)
+        Ok(())
     }
 
     // --- System ---
