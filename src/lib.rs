@@ -10,6 +10,7 @@ pub mod proto {
 }
 
 pub use crate::winebridge::{
-    LaunchRequest, RegistryHive, RegistryKey, RegistryKeyValue, RegistryMultiString, RegistryValue,
-    WineBridgeClient,
+    DllOverride, DllOverrideMode, Drive, LaunchRequest, PathInfo, PathKind, Process, RegistryHive,
+    RegistryKey, RegistryKeyValue, RegistryMultiString, RegistryValue, Service, ServiceStartType,
+    ServiceState, WineBridgeClient, WinebootMode,
 };
