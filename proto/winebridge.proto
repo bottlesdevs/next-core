@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package winebridge;
 
+import "google/protobuf/empty.proto";
+
 service WineBridge {
   // Basic Communication
   rpc Health(BridgeHealthRequest) returns (BridgeHealthResponse);
@@ -13,12 +15,12 @@ service WineBridge {
   rpc KillProcess(KillProcessRequest) returns (KillProcessResponse);
 
   // Registry Management
-  rpc CreateRegistryKey(CreateRegistryKeyRequest) returns (MessageResponse);
-  rpc DeleteRegistryKey(DeleteRegistryKeyRequest) returns (MessageResponse);
-  rpc GetRegistryKey(GetRegistryKeyRequest) returns (RegistryKey);
-  rpc GetRegistryKeyValue(RegistryKeyRequest) returns (RegistryValue);
-  rpc SetRegistryKeyValue(SetRegistryKeyValueRequest) returns (MessageResponse);
-  rpc DeleteRegistryKeyValue(RegistryKeyRequest) returns (MessageResponse);
+  rpc CreateRegistryKey(RegistryKeyRequest) returns (google.protobuf.Empty);
+  rpc DeleteRegistryTree(RegistryKeyRequest) returns (google.protobuf.Empty);
+  rpc GetRegistryKey(RegistryKeyRequest) returns (RegistryKey);
+  rpc GetRegistryValue(RegistryValueRequest) returns (RegistryValue);
+  rpc SetRegistryValue(SetRegistryValueRequest) returns (google.protobuf.Empty);
+  rpc DeleteRegistryValue(RegistryValueRequest) returns (google.protobuf.Empty);
 
   // Prefix FS Operations
   rpc CreateDirectory(FileOperationRequest) returns (FileOperationResponse);
@@ -133,30 +135,22 @@ message RegistryKey {
   repeated RegistryKeyValue values = 3;
 }
 
-message GetRegistryKeyRequest {
-  RegistryHive hive = 1;
-  string subkey = 2;
-}
-
-message CreateRegistryKeyRequest {
-  RegistryHive hive = 1;
-  string subkey = 2;
-}
-
 message RegistryKeyRequest {
+  RegistryHive hive = 1;
+  string subkey = 2;
+}
+
+message RegistryValueRequest {
   RegistryHive hive = 1;
   string subkey = 2;
   string name = 3;
 }
 
-message SetRegistryKeyValueRequest {
-  RegistryKeyRequest key = 1;
-  RegistryValue value = 4;
-}
-
-message DeleteRegistryKeyRequest {
+message SetRegistryValueRequest {
   RegistryHive hive = 1;
   string subkey = 2;
+  string name = 3;
+  RegistryValue value = 4;
 }
 
 // File System
