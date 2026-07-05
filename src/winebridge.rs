@@ -132,15 +132,6 @@ fn check_message(response: proto::MessageResponse) -> Result<()> {
     }
 }
 
-/// Maps a [`proto::FileOperationResponse`] onto a `Result`, surfacing the reported error.
-fn check_file_operation(response: proto::FileOperationResponse) -> Result<()> {
-    if response.success {
-        Ok(())
-    } else {
-        Err(BridgeError::OperationFailed(response.error).into())
-    }
-}
-
 /// Managed client for a WineBridge server running inside a Wine prefix.
 ///
 /// The wrapper starts WineBridge through a [`Runner`], waits until the gRPC
@@ -450,12 +441,11 @@ impl WineBridgeClient {
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn create_directory(&self, path: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
-            .create_directory(proto::FileOperationRequest { path: path.into() })
-            .await?
-            .into_inner();
+        client
+            .create_directory(proto::PathRequest { path: path.into() })
+            .await?;
 
-        check_file_operation(response)
+        Ok(())
     }
 
     /// Deletes a file or directory inside the prefix.
@@ -465,12 +455,25 @@ impl WineBridgeClient {
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn delete_file(&self, path: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
-            .delete_file(proto::FileOperationRequest { path: path.into() })
-            .await?
-            .into_inner();
+        client
+            .delete_file(proto::PathRequest { path: path.into() })
+            .await?;
 
-        check_file_operation(response)
+        Ok(())
+    }
+
+    /// Recursively deletes a directory and all of its descendants.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path is not a directory or the operation fails.
+    pub async fn delete_directory_tree(&self, path: impl Into<String>) -> Result<()> {
+        let mut client = self.client.clone();
+        client
+            .delete_directory_tree(proto::PathRequest { path: path.into() })
+            .await?;
+
+        Ok(())
     }
 
     /// Copies a file inside the prefix.
@@ -484,15 +487,14 @@ impl WineBridgeClient {
         destination: impl Into<String>,
     ) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
-            .copy_file(proto::CopyMoveRequest {
+        client
+            .copy_file(proto::PathTransferRequest {
                 source: source.into(),
                 destination: destination.into(),
             })
-            .await?
-            .into_inner();
+            .await?;
 
-        check_file_operation(response)
+        Ok(())
     }
 
     /// Moves or renames a file inside the prefix.
@@ -500,21 +502,33 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
-    pub async fn move_file(
+    pub async fn move_path(
         &self,
         source: impl Into<String>,
         destination: impl Into<String>,
     ) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
-            .move_file(proto::CopyMoveRequest {
+        client
+            .move_path(proto::PathTransferRequest {
                 source: source.into(),
                 destination: destination.into(),
             })
-            .await?
-            .into_inner();
+            .await?;
 
-        check_file_operation(response)
+        Ok(())
+    }
+
+    /// Returns metadata for a file or directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NOT_FOUND` when the path does not exist.
+    pub async fn path_info(&self, path: impl Into<String>) -> Result<proto::PathInfo> {
+        let mut client = self.client.clone();
+        Ok(client
+            .get_path_info(proto::PathRequest { path: path.into() })
+            .await?
+            .into_inner())
     }
 
     /// Lists the entries of a directory inside the prefix.
@@ -522,29 +536,31 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn list_directory(&self, path: impl Into<String>) -> Result<Vec<proto::FileInfo>> {
+    pub async fn list_directory(&self, path: impl Into<String>) -> Result<Vec<proto::PathInfo>> {
         let mut client = self.client.clone();
         let response = client
-            .list_directory(proto::FileOperationRequest { path: path.into() })
+            .list_directory(proto::PathRequest { path: path.into() })
             .await?
             .into_inner();
 
-        Ok(response.files)
+        Ok(response.entries)
     }
 
-    /// Checks whether a path exists, returning `(exists, is_dir)`.
+    /// Checks whether a path exists.
     ///
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn exists(&self, path: impl Into<String>) -> Result<(bool, bool)> {
+    pub async fn exists(&self, path: impl Into<String>) -> Result<bool> {
         let mut client = self.client.clone();
-        let response = client
-            .exists(proto::FileOperationRequest { path: path.into() })
-            .await?
-            .into_inner();
-
-        Ok((response.exists, response.is_dir))
+        match client
+            .get_path_info(proto::PathRequest { path: path.into() })
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(error) if error.code() == tonic::Code::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 
     // --- Service Management ---
@@ -818,16 +834,5 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("boom"));
-    }
-
-    #[test]
-    fn check_file_operation_success_is_ok() {
-        assert!(
-            check_file_operation(proto::FileOperationResponse {
-                success: true,
-                error: String::new(),
-            })
-            .is_ok()
-        );
     }
 }

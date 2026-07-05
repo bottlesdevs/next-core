@@ -19,12 +19,13 @@ service WineBridge {
   rpc DeleteRegistryValue(RegistryValueRequest) returns (google.protobuf.Empty);
 
   // Prefix FS Operations
-  rpc CreateDirectory(FileOperationRequest) returns (FileOperationResponse);
-  rpc DeleteFile(FileOperationRequest) returns (FileOperationResponse);
-  rpc CopyFile(CopyMoveRequest) returns (FileOperationResponse);
-  rpc MoveFile(CopyMoveRequest) returns (FileOperationResponse);
-  rpc ListDirectory(FileOperationRequest) returns (ListDirectoryResponse);
-  rpc Exists(FileOperationRequest) returns (ExistsResponse);
+  rpc CreateDirectory(PathRequest) returns (google.protobuf.Empty);
+  rpc DeleteFile(PathRequest) returns (google.protobuf.Empty);
+  rpc DeleteDirectoryTree(PathRequest) returns (google.protobuf.Empty);
+  rpc CopyFile(PathTransferRequest) returns (google.protobuf.Empty);
+  rpc MovePath(PathTransferRequest) returns (google.protobuf.Empty);
+  rpc GetPathInfo(PathRequest) returns (PathInfo);
+  rpc ListDirectory(PathRequest) returns (ListDirectoryResponse);
 
   // Service Management
   rpc ListServices(ListServicesRequest) returns (ListServicesResponse);
@@ -133,33 +134,29 @@ message SetRegistryValueRequest {
 }
 
 // File System
-message FileOperationRequest {
+message PathRequest {
   string path = 1;
 }
 
-message FileOperationResponse {
-  bool success = 1;
-  string error = 2;
-}
-
-message CopyMoveRequest {
+message PathTransferRequest {
   string source = 1;
   string destination = 2;
 }
 
-message FileInfo {
-  string name = 1;
-  bool is_dir = 2;
-  uint64 size = 3;
+enum PathKind {
+  PATH_KIND_UNSPECIFIED = 0;
+  PATH_KIND_FILE = 1;
+  PATH_KIND_DIRECTORY = 2;
+}
+
+message PathInfo {
+  string path = 1;
+  PathKind kind = 2;
+  optional uint64 size = 3;
 }
 
 message ListDirectoryResponse {
-  repeated FileInfo files = 1;
-}
-
-message ExistsResponse {
-  bool exists = 1;
-  bool is_dir = 2;
+  repeated PathInfo entries = 1;
 }
 
 // Service API
