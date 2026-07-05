@@ -570,29 +570,24 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn list_services(&self) -> Result<Vec<proto::ServiceInfo>> {
+    pub async fn list_services(&self) -> Result<Vec<proto::Service>> {
         let mut client = self.client.clone();
-        let response = client
-            .list_services(proto::ListServicesRequest {})
-            .await?
-            .into_inner();
+        let response = client.list_services(()).await?.into_inner();
 
         Ok(response.services)
     }
 
-    /// Returns the current state of a service.
+    /// Returns a service and its current configuration.
     ///
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn get_service_status(&self, name: impl Into<String>) -> Result<proto::ServiceState> {
+    pub async fn get_service(&self, name: impl Into<String>) -> Result<proto::Service> {
         let mut client = self.client.clone();
-        let response = client
-            .get_service_status(proto::ServiceRequest { name: name.into() })
+        Ok(client
+            .get_service(proto::ServiceRequest { name: name.into() })
             .await?
-            .into_inner();
-
-        Ok(response.state())
+            .into_inner())
     }
 
     /// Starts a service.
@@ -602,12 +597,11 @@ impl WineBridgeClient {
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn start_service(&self, name: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
+        client
             .start_service(proto::ServiceRequest { name: name.into() })
-            .await?
-            .into_inner();
+            .await?;
 
-        check_message(response)
+        Ok(())
     }
 
     /// Stops a service.
@@ -617,12 +611,11 @@ impl WineBridgeClient {
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn stop_service(&self, name: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
+        client
             .stop_service(proto::ServiceRequest { name: name.into() })
-            .await?
-            .into_inner();
+            .await?;
 
-        check_message(response)
+        Ok(())
     }
 
     /// Creates a new service.
@@ -638,17 +631,16 @@ impl WineBridgeClient {
         start_type: proto::ServiceStartType,
     ) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
+        client
             .create_service(proto::CreateServiceRequest {
                 name: name.into(),
                 display_name: display_name.into(),
                 binary_path: binary_path.into(),
                 start_type: start_type as i32,
             })
-            .await?
-            .into_inner();
+            .await?;
 
-        check_message(response)
+        Ok(())
     }
 
     /// Deletes a service.
@@ -658,12 +650,11 @@ impl WineBridgeClient {
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn delete_service(&self, name: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
+        client
             .delete_service(proto::ServiceRequest { name: name.into() })
-            .await?
-            .into_inner();
+            .await?;
 
-        check_message(response)
+        Ok(())
     }
 
     // --- DLL Overrides ---
