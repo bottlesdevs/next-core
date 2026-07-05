@@ -10,6 +10,9 @@ use std::{
 use std::net::{IpAddr, Ipv4Addr};
 use thiserror::Error;
 use tonic::transport::{Channel, Endpoint};
+use tonic_health::pb::{
+    HealthCheckRequest, health_check_response::ServingStatus, health_client::HealthClient,
+};
 
 use crate::proto::{self, wine_bridge_client::WineBridgeClient as GrpcClient};
 use crate::runner::RunnerError;
@@ -225,15 +228,17 @@ impl WineBridgeClient {
                     return Err(BridgeError::BridgeExited(status).into());
                 }
 
-                match GrpcClient::connect(endpoint.clone()).await {
-                    Ok(mut client) => match client.health(proto::BridgeHealthRequest {}).await {
-                        Ok(response) => {
-                            if response.into_inner().ok {
-                                return Ok(client);
-                            }
-
-                            tracing::debug!("WineBridge health check returned not ready");
+                match endpoint.connect().await {
+                    Ok(channel) => match HealthClient::new(channel.clone())
+                        .check(HealthCheckRequest {
+                            service: proto::wine_bridge_server::SERVICE_NAME.to_string(),
+                        })
+                        .await
+                    {
+                        Ok(response) if response.get_ref().status() == ServingStatus::Serving => {
+                            return Ok(GrpcClient::new(channel));
                         }
+                        Ok(_) => tracing::debug!("WineBridge health check returned not serving"),
                         Err(error) => {
                             tracing::debug!(%error, "WineBridge health check failed");
                         }
@@ -251,25 +256,6 @@ impl WineBridgeClient {
             result = ready => result,
             _ = tokio::time::sleep(timeout) => Err(BridgeError::Timeout.into()),
         }
-    }
-
-    // --- Basic Communication ---
-
-    /// Sends a free-form message to WineBridge and confirms it was accepted.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
-    pub async fn message(&self, message: impl Into<String>) -> Result<()> {
-        let mut client = self.client.clone();
-        let response = client
-            .message(proto::MessageRequest {
-                message: message.into(),
-            })
-            .await?
-            .into_inner();
-
-        check_message(response)
     }
 
     // --- Process Management ---
