@@ -18,7 +18,10 @@ use crate::{
     runner::{PrefixConfig, Runner, RunnerCommand},
 };
 
-pub use crate::proto::{RegistryHive, RegistryMultiString, registry_value::Value as RegistryValue};
+pub use crate::proto::{
+    RegistryHive, RegistryKey, RegistryKeyValue, RegistryMultiString,
+    registry_value::Value as RegistryValue,
+};
 
 static BRIDGE_ENDPOINT_MANAGER: LazyLock<BridgeEndpointManager> =
     LazyLock::new(BridgeEndpointManager::new);
@@ -329,37 +332,35 @@ impl WineBridgeClient {
         subkey: impl Into<String>,
     ) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
-            .create_registry_key(proto::CreateRegistryKeyRequest {
+        client
+            .create_registry_key(proto::RegistryKeyRequest {
                 hive: hive as i32,
                 subkey: subkey.into(),
             })
-            .await?
-            .into_inner();
+            .await?;
 
-        check_message(response)
+        Ok(())
     }
 
-    /// Deletes a registry key under `hive`.
+    /// Recursively deletes a registry key and all of its descendants.
     ///
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
-    pub async fn delete_registry_key(
+    pub async fn delete_registry_tree(
         &self,
         hive: RegistryHive,
         subkey: impl Into<String>,
     ) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
-            .delete_registry_key(proto::DeleteRegistryKeyRequest {
+        client
+            .delete_registry_tree(proto::RegistryKeyRequest {
                 hive: hive as i32,
                 subkey: subkey.into(),
             })
-            .await?
-            .into_inner();
+            .await?;
 
-        check_message(response)
+        Ok(())
     }
 
     /// Returns a registry key together with its values.
@@ -371,10 +372,10 @@ impl WineBridgeClient {
         &self,
         hive: RegistryHive,
         subkey: impl Into<String>,
-    ) -> Result<proto::RegistryKey> {
+    ) -> Result<RegistryKey> {
         let mut client = self.client.clone();
         let response = client
-            .get_registry_key(proto::GetRegistryKeyRequest {
+            .get_registry_key(proto::RegistryKeyRequest {
                 hive: hive as i32,
                 subkey: subkey.into(),
             })
@@ -388,7 +389,7 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn get_registry_key_value(
+    pub async fn get_registry_value(
         &self,
         hive: RegistryHive,
         subkey: impl Into<String>,
@@ -396,7 +397,7 @@ impl WineBridgeClient {
     ) -> Result<RegistryValue> {
         let mut client = self.client.clone();
         let response = client
-            .get_registry_key_value(proto::RegistryKeyRequest {
+            .get_registry_value(proto::RegistryValueRequest {
                 hive: hive as i32,
                 subkey: subkey.into(),
                 name: name.into(),
@@ -414,7 +415,7 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
-    pub async fn set_registry_key_value(
+    pub async fn set_registry_value(
         &self,
         hive: RegistryHive,
         subkey: impl Into<String>,
@@ -422,19 +423,16 @@ impl WineBridgeClient {
         value: RegistryValue,
     ) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
-            .set_registry_key_value(proto::SetRegistryKeyValueRequest {
-                key: Some(proto::RegistryKeyRequest {
-                    hive: hive as i32,
-                    subkey: subkey.into(),
-                    name: name.into(),
-                }),
+        client
+            .set_registry_value(proto::SetRegistryValueRequest {
+                hive: hive as i32,
+                subkey: subkey.into(),
+                name: name.into(),
                 value: Some(proto::RegistryValue { value: Some(value) }),
             })
-            .await?
-            .into_inner();
+            .await?;
 
-        check_message(response)
+        Ok(())
     }
 
     /// Deletes a value from a registry key.
@@ -442,23 +440,22 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
-    pub async fn delete_registry_key_value(
+    pub async fn delete_registry_value(
         &self,
         hive: RegistryHive,
         subkey: impl Into<String>,
         name: impl Into<String>,
     ) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
-            .delete_registry_key_value(proto::RegistryKeyRequest {
+        client
+            .delete_registry_value(proto::RegistryValueRequest {
                 hive: hive as i32,
                 subkey: subkey.into(),
                 name: name.into(),
             })
-            .await?
-            .into_inner();
+            .await?;
 
-        check_message(response)
+        Ok(())
     }
 
     // --- File System ---

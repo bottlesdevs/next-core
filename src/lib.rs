@@ -10,5 +10,6 @@ pub mod proto {
 }
 
 pub use crate::winebridge::{
-    LaunchRequest, RegistryHive, RegistryMultiString, RegistryValue, WineBridgeClient,
+    LaunchRequest, RegistryHive, RegistryKey, RegistryKeyValue, RegistryMultiString, RegistryValue,
+    WineBridgeClient,
 };
