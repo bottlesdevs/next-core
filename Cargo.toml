@@ -10,6 +10,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tonic.workspace = true
+tonic-health.workspace = true
 tokio.workspace = true
 derive_builder.workspace = true
 prost = "0.14"

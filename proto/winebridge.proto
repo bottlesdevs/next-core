@@ -5,10 +5,6 @@ package winebridge;
 import "google/protobuf/empty.proto";
 
 service WineBridge {
-  // Basic Communication
-  rpc Health(BridgeHealthRequest) returns (BridgeHealthResponse);
-  rpc Message(MessageRequest) returns (MessageResponse);
-
   // Process Management
   rpc RunningProcesses(RunningProcessesRequest) returns (RunningProcessesResponse);
   rpc CreateProcess(CreateProcessRequest) returns (CreateProcessResponse);
@@ -48,17 +44,6 @@ service WineBridge {
   rpc Shutdown(ShutdownRequest) returns (MessageResponse); // Terminates the Agent
   rpc Wineboot(WinebootRequest) returns (MessageResponse);
   rpc GetDriveInfo(DriveInfoRequest) returns (DriveInfoResponse);
-}
-
-// Basic Communication
-message BridgeHealthRequest {}
-
-message BridgeHealthResponse {
-  bool ok = 1;
-}
-
-message MessageRequest {
-  string message = 1;
 }
 
 message MessageResponse {
