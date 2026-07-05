@@ -42,14 +42,9 @@ service WineBridge {
   rpc DeleteDllOverride(DllOverrideRequest) returns (google.protobuf.Empty);
 
   // System
-  rpc Shutdown(ShutdownRequest) returns (MessageResponse); // Terminates the Agent
-  rpc Wineboot(WinebootRequest) returns (MessageResponse);
-  rpc GetDriveInfo(DriveInfoRequest) returns (DriveInfoResponse);
-}
-
-message MessageResponse {
-  bool success = 1;
-  optional string error = 2;
+  rpc RunWineboot(WinebootRequest) returns (google.protobuf.Empty);
+  rpc ListDrives(google.protobuf.Empty) returns (ListDrivesResponse);
+  rpc Shutdown(google.protobuf.Empty) returns (google.protobuf.Empty);
 }
 
 // Process
@@ -231,21 +226,18 @@ message SetDllOverrideRequest {
 }
 
 // System
-message ShutdownRequest {}
-
 enum WinebootMode {
-  NORMAL = 0;
-  SHUTDOWN = 1;
-  KILL = 2;
+  WINEBOOT_MODE_UNSPECIFIED = 0;
+  NORMAL = 1;
+  SHUTDOWN = 2;
+  KILL = 3;
 }
 
 message WinebootRequest {
   WinebootMode mode = 1;
 }
 
-message DriveInfoRequest {}
-
-message DriveInfoResponse {
+message ListDrivesResponse {
   repeated Drive drives = 1;
 }
 

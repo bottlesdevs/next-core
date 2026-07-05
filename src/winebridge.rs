@@ -22,7 +22,8 @@ use crate::{
 };
 
 pub use crate::proto::{
-    RegistryHive, RegistryKey, RegistryKeyValue, RegistryMultiString,
+    DllOverride, DllOverrideMode, Drive, PathInfo, PathKind, Process, RegistryHive, RegistryKey,
+    RegistryKeyValue, RegistryMultiString, Service, ServiceStartType, ServiceState, WinebootMode,
     registry_value::Value as RegistryValue,
 };
 
@@ -37,8 +38,6 @@ pub enum BridgeError {
     BridgeExited(ExitStatus),
     #[error("WineBridge did not report readiness before the startup timeout elapsed.")]
     Timeout,
-    #[error("WineBridge reported an operation failure: {0}")]
-    OperationFailed(String),
     #[error("WineBridge returned an invalid response: {0}")]
     InvalidResponse(&'static str),
 }
@@ -120,15 +119,6 @@ impl LaunchRequest {
 impl From<LaunchRequest> for proto::LaunchProcessRequest {
     fn from(request: LaunchRequest) -> Self {
         request.0
-    }
-}
-
-/// Maps a [`proto::MessageResponse`] onto a `Result`, surfacing the reported error.
-fn check_message(response: proto::MessageResponse) -> Result<()> {
-    if response.success {
-        Ok(())
-    } else {
-        Err(BridgeError::OperationFailed(response.error.unwrap_or_default()).into())
     }
 }
 
@@ -256,7 +246,7 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn list_processes(&self) -> Result<Vec<proto::Process>> {
+    pub async fn list_processes(&self) -> Result<Vec<Process>> {
         let mut client = self.client.clone();
         let response = client.list_processes(()).await?.into_inner();
 
@@ -523,7 +513,7 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns `NOT_FOUND` when the path does not exist.
-    pub async fn path_info(&self, path: impl Into<String>) -> Result<proto::PathInfo> {
+    pub async fn path_info(&self, path: impl Into<String>) -> Result<PathInfo> {
         let mut client = self.client.clone();
         Ok(client
             .get_path_info(proto::PathRequest { path: path.into() })
@@ -536,7 +526,7 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn list_directory(&self, path: impl Into<String>) -> Result<Vec<proto::PathInfo>> {
+    pub async fn list_directory(&self, path: impl Into<String>) -> Result<Vec<PathInfo>> {
         let mut client = self.client.clone();
         let response = client
             .list_directory(proto::PathRequest { path: path.into() })
@@ -570,7 +560,7 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn list_services(&self) -> Result<Vec<proto::Service>> {
+    pub async fn list_services(&self) -> Result<Vec<Service>> {
         let mut client = self.client.clone();
         let response = client.list_services(()).await?.into_inner();
 
@@ -582,7 +572,7 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn get_service(&self, name: impl Into<String>) -> Result<proto::Service> {
+    pub async fn get_service(&self, name: impl Into<String>) -> Result<Service> {
         let mut client = self.client.clone();
         Ok(client
             .get_service(proto::ServiceRequest { name: name.into() })
@@ -628,7 +618,7 @@ impl WineBridgeClient {
         name: impl Into<String>,
         display_name: impl Into<String>,
         binary_path: impl Into<String>,
-        start_type: proto::ServiceStartType,
+        start_type: ServiceStartType,
     ) -> Result<()> {
         let mut client = self.client.clone();
         client
@@ -664,7 +654,7 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn list_dll_overrides(&self) -> Result<Vec<proto::DllOverride>> {
+    pub async fn list_dll_overrides(&self) -> Result<Vec<DllOverride>> {
         let mut client = self.client.clone();
         let response = client.list_dll_overrides(()).await?.into_inner();
 
@@ -676,7 +666,7 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn get_dll_override(&self, dll: impl Into<String>) -> Result<proto::DllOverride> {
+    pub async fn get_dll_override(&self, dll: impl Into<String>) -> Result<DllOverride> {
         let mut client = self.client.clone();
         let response = client
             .get_dll_override(proto::DllOverrideRequest { dll: dll.into() })
@@ -693,7 +683,7 @@ impl WineBridgeClient {
     pub async fn set_dll_override(
         &self,
         dll: impl Into<String>,
-        mode: proto::DllOverrideMode,
+        mode: DllOverrideMode,
     ) -> Result<()> {
         let mut client = self.client.clone();
         client
@@ -727,14 +717,13 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
-    pub async fn wineboot(&self, mode: proto::WinebootMode) -> Result<()> {
+    pub async fn wineboot(&self, mode: WinebootMode) -> Result<()> {
         let mut client = self.client.clone();
-        let response = client
-            .wineboot(proto::WinebootRequest { mode: mode as i32 })
-            .await?
-            .into_inner();
+        client
+            .run_wineboot(proto::WinebootRequest { mode: mode as i32 })
+            .await?;
 
-        check_message(response)
+        Ok(())
     }
 
     /// Returns information about the drives mapped in the prefix.
@@ -742,12 +731,9 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn get_drive_info(&self) -> Result<Vec<proto::Drive>> {
+    pub async fn list_drives(&self) -> Result<Vec<Drive>> {
         let mut client = self.client.clone();
-        let response = client
-            .get_drive_info(proto::DriveInfoRequest {})
-            .await?
-            .into_inner();
+        let response = client.list_drives(()).await?.into_inner();
 
         Ok(response.drives)
     }
@@ -762,7 +748,7 @@ impl WineBridgeClient {
     pub async fn shutdown(self) -> Result<()> {
         let mut client = self.client.clone();
 
-        client.shutdown(proto::ShutdownRequest {}).await?;
+        client.shutdown(()).await?;
 
         Ok(())
     }
@@ -806,16 +792,5 @@ mod tests {
             .into();
 
         assert_eq!(proto.working_directory, None);
-    }
-
-    #[test]
-    fn check_message_reports_error_text() {
-        let err = check_message(proto::MessageResponse {
-            success: false,
-            error: Some("boom".to_string()),
-        })
-        .unwrap_err();
-
-        assert!(err.to_string().contains("boom"));
     }
 }
