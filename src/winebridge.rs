@@ -71,20 +71,20 @@ impl BridgeEndpointManager {
 /// dedicated console. The request maps directly onto the WineBridge
 /// `CreateProcess` RPC.
 #[derive(Debug, Clone)]
-pub struct LaunchRequest(proto::CreateProcessRequest);
+pub struct LaunchRequest(proto::LaunchProcessRequest);
 
 impl LaunchRequest {
     /// Creates a launch request for `executable` with no arguments.
     pub fn new(executable: impl AsRef<Path>) -> Self {
-        Self(proto::CreateProcessRequest {
-            command: executable.as_ref().display().to_string(),
+        Self(proto::LaunchProcessRequest {
+            executable: executable.as_ref().display().to_string(),
             ..Default::default()
         })
     }
 
     /// Appends a single argument passed after the executable.
     pub fn arg(mut self, arg: impl Into<String>) -> Self {
-        self.0.args.push(arg.into());
+        self.0.arguments.push(arg.into());
         self
     }
 
@@ -94,30 +94,30 @@ impl LaunchRequest {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.0.args.extend(args.into_iter().map(Into::into));
+        self.0.arguments.extend(args.into_iter().map(Into::into));
         self
     }
 
     /// Sets the working directory the process is started in.
     pub fn work_dir(mut self, work_dir: impl AsRef<Path>) -> Self {
-        self.0.work_dir = Some(work_dir.as_ref().display().to_string());
+        self.0.working_directory = Some(work_dir.as_ref().display().to_string());
         self
     }
 
     /// Sets the working directory from an optional value, leaving it unset on `None`.
     pub fn maybe_work_dir(mut self, work_dir: Option<PathBuf>) -> Self {
-        self.0.work_dir = work_dir.map(|dir| dir.display().to_string());
+        self.0.working_directory = work_dir.map(|dir| dir.display().to_string());
         self
     }
 
     /// Requests the process be launched with a new console window.
     pub fn terminal(mut self, terminal: bool) -> Self {
-        self.0.terminal = terminal;
+        self.0.new_console = terminal;
         self
     }
 }
 
-impl From<LaunchRequest> for proto::CreateProcessRequest {
+impl From<LaunchRequest> for proto::LaunchProcessRequest {
     fn from(request: LaunchRequest) -> Self {
         request.0
     }
@@ -265,12 +265,9 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn running_processes(&self) -> Result<Vec<proto::Process>> {
+    pub async fn list_processes(&self) -> Result<Vec<proto::Process>> {
         let mut client = self.client.clone();
-        let response = client
-            .running_processes(proto::RunningProcessesRequest {})
-            .await?
-            .into_inner();
+        let response = client.list_processes(()).await?.into_inner();
 
         Ok(response.processes)
     }
@@ -283,7 +280,7 @@ impl WineBridgeClient {
     pub async fn launch_process(&self, request: LaunchRequest) -> Result<u32> {
         let mut client = self.client.clone();
         let response = client
-            .create_process(proto::CreateProcessRequest::from(request))
+            .launch_process(proto::LaunchProcessRequest::from(request))
             .await?;
 
         Ok(response.into_inner().pid)
@@ -784,32 +781,32 @@ mod tests {
             .work_dir("C:\\work")
             .terminal(true);
 
-        let proto: proto::CreateProcessRequest = request.into();
+        let proto: proto::LaunchProcessRequest = request.into();
 
-        assert_eq!(proto.command, "C:\\app.exe");
-        assert_eq!(proto.args, vec!["--flag", "a", "b"]);
-        assert_eq!(proto.work_dir.as_deref(), Some("C:\\work"));
-        assert!(proto.terminal);
+        assert_eq!(proto.executable, "C:\\app.exe");
+        assert_eq!(proto.arguments, vec!["--flag", "a", "b"]);
+        assert_eq!(proto.working_directory.as_deref(), Some("C:\\work"));
+        assert!(proto.new_console);
     }
 
     #[test]
     fn launch_request_defaults_leave_work_dir_unset() {
-        let proto: proto::CreateProcessRequest = LaunchRequest::new("game.exe").into();
+        let proto: proto::LaunchProcessRequest = LaunchRequest::new("game.exe").into();
 
-        assert_eq!(proto.command, "game.exe");
-        assert!(proto.args.is_empty());
-        assert_eq!(proto.work_dir, None);
-        assert!(!proto.terminal);
+        assert_eq!(proto.executable, "game.exe");
+        assert!(proto.arguments.is_empty());
+        assert_eq!(proto.working_directory, None);
+        assert!(!proto.new_console);
     }
 
     #[test]
     fn maybe_work_dir_overrides_with_none() {
-        let proto: proto::CreateProcessRequest = LaunchRequest::new("game.exe")
+        let proto: proto::LaunchProcessRequest = LaunchRequest::new("game.exe")
             .work_dir("C:\\work")
             .maybe_work_dir(None)
             .into();
 
-        assert_eq!(proto.work_dir, None);
+        assert_eq!(proto.working_directory, None);
     }
 
     #[test]
