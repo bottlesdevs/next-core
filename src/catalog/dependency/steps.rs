@@ -19,6 +19,9 @@ pub enum DependencyStep {
     Extract {
         destination: PathBuf,
     },
+    RegisterDlls {
+        dlls: Vec<PathBuf>,
+    },
     SetRegistryValue {
         hive: RegistryHive,
         #[serde(deserialize_with = "deserialize_non_empty_string")]

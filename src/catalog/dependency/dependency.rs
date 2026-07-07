@@ -132,6 +132,10 @@ mod tests {
                         "destination": "drive_c/windows/system32/vcruntime140.dll"
                     },
                     {
+                        "action": "register-dlls",
+                        "dlls": ["drive_c/windows/system32/vcruntime140.dll"]
+                    },
+                    {
                         "action": "set-registry-value",
                         "hive": "current-user",
                         "key": "Software\\Example",
@@ -202,19 +206,24 @@ mod tests {
                 if destination == Path::new("drive_c/windows/system32/vcruntime140.dll")
         ));
         assert!(matches!(
+            &x64.steps()[1],
+            DependencyStep::RegisterDlls { dlls }
+                if dlls == &[Path::new("drive_c/windows/system32/vcruntime140.dll")]
+        ));
+        assert!(matches!(
             &dependency.resources()[2].steps()[0],
             DependencyStep::Extract { destination }
                 if destination == Path::new("drive_c/runtime")
         ));
 
         assert!(matches!(
-            &x64.steps()[2],
+            &x64.steps()[3],
             DependencyStep::SetRegistryValue {
                 value: RegistryValue::String(value), ..
             } if value == "14.38"
         ));
         assert!(matches!(
-            &x64.steps()[3],
+            &x64.steps()[4],
             DependencyStep::SetDllOverrides {
                 dlls,
                 mode: DllOverrideMode::NativeBuiltin,
