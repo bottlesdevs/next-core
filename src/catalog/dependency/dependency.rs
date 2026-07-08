@@ -115,7 +115,6 @@ mod tests {
                     {
                         "action": "execute",
                         "arguments": ["/quiet", "/norestart"],
-                        "environment": { "WINEDLLOVERRIDES": "fusion=b" },
                         "windows_version": "win7"
                     }
                 ]
@@ -192,10 +191,8 @@ mod tests {
             &x86.steps()[0],
             DependencyStep::Execute {
                 arguments,
-                environment,
                 windows_version: Some(WindowsVersion::Win7),
             } if arguments == &["/quiet", "/norestart"]
-                && environment.get("WINEDLLOVERRIDES").map(String::as_str) == Some("fusion=b")
         ));
 
         let x64 = &dependency.resources()[1];
@@ -250,9 +247,8 @@ mod tests {
             &dependency.resources()[0].steps()[0],
             DependencyStep::Execute {
                 arguments,
-                environment,
                 windows_version: None,
-            } if arguments.is_empty() && environment.is_empty()
+            } if arguments.is_empty()
         ));
     }
 
