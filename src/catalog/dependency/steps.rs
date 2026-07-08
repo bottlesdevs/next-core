@@ -1,6 +1,6 @@
 use crate::{catalog::deserialize_non_empty_string, runner::WindowsVersion};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
@@ -11,8 +11,6 @@ pub enum DependencyStep {
     Execute {
         #[serde(default)]
         arguments: Vec<String>,
-        #[serde(default)]
-        environment: HashMap<String, String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         windows_version: Option<WindowsVersion>,
     },
