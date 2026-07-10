@@ -34,7 +34,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     mgr.capture(&dep, &virgo, "dep")?;
     let dep_patch = dep.join(".fvs2/registry/system.reg.patch");
     println!("captured dep layer files : {:?}", list(&dep));
-    println!("captured registry patch  : {} ops", dep_patch.exists().then(|| count_ops(&dep_patch)).unwrap_or(0));
+    println!(
+        "captured registry patch  : {} ops",
+        dep_patch
+            .exists()
+            .then(|| count_ops(&dep_patch))
+            .unwrap_or(0)
+    );
 
     // --- REPLAY: mount virgo + dep over a fresh upper (patches auto-discovered) ---
     let upper2 = work.join("upper2");
@@ -45,13 +51,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let merged = fs::read_to_string(mount.path().join("system.reg"))?;
     println!("replay NewDep present    : {}", merged.contains("NewDep"));
-    println!("replay ToUpdate Ver2.0   : {}", merged.contains("\"Ver\"=\"2.0\""));
-    println!("replay ToDelete gone     : {}", !merged.contains("ToDelete"));
-    println!("replay newdep.dll        : {:?}", fs::read_to_string(mount.path().join("system32/newdep.dll"))?);
-    println!("replay core.dll (virgo)  : {:?}", fs::read_to_string(mount.path().join("system32/core.dll"))?);
-    println!("merged in upper2         : {}", upper2.join("system.reg").exists());
+    println!(
+        "replay ToUpdate Ver2.0   : {}",
+        merged.contains("\"Ver\"=\"2.0\"")
+    );
+    println!(
+        "replay ToDelete gone     : {}",
+        !merged.contains("ToDelete")
+    );
+    println!(
+        "replay newdep.dll        : {:?}",
+        fs::read_to_string(mount.path().join("system32/newdep.dll"))?
+    );
+    println!(
+        "replay core.dll (virgo)  : {:?}",
+        fs::read_to_string(mount.path().join("system32/core.dll"))?
+    );
+    println!(
+        "merged in upper2         : {}",
+        upper2.join("system.reg").exists()
+    );
     let base = fs::read_to_string(virgo.join("system.reg"))?;
-    println!("virgo untouched          : {}", base.contains("\"Ver\"=\"1.0\"") && base.contains("ToDelete"));
+    println!(
+        "virgo untouched          : {}",
+        base.contains("\"Ver\"=\"1.0\"") && base.contains("ToDelete")
+    );
 
     drop(mount);
     println!("OK");

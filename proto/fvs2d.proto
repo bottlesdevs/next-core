@@ -1,0 +1,145 @@
+syntax = "proto3";
+
+package fvs2d.v1;
+
+option go_package = "fvs2d/internal/fvs2dpb;fvs2dpb";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+service Fvs2d {
+    rpc Probe(google.protobuf.Empty) returns (ProbeResponse);
+    rpc InitRepository(InitRepositoryRequest) returns (Repository);
+    rpc Commit(CommitRequest) returns (Revision);
+    rpc ListStates(ListStatesRequest) returns (ListStatesResponse);
+    rpc Restore(RestoreRequest) returns (RestoreResponse);
+    rpc CreateMount(CreateMountRequest) returns (Mount);
+    rpc GetMount(GetMountRequest) returns (Mount);
+    rpc ListMounts(google.protobuf.Empty) returns (ListMountsResponse);
+    rpc Unmount(UnmountRequest) returns (google.protobuf.Empty);
+    rpc Shutdown(ShutdownRequest) returns (google.protobuf.Empty);
+}
+
+message ListStatesRequest {
+    string repository_path = 1;
+}
+
+message State {
+    string state_id = 1;
+    google.protobuf.Timestamp created_at = 2;
+    string message = 3;
+}
+
+message ListStatesResponse {
+    repeated State states = 1;
+}
+
+message RestoreRequest {
+    string repository_path = 1;
+    string state_id_or_prefix = 2;
+    // destination_path overrides the restore destination (default: the repo root).
+    optional string destination_path = 3;
+    // clean removes files in the destination that are not part of the state.
+    bool clean = 4;
+    // reset moves HEAD to the restored state.
+    bool reset = 5;
+}
+
+message RestoreResponse {
+    string state_id = 1;
+    string destination_path = 2;
+}
+
+message InitRepositoryRequest {
+    string repository_path = 1;
+    uint32 block_size = 2;
+}
+
+message Repository {
+    string repository_path = 1;
+    uint32 block_size = 2;
+}
+
+message CommitRequest {
+    string repository_path = 1;
+    string message = 2;
+    bool allow_empty = 3;
+}
+
+message Revision {
+    string repository_path = 1;
+    string state_id = 2;
+    google.protobuf.Timestamp created_at = 3;
+    uint64 file_count = 4;
+}
+
+message ProbeResponse {
+    string daemon_version = 1;
+    uint32 pid = 2;
+    google.protobuf.Timestamp started_at = 3;
+
+    bool fuse_backend_available = 4;
+    bool dev_fuse_accessible = 5;
+    bool fusermount_available = 6;
+    bool running_in_flatpak = 7;
+}
+
+message RevisionSelector {
+    oneof selector {
+        string state_id_or_prefix = 1;
+        string branch = 2;
+    }
+}
+
+message Layer {
+    string repository_path = 1;
+    RevisionSelector revision = 2;
+}
+
+message MountSpec {
+    string mount_point = 1;
+    repeated Layer layers = 2;
+    optional string upper_path = 3;
+    bool debug = 4;
+}
+
+message CreateMountRequest {
+    MountSpec spec = 1;
+}
+
+message ResolvedLayer {
+    string repository_path = 1;
+    string state_id = 2;
+    string blocks_path = 3;
+    uint32 block_size = 4;
+}
+
+message Mount {
+    string id = 1;
+    MountSpec spec = 2;
+    repeated ResolvedLayer resolved_layers = 3;
+    uint64 node_count = 4;
+    google.protobuf.Timestamp mounted_at = 5;
+}
+
+message GetMountRequest {
+    string mount_id = 1;
+}
+
+message ListMountsResponse {
+    repeated Mount mounts = 1;
+}
+
+enum UnmountMode {
+    UNMOUNT_MODE_NORMAL = 0;
+    UNMOUNT_MODE_LAZY = 1;
+}
+
+message UnmountRequest {
+    string mount_id = 1;
+    UnmountMode mode = 2;
+}
+
+message ShutdownRequest {
+    UnmountMode mode = 1;
+}
