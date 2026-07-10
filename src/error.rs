@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{layers::LayersError, runner::RunnerError, winebridge::BridgeError};
+use crate::{layers::LayersError, runner::RunnerError, virgo::VirgoError, winebridge::BridgeError};
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Error, Debug)]
@@ -19,6 +19,8 @@ pub enum Error {
     Bridge(#[from] BridgeError),
     #[error("Runner error: {0}")]
     Runner(#[from] RunnerError),
+    #[error("Virgo error: {0}")]
+    Virgo(#[from] VirgoError),
 }
 
 #[allow(dead_code)]

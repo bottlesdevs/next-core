@@ -52,7 +52,9 @@ impl Tools {
     /// to the bare names resolved through `PATH`.
     pub fn from_env() -> Self {
         let pick = |var: &str, default: &str| {
-            std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(default))
+            std::env::var_os(var)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(default))
         };
         Self {
             fvs2d: pick("FVS2D_BIN", "fvs2d"),
@@ -71,11 +73,17 @@ pub struct LayerRef {
 
 impl LayerRef {
     pub fn head(repo: impl Into<PathBuf>) -> Self {
-        Self { repo: repo.into(), state: None }
+        Self {
+            repo: repo.into(),
+            state: None,
+        }
     }
 
     pub fn state(repo: impl Into<PathBuf>, state: impl Into<String>) -> Self {
-        Self { repo: repo.into(), state: Some(state.into()) }
+        Self {
+            repo: repo.into(),
+            state: Some(state.into()),
+        }
     }
 
     fn to_arg(&self) -> String {
@@ -98,7 +106,10 @@ impl Mount {
     }
 
     pub fn unmount(&mut self) {
-        let _ = Command::new("fusermount3").arg("-u").arg(&self.mountpoint).status();
+        let _ = Command::new("fusermount3")
+            .arg("-u")
+            .arg(&self.mountpoint)
+            .status();
         if let Some(mut child) = self.child.take() {
             let _ = child.wait();
         }
@@ -131,7 +142,12 @@ impl LayerManager {
 
     /// Mounts a stack of layers (low to high) at `mountpoint`, optionally backed
     /// by a writable `upper`. Returns once the mount is visible.
-    pub fn mount(&self, lowers: &[LayerRef], upper: Option<&Path>, mountpoint: &Path) -> Result<Mount> {
+    pub fn mount(
+        &self,
+        lowers: &[LayerRef],
+        upper: Option<&Path>,
+        mountpoint: &Path,
+    ) -> Result<Mount> {
         std::fs::create_dir_all(mountpoint)?;
         let mut cmd = Command::new(&self.tools.fvs2d);
         cmd.arg("-mount").arg(mountpoint);
@@ -142,8 +158,14 @@ impl LayerManager {
             std::fs::create_dir_all(u)?;
             cmd.arg("-upper").arg(u);
         }
-        let child = cmd.spawn().map_err(|e| LayersError::Spawn { tool: "fvs2d".into(), source: e })?;
-        let mount = Mount { child: Some(child), mountpoint: mountpoint.to_path_buf() };
+        let child = cmd.spawn().map_err(|e| LayersError::Spawn {
+            tool: "fvs2d".into(),
+            source: e,
+        })?;
+        let mount = Mount {
+            child: Some(child),
+            mountpoint: mountpoint.to_path_buf(),
+        };
         wait_mounted(mountpoint)?;
         Ok(mount)
     }
@@ -184,7 +206,12 @@ impl LayerManager {
     /// the directory's `.fvs2` repo at its new HEAD).
     pub fn commit_layer(&self, dir: &Path, message: &str) -> Result<()> {
         let _ = self.run(&self.tools.fvs2, Some(dir), ["init"], "fvs2");
-        self.run(&self.tools.fvs2, Some(dir), ["commit", "-m", message], "fvs2")
+        self.run(
+            &self.tools.fvs2,
+            Some(dir),
+            ["commit", "-m", message],
+            "fvs2",
+        )
     }
 
     /// Mounts the stack over a writable upper and applies each layer's stored
@@ -218,11 +245,21 @@ impl LayerManager {
             let merged = upper.join(reg);
             let base = base_dir.join(reg);
             if merged.exists() && base.exists() {
-                self.diff_one(&base, &merged, &patch_dir.join(format!("{reg}.patch")), hive)?;
+                self.diff_one(
+                    &base,
+                    &merged,
+                    &patch_dir.join(format!("{reg}.patch")),
+                    hive,
+                )?;
                 std::fs::remove_file(&merged)?;
             }
         }
-        self.run(&self.tools.fvs2, Some(upper), ["commit", "-m", message], "fvs2")
+        self.run(
+            &self.tools.fvs2,
+            Some(upper),
+            ["commit", "-m", message],
+            "fvs2",
+        )
     }
 
     /// Prepares a layered prefix and launches an application in it through
@@ -254,7 +291,10 @@ impl LayerManager {
             cmd.current_dir(d);
         }
         cmd.args(args);
-        let out = cmd.output().map_err(|e| LayersError::Spawn { tool: tool.into(), source: e })?;
+        let out = cmd.output().map_err(|e| LayersError::Spawn {
+            tool: tool.into(),
+            source: e,
+        })?;
         if !out.status.success() {
             return Err(LayersError::Tool {
                 tool: tool.into(),
@@ -295,7 +335,8 @@ fn is_mounted(target: &Path) -> bool {
         return false;
     };
     let target = target.to_string_lossy();
-    info.lines().any(|line| line.split(' ').nth(4) == Some(target.as_ref()))
+    info.lines()
+        .any(|line| line.split(' ').nth(4) == Some(target.as_ref()))
 }
 
 #[cfg(test)]
@@ -331,7 +372,9 @@ mod tests {
 
         let dep = work.join("dep");
         {
-            let mount = mgr.prepare(&[LayerRef::head(&virgo)], &dep, &work.join("mnt1")).unwrap();
+            let mount = mgr
+                .prepare(&[LayerRef::head(&virgo)], &dep, &work.join("mnt1"))
+                .unwrap();
             std::fs::write(mount.path().join("system32/newdep.dll"), b"newdep").unwrap();
             std::fs::write(mount.path().join("system.reg"), POST_REG).unwrap();
         }
@@ -339,16 +382,32 @@ mod tests {
         assert!(registry_patch_dir(&dep).join("system.reg.patch").exists());
 
         let mount = mgr
-            .prepare(&[LayerRef::head(&virgo), LayerRef::head(&dep)], &work.join("upper2"), &work.join("mnt2"))
+            .prepare(
+                &[LayerRef::head(&virgo), LayerRef::head(&dep)],
+                &work.join("upper2"),
+                &work.join("mnt2"),
+            )
             .unwrap();
         let merged = std::fs::read_to_string(mount.path().join("system.reg")).unwrap();
-        assert!(merged.contains("NewDep"), "merged registry should gain NewDep");
+        assert!(
+            merged.contains("NewDep"),
+            "merged registry should gain NewDep"
+        );
         assert!(merged.contains("\"Ver\"=\"2.0\""), "ToUpdate should be 2.0");
-        assert!(!merged.contains("ToDelete"), "ToDelete should be whiteed out");
-        assert_eq!(std::fs::read_to_string(mount.path().join("system32/newdep.dll")).unwrap(), "newdep");
+        assert!(
+            !merged.contains("ToDelete"),
+            "ToDelete should be whiteed out"
+        );
+        assert_eq!(
+            std::fs::read_to_string(mount.path().join("system32/newdep.dll")).unwrap(),
+            "newdep"
+        );
 
         let base = std::fs::read_to_string(virgo.join("system.reg")).unwrap();
-        assert!(base.contains("\"Ver\"=\"1.0\"") && base.contains("ToDelete"), "virgo must stay untouched");
+        assert!(
+            base.contains("\"Ver\"=\"1.0\"") && base.contains("ToDelete"),
+            "virgo must stay untouched"
+        );
 
         drop(mount);
         let _ = std::fs::remove_dir_all(&work);
