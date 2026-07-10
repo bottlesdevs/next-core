@@ -85,12 +85,12 @@ impl Layer {
     fn into_proto(self) -> pb::Layer {
         let selector = match self.revision {
             LayerRevision::Head => None,
-            LayerRevision::State(s) => Some(pb::revision_selector::Selector::StateIdOrPrefix(s)),
-            LayerRevision::Branch(b) => Some(pb::revision_selector::Selector::Branch(b)),
+            LayerRevision::State(s) => Some(pb::commit_selector::Selector::StateIdOrPrefix(s)),
+            LayerRevision::Branch(b) => Some(pb::commit_selector::Selector::Branch(b)),
         };
         pb::Layer {
             repository_path: self.repository.display().to_string(),
-            revision: selector.map(|selector| pb::RevisionSelector {
+            revision: selector.map(|selector| pb::CommitSelector {
                 selector: Some(selector),
             }),
         }
@@ -229,7 +229,7 @@ impl VirgoDaemon {
         &self,
         path: impl Into<PathBuf>,
         message: impl Into<String>,
-    ) -> Result<pb::Revision> {
+    ) -> Result<pb::Commit> {
         let mut client = self.client.lock().await;
         let response = client
             .commit(pb::CommitRequest {
@@ -246,14 +246,14 @@ impl VirgoDaemon {
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
-    pub async fn list_states(&self, path: impl Into<PathBuf>) -> Result<Vec<pb::State>> {
+    pub async fn list_commits(&self, path: impl Into<PathBuf>) -> Result<Vec<pb::Commit>> {
         let mut client = self.client.lock().await;
         let response = client
-            .list_states(pb::ListStatesRequest {
+            .list_commits(pb::ListCommitsRequest {
                 repository_path: path.into().display().to_string(),
             })
             .await?;
-        Ok(response.into_inner().states)
+        Ok(response.into_inner().commits)
     }
 
     /// Restores a state into the repository working tree (exact checkout) and
@@ -290,7 +290,7 @@ impl VirgoDaemon {
         &self,
         prefix: impl Into<PathBuf>,
         label: impl Into<String>,
-    ) -> Result<pb::Revision> {
+    ) -> Result<pb::Commit> {
         let prefix = prefix.into();
         self.init_repository(prefix.clone()).await?;
         self.commit(prefix, label).await
