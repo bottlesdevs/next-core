@@ -10,8 +10,8 @@ import "google/protobuf/timestamp.proto";
 service Fvs2d {
     rpc Probe(google.protobuf.Empty) returns (ProbeResponse);
     rpc InitRepository(InitRepositoryRequest) returns (Repository);
-    rpc Commit(CommitRequest) returns (Revision);
-    rpc ListStates(ListStatesRequest) returns (ListStatesResponse);
+    rpc Commit(CommitRequest) returns (.fvs2d.v1.Commit);
+    rpc ListCommits(ListCommitsRequest) returns (ListCommitsResponse);
     rpc Restore(RestoreRequest) returns (RestoreResponse);
     rpc CreateMount(CreateMountRequest) returns (Mount);
     rpc GetMount(GetMountRequest) returns (Mount);
@@ -20,18 +20,12 @@ service Fvs2d {
     rpc Shutdown(ShutdownRequest) returns (google.protobuf.Empty);
 }
 
-message ListStatesRequest {
+message ListCommitsRequest {
     string repository_path = 1;
 }
 
-message State {
-    string state_id = 1;
-    google.protobuf.Timestamp created_at = 2;
-    string message = 3;
-}
-
-message ListStatesResponse {
-    repeated State states = 1;
+message ListCommitsResponse {
+    repeated Commit commits = 1;
 }
 
 message RestoreRequest {
@@ -66,11 +60,12 @@ message CommitRequest {
     bool allow_empty = 3;
 }
 
-message Revision {
+message Commit {
     string repository_path = 1;
     string state_id = 2;
     google.protobuf.Timestamp created_at = 3;
     uint64 file_count = 4;
+    string message = 5;
 }
 
 message ProbeResponse {
@@ -84,7 +79,7 @@ message ProbeResponse {
     bool running_in_flatpak = 7;
 }
 
-message RevisionSelector {
+message CommitSelector {
     oneof selector {
         string state_id_or_prefix = 1;
         string branch = 2;
@@ -93,7 +88,7 @@ message RevisionSelector {
 
 message Layer {
     string repository_path = 1;
-    RevisionSelector revision = 2;
+    CommitSelector revision = 2;
 }
 
 message MountSpec {
