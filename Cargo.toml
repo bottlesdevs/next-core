@@ -14,6 +14,7 @@ tonic.workspace = true
 tonic-health.workspace = true
 tokio.workspace = true
 derive_builder.workspace = true
+directories.workspace = true
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde"] }
 prost = "0.14"
