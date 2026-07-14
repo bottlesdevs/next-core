@@ -1,6 +1,8 @@
 use thiserror::Error;
 
-use crate::{layers::LayersError, runner::RunnerError, virgo::VirgoError, winebridge::BridgeError};
+use crate::{layers::LayersError, runner::RunnerError, winebridge::BridgeError};
+use fvs_rs::error::Error as VirgoError;
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Error, Debug)]
