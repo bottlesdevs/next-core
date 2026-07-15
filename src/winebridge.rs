@@ -21,10 +21,9 @@ use crate::{
     runner::{PrefixConfig, Runner, RunnerCommand},
 };
 
-pub use crate::proto::{
-    DllOverride, DllOverrideMode, Drive, PathInfo, PathKind, Process, RegistryHive, RegistryKey,
-    RegistryKeyValue, RegistryMultiString, Service, ServiceStartType, ServiceState, WinebootMode,
-    registry_value::Value as RegistryValue,
+use crate::proto::{
+    DllOverride, DllOverrideMode, Drive, PathInfo, Process, RegistryHive, RegistryKey, Service,
+    ServiceStartType, WinebootMode, registry_value::Value as RegistryValue,
 };
 
 static BRIDGE_ENDPOINT_MANAGER: LazyLock<BridgeEndpointManager> =
