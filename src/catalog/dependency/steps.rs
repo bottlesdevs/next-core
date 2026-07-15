@@ -1,4 +1,8 @@
-use crate::{catalog::deserialize_non_empty_string, runner::WindowsVersion};
+use crate::{
+    catalog::deserialize_non_empty_string,
+    proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
+    runner::WindowsVersion,
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -31,41 +35,4 @@ pub enum DependencyStep {
         dlls: Vec<String>,
         mode: DllOverrideMode,
     },
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RegistryHive {
-    ClassesRoot,
-    CurrentUser,
-    LocalMachine,
-    Users,
-    CurrentConfig,
-}
-
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(
-    tag = "type",
-    content = "data",
-    rename_all = "kebab-case",
-    deny_unknown_fields
-)]
-pub enum RegistryValue {
-    None(Vec<u8>),
-    Binary(Vec<u8>),
-    Dword(u32),
-    Qword(u64),
-    ExpandString(String),
-    MultiString(Vec<String>),
-    String(String),
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum DllOverrideMode {
-    NativeBuiltin,
-    BuiltinNative,
-    Native,
-    Builtin,
-    Disabled,
 }

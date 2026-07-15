@@ -1,12 +1,11 @@
-use serde::{Deserialize, Serialize};
-use std::num::NonZeroU64;
-use url::Url;
-use uuid::{NonNilUuid, Uuid};
-
 use crate::catalog::{
     Architecture, Checksum, dependency::steps::DependencyStep, deserialize_non_empty_checksum,
     deserialize_non_empty_string,
 };
+use serde::{Deserialize, Serialize};
+use std::num::NonZeroU64;
+use url::Url;
+use uuid::{NonNilUuid, Uuid};
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -94,7 +93,8 @@ mod tests {
     use uuid::uuid;
 
     use crate::{
-        catalog::dependency::{DependencyStep, DllOverrideMode, RegistryHive, RegistryValue},
+        catalog::dependency::DependencyStep,
+        proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
         runner::WindowsVersion,
     };
 
@@ -139,14 +139,14 @@ mod tests {
                         "hive": "current-user",
                         "key": "Software\\Example",
                         "name": "Installed",
-                        "value": { "type": "dword", "data": 1 }
+                        "value": { "dword": 1 }
                     },
                     {
                         "action": "set-registry-value",
                         "hive": "local-machine",
                         "key": "Software\\Example",
                         "name": "Version",
-                        "value": { "type": "string", "data": "14.38" }
+                        "value": { "string": "14.38" }
                     },
                     {
                         "action": "set-dll-overrides",
@@ -281,13 +281,13 @@ mod tests {
     #[test]
     fn deserializes_every_registry_value_type() {
         for value in [
-            serde_json::json!({ "type": "none", "data": [1, 2] }),
-            serde_json::json!({ "type": "binary", "data": [3, 4] }),
-            serde_json::json!({ "type": "dword", "data": 5 }),
-            serde_json::json!({ "type": "qword", "data": 6 }),
-            serde_json::json!({ "type": "expand-string", "data": "%PATH%" }),
-            serde_json::json!({ "type": "multi-string", "data": ["a", "b"] }),
-            serde_json::json!({ "type": "string", "data": "text" }),
+            serde_json::json!({ "none": [1, 2] }),
+            serde_json::json!({ "binary": [3, 4] }),
+            serde_json::json!({ "dword": 5 }),
+            serde_json::json!({ "qword": 6 }),
+            serde_json::json!({ "expand-string": "%PATH%" }),
+            serde_json::json!({ "multi-string": { "values": ["a", "b"] } }),
+            serde_json::json!({ "string": "text" }),
         ] {
             let parsed: RegistryValue = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(parsed).unwrap(), value);
