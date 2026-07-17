@@ -1,11 +1,7 @@
 use std::process::ExitStatus;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::{
-    path::{Path, PathBuf},
-    process::Child,
-    time::Duration,
-};
+use std::{path::PathBuf, process::Child, time::Duration};
 
 use std::net::{IpAddr, Ipv4Addr};
 use thiserror::Error;
@@ -18,7 +14,7 @@ use crate::proto::{self, wine_bridge_client::WineBridgeClient as GrpcClient};
 use crate::runner::RunnerError;
 use crate::{
     error::Result,
-    runner::{PrefixConfig, Runner, RunnerCommand},
+    runner::{Prefix, Runner, RunnerCommand},
 };
 
 use crate::proto::{
@@ -62,65 +58,6 @@ impl BridgeEndpointManager {
     }
 }
 
-/// Description of a process launch issued through WineBridge.
-///
-/// Use [`LaunchRequest::new`] with the Windows executable path and chain the
-/// builder-style setters to attach arguments, a working directory, or request a
-/// dedicated console. The request maps directly onto the WineBridge
-/// `CreateProcess` RPC.
-#[derive(Debug, Clone)]
-pub struct LaunchRequest(proto::LaunchProcessRequest);
-
-impl LaunchRequest {
-    /// Creates a launch request for `executable` with no arguments.
-    pub fn new(executable: impl AsRef<Path>) -> Self {
-        Self(proto::LaunchProcessRequest {
-            executable: executable.as_ref().display().to_string(),
-            ..Default::default()
-        })
-    }
-
-    /// Appends a single argument passed after the executable.
-    pub fn arg(mut self, arg: impl Into<String>) -> Self {
-        self.0.arguments.push(arg.into());
-        self
-    }
-
-    /// Appends multiple arguments in order.
-    pub fn args<I, S>(mut self, args: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.0.arguments.extend(args.into_iter().map(Into::into));
-        self
-    }
-
-    /// Sets the working directory the process is started in.
-    pub fn work_dir(mut self, work_dir: impl AsRef<Path>) -> Self {
-        self.0.working_directory = Some(work_dir.as_ref().display().to_string());
-        self
-    }
-
-    /// Sets the working directory from an optional value, leaving it unset on `None`.
-    pub fn maybe_work_dir(mut self, work_dir: Option<PathBuf>) -> Self {
-        self.0.working_directory = work_dir.map(|dir| dir.display().to_string());
-        self
-    }
-
-    /// Requests the process be launched with a new console window.
-    pub fn terminal(mut self, terminal: bool) -> Self {
-        self.0.new_console = terminal;
-        self
-    }
-}
-
-impl From<LaunchRequest> for proto::LaunchProcessRequest {
-    fn from(request: LaunchRequest) -> Self {
-        request.0
-    }
-}
-
 /// Managed client for a WineBridge server running inside a Wine prefix.
 ///
 /// The wrapper starts WineBridge through a [`Runner`], waits until the gRPC
@@ -131,7 +68,16 @@ impl From<LaunchRequest> for proto::LaunchProcessRequest {
 /// when the bridge is no longer needed so the server can stop cleanly.
 pub struct WineBridgeClient {
     client: GrpcClient<Channel>,
-    _process: Child,
+    process: Option<Child>,
+}
+
+impl Drop for WineBridgeClient {
+    fn drop(&mut self) {
+        if let Some(mut process) = self.process.take() {
+            let _ = process.kill();
+            let _ = process.wait();
+        }
+    }
 }
 
 impl WineBridgeClient {
@@ -148,7 +94,7 @@ impl WineBridgeClient {
     /// elapses, or the gRPC client cannot be created.
     pub async fn new(
         runner: &dyn Runner,
-        prefix: &PrefixConfig,
+        prefix: &Prefix,
         winebridge_executable: PathBuf,
     ) -> Result<Self> {
         let endpoint = BRIDGE_ENDPOINT_MANAGER.next()?;
@@ -191,7 +137,7 @@ impl WineBridgeClient {
 
         let client = Self {
             client: grpc_client,
-            _process: child,
+            process: Some(child),
         };
 
         Ok(client)
@@ -240,11 +186,6 @@ impl WineBridgeClient {
 
     // --- Process Management ---
 
-    /// Returns the processes currently running inside the prefix.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the gRPC request fails.
     pub async fn list_processes(&self) -> Result<Vec<Process>> {
         let mut client = self.client.clone();
         let response = client.list_processes(()).await?.into_inner();
@@ -252,31 +193,33 @@ impl WineBridgeClient {
         Ok(response.processes)
     }
 
-    /// Launches a process through WineBridge and returns the process id reported by the server.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the gRPC request fails or WineBridge rejects the launch.
-    pub async fn launch_process(&self, request: LaunchRequest) -> Result<u32> {
+    pub async fn launch_process(
+        &self,
+        id: uuid::Uuid,
+        executable: String,
+        arguments: Vec<String>,
+        working_directory: Option<String>,
+        new_console: bool,
+    ) -> Result<u32> {
         let mut client = self.client.clone();
         let response = client
-            .launch_process(proto::LaunchProcessRequest::from(request))
+            .launch_process(proto::LaunchProcessRequest {
+                id: id.to_string(),
+                executable,
+                arguments,
+                working_directory,
+                new_console,
+            })
             .await?;
 
         Ok(response.into_inner().pid)
     }
 
-    /// Requests WineBridge to terminate a process by pid.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the gRPC request fails or WineBridge cannot kill the
-    /// target process.
-    pub async fn kill_process(&self, pid: u32) -> Result<()> {
+    pub async fn kill_process(&self, id: uuid::Uuid) -> Result<()> {
         let mut client = self.client.clone();
 
         client
-            .kill_process(proto::KillProcessRequest { pid })
+            .kill_process(proto::KillProcessRequest { id: id.to_string() })
             .await?;
 
         Ok(())
@@ -744,52 +687,22 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the shutdown RPC fails.
-    pub async fn shutdown(self) -> Result<()> {
+    pub async fn shutdown(mut self) -> Result<()> {
+        let mut process = self.process.take().expect("WineBridge process is present");
         let mut client = self.client.clone();
-
-        client.shutdown(()).await?;
-
+        if let Err(error) = client.shutdown(()).await {
+            let _ = process.kill();
+            let _ = process.wait();
+            return Err(error.into());
+        }
+        for _ in 0..50 {
+            if process.try_wait()?.is_some() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let _ = process.kill();
+        process.wait()?;
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn launch_request_maps_all_fields_to_proto() {
-        let request = LaunchRequest::new("C:\\app.exe")
-            .arg("--flag")
-            .args(["a", "b"])
-            .work_dir("C:\\work")
-            .terminal(true);
-
-        let proto: proto::LaunchProcessRequest = request.into();
-
-        assert_eq!(proto.executable, "C:\\app.exe");
-        assert_eq!(proto.arguments, vec!["--flag", "a", "b"]);
-        assert_eq!(proto.working_directory.as_deref(), Some("C:\\work"));
-        assert!(proto.new_console);
-    }
-
-    #[test]
-    fn launch_request_defaults_leave_work_dir_unset() {
-        let proto: proto::LaunchProcessRequest = LaunchRequest::new("game.exe").into();
-
-        assert_eq!(proto.executable, "game.exe");
-        assert!(proto.arguments.is_empty());
-        assert_eq!(proto.working_directory, None);
-        assert!(!proto.new_console);
-    }
-
-    #[test]
-    fn maybe_work_dir_overrides_with_none() {
-        let proto: proto::LaunchProcessRequest = LaunchRequest::new("game.exe")
-            .work_dir("C:\\work")
-            .maybe_work_dir(None)
-            .into();
-
-        assert_eq!(proto.working_directory, None);
     }
 }
