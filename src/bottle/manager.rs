@@ -5,6 +5,9 @@ use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 use crate::{
+    BottleComponents,
+    components::Component,
+    dependencies::Dependency,
     error::Result,
     runner::{initialize_and_shutdown_prefix, load_runner},
     utils::absolute_path,
@@ -16,9 +19,7 @@ use super::{
 };
 
 pub struct BottleManagerConfig {
-    pub winebridge_executable: PathBuf, // TODO: This is a component????, not a config
     pub fvs2d_executable: Option<PathBuf>,
-    pub umu_executable: Option<PathBuf>, // TODO: This is a component, not a config
 }
 
 static CONFIG: OnceLock<BottleManagerConfig> = OnceLock::new();
@@ -30,15 +31,12 @@ impl BottleManager {
     pub fn new(config: BottleManagerConfig) -> Result<Self> {
         // TODO: Directories shouldn't be created here
         let directories =
-            crate::directories::get().ok_or(BottleError::ProjectDirectoriesUnavailable)?;
+            crate::utils::directories::get().ok_or(BottleError::ProjectDirectoriesUnavailable)?;
         fs::create_dir_all(directories.bottles())?;
-        fs::create_dir_all(directories.runners())?;
         fs::create_dir_all(directories.runtime_dir())?;
 
         let config = BottleManagerConfig {
-            winebridge_executable: absolute_path(config.winebridge_executable)?,
             fvs2d_executable: config.fvs2d_executable.map(absolute_path).transpose()?,
-            umu_executable: config.umu_executable.map(absolute_path).transpose()?,
         };
 
         CONFIG.get_or_init(|| config);
@@ -50,19 +48,28 @@ impl BottleManager {
         &self,
         name: impl Into<String>,
         kind: BottleType,
-        runner: impl Into<String>,
+        components: BottleComponents,
+        dependencies: Vec<Dependency>,
     ) -> Result<Bottle> {
         let name = name.into();
-        for entry in fs::read_dir(crate::directories::expect().bottles())? {
+        for entry in fs::read_dir(crate::utils::directories::expect().bottles())? {
             let path = entry?.path().join("bottle.toml");
             if path.is_file() && next_config::load::<Bottle>(&path)?.name == name {
                 return Err(BottleError::DuplicateName(name).into());
             }
         }
 
-        let runner_key = runner.into();
-        let runner_path = crate::directories::expect().runner(&runner_key);
-        let runner = load_runner(&runner_path, config().umu_executable.as_deref())?;
+        let runner_id = components.runner().id();
+        let runner_kind = components
+            .runner()
+            .kind()
+            .runner_kind()
+            .expect("BottleComponents guarantees a runner component");
+        let runner = load_runner(
+            components.runner().path(),
+            runner_kind,
+            components.umu().map(Component::path),
+        )?;
         let id = Uuid::new_v4();
         let root = self.bottle_root(id);
         fs::create_dir_all(&root)?;
@@ -78,7 +85,7 @@ impl BottleManager {
                     fs::create_dir_all(root.join("upper"))?;
                     let base = self.ensure_base(runner.as_ref()).await?;
                     let adapter = self
-                        .ensure_adapter(runner.as_ref(), &runner_key, &base)
+                        .ensure_adapter(runner.as_ref(), &runner_id.to_string(), &base)
                         .await?;
                     PrefixStorage::Virgo {
                         layers: vec![base, adapter],
@@ -86,7 +93,7 @@ impl BottleManager {
                 }
             };
 
-            Bottle::new(id, name, runner_key, storage)
+            Bottle::new(id, name, components, dependencies, storage)
         }
         .await;
 
@@ -114,7 +121,7 @@ impl BottleManager {
 
     pub fn list(&self) -> Result<Vec<Bottle>> {
         let mut bottles: Vec<Bottle> = Vec::new();
-        for entry in fs::read_dir(crate::directories::expect().bottles())? {
+        for entry in fs::read_dir(crate::utils::directories::expect().bottles())? {
             let path = entry?.path().join("bottle.toml");
             if path.is_file() {
                 bottles.push(next_config::load(path)?);
@@ -131,7 +138,7 @@ impl BottleManager {
     }
 
     fn bottle_root(&self, id: Uuid) -> PathBuf {
-        crate::directories::expect().bottle(id)
+        crate::utils::directories::expect().bottle(id)
     }
 }
 
@@ -149,7 +156,7 @@ pub(super) async fn fvs() -> Result<&'static Fvs2dClient> {
             .ok_or(BottleError::VirgoUnavailable)?;
         Ok(Fvs2dClient::connect_or_spawn(
             executable,
-            crate::directories::expect()
+            crate::utils::directories::expect()
                 .runtime_dir()
                 .join("fvs2d.sock"),
         )
