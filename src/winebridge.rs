@@ -31,8 +31,16 @@ pub enum BridgeError {
     BridgeExited(ExitStatus),
     #[error("WineBridge did not report readiness before the startup timeout elapsed.")]
     Timeout,
+    #[error("WineBridge did not stop before the shutdown timeout elapsed.")]
+    ShutdownTimeout,
     #[error("WineBridge returned an invalid response: {0}")]
     InvalidResponse(&'static str),
+}
+
+const PORT_FILE_NAME: &str = "bottles-winebridge.port";
+
+fn port_file(prefix: &Path) -> PathBuf {
+    prefix.join("drive_c/windows/temp").join(PORT_FILE_NAME)
 }
 
 fn endpoint_from_port_file(path: &Path) -> Result<Option<Endpoint>> {
@@ -60,20 +68,10 @@ fn endpoint_from_port_file(path: &Path) -> Result<Option<Endpoint>> {
 /// health endpoint reports ready, and then exposes higher-level methods for
 /// every WineBridge capability through the generated client.
 ///
-/// Each client owns one spawned WineBridge process. Call [`shutdown`](Self::shutdown)
-/// when the bridge is no longer needed so the server can stop cleanly.
+/// WineBridge remains available for other clients until the bottle is stopped.
 pub struct WineBridgeClient {
     client: GrpcClient<Channel>,
-    process: Option<Child>,
-}
-
-impl Drop for WineBridgeClient {
-    fn drop(&mut self) {
-        if let Some(mut process) = self.process.take() {
-            let _ = process.kill();
-            let _ = process.wait();
-        }
-    }
+    port_file: PathBuf,
 }
 
 impl WineBridgeClient {
@@ -92,14 +90,18 @@ impl WineBridgeClient {
         winebridge_executable: PathBuf,
         environment: impl IntoIterator<Item = (OsString, OsString)>,
     ) -> Result<Self> {
-        let port_file_name = format!("{}.port", uuid::Uuid::new_v4());
-        let port_file = prefix.join("drive_c/windows/temp").join(&port_file_name);
+        let port_file = port_file(prefix);
         fs::create_dir_all(port_file.parent().expect("port file has a parent"))?;
+
+        if let Some(client) = Self::connect_existing(prefix).await? {
+            return Ok(client);
+        }
+        let _ = fs::remove_file(&port_file);
 
         let command = RunnerCommand::new(winebridge_executable)
             .env(
                 "WINEBRIDGE_PORT_FILE",
-                format!(r"C:\windows\temp\{port_file_name}"),
+                format!(r"C:\windows\temp\{PORT_FILE_NAME}"),
             )
             .envs(environment);
 
@@ -128,14 +130,31 @@ impl WineBridgeClient {
                     return Err(error);
                 }
             };
-        let _ = fs::remove_file(port_file);
 
-        let client = Self {
+        Ok(Self {
             client: grpc_client,
-            process: Some(child),
-        };
+            port_file,
+        })
+    }
 
-        Ok(client)
+    pub(crate) async fn connect_existing(prefix: &Path) -> Result<Option<Self>> {
+        let port_file = port_file(prefix);
+        let Some(endpoint) = endpoint_from_port_file(&port_file)? else {
+            return Ok(None);
+        };
+        let Ok(channel) = endpoint.connect().await else {
+            return Ok(None);
+        };
+        let response = HealthClient::new(channel.clone())
+            .check(HealthCheckRequest {
+                service: proto::wine_bridge_server::SERVICE_NAME.to_string(),
+            })
+            .await;
+        Ok(matches!(response, Ok(response) if response.get_ref().status() == ServingStatus::Serving)
+            .then(|| Self {
+                client: GrpcClient::new(channel),
+                port_file,
+            }))
     }
 
     async fn wait_until_ready(
@@ -692,22 +711,18 @@ impl WineBridgeClient {
     /// # Errors
     ///
     /// Returns an error if the shutdown RPC fails.
-    pub async fn shutdown(mut self) -> Result<()> {
-        let mut process = self.process.take().expect("WineBridge process is present");
+    pub async fn shutdown(self) -> Result<()> {
         let mut client = self.client.clone();
-        if let Err(error) = client.shutdown(()).await {
-            let _ = process.kill();
-            let _ = process.wait();
-            return Err(error.into());
-        }
+        client.shutdown(()).await?;
+        drop(client);
+        let port_file = self.port_file.clone();
+        drop(self);
         for _ in 0..50 {
-            if process.try_wait()?.is_some() {
+            if !port_file.try_exists()? {
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let _ = process.kill();
-        process.wait()?;
-        Ok(())
+        Err(BridgeError::ShutdownTimeout.into())
     }
 }
