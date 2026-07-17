@@ -1,12 +1,10 @@
+use super::{Runner, RunnerCommand};
+use crate::{error::Result, runner::RunnerError};
 use std::{
     io::{self, ErrorKind},
     path::{Path, PathBuf},
     process::{Child, Command},
 };
-
-use crate::{error::Result, runner::RunnerError};
-
-use super::{PrefixConfig, Runner, RunnerCommand};
 
 /// Wine runner implementation
 ///
@@ -38,28 +36,43 @@ impl Wine {
 }
 
 impl Runner for Wine {
-    fn run(&self, prefix: &PrefixConfig, command: RunnerCommand) -> Result<Child> {
+    fn run(&self, prefix: &Path, command: RunnerCommand) -> Result<Child> {
         Command::new(&self.executable)
             .arg(command.executable)
             .args(command.args)
-            .envs(prefix.to_env())
+            .env("WINEPREFIX", prefix)
+            .env("WINEARCH", "win64")
             .envs(command.envs)
             .spawn()
             .map_err(Into::into)
     }
 
-    fn initialize_prefix(&self, prefix: &PrefixConfig) -> Result<()> {
-        let command = RunnerCommand::builder()
-            .executable("wineboot")
-            .arg("--init")
-            .build()
-            .map_err(Into::<RunnerError>::into)?;
-
+    fn initialize_prefix(&self, prefix: &Path) -> Result<()> {
+        let command = RunnerCommand::new("wineboot").arg("--init");
         let status = self.run(prefix, command)?.wait()?;
         if !status.success() {
             return Err(RunnerError::PrefixInitFailed.into());
         }
 
+        Ok(())
+    }
+
+    fn shutdown_prefix(&self, prefix: &Path) -> Result<()> {
+        let wineserver = self
+            .executable
+            .parent()
+            .unwrap_or(Path::new(""))
+            .join("wineserver");
+        for arg in ["-k", "-w"] {
+            let status = Command::new(&wineserver)
+                .arg(arg)
+                .env("WINEPREFIX", prefix)
+                .env("WINEARCH", "win64")
+                .status()?;
+            if !status.success() {
+                return Err(RunnerError::PrefixShutdownFailed(arg).into());
+            }
+        }
         Ok(())
     }
 }
