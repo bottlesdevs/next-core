@@ -5,7 +5,7 @@ mod runner;
 mod utils;
 mod winebridge;
 
-mod proto {
+pub mod proto {
     tonic::include_proto!("winebridge");
     tonic::include_proto!("bottles");
 }
