@@ -144,10 +144,19 @@ impl Bottle {
     /// Stop WineBridge, wineserver, and prefix storage.
     pub async fn stop(&mut self) -> Result<()> {
         let mut first_error = None;
-        if let Some(bridge) = self.bridge.take()
-            && let Err(error) = bridge.shutdown().await
-        {
-            first_error = Some(error);
+        if self.bridge.is_none() {
+            match WineBridgeClient::connect_existing(&self.prefix_path()).await {
+                Ok(bridge) => self.bridge = bridge,
+                Err(error) => first_error = Some(error),
+            }
+        }
+        match self.bridge.take() {
+            Some(bridge) => {
+                if let Err(error) = bridge.shutdown().await {
+                    first_error.get_or_insert(error);
+                }
+            }
+            None => {}
         }
 
         let runner = match self.load_runner() {
