@@ -1,10 +1,12 @@
 use crate::{
     BottleComponents,
-    components::{
-        Component,
-        catalog::{ComponentKind, RunnerKind},
+    compatibility::{
+        components::{
+            Component,
+            catalog::{ComponentKind, RunnerKind},
+        },
+        dependencies::Dependency,
     },
-    dependencies::Dependency,
 };
 
 #[test]
@@ -30,18 +32,15 @@ fn proton_umu_components_and_dependencies_round_trip() {
     let bridge = Component::new(
         ComponentKind::Winebridge,
         "bridge-1",
-        root.join("winebridge.exe"),
+        root.join("winebridge/bottles-winebridge.exe"),
     )
     .unwrap();
-    let umu = Component::new(ComponentKind::Umu, "umu-1", root.join("umu-run")).unwrap();
-    let dxvk = Component::new(ComponentKind::Dxvk, "dxvk-1", root.join("dxvk.tar.gz")).unwrap();
+    let umu = Component::new(ComponentKind::Umu, "umu-1", root.join("umu/umu-run")).unwrap();
+    let dxvk = Component::new(ComponentKind::Dxvk, "dxvk-1", root.join("dxvk")).unwrap();
     assert!(BottleComponents::new(&proton, &bridge, None).is_err());
     assert!(BottleComponents::new(&wine, &bridge, Some(&umu)).is_err());
-    let components = BottleComponents::new(&proton, &bridge, Some(&umu))
-        .unwrap()
-        .with(&dxvk)
-        .unwrap();
-    assert!(components.clone().with(&dxvk).is_err());
+    let mut components = BottleComponents::new(&proton, &bridge, Some(&umu)).unwrap();
+    components.dxvk = Some(dxvk);
     let dependency: Dependency = serde_json::from_value(serde_json::json!({
         "id": "00000000-0000-0000-0000-000000000001",
         "name": "vcrun2022",
@@ -55,6 +54,7 @@ fn proton_umu_components_and_dependencies_round_trip() {
         dependencies: vec![dependency],
         storage: super::bottle::PrefixStorage::Standard,
         programs: Vec::new(),
+        environment: [("EXAMPLE".into(), "enabled".into())].into(),
         bridge: None,
     };
     let path = root.join("bottle.toml");
@@ -73,6 +73,7 @@ fn proton_umu_components_and_dependencies_round_trip() {
     );
     assert_eq!(loaded.components().umu().unwrap().version(), "umu-1");
     assert_eq!(loaded.dependencies()[0].name(), "vcrun2022");
+    assert_eq!(loaded.environment["EXAMPLE"], "enabled");
 
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -109,9 +110,10 @@ mod unix {
             .data_dir()
             .join(format!("test-assets-{}", Uuid::new_v4()));
         let runner_root = assets.join("wine");
-        let bridge_path = assets.join("winebridge.exe");
+        let bridge_root = assets.join("winebridge");
         install_wine(&runner_root);
-        fs::write(&bridge_path, []).unwrap();
+        fs::create_dir_all(&bridge_root).unwrap();
+        fs::write(bridge_root.join("bottles-winebridge.exe"), []).unwrap();
 
         let runner = Component::new(
             ComponentKind::Runner {
@@ -121,9 +123,12 @@ mod unix {
             &runner_root,
         )
         .unwrap();
-        let bridge =
-            Component::new(ComponentKind::Winebridge, "manual-winebridge", &bridge_path).unwrap();
-        let components = BottleComponents::new(&runner, &bridge, None).unwrap();
+        let bridge = Component::new(
+            ComponentKind::Winebridge,
+            "manual-winebridge",
+            bridge_root.join("bottles-winebridge.exe"),
+        )
+        .unwrap();
         let manager = BottleManager::new(BottleManagerConfig {
             fvs2d_executable: None,
         })
@@ -133,8 +138,8 @@ mod unix {
             .create(
                 Uuid::new_v4().to_string(),
                 BottleType::Standard,
-                components,
-                Vec::new(),
+                &runner,
+                &bridge,
             )
             .await
             .unwrap();
@@ -203,7 +208,7 @@ fn virgo_layers_round_trip_through_bottle_toml() {
     let bridge = Component::new(
         ComponentKind::Winebridge,
         "winebridge",
-        root.join("winebridge.exe"),
+        root.join("winebridge/bottles-winebridge.exe"),
     )
     .unwrap();
     let bottle = super::bottle::Bottle {
@@ -215,6 +220,7 @@ fn virgo_layers_round_trip_through_bottle_toml() {
             layers: vec![expected.clone()],
         },
         programs: Vec::new(),
+        environment: Default::default(),
         bridge: None,
     };
     let path = root.join("bottle.toml");

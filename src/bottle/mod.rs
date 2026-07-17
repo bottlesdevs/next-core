@@ -8,5 +8,7 @@ mod virgo;
 mod tests;
 
 pub use bottle::{Bottle, BottleComponents, BottleType, Program};
+pub(crate) use bottle::{PrefixStorage, invalid_components};
 pub use error::BottleError;
+pub(crate) use manager::fvs;
 pub use manager::{BottleManager, BottleManagerConfig};
