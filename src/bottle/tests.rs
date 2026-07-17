@@ -192,6 +192,7 @@ fn virgo_layers_round_trip_through_bottle_toml() {
         created_at: None,
         file_count: 1,
         message: "test".into(),
+        created: true,
     };
     let expected = Layer::new(&repository, Some(&commit));
     let runner = Component::new(

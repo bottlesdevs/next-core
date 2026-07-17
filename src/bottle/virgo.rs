@@ -324,7 +324,7 @@ async fn ensure_base(runner: &dyn Runner) -> Result<Layer> {
             .into_iter()
             .next()
             .ok_or(BottleError::EmptyBase)?;
-        return Ok(Layer::new(&repository, Some(&commit)));
+        return Ok(Layer::from_summary(&repository, Some(&commit)));
     }
     if repository_path.exists() && repository_path.read_dir()?.next().is_some() {
         return Err(BottleError::DirtyBase(repository_path).into());
@@ -364,7 +364,7 @@ async fn ensure_adapter(runner: &dyn Runner, runner_key: &str, base: &Layer) -> 
                 repository: destination.clone(),
                 state: "HEAD".into(),
             })?;
-        return Ok(Layer::new(&repository, Some(&commit)));
+        return Ok(Layer::from_summary(&repository, Some(&commit)));
     }
 
     let stage = crate::utils::directories::expect()
@@ -424,7 +424,7 @@ async fn cached_layer(id: Uuid) -> Result<Layer> {
             repository: destination,
             state: "HEAD".into(),
         })?;
-    Ok(Layer::new(&repository, Some(&commit)))
+    Ok(Layer::from_summary(&repository, Some(&commit)))
 }
 
 fn layer_cache(id: Uuid) -> PathBuf {
