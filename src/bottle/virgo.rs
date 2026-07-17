@@ -134,3 +134,103 @@ where
     }
     Ok(executed)
 }
+
+async fn cache_install<F>(layers: Vec<Layer>, item_id: Uuid, execute: F) -> Result<()>
+where
+    F: for<'a> AsyncFnOnce(&'a Path) -> Result<()>,
+{
+    let destination = layer_cache(item_id);
+    let registry_destination = registry_cache(item_id);
+    if destination.exists() {
+        fs::remove_dir_all(&destination)?;
+    }
+    if registry_destination.exists() {
+        fs::remove_dir_all(&registry_destination)?;
+    }
+
+    // UUID-only caches assume compatible lower layers.
+    let stage = crate::utils::directories::expect()
+        .data_dir()
+        .join("virgo/.staging")
+        .join(Uuid::new_v4().to_string());
+    let upper = stage.join("upper");
+    let prefix = stage.join("prefix");
+    let before = stage.join("before");
+    let patches = stage.join("registry");
+    for path in [&upper, &prefix, &before, &patches] {
+        fs::create_dir_all(path)?;
+    }
+
+    let client = fvs().await?;
+    let result = async {
+        let mount = client.mount(&prefix, layers, Some(&upper)).await?;
+        let installed = async {
+            for (file, _) in registry_files() {
+                fs::copy(prefix.join(file), before.join(file))?;
+            }
+            execute(&prefix).await?;
+            for (file, hive) in registry_files() {
+                write_forward(
+                    &before.join(file),
+                    &prefix.join(file),
+                    &patches.join(file),
+                    hive,
+                )?;
+            }
+            Ok::<_, Error>(())
+        }
+        .await;
+        let unmounted = client.unmount(&mount, UnmountMode::Normal).await;
+        installed?;
+        unmounted?;
+
+        for (file, _) in registry_files() {
+            remove_file(&upper.join(file))?;
+        }
+        let repository = client.new_repository(&upper, BLOCK_SIZE).await?;
+        client.commit(&repository, item_id.to_string()).await?;
+        fs::create_dir_all(destination.parent().expect("cache path has a parent"))?;
+        fs::create_dir_all(
+            registry_destination
+                .parent()
+                .expect("registry cache path has a parent"),
+        )?;
+        fs::rename(&patches, &registry_destination)?;
+        fs::rename(&upper, &destination)?;
+        Ok::<_, Error>(())
+    }
+    .await;
+    let _ = fs::remove_dir_all(stage);
+    result
+}
+
+async fn apply_registry(bottle_path: &Path, layers: &[Layer], id: Uuid) -> Result<()> {
+    let patches = registry_cache(id);
+    if !patches.is_dir() {
+        return Ok(());
+    }
+
+    mount_layers(bottle_path, layers.to_vec()).await?;
+    let prefix = bottle_path.join("prefix");
+    let stage = prefix.join(format!(".bottles-next-registry-{}", Uuid::new_v4()));
+    fs::create_dir_all(&stage)?;
+    let applied = (|| -> Result<()> {
+        for (file, hive) in registry_files() {
+            apply_files(
+                prefix.join(file),
+                patches.join(file),
+                stage.join(file),
+                hive,
+            )
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        }
+        for (file, _) in registry_files() {
+            fs::rename(stage.join(file), prefix.join(file))?;
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(stage);
+    let unmounted = unmount_prefix(bottle_path).await;
+    applied?;
+    unmounted
+}
