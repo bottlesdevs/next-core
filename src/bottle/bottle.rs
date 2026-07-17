@@ -5,23 +5,29 @@ use next_config::Config;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{error::Result, proto::Process, runner::Runner, winebridge::WineBridgeClient};
-
-use super::{
-    error::BottleError,
-    manager::{config, fvs},
-    virgo::ensure_empty_dir,
+use super::{error::BottleError, manager::fvs, virgo::ensure_empty_dir};
+use crate::{
+    components::{
+        Component,
+        catalog::{ComponentKind, RunnerKind},
+    },
+    dependencies::Dependency,
 };
+use crate::{error::Result, proto::Process, runner::Runner, winebridge::WineBridgeClient};
 
 #[derive(Deserialize, Serialize, Config)]
 #[config(version = 1)]
 pub struct Bottle {
     pub(super) id: Uuid,
     pub(super) name: String,
-    pub(super) runner: String,
     pub(super) storage: PrefixStorage,
     #[serde(default)]
     pub(super) programs: Vec<Program>,
+
+    #[serde(flatten)]
+    pub(super) components: BottleComponents,
+    #[serde(default)]
+    pub(super) dependencies: Vec<Dependency>,
 
     // Runtime state
     #[serde(skip)]
@@ -32,13 +38,15 @@ impl Bottle {
     pub(super) fn new(
         id: Uuid,
         name: String,
-        runner: String,
+        components: BottleComponents,
+        dependencies: Vec<Dependency>,
         storage: PrefixStorage,
     ) -> Result<Self> {
         let bottle = Self {
             id,
             name,
-            runner,
+            components,
+            dependencies,
             storage,
             programs: Vec::new(),
             bridge: None,
@@ -55,8 +63,16 @@ impl Bottle {
         &self.name
     }
 
-    pub fn runner(&self) -> &str {
-        &self.runner
+    pub fn components(&self) -> &BottleComponents {
+        &self.components
+    }
+
+    pub fn runner(&self) -> &Component {
+        self.components.runner()
+    }
+
+    pub fn dependencies(&self) -> &[Dependency] {
+        &self.dependencies
     }
 
     pub fn r#type(&self) -> BottleType {
@@ -156,9 +172,15 @@ impl Bottle {
     }
 
     fn load_runner(&self) -> Result<Box<dyn Runner>> {
+        let kind = self
+            .runner()
+            .kind()
+            .runner_kind()
+            .ok_or_else(|| invalid_components("runner component is required"))?;
         crate::runner::load_runner(
-            &crate::directories::expect().runner(&self.runner),
-            config().umu_executable.as_deref(),
+            self.runner().path(),
+            kind,
+            self.components.umu().map(Component::path),
         )
     }
 
@@ -168,7 +190,7 @@ impl Bottle {
     }
 
     fn root(&self) -> PathBuf {
-        crate::directories::expect().bottle(self.id())
+        crate::utils::directories::expect().bottle(self.id())
     }
 
     fn prefix(&self) -> PathBuf {
@@ -207,7 +229,7 @@ impl Bottle {
                 WineBridgeClient::new(
                     runner.as_ref(),
                     &prefix,
-                    config().winebridge_executable.clone(),
+                    self.components.winebridge().path().to_path_buf(),
                 )
                 .await?,
             );
@@ -228,6 +250,115 @@ impl Bottle {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BottleComponents {
+    runner: Component,
+    winebridge: Component,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    umu: Option<Component>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dxvk: Option<Component>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vkd3d: Option<Component>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nvapi: Option<Component>,
+    #[serde(
+        default,
+        rename = "latency-flex",
+        skip_serializing_if = "Option::is_none"
+    )]
+    latency_flex: Option<Component>,
+}
+
+impl BottleComponents {
+    pub fn new(
+        runner: &Component,
+        winebridge: &Component,
+        umu: Option<&Component>,
+    ) -> Result<Self> {
+        let ComponentKind::Runner { kind } = runner.kind() else {
+            return Err(invalid_components("runner component is required"));
+        };
+        if winebridge.kind() != ComponentKind::Winebridge {
+            return Err(invalid_components("WineBridge component is required"));
+        }
+        if umu.is_some_and(|component| component.kind() != ComponentKind::Umu) {
+            return Err(invalid_components("UMU component has the wrong kind"));
+        }
+
+        match (kind, umu) {
+            (RunnerKind::Wine, Some(_)) => {
+                return Err(invalid_components("Wine runner must not use UMU"));
+            }
+            (RunnerKind::Proton, None) => {
+                return Err(invalid_components("Proton runner requires UMU"));
+            }
+            _ => {}
+        }
+
+        Ok(Self {
+            runner: runner.clone(),
+            winebridge: winebridge.clone(),
+            umu: umu.cloned(),
+            dxvk: None,
+            vkd3d: None,
+            nvapi: None,
+            latency_flex: None,
+        })
+    }
+
+    pub fn with(mut self, component: &Component) -> Result<Self> {
+        let slot = match component.kind() {
+            ComponentKind::Dxvk => &mut self.dxvk,
+            ComponentKind::Vkd3d => &mut self.vkd3d,
+            ComponentKind::Nvapi => &mut self.nvapi,
+            ComponentKind::LatencyFlex => &mut self.latency_flex,
+            _ => {
+                return Err(invalid_components(
+                    "only optional bottle components can be added",
+                ));
+            }
+        };
+        if slot.is_some() {
+            return Err(invalid_components("component kind is already installed"));
+        }
+        *slot = Some(component.clone());
+        Ok(self)
+    }
+
+    pub fn runner(&self) -> &Component {
+        &self.runner
+    }
+
+    pub fn winebridge(&self) -> &Component {
+        &self.winebridge
+    }
+
+    pub fn umu(&self) -> Option<&Component> {
+        self.umu.as_ref()
+    }
+
+    pub fn dxvk(&self) -> Option<&Component> {
+        self.dxvk.as_ref()
+    }
+
+    pub fn vkd3d(&self) -> Option<&Component> {
+        self.vkd3d.as_ref()
+    }
+
+    pub fn nvapi(&self) -> Option<&Component> {
+        self.nvapi.as_ref()
+    }
+
+    pub fn latency_flex(&self) -> Option<&Component> {
+        self.latency_flex.as_ref()
+    }
+}
+
+fn invalid_components(message: impl Into<String>) -> crate::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message.into()).into()
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
