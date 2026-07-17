@@ -198,6 +198,53 @@ impl Bottle {
         }
     }
 
+    pub async fn uninstall_component(&mut self, id: Uuid) -> Result<Component> {
+        if self.runner().id() == id
+            || self.components.winebridge().id() == id
+            || self
+                .components
+                .umu()
+                .is_some_and(|component| component.id() == id)
+        {
+            return Err(BottleError::ComponentNotUninstallable(id).into());
+        }
+
+        let component = (&self.components)
+            .into_iter()
+            .find(|component| component.id() == id)
+            .cloned()
+            .ok_or(BottleError::ComponentNotInstalled(id))?;
+
+        self.stop().await?;
+        let previous_storage = self.storage.clone();
+        let previous_environment = self.environment.clone();
+        crate::compatibility::installer::uninstall(self, &component).await?;
+
+        let removed = match component.kind() {
+            ComponentKind::Dxvk => self.components.dxvk.take(),
+            ComponentKind::Vkd3d => self.components.vkd3d.take(),
+            ComponentKind::Nvapi => self.components.nvapi.take(),
+            ComponentKind::LatencyFlex => self.components.latency_flex.take(),
+            _ => unreachable!("only optional prefix components are uninstallable"),
+        }
+        .expect("the selected component is installed");
+
+        if let Err(error) = self.save() {
+            self.storage = previous_storage;
+            self.environment = previous_environment;
+            match component.kind() {
+                ComponentKind::Dxvk => self.components.dxvk = Some(removed),
+                ComponentKind::Vkd3d => self.components.vkd3d = Some(removed),
+                ComponentKind::Nvapi => self.components.nvapi = Some(removed),
+                ComponentKind::LatencyFlex => self.components.latency_flex = Some(removed),
+                _ => unreachable!("only optional prefix components are uninstallable"),
+            }
+            return Err(error);
+        }
+
+        Ok(component)
+    }
+
     async fn install_prefix_component(
         &mut self,
         component: &Component,

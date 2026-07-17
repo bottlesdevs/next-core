@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    bottle::{Bottle, invalid_components},
+    bottle::Bottle,
     compatibility::components::{
         Component, ComponentManager,
         catalog::{ComponentKind, RunnerKind},
     },
-    error::{Error, Result},
+    error::{Error, Result, ResultExt},
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
     runner::{Runner, RunnerCommand},
     utils::archive,
@@ -108,6 +108,40 @@ pub(crate) async fn execute(
     }
 }
 
+pub(crate) async fn uninstall(bottle: &mut Bottle, component: &Component) -> Result<()> {
+    let resources = component.prepare()?;
+    let runner = bottle.load_runner()?;
+    let winebridge = bottle.components.winebridge.path().to_path_buf();
+    let bottle_path = bottle.bottle_path();
+    let previous_environment = bottle.environment.clone();
+    let result = {
+        let storage = &mut bottle.storage;
+        let environment = &mut bottle.environment;
+        storage
+            .uninstall(
+                &bottle_path,
+                component.id(),
+                async |prefix, restore_files| {
+                    uninstall_steps(
+                        runner.as_ref(),
+                        prefix,
+                        &winebridge,
+                        environment,
+                        &resources,
+                        restore_files,
+                        component.id(),
+                    )
+                    .await
+                },
+            )
+            .await
+    };
+    if result.is_err() {
+        bottle.environment = previous_environment;
+    }
+    result
+}
+
 fn replay_environment(environment: &mut HashMap<String, String>, resources: &[InstallResource]) {
     for step in resources.iter().flat_map(|resource| &resource.steps) {
         if let InstallStep::SetEnvironment { name, value } = step {
@@ -133,7 +167,13 @@ pub(crate) fn umu_for_runner(
         .max_by(|left, right| left.version().cmp(right.version()))
         .cloned()
         .map(Some)
-        .ok_or_else(|| invalid_components("Proton runner requires a locally available UMU"))
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                String::from("Proton runner requires a locally available UMU"),
+            )
+            .into()
+        })
 }
 
 async fn execute_steps(
@@ -242,6 +282,74 @@ async fn execute_steps(
     runner_stopped
 }
 
+async fn uninstall_steps(
+    runner: &dyn Runner,
+    prefix: &Path,
+    winebridge: &Path,
+    environment: &mut HashMap<String, String>,
+    resources: &[InstallResource],
+    restore_files: bool,
+    component_id: Uuid,
+) -> Result<()> {
+    let mut bridge_client = None;
+
+    for resource in resources.iter().rev() {
+        for step in resource.steps.iter().rev() {
+            match step {
+                InstallStep::Copy { destination, .. } if restore_files => {
+                    uninstall_file(prefix, destination).log_warn();
+                }
+                InstallStep::Copy { .. } => {}
+                InstallStep::SetEnvironment { name, .. } => {
+                    environment.remove(name);
+                }
+                InstallStep::SetDllOverrides { dlls, .. } => {
+                    let bridge = match ensure_bridge(
+                        &mut bridge_client,
+                        runner,
+                        prefix,
+                        winebridge,
+                        environment,
+                    )
+                    .await
+                    {
+                        Ok(bridge) => bridge,
+                        Err(error) => {
+                            tracing::warn!(%error);
+                            continue;
+                        }
+                    };
+                    for dll in dlls.iter().rev() {
+                        match bridge.delete_dll_override(dll.clone()).await {
+                            Err(error) if is_not_found(&error) => {}
+                            result => {
+                                result.log_warn();
+                            }
+                        }
+                    }
+                }
+                unsupported => {
+                    tracing::warn!(
+                        %component_id,
+                        step = ?unsupported,
+                        "skipping unsupported component uninstall action"
+                    );
+                }
+            }
+        }
+    }
+
+    if let Some(bridge) = bridge_client {
+        bridge.shutdown().await.log_warn();
+    }
+    runner.shutdown_prefix(prefix).log_warn();
+    Ok(())
+}
+
+fn is_not_found(error: &Error) -> bool {
+    matches!(error, Error::Status(status) if status.code() == tonic::Code::NotFound)
+}
+
 async fn ensure_bridge<'a>(
     bridge: &'a mut Option<WineBridgeClient>,
     runner: &dyn Runner,
@@ -275,6 +383,21 @@ fn install_file(source: &Path, prefix: &Path, relative: &Path) -> Result<()> {
     }
     fs::copy(source, destination)?;
     Ok(())
+}
+
+fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
+    let destination = prefix.join(relative);
+    let backup = prefix.join(backup_path(relative));
+    if backup.is_file() {
+        fs::copy(&backup, &destination)?;
+        fs::remove_file(backup)
+    } else {
+        match fs::remove_file(destination) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 fn extract_into(archive: &Path, prefix: &Path, destination: &Path) -> Result<()> {

@@ -17,6 +17,10 @@ pub enum BottleError {
     InvalidProgram,
     #[error("program {0} was not found")]
     ProgramNotFound(Uuid),
+    #[error("component {0} is not installed")]
+    ComponentNotInstalled(Uuid),
+    #[error("component {0} is required and cannot be uninstalled")]
+    ComponentNotUninstallable(Uuid),
     #[error("FVS repository {repository} has no commit {state}")]
     MissingCommit { repository: PathBuf, state: String },
     #[error("Virgo base exists but has no commits")]
