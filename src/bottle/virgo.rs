@@ -100,6 +100,42 @@ impl PrefixStorage {
             }
         }
     }
+
+    pub(crate) async fn uninstall<F>(
+        &mut self,
+        bottle_path: &Path,
+        item_id: Uuid,
+        execute: F,
+    ) -> Result<()>
+    where
+        F: for<'a> AsyncFnOnce(&'a Path, bool) -> Result<()>,
+    {
+        match self {
+            Self::Standard => execute(&bottle_path.join("prefix"), true).await,
+            Self::Virgo { layers } => {
+                let previous_layers = layers.clone();
+                remove_cached_layer(layers, item_id);
+
+                let prefix = bottle_path.join("prefix");
+                let cleaned = async {
+                    mount_layers(bottle_path, layers.clone()).await?;
+                    execute(&prefix, false).await
+                }
+                .await;
+                let unmounted = unmount_prefix(bottle_path).await;
+                let result = cleaned.and(unmounted);
+                if result.is_err() {
+                    *layers = previous_layers;
+                }
+                result
+            }
+        }
+    }
+}
+
+fn remove_cached_layer(layers: &mut Vec<Layer>, id: Uuid) {
+    let repository = layer_cache(id).display().to_string();
+    layers.retain(|layer| layer.repository_path != repository);
 }
 
 async fn install_virgo<F>(
