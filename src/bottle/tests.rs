@@ -1,5 +1,5 @@
 use crate::{
-    BottleComponents,
+    bottle::bottle::BottleComponents,
     compatibility::{
         components::{
             Component,
@@ -129,10 +129,7 @@ mod unix {
             bridge_root.join("bottles-winebridge.exe"),
         )
         .unwrap();
-        let manager = BottleManager::new(BottleManagerConfig {
-            fvs2d_executable: None,
-        })
-        .unwrap();
+        let manager = BottleManager::new(None).unwrap();
 
         let mut bottle = manager
             .create(

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{layers::LayersError, runner::RunnerError, winebridge::BridgeError};
+use crate::{bottle::error::BottleError, runner::RunnerError, winebridge::BridgeError};
 use fvs_rs::error::Error as VirgoError;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -9,10 +9,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Layers error: {0}")]
-    Layers(#[from] LayersError),
     #[error("Serde: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("configuration: {0}")]
+    Config(#[from] next_config::error::Error),
     #[error("gRPC transport: {0}")]
     Transport(#[from] tonic::transport::Error),
     #[error("gRPC status: {0}")]
@@ -23,6 +23,8 @@ pub enum Error {
     Runner(#[from] RunnerError),
     #[error("Virgo error: {0}")]
     Virgo(#[from] VirgoError),
+    #[error("Bottle error: {0}")]
+    Bottle(#[from] BottleError),
 }
 
 #[allow(dead_code)]

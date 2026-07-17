@@ -5,7 +5,7 @@ use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 use crate::{
-    BottleComponents,
+    bottle::bottle::BottleComponents,
     compatibility::{components::Component, installer::umu_for_runner},
     error::Result,
     runner::load_runner,
@@ -27,7 +27,7 @@ static FVS: OnceCell<Fvs2dClient> = OnceCell::const_new();
 pub struct BottleManager;
 
 impl BottleManager {
-    pub fn new(config: BottleManagerConfig) -> Result<Self> {
+    pub fn new(fvs2d_executable: Option<PathBuf>) -> Result<Self> {
         // TODO: Directories shouldn't be created here
         let directories =
             crate::utils::directories::get().ok_or(BottleError::ProjectDirectoriesUnavailable)?;
@@ -35,7 +35,7 @@ impl BottleManager {
         fs::create_dir_all(directories.runtime_dir())?;
 
         let config = BottleManagerConfig {
-            fvs2d_executable: config.fvs2d_executable.map(absolute_path).transpose()?,
+            fvs2d_executable: fvs2d_executable.map(absolute_path).transpose()?,
         };
 
         CONFIG.get_or_init(|| config);

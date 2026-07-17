@@ -1,13 +1,11 @@
 #[allow(clippy::module_inception)]
 mod bottle;
-mod error;
+pub(crate) mod error;
 mod manager;
 mod virgo;
 
 #[cfg(test)]
 mod tests;
 
-pub(crate) use bottle::invalid_components;
-pub use bottle::{Bottle, BottleComponents, BottleType, Program};
-pub use error::BottleError;
-pub use manager::{BottleManager, BottleManagerConfig};
+pub use bottle::{Bottle, BottleType, Program};
+pub use manager::BottleManager;
