@@ -2,13 +2,13 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 use uuid::{NonNilUuid, Uuid};
 
-use crate::catalog::{
+use crate::compatibility::{
     Checksum, Target, deserialize_non_empty_checksum, deserialize_non_empty_string,
     deserialize_non_empty_vec,
 };
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Component {
+pub struct CatalogComponentEntry {
     id: NonNilUuid,
     #[serde(deserialize_with = "deserialize_non_empty_string")]
     version: String,
@@ -17,7 +17,7 @@ pub struct Component {
     artifacts: Vec<ComponentArtifact>,
 }
 
-impl Component {
+impl CatalogComponentEntry {
     pub fn uuid(&self) -> Uuid {
         self.id.get()
     }
@@ -98,6 +98,7 @@ impl ComponentArtifact {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum ComponentKind {
     Winebridge,
+    Umu,
     Dxvk,
     Vkd3d,
     Nvapi,
@@ -136,7 +137,7 @@ mod tests {
 
     #[test]
     fn deserializes_runner_kind_from_typed_kind() {
-        let component: Component = serde_json::from_str(
+        let component: CatalogComponentEntry = serde_json::from_str(
             r#"{
                 "id": "00000000-0000-0000-0000-000000000002",
                 "version": "1",
@@ -205,7 +206,7 @@ mod tests {
             size: None,
             target: Some(Target::linux_x86_64()),
         };
-        let component = Component {
+        let component = CatalogComponentEntry {
             id: NonNilUuid::new(uuid!("00000000-0000-0000-0000-ffff00000000")).unwrap(),
             version: String::from("2.4"),
             kind: ComponentKind::Dxvk,

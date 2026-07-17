@@ -1,5 +1,5 @@
-use super::{Component, ComponentKind, RunnerKind};
-use crate::catalog::{
+use super::{CatalogComponentEntry, ComponentKind, RunnerKind};
+use crate::compatibility::{
     Catalog, CatalogItem, Target, deserialize_supported_schema_version,
     deserialize_unique_catalog_items,
 };
@@ -14,10 +14,10 @@ pub struct ComponentCatalog {
     #[serde(deserialize_with = "deserialize_supported_schema_version::<_, CATALOG_VERSION>")]
     schema_version: NonZeroU32,
     #[serde(deserialize_with = "deserialize_unique_catalog_items")]
-    components: Vec<Component>,
+    components: Vec<CatalogComponentEntry>,
 }
 
-impl CatalogItem for Component {
+impl CatalogItem for CatalogComponentEntry {
     fn uuid(&self) -> Uuid {
         self.uuid()
     }
@@ -25,7 +25,7 @@ impl CatalogItem for Component {
 
 #[derive(Debug, Clone)]
 pub struct ComponentCatalogQuery<'catalog> {
-    components: &'catalog [Component],
+    components: &'catalog [CatalogComponentEntry],
     uuid: Option<Uuid>,
     kind: Option<ComponentKind>,
     version: Option<String>,
@@ -33,7 +33,7 @@ pub struct ComponentCatalogQuery<'catalog> {
 }
 
 impl<'catalog> ComponentCatalogQuery<'catalog> {
-    fn new(components: &'catalog [Component]) -> Self {
+    fn new(components: &'catalog [CatalogComponentEntry]) -> Self {
         Self {
             components,
             uuid: None,
@@ -67,17 +67,17 @@ impl<'catalog> ComponentCatalogQuery<'catalog> {
         self
     }
 
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &'catalog Component> + '_ {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &'catalog CatalogComponentEntry> + '_ {
         self.components
             .iter()
             .filter(|component| self.matches(component))
     }
 
-    pub fn first(&self) -> Option<&'catalog Component> {
+    pub fn first(&self) -> Option<&'catalog CatalogComponentEntry> {
         self.iter().next()
     }
 
-    pub fn last(&self) -> Option<&'catalog Component> {
+    pub fn last(&self) -> Option<&'catalog CatalogComponentEntry> {
         self.iter().next_back()
     }
 
@@ -89,7 +89,7 @@ impl<'catalog> ComponentCatalogQuery<'catalog> {
         self.first().is_none()
     }
 
-    fn matches(&self, component: &Component) -> bool {
+    fn matches(&self, component: &CatalogComponentEntry) -> bool {
         self.uuid
             .map(|uuid| component.uuid() == uuid)
             .unwrap_or(true)
@@ -110,8 +110,8 @@ impl<'catalog> ComponentCatalogQuery<'catalog> {
 }
 
 impl IntoIterator for ComponentCatalog {
-    type IntoIter = std::vec::IntoIter<Component>;
-    type Item = Component;
+    type IntoIter = std::vec::IntoIter<CatalogComponentEntry>;
+    type Item = CatalogComponentEntry;
 
     fn into_iter(self) -> Self::IntoIter {
         self.components.into_iter()
@@ -119,8 +119,8 @@ impl IntoIterator for ComponentCatalog {
 }
 
 impl<'catalog> IntoIterator for &'catalog ComponentCatalog {
-    type IntoIter = std::slice::Iter<'catalog, Component>;
-    type Item = &'catalog Component;
+    type IntoIter = std::slice::Iter<'catalog, CatalogComponentEntry>;
+    type Item = &'catalog CatalogComponentEntry;
 
     fn into_iter(self) -> Self::IntoIter {
         self.components.iter()
@@ -128,7 +128,7 @@ impl<'catalog> IntoIterator for &'catalog ComponentCatalog {
 }
 
 impl Catalog for ComponentCatalog {
-    type Item = Component;
+    type Item = CatalogComponentEntry;
     type Query<'catalog> = ComponentCatalogQuery<'catalog>;
 
     fn version(&self) -> NonZeroU32 {
@@ -147,7 +147,7 @@ impl Catalog for ComponentCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::component::RunnerKind;
+    use crate::compatibility::components::catalog::RunnerKind;
     use uuid::{Uuid, uuid};
 
     fn dxvk_2_4_id() -> Uuid {
@@ -207,7 +207,10 @@ mod tests {
     #[test]
     fn iterates_catalog_components() {
         let catalog = catalog();
-        let ids = catalog.iter().map(Component::uuid).collect::<Vec<_>>();
+        let ids = catalog
+            .iter()
+            .map(CatalogComponentEntry::uuid)
+            .collect::<Vec<_>>();
 
         assert_eq!(ids, vec![dxvk_2_4_id(), ge_proton_9_1_id()]);
     }
@@ -381,7 +384,7 @@ mod tests {
 
         assert_eq!(catalog.version().get(), 1);
         assert_eq!(
-            catalog.iter().next().map(Component::uuid),
+            catalog.iter().next().map(CatalogComponentEntry::uuid),
             Some(dxvk_2_4_id())
         );
     }
