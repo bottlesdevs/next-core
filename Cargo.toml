@@ -13,8 +13,10 @@ tracing.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
 tokio.workspace = true
-derive_builder.workspace = true
 directories.workspace = true
+flate2.workspace = true
+tar.workspace = true
+regdiff-rs.workspace = true
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde"] }
 prost.workspace = true
