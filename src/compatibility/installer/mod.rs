@@ -233,3 +233,235 @@ async fn cache_virgo_install(
     let _ = fs::remove_dir_all(stage);
     result
 }
+
+async fn execute_steps(
+    bottle: &mut Bottle,
+    prefix: &Path,
+    resources: &[InstallResource],
+) -> Result<()> {
+    let runner = bottle.load_runner()?;
+    let winebridge = bottle.components.winebridge.path().to_path_buf();
+    let mut bridge_client = None;
+    let result = async {
+        for resource in resources {
+            for step in &resource.steps {
+                match step {
+                    InstallStep::Copy {
+                        source,
+                        destination,
+                    } => {
+                        let source = if source.as_os_str().is_empty() {
+                            resource.source.clone()
+                        } else {
+                            resource.source.join(source)
+                        };
+                        install_file(&source, prefix, destination)?;
+                    }
+                    InstallStep::Extract { destination } => {
+                        extract_into(&resource.source, prefix, destination)?;
+                    }
+                    InstallStep::Execute { arguments } => {
+                        let mut command = RunnerCommand::new(&resource.source);
+                        for argument in arguments {
+                            command = command.arg(argument);
+                        }
+                        for (name, value) in &bottle.environment {
+                            command = command.env(name, value);
+                        }
+                        let status = runner.run(prefix, command)?.wait()?;
+                        if !status.success() {
+                            return Err(io::Error::other(format!(
+                                "installer exited with status {status}"
+                            ))
+                            .into());
+                        }
+                    }
+                    InstallStep::RegisterDlls { dlls } => {
+                        for dll in dlls {
+                            let mut command = RunnerCommand::new("regsvr32")
+                                .arg("/s")
+                                .arg(prefix.join(dll).to_string_lossy());
+                            for (name, value) in &bottle.environment {
+                                command = command.env(name, value);
+                            }
+                            let status = runner.run(prefix, command)?.wait()?;
+                            if !status.success() {
+                                return Err(io::Error::other(format!(
+                                    "regsvr32 exited with status {status}"
+                                ))
+                                .into());
+                            }
+                        }
+                    }
+                    InstallStep::SetRegistryValue {
+                        hive,
+                        key,
+                        name,
+                        value,
+                    } => {
+                        ensure_bridge(
+                            &mut bridge_client,
+                            runner.as_ref(),
+                            prefix,
+                            &winebridge,
+                            &bottle.environment,
+                        )
+                        .await?
+                        .set_registry_value(*hive, key.clone(), name.clone(), value.clone())
+                        .await?;
+                    }
+                    InstallStep::SetDllOverrides { dlls, mode } => {
+                        let bridge = ensure_bridge(
+                            &mut bridge_client,
+                            runner.as_ref(),
+                            prefix,
+                            &winebridge,
+                            &bottle.environment,
+                        )
+                        .await?;
+                        for dll in dlls {
+                            bridge.set_dll_override(dll.clone(), *mode).await?;
+                        }
+                    }
+                    InstallStep::SetEnvironment { name, value } => {
+                        bottle.environment.insert(name.clone(), value.clone());
+                        if let Some(bridge) = bridge_client.take() {
+                            bridge.shutdown().await?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok::<_, Error>(())
+    }
+    .await;
+
+    let bridge_stopped = match bridge_client {
+        Some(bridge) => bridge.shutdown().await,
+        None => Ok(()),
+    };
+    let runner_stopped = runner.shutdown_prefix(prefix);
+    result?;
+    bridge_stopped?;
+    runner_stopped
+}
+
+async fn ensure_bridge<'a>(
+    bridge: &'a mut Option<WineBridgeClient>,
+    runner: &dyn Runner,
+    prefix: &Path,
+    executable: &Path,
+    environment: &HashMap<String, String>,
+) -> Result<&'a WineBridgeClient> {
+    if bridge.is_none() {
+        *bridge = Some(
+            WineBridgeClient::new(
+                runner,
+                prefix,
+                executable.to_path_buf(),
+                environment
+                    .iter()
+                    .map(|(name, value)| (name.into(), value.into())),
+            )
+            .await?,
+        );
+    }
+    Ok(bridge.as_ref().expect("WineBridge was initialized"))
+}
+
+fn install_file(source: &Path, prefix: &Path, relative: &Path) -> Result<()> {
+    let destination = prefix.join(relative);
+    fs::create_dir_all(destination.parent().expect("destination has a parent"))?;
+    let relative_backup = backup_path(relative);
+    let backup = prefix.join(&relative_backup);
+    if destination.is_file() && !backup.exists() {
+        fs::copy(&destination, &backup)?;
+    }
+    fs::copy(source, destination)?;
+    Ok(())
+}
+
+fn extract_into(archive: &Path, prefix: &Path, destination: &Path) -> Result<()> {
+    let stage = crate::utils::directories::expect()
+        .data_dir()
+        .join(".staging")
+        .join(Uuid::new_v4().to_string());
+    fs::create_dir_all(&stage)?;
+    let result = (|| -> Result<()> {
+        archive::extract(archive, &stage)?;
+        for source in archive::files(&stage)? {
+            let relative = destination.join(source.strip_prefix(&stage).map_err(io::Error::other)?);
+            install_file(&source, prefix, &relative)?;
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(stage);
+    result
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    let mut path = path.as_os_str().to_os_string();
+    path.push(".bak");
+    PathBuf::from(path)
+}
+
+fn remove_file(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn registry_files() -> [(&'static str, Hive); 2] {
+    [
+        ("user.reg", Hive::CurrentUser),
+        ("system.reg", Hive::LocalMachine),
+    ]
+}
+
+fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -> Result<()> {
+    let old = Registry::try_from(old, hive).map_err(io::Error::other)?;
+    let new = Registry::try_from(new, hive).map_err(io::Error::other)?;
+    Registry::diff(&old, &new)
+        .serialize_file(output)
+        .map_err(io::Error::other)?;
+    Ok(())
+}
+
+pub(super) fn layer_cache(id: Uuid) -> PathBuf {
+    crate::utils::directories::expect()
+        .data_dir()
+        .join("virgo/layers")
+        .join(id.to_string())
+}
+
+fn registry_cache(id: Uuid) -> PathBuf {
+    crate::utils::directories::expect()
+        .data_dir()
+        .join("virgo/registry")
+        .join(id.to_string())
+}
+
+pub(crate) async fn cached_layer(id: Uuid) -> Result<Layer> {
+    let destination = layer_cache(id);
+    if !destination.join(".fvs2").is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("cached Virgo layer not found: {}", destination.display()),
+        )
+        .into());
+    }
+    let client = fvs().await?;
+    let repository = client.new_repository(&destination, 0).await?;
+    let commit = client
+        .list_commits(&repository)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| BottleError::MissingCommit {
+            repository: destination,
+            state: "HEAD".into(),
+        })?;
+    Ok(Layer::new(&repository, Some(&commit)))
+}
