@@ -12,13 +12,13 @@ use crate::{
 #[test]
 fn proton_umu_components_and_dependencies_round_trip() {
     let id = uuid::Uuid::new_v4();
-    let root = crate::utils::directories::expect().bottle(id);
+    let bottle_path = crate::utils::directories::expect().bottle(id);
     let proton = Component::new(
         ComponentKind::Runner {
             kind: RunnerKind::Proton,
         },
         "proton-1",
-        root.join("proton"),
+        bottle_path.join("proton"),
     )
     .unwrap();
     let wine = Component::new(
@@ -26,17 +26,17 @@ fn proton_umu_components_and_dependencies_round_trip() {
             kind: RunnerKind::Wine,
         },
         "wine-1",
-        root.join("wine"),
+        bottle_path.join("wine"),
     )
     .unwrap();
     let bridge = Component::new(
         ComponentKind::Winebridge,
         "bridge-1",
-        root.join("winebridge/bottles-winebridge.exe"),
+        bottle_path.join("winebridge/bottles-winebridge.exe"),
     )
     .unwrap();
-    let umu = Component::new(ComponentKind::Umu, "umu-1", root.join("umu/umu-run")).unwrap();
-    let dxvk = Component::new(ComponentKind::Dxvk, "dxvk-1", root.join("dxvk")).unwrap();
+    let umu = Component::new(ComponentKind::Umu, "umu-1", bottle_path.join("umu/umu-run")).unwrap();
+    let dxvk = Component::new(ComponentKind::Dxvk, "dxvk-1", bottle_path.join("dxvk")).unwrap();
     assert!(BottleComponents::new(&proton, &bridge, None).is_err());
     assert!(BottleComponents::new(&wine, &bridge, Some(&umu)).is_err());
     let mut components = BottleComponents::new(&proton, &bridge, Some(&umu)).unwrap();
@@ -57,7 +57,7 @@ fn proton_umu_components_and_dependencies_round_trip() {
         environment: [("EXAMPLE".into(), "enabled".into())].into(),
         bridge: None,
     };
-    let path = root.join("bottle.toml");
+    let path = bottle_path.join("bottle.toml");
 
     next_config::save(&path, &bottle).unwrap();
     let loaded: super::bottle::Bottle = next_config::load(&path).unwrap();
@@ -75,7 +75,7 @@ fn proton_umu_components_and_dependencies_round_trip() {
     assert_eq!(loaded.dependencies()[0].name(), "vcrun2022");
     assert_eq!(loaded.environment["EXAMPLE"], "enabled");
 
-    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(bottle_path).unwrap();
 }
 
 #[cfg(unix)]
@@ -87,8 +87,8 @@ mod unix {
     use super::super::*;
     use super::*;
 
-    fn install_wine(root: &Path) {
-        let bin = root.join("bin");
+    fn install_wine(runner_path: &Path) {
+        let bin = runner_path.join("bin");
         fs::create_dir_all(&bin).unwrap();
         for (name, script) in [
             (
@@ -184,9 +184,9 @@ fn virgo_layers_round_trip_through_bottle_toml() {
     use fvs_rs::{Commit, Layer, Repository};
 
     let id = uuid::Uuid::new_v4();
-    let root = crate::utils::directories::expect().bottle(id);
+    let bottle_path = crate::utils::directories::expect().bottle(id);
     let repository = Repository {
-        repository_path: root.join("repo").display().to_string(),
+        repository_path: bottle_path.join("repo").display().to_string(),
         block_size: 4096,
     };
     let commit = Commit {
@@ -202,13 +202,13 @@ fn virgo_layers_round_trip_through_bottle_toml() {
             kind: RunnerKind::Wine,
         },
         "wine",
-        root.join("runner"),
+        bottle_path.join("runner"),
     )
     .unwrap();
     let bridge = Component::new(
         ComponentKind::Winebridge,
         "winebridge",
-        root.join("winebridge/bottles-winebridge.exe"),
+        bottle_path.join("winebridge/bottles-winebridge.exe"),
     )
     .unwrap();
     let bottle = super::bottle::Bottle {
@@ -223,7 +223,7 @@ fn virgo_layers_round_trip_through_bottle_toml() {
         environment: Default::default(),
         bridge: None,
     };
-    let path = root.join("bottle.toml");
+    let path = bottle_path.join("bottle.toml");
 
     next_config::save(&path, &bottle).unwrap();
     let loaded: super::bottle::Bottle = next_config::load(&path).unwrap();
@@ -232,12 +232,15 @@ fn virgo_layers_round_trip_through_bottle_toml() {
     assert!(stored.contains("[winebridge]"));
     assert!(stored.contains("[storage]"));
     assert!(!stored.contains("[prefix]"));
-    assert!(!stored.contains(&format!("path = \"{}\"", root.join("prefix").display())));
+    assert!(!stored.contains(&format!(
+        "path = \"{}\"",
+        bottle_path.join("prefix").display()
+    )));
     assert_eq!(loaded.r#type(), super::bottle::BottleType::Virgo);
     let super::bottle::PrefixStorage::Virgo { layers } = loaded.storage else {
         panic!("expected Virgo storage");
     };
     assert_eq!(layers, vec![expected]);
 
-    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(bottle_path).unwrap();
 }
