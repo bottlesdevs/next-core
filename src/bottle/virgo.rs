@@ -4,11 +4,13 @@ use fvs_rs::{Layer, Repository, UnmountMode};
 use uuid::Uuid;
 
 use crate::{
+    compatibility::installer::cached_layer,
     error::{Error, Result},
     runner::{Runner, initialize_and_shutdown_prefix},
 };
 
 use super::{
+    bottle::{Bottle, PrefixStorage},
     error::BottleError,
     manager::{BottleManager, fvs},
 };
@@ -114,6 +116,42 @@ impl BottleManager {
             block_size: BLOCK_SIZE,
         };
         Ok(Layer::new(&repository, Some(&commit)))
+    }
+}
+
+impl Bottle {
+    pub(crate) async fn prepare_virgo_layers(&mut self) -> Result<()> {
+        if matches!(&self.storage, PrefixStorage::Virgo { layers } if layers.is_empty()) {
+            self.refresh_virgo_layers().await?;
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn refresh_virgo_layers(&mut self) -> Result<()> {
+        let PrefixStorage::Virgo { layers } = &self.storage else {
+            return Ok(());
+        };
+        let mut refreshed = if layers.len() >= 2 {
+            layers[..2].to_vec()
+        } else {
+            let runner = self.load_runner()?;
+            let manager = BottleManager;
+            let base = manager.ensure_base(runner.as_ref()).await?;
+            let adapter = manager
+                .ensure_adapter(runner.as_ref(), &self.runner().id().to_string(), &base)
+                .await?;
+            vec![base, adapter]
+        };
+
+        for component in &self.components {
+            refreshed.push(cached_layer(component.id()).await?);
+        }
+        for dependency in &self.dependencies {
+            refreshed.push(cached_layer(dependency.id()).await?);
+        }
+        self.storage = PrefixStorage::Virgo { layers: refreshed };
+        Ok(())
     }
 }
 

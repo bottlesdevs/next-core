@@ -6,8 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     BottleComponents,
-    components::Component,
-    dependencies::Dependency,
+    compatibility::{components::Component, installer::umu_for_runner},
     error::Result,
     runner::{initialize_and_shutdown_prefix, load_runner},
     utils::absolute_path,
@@ -48,8 +47,8 @@ impl BottleManager {
         &self,
         name: impl Into<String>,
         kind: BottleType,
-        components: BottleComponents,
-        dependencies: Vec<Dependency>,
+        runner_component: &Component,
+        winebridge: &Component,
     ) -> Result<Bottle> {
         let name = name.into();
         for entry in fs::read_dir(crate::utils::directories::expect().bottles())? {
@@ -59,16 +58,18 @@ impl BottleManager {
             }
         }
 
-        let runner_id = components.runner().id();
-        let runner_kind = components
-            .runner()
-            .kind()
-            .runner_kind()
-            .expect("BottleComponents guarantees a runner component");
+        let runner_kind = runner_component.kind().runner_kind().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "runner component is required",
+            )
+        })?;
+        let umu = umu_for_runner(runner_kind, None)?;
+        let components = BottleComponents::new(runner_component, winebridge, umu.as_ref())?;
         let runner = load_runner(
-            components.runner().path(),
+            runner_component.path(),
             runner_kind,
-            components.umu().map(Component::path),
+            umu.as_ref().map(Component::path),
         )?;
         let id = Uuid::new_v4();
         let root = self.bottle_root(id);
@@ -85,7 +86,7 @@ impl BottleManager {
                     fs::create_dir_all(root.join("upper"))?;
                     let base = self.ensure_base(runner.as_ref()).await?;
                     let adapter = self
-                        .ensure_adapter(runner.as_ref(), &runner_id.to_string(), &base)
+                        .ensure_adapter(runner.as_ref(), &runner_component.id().to_string(), &base)
                         .await?;
                     PrefixStorage::Virgo {
                         layers: vec![base, adapter],
@@ -93,7 +94,7 @@ impl BottleManager {
                 }
             };
 
-            Bottle::new(id, name, components, dependencies, storage)
+            Bottle::new(id, name, components, Vec::new(), storage)
         }
         .await;
 
@@ -148,7 +149,7 @@ pub(super) fn config() -> &'static BottleManagerConfig {
         .expect("BottleManager initialized runtime configuration")
 }
 
-pub(super) async fn fvs() -> Result<&'static Fvs2dClient> {
+pub(crate) async fn fvs() -> Result<&'static Fvs2dClient> {
     FVS.get_or_try_init(|| async {
         let executable = config()
             .fvs2d_executable

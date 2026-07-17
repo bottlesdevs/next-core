@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, ffi::OsString, path::PathBuf};
 
 use fvs_rs::{Layer, UnmountMode};
 use next_config::Config;
@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{error::BottleError, manager::fvs, virgo::ensure_empty_dir};
-use crate::{
+use crate::compatibility::{
     components::{
         Component,
         catalog::{ComponentKind, RunnerKind},
@@ -18,24 +18,26 @@ use crate::{error::Result, proto::Process, runner::Runner, winebridge::WineBridg
 #[derive(Deserialize, Serialize, Config)]
 #[config(version = 1)]
 pub struct Bottle {
-    pub(super) id: Uuid,
-    pub(super) name: String,
-    pub(super) storage: PrefixStorage,
+    pub(crate) id: Uuid,
+    pub(crate) name: String,
+    pub(crate) storage: PrefixStorage,
     #[serde(default)]
-    pub(super) programs: Vec<Program>,
+    pub(crate) programs: Vec<Program>,
 
     #[serde(flatten)]
-    pub(super) components: BottleComponents,
+    pub(crate) components: BottleComponents,
     #[serde(default)]
-    pub(super) dependencies: Vec<Dependency>,
+    pub(crate) dependencies: Vec<Dependency>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) environment: HashMap<String, String>,
 
     // Runtime state
     #[serde(skip)]
-    pub(super) bridge: Option<WineBridgeClient>,
+    pub(crate) bridge: Option<WineBridgeClient>,
 }
 
 impl Bottle {
-    pub(super) fn new(
+    pub(crate) fn new(
         id: Uuid,
         name: String,
         components: BottleComponents,
@@ -49,6 +51,7 @@ impl Bottle {
             dependencies,
             storage,
             programs: Vec::new(),
+            environment: HashMap::new(),
             bridge: None,
         };
         bottle.save()?;
@@ -171,7 +174,88 @@ impl Bottle {
         first_error.map_or(Ok(()), Err)
     }
 
-    fn load_runner(&self) -> Result<Box<dyn Runner>> {
+    pub async fn install_component(&mut self, component: &Component) -> Result<()> {
+        match component.kind() {
+            ComponentKind::Runner { kind } => self.install_runner(component, kind).await,
+            ComponentKind::Winebridge => {
+                self.stop().await?;
+                self.components.winebridge = component.clone();
+                self.save()
+            }
+            ComponentKind::Umu => {
+                if self.runner().kind().runner_kind() != Some(RunnerKind::Proton) {
+                    return Err(invalid_components("Wine runner must not use UMU"));
+                }
+                self.stop().await?;
+                self.components.umu = Some(component.clone());
+                self.save()
+            }
+            kind => self.install_prefix_component(component, kind).await,
+        }
+    }
+
+    async fn install_prefix_component(
+        &mut self,
+        component: &Component,
+        kind: ComponentKind,
+    ) -> Result<()> {
+        self.prepare_virgo_layers().await?;
+        self.stop().await?;
+        crate::compatibility::installer::execute(self, component).await?;
+        match kind {
+            ComponentKind::Dxvk => &mut self.components.dxvk,
+            ComponentKind::Vkd3d => &mut self.components.vkd3d,
+            ComponentKind::Nvapi => &mut self.components.nvapi,
+            ComponentKind::LatencyFlex => &mut self.components.latency_flex,
+            _ => unreachable!(),
+        }
+        .replace(component.clone());
+        async {
+            self.refresh_virgo_layers().await?;
+            self.apply_virgo_registry(component.id()).await?;
+            self.save()
+        }
+        .await
+    }
+
+    pub async fn install_dependency(&mut self, dependency: &Dependency) -> Result<()> {
+        self.prepare_virgo_layers().await?;
+        self.stop().await?;
+        crate::compatibility::installer::execute(self, dependency).await?;
+        self.dependencies.push(dependency.clone());
+        async {
+            self.refresh_virgo_layers().await?;
+            self.apply_virgo_registry(dependency.id()).await?;
+            self.save()
+        }
+        .await
+    }
+
+    async fn install_runner(&mut self, component: &Component, kind: RunnerKind) -> Result<()> {
+        if self.runner().id() == component.id() {
+            return Ok(());
+        }
+        let umu =
+            crate::compatibility::installer::umu_for_runner(kind, self.components.umu.as_ref())?;
+        crate::runner::load_runner(component.path(), kind, umu.as_ref().map(Component::path))?;
+        self.stop().await?;
+
+        let previous_runner = std::mem::replace(&mut self.components.runner, component.clone());
+        let previous_umu = std::mem::replace(&mut self.components.umu, umu);
+        let previous_storage = self.storage.clone();
+        if let PrefixStorage::Virgo { layers } = &mut self.storage {
+            layers.clear();
+        }
+        if let Err(error) = self.save() {
+            self.components.runner = previous_runner;
+            self.components.umu = previous_umu;
+            self.storage = previous_storage;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn load_runner(&self) -> Result<Box<dyn Runner>> {
         let kind = self
             .runner()
             .kind()
@@ -184,20 +268,21 @@ impl Bottle {
         )
     }
 
-    fn save(&self) -> Result<()> {
+    pub(crate) fn save(&self) -> Result<()> {
         next_config::save(self.root().join("bottle.toml"), self)?;
         Ok(())
     }
 
-    fn root(&self) -> PathBuf {
+    pub(crate) fn root(&self) -> PathBuf {
         crate::utils::directories::expect().bottle(self.id())
     }
 
-    fn prefix(&self) -> PathBuf {
+    pub(crate) fn prefix(&self) -> PathBuf {
         self.root().join("prefix")
     }
 
-    async fn ensure_mounted(&mut self) -> Result<()> {
+    pub(crate) async fn ensure_mounted(&mut self) -> Result<()> {
+        self.prepare_virgo_layers().await?;
         let root = self.root();
         let prefix = self.prefix();
         let mountpoint = prefix.as_path();
@@ -220,7 +305,7 @@ impl Bottle {
         Ok(())
     }
 
-    async fn bridge(&mut self) -> Result<&WineBridgeClient> {
+    pub(crate) async fn bridge(&mut self) -> Result<&WineBridgeClient> {
         if self.bridge.is_none() {
             let runner = self.load_runner()?;
             self.ensure_mounted().await?;
@@ -230,6 +315,9 @@ impl Bottle {
                     runner.as_ref(),
                     &prefix,
                     self.components.winebridge().path().to_path_buf(),
+                    self.environment
+                        .iter()
+                        .map(|(name, value)| (OsString::from(name), OsString::from(value))),
                 )
                 .await?,
             );
@@ -237,7 +325,7 @@ impl Bottle {
         Ok(self.bridge.as_ref().expect("WineBridge was initialized"))
     }
 
-    async fn unmount(&mut self) -> Result<()> {
+    pub(crate) async fn unmount(&mut self) -> Result<()> {
         let mountpoint = self.prefix().display().to_string();
         let mount = fvs().await?.list_mounts().await?.into_iter().find(|mount| {
             mount
@@ -254,22 +342,22 @@ impl Bottle {
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BottleComponents {
-    runner: Component,
-    winebridge: Component,
+    pub(crate) runner: Component,
+    pub(crate) winebridge: Component,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    umu: Option<Component>,
+    pub(crate) umu: Option<Component>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    dxvk: Option<Component>,
+    pub(crate) dxvk: Option<Component>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    vkd3d: Option<Component>,
+    pub(crate) vkd3d: Option<Component>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    nvapi: Option<Component>,
+    pub(crate) nvapi: Option<Component>,
     #[serde(
         default,
         rename = "latency-flex",
         skip_serializing_if = "Option::is_none"
     )]
-    latency_flex: Option<Component>,
+    pub(crate) latency_flex: Option<Component>,
 }
 
 impl BottleComponents {
@@ -309,25 +397,6 @@ impl BottleComponents {
         })
     }
 
-    pub fn with(mut self, component: &Component) -> Result<Self> {
-        let slot = match component.kind() {
-            ComponentKind::Dxvk => &mut self.dxvk,
-            ComponentKind::Vkd3d => &mut self.vkd3d,
-            ComponentKind::Nvapi => &mut self.nvapi,
-            ComponentKind::LatencyFlex => &mut self.latency_flex,
-            _ => {
-                return Err(invalid_components(
-                    "only optional bottle components can be added",
-                ));
-            }
-        };
-        if slot.is_some() {
-            return Err(invalid_components("component kind is already installed"));
-        }
-        *slot = Some(component.clone());
-        Ok(self)
-    }
-
     pub fn runner(&self) -> &Component {
         &self.runner
     }
@@ -357,7 +426,23 @@ impl BottleComponents {
     }
 }
 
-fn invalid_components(message: impl Into<String>) -> crate::Error {
+impl<'a> IntoIterator for &'a BottleComponents {
+    type Item = &'a Component;
+    type IntoIter = std::iter::Flatten<std::array::IntoIter<Option<&'a Component>, 4>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        [
+            self.dxvk.as_ref(),
+            self.vkd3d.as_ref(),
+            self.nvapi.as_ref(),
+            self.latency_flex.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+}
+
+pub(crate) fn invalid_components(message: impl Into<String>) -> crate::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message.into()).into()
 }
 
@@ -395,7 +480,7 @@ pub enum BottleType {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "kind")]
-pub(super) enum PrefixStorage {
+pub(crate) enum PrefixStorage {
     Standard,
     Virgo {
         #[serde(default)]
