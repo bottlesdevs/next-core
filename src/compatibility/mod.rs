@@ -1,10 +1,13 @@
-pub mod component;
-pub mod dependency;
+//! Types and deserializers shared by component and dependency catalogs.
 
 use std::{collections::HashSet, num::NonZeroU32};
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 use uuid::Uuid;
+
+pub mod components;
+pub mod dependencies;
+pub mod installer;
 
 pub trait Catalog {
     type Item;
@@ -17,7 +20,7 @@ pub trait Catalog {
     fn iter(&self) -> impl ExactSizeIterator<Item = &Self::Item> + DoubleEndedIterator;
 }
 
-pub(self) trait CatalogItem {
+pub(crate) trait CatalogItem {
     fn uuid(&self) -> Uuid;
 }
 
@@ -85,7 +88,7 @@ pub enum Architecture {
     Aarch64,
 }
 
-pub(self) fn deserialize_supported_schema_version<'de, D, const SUPPORTED_VERSION: u32>(
+pub(crate) fn deserialize_supported_schema_version<'de, D, const SUPPORTED_VERSION: u32>(
     deserializer: D,
 ) -> Result<NonZeroU32, D::Error>
 where
@@ -104,7 +107,7 @@ where
     Ok(schema_version)
 }
 
-pub(self) fn deserialize_unique_catalog_items<'de, D, T>(
+pub(crate) fn deserialize_unique_catalog_items<'de, D, T>(
     deserializer: D,
 ) -> Result<Vec<T>, D::Error>
 where
@@ -126,7 +129,7 @@ where
     Ok(items)
 }
 
-pub(self) fn deserialize_non_empty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+pub(crate) fn deserialize_non_empty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -139,7 +142,7 @@ where
     Ok(value)
 }
 
-pub(self) fn deserialize_non_empty_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+pub(crate) fn deserialize_non_empty_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,
@@ -153,7 +156,7 @@ where
     Ok(value)
 }
 
-pub(self) fn deserialize_non_empty_checksum<'de, D>(deserializer: D) -> Result<Checksum, D::Error>
+pub(crate) fn deserialize_non_empty_checksum<'de, D>(deserializer: D) -> Result<Checksum, D::Error>
 where
     D: Deserializer<'de>,
 {
