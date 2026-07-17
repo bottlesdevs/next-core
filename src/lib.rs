@@ -1,15 +1,11 @@
-pub mod catalog;
-mod error;
-pub mod layers;
-pub mod runner;
-pub use error::Error;
+pub mod bottle;
+pub mod compatibility;
+pub mod error;
+mod runner;
 mod utils;
-pub mod virgo;
 mod winebridge;
 
-pub mod proto {
+mod proto {
     tonic::include_proto!("winebridge");
     tonic::include_proto!("bottles");
 }
-
-pub use crate::winebridge::{LaunchRequest, WineBridgeClient};

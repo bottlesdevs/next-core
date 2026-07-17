@@ -6,12 +6,15 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::error::BottleError;
-use crate::compatibility::{
-    components::{
-        Component,
-        catalog::{ComponentKind, RunnerKind},
+use crate::{
+    compatibility::{
+        components::{
+            Component,
+            catalog::{ComponentKind, RunnerKind},
+        },
+        dependencies::Dependency,
     },
-    dependencies::Dependency,
+    error::Error,
 };
 use crate::{error::Result, proto::Process, runner::Runner, winebridge::WineBridgeClient};
 
@@ -468,7 +471,7 @@ impl<'a> IntoIterator for &'a BottleComponents {
     }
 }
 
-pub(crate) fn invalid_components(message: impl Into<String>) -> crate::Error {
+fn invalid_components(message: impl Into<String>) -> Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message.into()).into()
 }
 
