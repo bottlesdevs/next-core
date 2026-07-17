@@ -1,5 +1,5 @@
-use super::Dependency;
-use crate::catalog::{
+use super::CatalogDependencyEntry;
+use crate::compatibility::{
     Architecture, Catalog, CatalogItem, deserialize_supported_schema_version,
     deserialize_unique_catalog_items,
 };
@@ -15,10 +15,10 @@ pub struct DependencyCatalog {
     #[serde(deserialize_with = "deserialize_supported_schema_version::<_, CATALOG_VERSION>")]
     schema_version: NonZeroU32,
     #[serde(deserialize_with = "deserialize_unique_catalog_items")]
-    dependencies: Vec<Dependency>,
+    dependencies: Vec<CatalogDependencyEntry>,
 }
 
-impl CatalogItem for Dependency {
+impl CatalogItem for CatalogDependencyEntry {
     fn uuid(&self) -> Uuid {
         self.uuid()
     }
@@ -26,7 +26,7 @@ impl CatalogItem for Dependency {
 
 #[derive(Debug, Clone)]
 pub struct DependencyCatalogQuery<'catalog> {
-    dependencies: &'catalog [Dependency],
+    dependencies: &'catalog [CatalogDependencyEntry],
     uuid: Option<Uuid>,
     name: Option<String>,
     version: Option<String>,
@@ -34,7 +34,7 @@ pub struct DependencyCatalogQuery<'catalog> {
 }
 
 impl<'catalog> DependencyCatalogQuery<'catalog> {
-    fn new(dependencies: &'catalog [Dependency]) -> Self {
+    fn new(dependencies: &'catalog [CatalogDependencyEntry]) -> Self {
         Self {
             dependencies,
             uuid: None,
@@ -64,17 +64,17 @@ impl<'catalog> DependencyCatalogQuery<'catalog> {
         self
     }
 
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &'catalog Dependency> + '_ {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &'catalog CatalogDependencyEntry> + '_ {
         self.dependencies
             .iter()
             .filter(|dependency| self.matches(dependency))
     }
 
-    pub fn first(&self) -> Option<&'catalog Dependency> {
+    pub fn first(&self) -> Option<&'catalog CatalogDependencyEntry> {
         self.iter().next()
     }
 
-    pub fn last(&self) -> Option<&'catalog Dependency> {
+    pub fn last(&self) -> Option<&'catalog CatalogDependencyEntry> {
         self.iter().next_back()
     }
 
@@ -86,7 +86,7 @@ impl<'catalog> DependencyCatalogQuery<'catalog> {
         self.first().is_none()
     }
 
-    fn matches(&self, dependency: &Dependency) -> bool {
+    fn matches(&self, dependency: &CatalogDependencyEntry) -> bool {
         self.uuid
             .map(|uuid| dependency.uuid() == uuid)
             .unwrap_or(true)
@@ -108,8 +108,8 @@ impl<'catalog> DependencyCatalogQuery<'catalog> {
 }
 
 impl IntoIterator for DependencyCatalog {
-    type IntoIter = std::vec::IntoIter<Dependency>;
-    type Item = Dependency;
+    type IntoIter = std::vec::IntoIter<CatalogDependencyEntry>;
+    type Item = CatalogDependencyEntry;
 
     fn into_iter(self) -> Self::IntoIter {
         self.dependencies.into_iter()
@@ -117,8 +117,8 @@ impl IntoIterator for DependencyCatalog {
 }
 
 impl<'catalog> IntoIterator for &'catalog DependencyCatalog {
-    type IntoIter = std::slice::Iter<'catalog, Dependency>;
-    type Item = &'catalog Dependency;
+    type IntoIter = std::slice::Iter<'catalog, CatalogDependencyEntry>;
+    type Item = &'catalog CatalogDependencyEntry;
 
     fn into_iter(self) -> Self::IntoIter {
         self.dependencies.iter()
@@ -126,7 +126,7 @@ impl<'catalog> IntoIterator for &'catalog DependencyCatalog {
 }
 
 impl Catalog for DependencyCatalog {
-    type Item = Dependency;
+    type Item = CatalogDependencyEntry;
     type Query<'catalog> = DependencyCatalogQuery<'catalog>;
 
     fn version(&self) -> std::num::NonZeroU32 {
@@ -215,7 +215,10 @@ mod tests {
     #[test]
     fn iterates_catalog_dependencies() {
         let catalog = catalog();
-        let ids = catalog.iter().map(Dependency::uuid).collect::<Vec<_>>();
+        let ids = catalog
+            .iter()
+            .map(CatalogDependencyEntry::uuid)
+            .collect::<Vec<_>>();
 
         assert_eq!(ids, vec![vcrun_2022_id(), dxvk_runtime_id()]);
     }

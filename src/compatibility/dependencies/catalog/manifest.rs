@@ -1,6 +1,6 @@
-use crate::catalog::{
-    Architecture, Checksum, dependency::steps::DependencyStep, deserialize_non_empty_checksum,
-    deserialize_non_empty_string,
+use crate::compatibility::{
+    Architecture, Checksum, deserialize_non_empty_checksum, deserialize_non_empty_string,
+    installer::InstallStep,
 };
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
@@ -9,7 +9,7 @@ use uuid::{NonNilUuid, Uuid};
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Dependency {
+pub struct CatalogDependencyEntry {
     id: NonNilUuid,
     #[serde(deserialize_with = "deserialize_non_empty_string")]
     name: String,
@@ -18,7 +18,7 @@ pub struct Dependency {
     resources: Vec<DependencyResource>,
 }
 
-impl Dependency {
+impl CatalogDependencyEntry {
     pub fn uuid(&self) -> Uuid {
         self.id.get()
     }
@@ -53,7 +53,7 @@ pub struct DependencyResource {
     size: NonZeroU64,
     target_arch: Architecture,
     #[serde(default)]
-    steps: Vec<DependencyStep>,
+    steps: Vec<InstallStep>,
 }
 
 impl DependencyResource {
@@ -77,7 +77,7 @@ impl DependencyResource {
         self.target_arch
     }
 
-    pub fn steps(&self) -> &[DependencyStep] {
+    pub fn steps(&self) -> &[InstallStep] {
         &self.steps
     }
 
@@ -93,9 +93,8 @@ mod tests {
     use uuid::uuid;
 
     use crate::{
-        catalog::dependency::DependencyStep,
+        compatibility::installer::InstallStep,
         proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
-        runner::WindowsVersion,
     };
 
     use super::*;
@@ -114,8 +113,7 @@ mod tests {
                 "steps": [
                     {
                         "action": "execute",
-                        "arguments": ["/quiet", "/norestart"],
-                        "windows_version": "win7"
+                        "arguments": ["/quiet", "/norestart"]
                     }
                 ]
             },
@@ -156,8 +154,8 @@ mod tests {
                 ]
             },
             {
-                "file_name": "runtime.zip",
-                "url": "https://example.test/runtime.zip",
+                "file_name": "runtime.tar.gz",
+                "url": "https://example.test/runtime.tar.gz",
                 "checksum": { "algorithm": "sha256", "value": "ghi" },
                 "size": 42,
                 "target_arch": "x86_64",
@@ -173,7 +171,7 @@ mod tests {
 
     #[test]
     fn deserializes_all_dependency_steps_in_order() {
-        let dependency: Dependency = serde_json::from_str(MANIFEST).unwrap();
+        let dependency: CatalogDependencyEntry = serde_json::from_str(MANIFEST).unwrap();
 
         assert_eq!(
             dependency.uuid(),
@@ -189,9 +187,8 @@ mod tests {
         assert_eq!(x86.target_arch(), Architecture::X86);
         assert!(matches!(
             &x86.steps()[0],
-            DependencyStep::Execute {
+            InstallStep::Execute {
                 arguments,
-                windows_version: Some(WindowsVersion::Win7),
             } if arguments == &["/quiet", "/norestart"]
         ));
 
@@ -199,29 +196,30 @@ mod tests {
         assert_eq!(x64.checksum(), &Checksum::sha512("def"));
         assert!(matches!(
             &x64.steps()[0],
-            DependencyStep::Copy { destination }
-                if destination == Path::new("drive_c/windows/system32/vcruntime140.dll")
+            InstallStep::Copy { source, destination }
+                if source.as_os_str().is_empty()
+                    && destination == Path::new("drive_c/windows/system32/vcruntime140.dll")
         ));
         assert!(matches!(
             &x64.steps()[1],
-            DependencyStep::RegisterDlls { dlls }
+            InstallStep::RegisterDlls { dlls }
                 if dlls == &[Path::new("drive_c/windows/system32/vcruntime140.dll")]
         ));
         assert!(matches!(
             &dependency.resources()[2].steps()[0],
-            DependencyStep::Extract { destination }
+            InstallStep::Extract { destination }
                 if destination == Path::new("drive_c/runtime")
         ));
 
         assert!(matches!(
             &x64.steps()[3],
-            DependencyStep::SetRegistryValue {
+            InstallStep::SetRegistryValue {
                 value: RegistryValue::String(value), ..
             } if value == "14.38"
         ));
         assert!(matches!(
             &x64.steps()[4],
-            DependencyStep::SetDllOverrides {
+            InstallStep::SetDllOverrides {
                 dlls,
                 mode: DllOverrideMode::NativeBuiltin,
             } if dlls == &["vcruntime140", "vcruntime140_1"]
@@ -230,9 +228,9 @@ mod tests {
 
     #[test]
     fn preserves_resource_and_step_order_when_round_tripped() {
-        let dependency: Dependency = serde_json::from_str(MANIFEST).unwrap();
+        let dependency: CatalogDependencyEntry = serde_json::from_str(MANIFEST).unwrap();
         let serialized = serde_json::to_string(&dependency).unwrap();
-        let round_tripped: Dependency = serde_json::from_str(&serialized).unwrap();
+        let round_tripped: CatalogDependencyEntry = serde_json::from_str(&serialized).unwrap();
 
         assert_eq!(round_tripped, dependency);
     }
@@ -241,32 +239,35 @@ mod tests {
     fn execute_options_default_to_empty() {
         let mut value = serde_json::from_str::<serde_json::Value>(MANIFEST).unwrap();
         value["resources"][0]["steps"][0] = serde_json::json!({ "action": "execute" });
-        let dependency: Dependency = serde_json::from_value(value).unwrap();
+        let dependency: CatalogDependencyEntry = serde_json::from_value(value).unwrap();
 
         assert!(matches!(
             &dependency.resources()[0].steps()[0],
-            DependencyStep::Execute {
+            InstallStep::Execute {
                 arguments,
-                windows_version: None,
             } if arguments.is_empty()
         ));
     }
 
     #[test]
-    fn deserializes_every_windows_version() {
-        for (value, expected) in [
-            ("win7", WindowsVersion::Win7),
-            ("win8", WindowsVersion::Win8),
-            ("win10", WindowsVersion::Win10),
-        ] {
-            let parsed: WindowsVersion = serde_json::from_str(&format!(r#""{value}""#)).unwrap();
-            assert_eq!(parsed, expected);
-        }
+    fn deserializes_environment_steps() {
+        let step: InstallStep = serde_json::from_value(serde_json::json!({
+            "action": "set-environment",
+            "name": "EXAMPLE",
+            "value": "enabled"
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            step,
+            InstallStep::SetEnvironment { name, value }
+                if name == "EXAMPLE" && value == "enabled"
+        ));
     }
 
     #[test]
     fn matches_resources_by_exact_target_architecture() {
-        let dependency: Dependency = serde_json::from_str(MANIFEST).unwrap();
+        let dependency: CatalogDependencyEntry = serde_json::from_str(MANIFEST).unwrap();
         let x86 = &dependency.resources()[0];
         let x64 = &dependency.resources()[1];
 
@@ -329,20 +330,20 @@ mod tests {
         ];
 
         for manifest in invalid {
-            assert!(serde_json::from_str::<Dependency>(&manifest).is_err());
+            assert!(serde_json::from_str::<CatalogDependencyEntry>(&manifest).is_err());
         }
 
         let mut unknown_dependency = serde_json::from_str::<serde_json::Value>(MANIFEST).unwrap();
         unknown_dependency["unexpected"] = true.into();
-        assert!(serde_json::from_value::<Dependency>(unknown_dependency).is_err());
+        assert!(serde_json::from_value::<CatalogDependencyEntry>(unknown_dependency).is_err());
 
         let mut unknown_step = serde_json::from_str::<serde_json::Value>(MANIFEST).unwrap();
         unknown_step["resources"][0]["steps"][0]["unexpected"] = true.into();
-        assert!(serde_json::from_value::<Dependency>(unknown_step).is_err());
+        assert!(serde_json::from_value::<CatalogDependencyEntry>(unknown_step).is_err());
 
         let mut unknown_resource_action =
             serde_json::from_str::<serde_json::Value>(MANIFEST).unwrap();
         unknown_resource_action["resources"][0]["steps"][0]["action"] = "unknown".into();
-        assert!(serde_json::from_value::<Dependency>(unknown_resource_action).is_err());
+        assert!(serde_json::from_value::<CatalogDependencyEntry>(unknown_resource_action).is_err());
     }
 }
