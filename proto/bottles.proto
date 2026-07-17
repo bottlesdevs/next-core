@@ -5,12 +5,6 @@ package bottles;
 service Bottles {
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc Notify(NotifyRequest) returns (NotifyResponse);
-
-  // Layered prefixes ("Next mode").
-  rpc PreparePrefix(PreparePrefixRequest) returns (PrefixSession);
-  rpc LaunchInPrefix(LaunchInPrefixRequest) returns (LaunchResult);
-  rpc CaptureLayer(CaptureLayerRequest) returns (CaptureLayerResponse);
-  rpc ReleasePrefix(ReleasePrefixRequest) returns (ReleasePrefixResponse);
 }
 
 message HealthRequest {}
@@ -25,54 +19,4 @@ message NotifyRequest {
 
 message NotifyResponse {
   bool success = 1;
-}
-
-message Layer {
-  string repo = 1;
-  optional string state = 2;
-}
-
-message PreparePrefixRequest {
-  repeated Layer lowers = 1;
-  string upper = 2;
-  string mountpoint = 3;
-}
-
-message PrefixSession {
-  uint64 session_id = 1;
-  string mountpoint = 2;
-}
-
-message LaunchInPrefixRequest {
-  repeated Layer lowers = 1;
-  string upper = 2;
-  string mountpoint = 3;
-  string executable = 4;
-  repeated string args = 5;
-  optional string work_dir = 6;
-  bool terminal = 7;
-}
-
-message LaunchResult {
-  uint64 session_id = 1;
-  string mountpoint = 2;
-  uint32 pid = 3;
-}
-
-message CaptureLayerRequest {
-  string upper = 1;
-  string base_dir = 2;
-  string message = 3;
-}
-
-message CaptureLayerResponse {
-  bool ok = 1;
-}
-
-message ReleasePrefixRequest {
-  uint64 session_id = 1;
-}
-
-message ReleasePrefixResponse {
-  bool ok = 1;
 }
