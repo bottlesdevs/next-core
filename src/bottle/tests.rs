@@ -1,13 +1,93 @@
+use crate::{
+    BottleComponents,
+    components::{
+        Component,
+        catalog::{ComponentKind, RunnerKind},
+    },
+    dependencies::Dependency,
+};
+
+#[test]
+fn proton_umu_components_and_dependencies_round_trip() {
+    let id = uuid::Uuid::new_v4();
+    let root = crate::utils::directories::expect().bottle(id);
+    let proton = Component::new(
+        ComponentKind::Runner {
+            kind: RunnerKind::Proton,
+        },
+        "proton-1",
+        root.join("proton"),
+    )
+    .unwrap();
+    let wine = Component::new(
+        ComponentKind::Runner {
+            kind: RunnerKind::Wine,
+        },
+        "wine-1",
+        root.join("wine"),
+    )
+    .unwrap();
+    let bridge = Component::new(
+        ComponentKind::Winebridge,
+        "bridge-1",
+        root.join("winebridge.exe"),
+    )
+    .unwrap();
+    let umu = Component::new(ComponentKind::Umu, "umu-1", root.join("umu-run")).unwrap();
+    let dxvk = Component::new(ComponentKind::Dxvk, "dxvk-1", root.join("dxvk.tar.gz")).unwrap();
+    assert!(BottleComponents::new(&proton, &bridge, None).is_err());
+    assert!(BottleComponents::new(&wine, &bridge, Some(&umu)).is_err());
+    let components = BottleComponents::new(&proton, &bridge, Some(&umu))
+        .unwrap()
+        .with(&dxvk)
+        .unwrap();
+    assert!(components.clone().with(&dxvk).is_err());
+    let dependency: Dependency = serde_json::from_value(serde_json::json!({
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "vcrun2022",
+        "version": "14.38"
+    }))
+    .unwrap();
+    let bottle = super::bottle::Bottle {
+        id,
+        name: "proton".into(),
+        components,
+        dependencies: vec![dependency],
+        storage: super::bottle::PrefixStorage::Standard,
+        programs: Vec::new(),
+        bridge: None,
+    };
+    let path = root.join("bottle.toml");
+
+    next_config::save(&path, &bottle).unwrap();
+    let loaded: super::bottle::Bottle = next_config::load(&path).unwrap();
+    let stored = std::fs::read_to_string(&path).unwrap();
+    assert!(stored.contains("[umu]"));
+    assert!(stored.contains("[dxvk]"));
+    assert!(stored.contains("[[dependencies]]"));
+    assert_eq!(
+        loaded.runner().kind(),
+        ComponentKind::Runner {
+            kind: RunnerKind::Proton
+        }
+    );
+    assert_eq!(loaded.components().umu().unwrap().version(), "umu-1");
+    assert_eq!(loaded.dependencies()[0].name(), "vcrun2022");
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 mod unix {
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
     use uuid::Uuid;
 
     use super::super::*;
+    use super::*;
 
-    fn install_wine(data_root: &std::path::Path, key: &str) {
-        let bin = data_root.join("runners").join(key).join("bin");
+    fn install_wine(root: &Path) {
+        let bin = root.join("bin");
         fs::create_dir_all(&bin).unwrap();
         for (name, script) in [
             (
@@ -23,22 +103,38 @@ mod unix {
     }
 
     #[tokio::test]
-    async fn manually_installed_runner_and_programs_are_stored_in_toml() {
-        let directories = crate::directories::expect();
-        let runner_key = format!("manual-wine-{}", Uuid::new_v4());
+    async fn components_and_programs_round_trip_through_bottle_toml() {
+        let directories = crate::utils::directories::expect();
+        let assets = directories
+            .data_dir()
+            .join(format!("test-assets-{}", Uuid::new_v4()));
+        let runner_root = assets.join("wine");
+        let bridge_path = assets.join("winebridge.exe");
+        install_wine(&runner_root);
+        fs::write(&bridge_path, []).unwrap();
+
+        let runner = Component::new(
+            ComponentKind::Runner {
+                kind: RunnerKind::Wine,
+            },
+            "manual-wine",
+            &runner_root,
+        )
+        .unwrap();
+        let bridge =
+            Component::new(ComponentKind::Winebridge, "manual-winebridge", &bridge_path).unwrap();
+        let components = BottleComponents::new(&runner, &bridge, None).unwrap();
         let manager = BottleManager::new(BottleManagerConfig {
-            winebridge_executable: directories.data_dir().join("bridge.exe"),
             fvs2d_executable: None,
-            umu_executable: None,
         })
         .unwrap();
-        install_wine(directories.data_dir(), &runner_key);
 
         let mut bottle = manager
             .create(
                 Uuid::new_v4().to_string(),
                 BottleType::Standard,
-                runner_key.clone(),
+                components,
+                Vec::new(),
             )
             .await
             .unwrap();
@@ -46,20 +142,24 @@ mod unix {
         let program_id = program.id;
         bottle.add_program(program).unwrap();
         let bottle_id = bottle.id();
+        let runner_id = bottle.runner().id();
         drop(bottle);
 
         let reopened = manager.open(bottle_id).unwrap();
-        assert_eq!(reopened.runner(), runner_key);
+        assert_eq!(reopened.runner().id(), runner_id);
+        assert_eq!(reopened.runner().path(), runner_root);
         assert_eq!(reopened.r#type(), BottleType::Standard);
         assert_eq!(reopened.program(program_id).unwrap().name, "Game");
         let stored = fs::read_to_string(directories.bottle(bottle_id).join("bottle.toml")).unwrap();
-        assert!(stored.contains(&format!("runner = \"{runner_key}\"")));
+        assert!(stored.contains("[runner]"));
+        assert!(stored.contains("type = \"runner\""));
+        assert!(stored.contains("runner = \"wine\""));
+        assert!(stored.contains("[winebridge]"));
+        assert!(!stored.contains("[[runner]]"));
+        assert!(!stored.contains("[umu]"));
         assert!(stored.contains("[storage]"));
-        assert!(stored.contains("kind = \"standard\""));
         assert!(!stored.contains("[prefix]"));
-        assert!(!stored.contains("prefix_arch"));
         assert!(!stored.contains("environment"));
-        assert!(!stored.contains(&directories.bottle(bottle_id).display().to_string()));
         assert!(stored.contains("[[programs]]"));
         assert!(
             directories
@@ -70,7 +170,7 @@ mod unix {
 
         drop(reopened);
         fs::remove_dir_all(directories.bottle(bottle_id)).unwrap();
-        fs::remove_dir_all(directories.runner(&runner_key)).unwrap();
+        fs::remove_dir_all(assets).unwrap();
     }
 }
 
@@ -79,7 +179,7 @@ fn virgo_layers_round_trip_through_bottle_toml() {
     use fvs_rs::{Commit, Layer, Repository};
 
     let id = uuid::Uuid::new_v4();
-    let root = crate::directories::expect().bottle(id);
+    let root = crate::utils::directories::expect().bottle(id);
     let repository = Repository {
         repository_path: root.join("repo").display().to_string(),
         block_size: 4096,
@@ -92,10 +192,25 @@ fn virgo_layers_round_trip_through_bottle_toml() {
         message: "test".into(),
     };
     let expected = Layer::new(&repository, Some(&commit));
+    let runner = Component::new(
+        ComponentKind::Runner {
+            kind: RunnerKind::Wine,
+        },
+        "wine",
+        root.join("runner"),
+    )
+    .unwrap();
+    let bridge = Component::new(
+        ComponentKind::Winebridge,
+        "winebridge",
+        root.join("winebridge.exe"),
+    )
+    .unwrap();
     let bottle = super::bottle::Bottle {
         id,
         name: "virgo".into(),
-        runner: "wine".into(),
+        components: BottleComponents::new(&runner, &bridge, None).unwrap(),
+        dependencies: Vec::new(),
         storage: super::bottle::PrefixStorage::Virgo {
             layers: vec![expected.clone()],
         },
@@ -107,8 +222,9 @@ fn virgo_layers_round_trip_through_bottle_toml() {
     next_config::save(&path, &bottle).unwrap();
     let loaded: super::bottle::Bottle = next_config::load(&path).unwrap();
     let stored = std::fs::read_to_string(&path).unwrap();
+    assert!(stored.contains("[runner]"));
+    assert!(stored.contains("[winebridge]"));
     assert!(stored.contains("[storage]"));
-    assert!(stored.contains("kind = \"virgo\""));
     assert!(!stored.contains("[prefix]"));
     assert!(!stored.contains(&format!("path = \"{}\"", root.join("prefix").display())));
     assert_eq!(loaded.r#type(), super::bottle::BottleType::Virgo);
