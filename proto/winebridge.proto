@@ -59,10 +59,11 @@ message ListProcessesResponse {
 }
 
 message LaunchProcessRequest {
-  string executable = 1;
-  repeated string arguments = 2;
-  optional string working_directory = 3;
-  bool new_console = 4;
+  string id = 1;
+  string executable = 2;
+  repeated string arguments = 3;
+  optional string working_directory = 4;
+  bool new_console = 5;
 }
 
 message LaunchProcessResponse {
@@ -70,7 +71,7 @@ message LaunchProcessResponse {
 }
 
 message KillProcessRequest {
-  uint32 pid = 1;
+  string id = 1;
 }
 
 // Registry
