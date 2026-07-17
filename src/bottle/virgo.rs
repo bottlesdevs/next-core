@@ -234,3 +234,205 @@ async fn apply_registry(bottle_path: &Path, layers: &[Layer], id: Uuid) -> Resul
     applied?;
     unmounted
 }
+
+async fn mount_layers(bottle_path: &Path, layers: Vec<Layer>) -> Result<()> {
+    let prefix = bottle_path.join("prefix");
+    let mountpoint = prefix.display().to_string();
+    let client = fvs().await?;
+    if client.list_mounts().await?.into_iter().any(|mount| {
+        mount
+            .spec
+            .as_ref()
+            .is_some_and(|spec| spec.mount_point == mountpoint)
+    }) {
+        return Ok(());
+    }
+    ensure_empty_dir(&prefix)?;
+    client
+        .mount(&prefix, layers, Some(bottle_path.join("upper")))
+        .await?;
+    Ok(())
+}
+
+async fn unmount_prefix(bottle_path: &Path) -> Result<()> {
+    let mountpoint = bottle_path.join("prefix").display().to_string();
+    let client = fvs().await?;
+    if let Some(mount) = client.list_mounts().await?.into_iter().find(|mount| {
+        mount
+            .spec
+            .as_ref()
+            .is_some_and(|spec| spec.mount_point == mountpoint)
+    }) {
+        client.unmount(&mount, UnmountMode::Normal).await?;
+    }
+    Ok(())
+}
+
+async fn base_layers(runner: &dyn Runner, runner_key: &str) -> Result<Vec<Layer>> {
+    let base = ensure_base(runner).await?;
+    let adapter = ensure_adapter(runner, runner_key, &base).await?;
+    Ok(vec![base, adapter])
+}
+
+async fn ensure_base(runner: &dyn Runner) -> Result<Layer> {
+    let client = fvs().await?;
+    let base_path = crate::utils::directories::expect()
+        .data_dir()
+        .join("virgo/base");
+    let repository_path = base_path.join("prefix");
+    if repository_path.join(".fvs2").is_dir() {
+        let repository = client.new_repository(&repository_path, 0).await?;
+        let commit = client
+            .list_commits(&repository)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or(BottleError::EmptyBase)?;
+        return Ok(Layer::new(&repository, Some(&commit)));
+    }
+    if repository_path.exists() && repository_path.read_dir()?.next().is_some() {
+        return Err(BottleError::DirtyBase(repository_path).into());
+    }
+
+    fs::create_dir_all(&repository_path)?;
+    if let Err(error) = initialize_and_shutdown_prefix(runner, &repository_path) {
+        let _ = fs::remove_dir_all(&base_path);
+        return Err(error);
+    }
+    let committed = async {
+        let repository = client.new_repository(&repository_path, BLOCK_SIZE).await?;
+        let commit = client.commit(&repository, "Virgo base".into()).await?;
+        Ok(Layer::new(&repository, Some(&commit)))
+    }
+    .await;
+    if committed.is_err() {
+        let _ = fs::remove_dir_all(base_path);
+    }
+    committed
+}
+
+async fn ensure_adapter(runner: &dyn Runner, runner_key: &str, base: &Layer) -> Result<Layer> {
+    let client = fvs().await?;
+    let destination = crate::utils::directories::expect()
+        .data_dir()
+        .join("virgo/adapters")
+        .join(runner_key);
+    if destination.join(".fvs2").is_dir() {
+        let repository = client.new_repository(&destination, 0).await?;
+        let commit = client
+            .list_commits(&repository)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| BottleError::MissingCommit {
+                repository: destination.clone(),
+                state: "HEAD".into(),
+            })?;
+        return Ok(Layer::new(&repository, Some(&commit)));
+    }
+
+    let stage = crate::utils::directories::expect()
+        .data_dir()
+        .join("virgo/.staging")
+        .join(Uuid::new_v4().to_string());
+    let upper = stage.join("upper");
+    let mountpoint = stage.join("prefix");
+    fs::create_dir_all(&upper)?;
+    fs::create_dir_all(&mountpoint)?;
+
+    let build = async {
+        let mount = client
+            .mount(&mountpoint, vec![base.clone()], Some(&upper))
+            .await?;
+        let initialized = initialize_and_shutdown_prefix(runner, &mountpoint);
+        let unmounted = client.unmount(&mount, UnmountMode::Normal).await;
+        initialized?;
+        unmounted?;
+
+        let repository = client.new_repository(&upper, BLOCK_SIZE).await?;
+        let commit = client
+            .commit(&repository, format!("Runner adapter {runner_key}"))
+            .await?;
+        fs::create_dir_all(destination.parent().expect("adapter path has a parent"))?;
+        fs::rename(&upper, &destination)?;
+        Ok::<_, Error>(commit)
+    }
+    .await;
+    let _ = fs::remove_dir_all(stage);
+
+    let commit = build?;
+    let repository = Repository {
+        repository_path: destination.display().to_string(),
+        block_size: BLOCK_SIZE,
+    };
+    Ok(Layer::new(&repository, Some(&commit)))
+}
+
+async fn cached_layer(id: Uuid) -> Result<Layer> {
+    let destination = layer_cache(id);
+    if !destination.join(".fvs2").is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("cached Virgo layer not found: {}", destination.display()),
+        )
+        .into());
+    }
+    let client = fvs().await?;
+    let repository = client.new_repository(&destination, 0).await?;
+    let commit = client
+        .list_commits(&repository)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| BottleError::MissingCommit {
+            repository: destination,
+            state: "HEAD".into(),
+        })?;
+    Ok(Layer::new(&repository, Some(&commit)))
+}
+
+fn layer_cache(id: Uuid) -> PathBuf {
+    crate::utils::directories::expect()
+        .data_dir()
+        .join("virgo/layers")
+        .join(id.to_string())
+}
+
+fn registry_cache(id: Uuid) -> PathBuf {
+    crate::utils::directories::expect()
+        .data_dir()
+        .join("virgo/registry")
+        .join(id.to_string())
+}
+
+fn registry_files() -> [(&'static str, Hive); 2] {
+    [
+        ("user.reg", Hive::CurrentUser),
+        ("system.reg", Hive::LocalMachine),
+    ]
+}
+
+fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -> Result<()> {
+    let old = Registry::try_from(old, hive).map_err(io::Error::other)?;
+    let new = Registry::try_from(new, hive).map_err(io::Error::other)?;
+    Registry::diff(&old, &new)
+        .serialize_file(output)
+        .map_err(io::Error::other)?;
+    Ok(())
+}
+
+fn remove_file(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn ensure_empty_dir(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)?;
+    if path.read_dir()?.next().is_some() {
+        return Err(BottleError::DirtyMountpoint(path.to_path_buf()).into());
+    }
+    Ok(())
+}
