@@ -18,7 +18,9 @@ const BLOCK_SIZE: u32 = 1024 * 1024;
 impl BottleManager {
     pub(super) async fn ensure_base(&self, runner: &dyn Runner) -> Result<Layer> {
         let client = fvs().await?;
-        let root = crate::directories::expect().data_dir().join("virgo/base");
+        let root = crate::utils::directories::expect()
+            .data_dir()
+            .join("virgo/base");
         let repository_path = root.join("prefix");
         if repository_path.join(".fvs2").is_dir() {
             let repository = client.new_repository(&repository_path, 0).await?;
@@ -59,7 +61,7 @@ impl BottleManager {
         base: &Layer,
     ) -> Result<Layer> {
         let client = fvs().await?;
-        let destination = crate::directories::expect()
+        let destination = crate::utils::directories::expect()
             .data_dir()
             .join("virgo/adapters")
             .join(runner_key);
@@ -77,7 +79,7 @@ impl BottleManager {
             return Ok(Layer::new(&repository, Some(&commit)));
         }
 
-        let stage = crate::directories::expect()
+        let stage = crate::utils::directories::expect()
             .data_dir()
             .join("virgo/.staging")
             .join(Uuid::new_v4().to_string());

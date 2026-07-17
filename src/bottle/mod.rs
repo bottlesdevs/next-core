@@ -7,6 +7,6 @@ mod virgo;
 #[cfg(test)]
 mod tests;
 
-pub use bottle::{Bottle, BottleType, Program};
+pub use bottle::{Bottle, BottleComponents, BottleType, Program};
 pub use error::BottleError;
 pub use manager::{BottleManager, BottleManagerConfig};
