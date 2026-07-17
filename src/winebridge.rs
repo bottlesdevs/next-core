@@ -1,9 +1,11 @@
-use std::process::ExitStatus;
-use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU16, Ordering};
-use std::{path::PathBuf, process::Child, time::Duration};
+use std::{
+    ffi::OsString,
+    fs, io,
+    path::{Path, PathBuf},
+    process::{Child, ExitStatus},
+    time::Duration,
+};
 
-use std::net::{IpAddr, Ipv4Addr};
 use thiserror::Error;
 use tonic::transport::{Channel, Endpoint};
 use tonic_health::pb::{
@@ -11,19 +13,15 @@ use tonic_health::pb::{
 };
 
 use crate::proto::{self, wine_bridge_client::WineBridgeClient as GrpcClient};
-use crate::runner::RunnerError;
 use crate::{
     error::Result,
-    runner::{Prefix, Runner, RunnerCommand},
+    runner::{Runner, RunnerCommand},
 };
 
 use crate::proto::{
     DllOverride, DllOverrideMode, Drive, PathInfo, Process, RegistryHive, RegistryKey, Service,
     ServiceStartType, WinebootMode, registry_value::Value as RegistryValue,
 };
-
-static BRIDGE_ENDPOINT_MANAGER: LazyLock<BridgeEndpointManager> =
-    LazyLock::new(BridgeEndpointManager::new);
 
 #[derive(Error, Debug)]
 pub enum BridgeError {
@@ -37,25 +35,23 @@ pub enum BridgeError {
     InvalidResponse(&'static str),
 }
 
-#[derive(Debug)]
-struct BridgeEndpointManager {
-    host: IpAddr,
-    next_port: AtomicU16,
-}
-
-impl BridgeEndpointManager {
-    fn new() -> Self {
-        Self {
-            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            next_port: AtomicU16::new(50051),
-        }
-    }
-
-    fn next(&self) -> Result<Endpoint> {
-        let host = self.host;
-        let port = self.next_port.fetch_add(1, Ordering::Relaxed);
-        Ok(Endpoint::from_shared(format!("http://{host}:{port}"))?)
-    }
+fn endpoint_from_port_file(path: &Path) -> Result<Option<Endpoint>> {
+    let port = match fs::read_to_string(path) {
+        Ok(port) => port,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let port = port
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or(BridgeError::InvalidResponse(
+            "WineBridge published an invalid port",
+        ))?;
+    Ok(Some(Endpoint::from_shared(format!(
+        "http://127.0.0.1:{port}"
+    ))?))
 }
 
 /// Managed client for a WineBridge server running inside a Wine prefix.
@@ -83,38 +79,34 @@ impl Drop for WineBridgeClient {
 impl WineBridgeClient {
     /// Starts WineBridge inside `prefix` using `runner` and connects to it over gRPC.
     ///
-    /// A loopback endpoint is allocated for the bridge and passed to the server
-    /// process through `WINEBRIDGE_HOST` and `WINEBRIDGE_PORT`. The method returns
-    /// only after WineBridge responds successfully to the health RPC.
+    /// WineBridge binds an OS-assigned loopback port and publishes it through the
+    /// prefix before this method connects and waits for a successful health RPC.
     ///
     /// # Errors
     ///
-    /// Returns an error if the runner command cannot be built, the bridge process
-    /// cannot be spawned, the process exits before readiness, the startup timeout
-    /// elapses, or the gRPC client cannot be created.
+    /// Returns an error if the bridge process cannot be spawned, exits before
+    /// readiness, times out during startup, or the gRPC client cannot be created.
     pub async fn new(
         runner: &dyn Runner,
-        prefix: &Prefix,
+        prefix: &Path,
         winebridge_executable: PathBuf,
+        environment: impl IntoIterator<Item = (OsString, OsString)>,
     ) -> Result<Self> {
-        let endpoint = BRIDGE_ENDPOINT_MANAGER.next()?;
-        let host = endpoint.uri().host().expect("bridge endpoint has a host");
-        let port = endpoint
-            .uri()
-            .port_u16()
-            .expect("bridge endpoint has a port");
+        let port_file_name = format!("{}.port", uuid::Uuid::new_v4());
+        let port_file = prefix.join("drive_c/windows/temp").join(&port_file_name);
+        fs::create_dir_all(port_file.parent().expect("port file has a parent"))?;
 
-        let command = RunnerCommand::builder()
-            .executable(winebridge_executable.display().to_string())
-            .env("WINEBRIDGE_HOST", host)
-            .env("WINEBRIDGE_PORT", &port.to_string())
-            .build()
-            .map_err(Into::<RunnerError>::into)?;
+        let command = RunnerCommand::new(winebridge_executable)
+            .env(
+                "WINEBRIDGE_PORT_FILE",
+                format!(r"C:\windows\temp\{port_file_name}"),
+            )
+            .envs(environment);
 
         let mut child = runner.run(prefix, command)?;
 
         let grpc_client =
-            match Self::wait_until_ready(endpoint, &mut child, Duration::from_secs(30)).await {
+            match Self::wait_until_ready(&port_file, &mut child, Duration::from_secs(30)).await {
                 Ok(client) => client,
                 Err(error) => {
                     if let Err(kill_error) = child.kill() {
@@ -131,9 +123,12 @@ impl WineBridgeClient {
                         );
                     }
 
+                    let _ = fs::remove_file(&port_file);
+                    let _ = fs::remove_file(port_file.with_extension("tmp"));
                     return Err(error);
                 }
             };
+        let _ = fs::remove_file(port_file);
 
         let client = Self {
             client: grpc_client,
@@ -144,33 +139,43 @@ impl WineBridgeClient {
     }
 
     async fn wait_until_ready(
-        endpoint: Endpoint,
+        port_file: &Path,
         process: &mut Child,
         timeout: Duration,
     ) -> Result<GrpcClient<Channel>> {
         let ready = async {
+            let mut endpoint = None;
             loop {
                 if let Some(status) = process.try_wait()? {
                     return Err(BridgeError::BridgeExited(status).into());
                 }
 
-                match endpoint.connect().await {
-                    Ok(channel) => match HealthClient::new(channel.clone())
-                        .check(HealthCheckRequest {
-                            service: proto::wine_bridge_server::SERVICE_NAME.to_string(),
-                        })
-                        .await
-                    {
-                        Ok(response) if response.get_ref().status() == ServingStatus::Serving => {
-                            return Ok(GrpcClient::new(channel));
-                        }
-                        Ok(_) => tracing::debug!("WineBridge health check returned not serving"),
+                if endpoint.is_none() {
+                    endpoint = endpoint_from_port_file(port_file)?;
+                }
+                if let Some(endpoint) = &endpoint {
+                    match endpoint.connect().await {
+                        Ok(channel) => match HealthClient::new(channel.clone())
+                            .check(HealthCheckRequest {
+                                service: proto::wine_bridge_server::SERVICE_NAME.to_string(),
+                            })
+                            .await
+                        {
+                            Ok(response)
+                                if response.get_ref().status() == ServingStatus::Serving =>
+                            {
+                                return Ok(GrpcClient::new(channel));
+                            }
+                            Ok(_) => {
+                                tracing::debug!("WineBridge health check returned not serving")
+                            }
+                            Err(error) => {
+                                tracing::debug!(%error, "WineBridge health check failed");
+                            }
+                        },
                         Err(error) => {
-                            tracing::debug!(%error, "WineBridge health check failed");
+                            tracing::debug!(%error, "WineBridge connection attempt failed");
                         }
-                    },
-                    Err(error) => {
-                        tracing::debug!(%error, "WineBridge connection attempt failed");
                     }
                 }
 
