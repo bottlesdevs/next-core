@@ -8,7 +8,7 @@ use crate::{
     BottleComponents,
     compatibility::{components::Component, installer::umu_for_runner},
     error::Result,
-    runner::{initialize_and_shutdown_prefix, load_runner},
+    runner::load_runner,
     utils::absolute_path,
 };
 
@@ -72,40 +72,30 @@ impl BottleManager {
             umu.as_ref().map(Component::path),
         )?;
         let id = Uuid::new_v4();
-        let root = self.bottle_root(id);
-        fs::create_dir_all(&root)?;
+        let bottle_path = self.bottle_path(id);
+        fs::create_dir_all(&bottle_path)?;
 
         let result = async {
-            let storage = match kind {
-                BottleType::Standard => {
-                    let prefix = root.join("prefix");
-                    initialize_and_shutdown_prefix(runner.as_ref(), &prefix)?;
-                    PrefixStorage::Standard
-                }
-                BottleType::Virgo => {
-                    fs::create_dir_all(root.join("upper"))?;
-                    let base = self.ensure_base(runner.as_ref()).await?;
-                    let adapter = self
-                        .ensure_adapter(runner.as_ref(), &runner_component.id().to_string(), &base)
-                        .await?;
-                    PrefixStorage::Virgo {
-                        layers: vec![base, adapter],
-                    }
-                }
-            };
+            let storage = PrefixStorage::create(
+                kind,
+                &bottle_path,
+                runner.as_ref(),
+                &runner_component.id().to_string(),
+            )
+            .await?;
 
             Bottle::new(id, name, components, Vec::new(), storage)
         }
         .await;
 
         if result.is_err() {
-            let _ = fs::remove_dir_all(root);
+            let _ = fs::remove_dir_all(bottle_path);
         }
         result
     }
 
     pub fn open(&self, id: Uuid) -> Result<Bottle> {
-        let path = self.bottle_root(id).join("bottle.toml");
+        let path = self.bottle_path(id).join("bottle.toml");
         if !path.is_file() {
             return Err(BottleError::NotFound(id).into());
         }
@@ -134,11 +124,11 @@ impl BottleManager {
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         let mut bottle = self.open(id)?;
         bottle.stop().await?;
-        fs::remove_dir_all(self.bottle_root(id))?;
+        fs::remove_dir_all(self.bottle_path(id))?;
         Ok(())
     }
 
-    fn bottle_root(&self, id: Uuid) -> PathBuf {
+    fn bottle_path(&self, id: Uuid) -> PathBuf {
         crate::utils::directories::expect().bottle(id)
     }
 }

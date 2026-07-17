@@ -7,8 +7,7 @@ mod virgo;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use bottle::invalid_components;
 pub use bottle::{Bottle, BottleComponents, BottleType, Program};
-pub(crate) use bottle::{PrefixStorage, invalid_components};
 pub use error::BottleError;
-pub(crate) use manager::fvs;
 pub use manager::{BottleManager, BottleManagerConfig};

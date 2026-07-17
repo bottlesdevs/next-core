@@ -1,11 +1,11 @@
 use std::{collections::HashMap, ffi::OsString, path::PathBuf};
 
-use fvs_rs::{Layer, UnmountMode};
+use fvs_rs::Layer;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{error::BottleError, manager::fvs, virgo::ensure_empty_dir};
+use super::error::BottleError;
 use crate::compatibility::{
     components::{
         Component,
@@ -79,10 +79,7 @@ impl Bottle {
     }
 
     pub fn r#type(&self) -> BottleType {
-        match self.storage {
-            PrefixStorage::Standard => BottleType::Standard,
-            PrefixStorage::Virgo { .. } => BottleType::Virgo,
-        }
+        self.storage.kind()
     }
 
     pub fn programs(&self) -> &[Program] {
@@ -141,7 +138,7 @@ impl Bottle {
         self.bridge().await?.kill_process(id).await
     }
 
-    /// Stop WineBridge, wineserver, and the Virgo mount.
+    /// Stop WineBridge, wineserver, and prefix storage.
     pub async fn stop(&mut self) -> Result<()> {
         let mut first_error = None;
         if let Some(bridge) = self.bridge.take()
@@ -160,14 +157,12 @@ impl Bottle {
         };
 
         if let Some(runner) = runner.as_deref()
-            && let Err(error) = runner.shutdown_prefix(&self.prefix())
+            && let Err(error) = runner.shutdown_prefix(&self.prefix_path())
         {
             first_error.get_or_insert(error);
         }
 
-        if matches!(self.storage, PrefixStorage::Virgo { .. })
-            && let Err(error) = self.unmount().await
-        {
+        if let Err(error) = self.storage.stop(&self.bottle_path()).await {
             first_error.get_or_insert(error);
         }
 
@@ -178,6 +173,9 @@ impl Bottle {
         match component.kind() {
             ComponentKind::Runner { kind } => self.install_runner(component, kind).await,
             ComponentKind::Winebridge => {
+                if self.components.winebridge.id() == component.id() {
+                    return Ok(());
+                }
                 self.stop().await?;
                 self.components.winebridge = component.clone();
                 self.save()
@@ -186,8 +184,14 @@ impl Bottle {
                 if self.runner().kind().runner_kind() != Some(RunnerKind::Proton) {
                     return Err(invalid_components("Wine runner must not use UMU"));
                 }
-                self.stop().await?;
-                self.components.umu = Some(component.clone());
+                if self.components.umu.as_ref().map(Component::id) == Some(component.id()) {
+                    return Ok(());
+                }
+                let previous = self.components.umu.replace(component.clone());
+                if let Err(error) = self.stop().await {
+                    self.components.umu = previous;
+                    return Err(error);
+                }
                 self.save()
             }
             kind => self.install_prefix_component(component, kind).await,
@@ -199,9 +203,23 @@ impl Bottle {
         component: &Component,
         kind: ComponentKind,
     ) -> Result<()> {
-        self.prepare_virgo_layers().await?;
+        let installed = match kind {
+            ComponentKind::Dxvk => self.components.dxvk.as_ref(),
+            ComponentKind::Vkd3d => self.components.vkd3d.as_ref(),
+            ComponentKind::Nvapi => self.components.nvapi.as_ref(),
+            ComponentKind::LatencyFlex => self.components.latency_flex.as_ref(),
+            _ => {
+                return Err(invalid_components(
+                    "component is not installed into a prefix",
+                ));
+            }
+        };
+        if installed.map(Component::id) == Some(component.id()) {
+            return Ok(());
+        }
+        let replaced_id = installed.map(Component::id);
         self.stop().await?;
-        crate::compatibility::installer::execute(self, component).await?;
+        crate::compatibility::installer::execute(self, component, replaced_id).await?;
         match kind {
             ComponentKind::Dxvk => &mut self.components.dxvk,
             ComponentKind::Vkd3d => &mut self.components.vkd3d,
@@ -210,25 +228,21 @@ impl Bottle {
             _ => unreachable!(),
         }
         .replace(component.clone());
-        async {
-            self.refresh_virgo_layers().await?;
-            self.apply_virgo_registry(component.id()).await?;
-            self.save()
-        }
-        .await
+        self.save()
     }
 
     pub async fn install_dependency(&mut self, dependency: &Dependency) -> Result<()> {
-        self.prepare_virgo_layers().await?;
-        self.stop().await?;
-        crate::compatibility::installer::execute(self, dependency).await?;
-        self.dependencies.push(dependency.clone());
-        async {
-            self.refresh_virgo_layers().await?;
-            self.apply_virgo_registry(dependency.id()).await?;
-            self.save()
+        if self
+            .dependencies
+            .iter()
+            .any(|installed| installed.id() == dependency.id())
+        {
+            return Ok(());
         }
-        .await
+        self.stop().await?;
+        crate::compatibility::installer::execute(self, dependency, None).await?;
+        self.dependencies.push(dependency.clone());
+        self.save()
     }
 
     async fn install_runner(&mut self, component: &Component, kind: RunnerKind) -> Result<()> {
@@ -237,22 +251,20 @@ impl Bottle {
         }
         let umu =
             crate::compatibility::installer::umu_for_runner(kind, self.components.umu.as_ref())?;
-        crate::runner::load_runner(component.path(), kind, umu.as_ref().map(Component::path))?;
+        let runner =
+            crate::runner::load_runner(component.path(), kind, umu.as_ref().map(Component::path))?;
         self.stop().await?;
-
-        let previous_runner = std::mem::replace(&mut self.components.runner, component.clone());
-        let previous_umu = std::mem::replace(&mut self.components.umu, umu);
-        let previous_storage = self.storage.clone();
-        if let PrefixStorage::Virgo { layers } = &mut self.storage {
-            layers.clear();
-        }
-        if let Err(error) = self.save() {
-            self.components.runner = previous_runner;
-            self.components.umu = previous_umu;
-            self.storage = previous_storage;
-            return Err(error);
-        }
-        Ok(())
+        let installed = (&self.components)
+            .into_iter()
+            .map(Component::id)
+            .chain(self.dependencies.iter().map(Dependency::id))
+            .collect::<Vec<_>>();
+        self.storage
+            .rebuild(runner.as_ref(), &component.id().to_string(), &installed)
+            .await?;
+        self.components.runner = component.clone();
+        self.components.umu = umu;
+        self.save()
     }
 
     pub(crate) fn load_runner(&self) -> Result<Box<dyn Runner>> {
@@ -269,47 +281,28 @@ impl Bottle {
     }
 
     pub(crate) fn save(&self) -> Result<()> {
-        next_config::save(self.root().join("bottle.toml"), self)?;
+        next_config::save(self.bottle_path().join("bottle.toml"), self)?;
         Ok(())
     }
 
-    pub(crate) fn root(&self) -> PathBuf {
+    pub(crate) fn bottle_path(&self) -> PathBuf {
         crate::utils::directories::expect().bottle(self.id())
     }
 
-    pub(crate) fn prefix(&self) -> PathBuf {
-        self.root().join("prefix")
+    pub(crate) fn prefix_path(&self) -> PathBuf {
+        self.bottle_path().join("prefix")
     }
 
-    pub(crate) async fn ensure_mounted(&mut self) -> Result<()> {
-        self.prepare_virgo_layers().await?;
-        let root = self.root();
-        let prefix = self.prefix();
-        let mountpoint = prefix.as_path();
-        if let PrefixStorage::Virgo { layers } = self.storage.clone() {
-            let mounted = fvs().await?.list_mounts().await?.into_iter().any(|mount| {
-                mount
-                    .spec
-                    .as_ref()
-                    .is_some_and(|spec| spec.mount_point == mountpoint.display().to_string())
-            });
-            if !mounted {
-                ensure_empty_dir(mountpoint)?;
-                fvs()
-                    .await?
-                    .mount(mountpoint, layers, Some(root.join("upper")))
-                    .await?;
-            }
-        }
-
-        Ok(())
+    pub(crate) async fn prefix(&mut self) -> Result<PathBuf> {
+        let bottle_path = self.bottle_path();
+        self.storage.prepare(&bottle_path).await?;
+        Ok(bottle_path.join("prefix"))
     }
 
     pub(crate) async fn bridge(&mut self) -> Result<&WineBridgeClient> {
         if self.bridge.is_none() {
             let runner = self.load_runner()?;
-            self.ensure_mounted().await?;
-            let prefix = self.prefix();
+            let prefix = self.prefix().await?;
             self.bridge = Some(
                 WineBridgeClient::new(
                     runner.as_ref(),
@@ -323,20 +316,6 @@ impl Bottle {
             );
         }
         Ok(self.bridge.as_ref().expect("WineBridge was initialized"))
-    }
-
-    pub(crate) async fn unmount(&mut self) -> Result<()> {
-        let mountpoint = self.prefix().display().to_string();
-        let mount = fvs().await?.list_mounts().await?.into_iter().find(|mount| {
-            mount
-                .spec
-                .as_ref()
-                .is_some_and(|spec| spec.mount_point == mountpoint)
-        });
-        if let Some(mount) = mount {
-            fvs().await?.unmount(&mount, UnmountMode::Normal).await?;
-        }
-        Ok(())
     }
 }
 
