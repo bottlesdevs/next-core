@@ -7,6 +7,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
@@ -24,6 +25,18 @@ use crate::{
 
 use self::super::deserialize_non_empty_string;
 pub(super) use recipes::component_steps;
+
+#[derive(Debug, Error)]
+pub enum InstallerError {
+    #[error("Proton runner requires a locally available UMU")]
+    UmuUnavailable,
+    #[error("installer exited with status {0}")]
+    InstallerFailed(std::process::ExitStatus),
+    #[error("regsvr32 exited with status {0}")]
+    RegisterDllFailed(std::process::ExitStatus),
+    #[error("staged file {path} is outside staging directory {stage}")]
+    FileOutsideStage { path: PathBuf, stage: PathBuf },
+}
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
@@ -167,13 +180,7 @@ pub(crate) fn umu_for_runner(
         .max_by(|left, right| left.version().cmp(right.version()))
         .cloned()
         .map(Some)
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                String::from("Proton runner requires a locally available UMU"),
-            )
-            .into()
-        })
+        .ok_or_else(|| InstallerError::UmuUnavailable.into())
 }
 
 async fn execute_steps(
@@ -212,10 +219,7 @@ async fn execute_steps(
                         }
                         let status = runner.run(prefix, command)?.wait()?;
                         if !status.success() {
-                            return Err(io::Error::other(format!(
-                                "installer exited with status {status}"
-                            ))
-                            .into());
+                            return Err(InstallerError::InstallerFailed(status).into());
                         }
                     }
                     InstallStep::RegisterDlls { dlls } => {
@@ -228,10 +232,7 @@ async fn execute_steps(
                             }
                             let status = runner.run(prefix, command)?.wait()?;
                             if !status.success() {
-                                return Err(io::Error::other(format!(
-                                    "regsvr32 exited with status {status}"
-                                ))
-                                .into());
+                                return Err(InstallerError::RegisterDllFailed(status).into());
                             }
                         }
                     }
@@ -409,7 +410,12 @@ fn extract_into(archive: &Path, prefix: &Path, destination: &Path) -> Result<()>
     let result = (|| -> Result<()> {
         archive::extract(archive, &stage)?;
         for source in archive::files(&stage)? {
-            let relative = destination.join(source.strip_prefix(&stage).map_err(io::Error::other)?);
+            let relative = destination.join(source.strip_prefix(&stage).map_err(|_| {
+                InstallerError::FileOutsideStage {
+                    path: source.clone(),
+                    stage: stage.clone(),
+                }
+            })?);
             install_file(&source, prefix, &relative)?;
         }
         Ok(())

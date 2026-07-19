@@ -5,26 +5,38 @@ use std::{
 };
 
 use flate2::read::GzDecoder;
+use thiserror::Error;
 
-pub(crate) fn extract(archive: &Path, destination: &Path) -> io::Result<()> {
+#[derive(Debug, Error)]
+pub enum ArchiveError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error("archive name is not valid UTF-8: {0}")]
+    InvalidName(PathBuf),
+    #[error("unsupported archive: {0}")]
+    Unsupported(PathBuf),
+    #[error("archive entry escaped the staging directory: {0}")]
+    EntryOutsideDestination(PathBuf),
+    #[error("archives must not contain links: {0}")]
+    Link(PathBuf),
+}
+
+pub(crate) fn extract(archive: &Path, destination: &Path) -> Result<(), ArchiveError> {
     let name = archive
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| invalid_data("archive name is not valid UTF-8"))?;
+        .ok_or_else(|| ArchiveError::InvalidName(archive.to_path_buf()))?;
     let file = File::open(archive)?;
     if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
         unpack(GzDecoder::new(file), destination)
     } else if name.ends_with(".tar") {
         unpack(file, destination)
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("unsupported archive: {}", archive.display()),
-        ))
+        Err(ArchiveError::Unsupported(archive.to_path_buf()))
     }
 }
 
-fn unpack(reader: impl Read, destination: &Path) -> io::Result<()> {
+fn unpack(reader: impl Read, destination: &Path) -> Result<(), ArchiveError> {
     let mut archive = tar::Archive::new(reader);
     for entry in archive.entries()? {
         let mut entry = entry?;
@@ -34,16 +46,16 @@ fn unpack(reader: impl Read, destination: &Path) -> io::Result<()> {
             fs::create_dir_all(destination.join(path))?;
         } else if entry_type.is_file() {
             if !entry.unpack_in(destination)? {
-                return Err(invalid_data("archive entry escaped the staging directory"));
+                return Err(ArchiveError::EntryOutsideDestination(path));
             }
         } else {
-            return Err(invalid_data("archives must not contain links"));
+            return Err(ArchiveError::Link(path));
         }
     }
     Ok(())
 }
 
-pub(crate) fn files(root: &Path) -> io::Result<Vec<PathBuf>> {
+pub(crate) fn files(root: &Path) -> Result<Vec<PathBuf>, ArchiveError> {
     let mut files = Vec::new();
     for entry in sorted_entries(root)? {
         if entry.file_type()?.is_dir() {
@@ -51,18 +63,14 @@ pub(crate) fn files(root: &Path) -> io::Result<Vec<PathBuf>> {
         } else if entry.file_type()?.is_file() {
             files.push(entry.path());
         } else {
-            return Err(invalid_data("staged archive contains a link"));
+            return Err(ArchiveError::Link(entry.path()));
         }
     }
     Ok(files)
 }
 
-fn sorted_entries(path: &Path) -> io::Result<Vec<fs::DirEntry>> {
+fn sorted_entries(path: &Path) -> Result<Vec<fs::DirEntry>, ArchiveError> {
     let mut entries = fs::read_dir(path)?.collect::<io::Result<Vec<_>>>()?;
     entries.sort_by_key(fs::DirEntry::file_name);
     Ok(entries)
-}
-
-fn invalid_data(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
 }

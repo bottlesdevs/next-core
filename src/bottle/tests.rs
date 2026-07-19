@@ -1,5 +1,5 @@
 use crate::{
-    bottle::bottle::BottleComponents,
+    bottle::{bottle::BottleComponents, error::BottleError},
     compatibility::{
         components::{
             Component,
@@ -37,8 +37,16 @@ fn proton_umu_components_and_dependencies_round_trip() {
     .unwrap();
     let umu = Component::new(ComponentKind::Umu, "umu-1", bottle_path.join("umu/umu-run")).unwrap();
     let dxvk = Component::new(ComponentKind::Dxvk, "dxvk-1", bottle_path.join("dxvk")).unwrap();
-    assert!(BottleComponents::new(&proton, &bridge, None).is_err());
-    assert!(BottleComponents::new(&wine, &bridge, Some(&umu)).is_err());
+    assert!(matches!(
+        BottleComponents::new(&proton, &bridge, None),
+        Err(crate::error::Error::Bottle(
+            BottleError::ProtonRunnerWithoutUmu
+        ))
+    ));
+    assert!(matches!(
+        BottleComponents::new(&wine, &bridge, Some(&umu)),
+        Err(crate::error::Error::Bottle(BottleError::WineRunnerWithUmu))
+    ));
     let mut components = BottleComponents::new(&proton, &bridge, Some(&umu)).unwrap();
     components.dxvk = Some(dxvk);
     let dependency: Dependency = serde_json::from_value(serde_json::json!({
