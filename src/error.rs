@@ -1,7 +1,13 @@
 use thiserror::Error;
 
-use crate::{bottle::error::BottleError, runner::RunnerError, winebridge::BridgeError};
-use fvs_rs::error::Error as VirgoError;
+use crate::{
+    bottle::error::{BottleError, VirgoError},
+    compatibility::installer::InstallerError,
+    runner::RunnerError,
+    utils::archive::ArchiveError,
+    winebridge::BridgeError,
+};
+use fvs_rs::error::Error as FvsError;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -21,10 +27,16 @@ pub enum Error {
     Bridge(#[from] BridgeError),
     #[error("Runner error: {0}")]
     Runner(#[from] RunnerError),
-    #[error("Virgo error: {0}")]
-    Virgo(#[from] VirgoError),
+    #[error("FVS error: {0}")]
+    Fvs(#[from] FvsError),
     #[error("Bottle error: {0}")]
     Bottle(#[from] BottleError),
+    #[error("Virgo error: {0}")]
+    Virgo(#[from] VirgoError),
+    #[error("archive error: {0}")]
+    Archive(#[from] ArchiveError),
+    #[error("installer error: {0}")]
+    Installer(#[from] InstallerError),
 }
 
 #[allow(dead_code)]

@@ -6,15 +6,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::error::BottleError;
-use crate::{
-    compatibility::{
-        components::{
-            Component,
-            catalog::{ComponentKind, RunnerKind},
-        },
-        dependencies::Dependency,
+use crate::compatibility::{
+    components::{
+        Component,
+        catalog::{ComponentKind, RunnerKind},
     },
-    error::Error,
+    dependencies::Dependency,
 };
 use crate::{error::Result, proto::Process, runner::Runner, winebridge::WineBridgeClient};
 
@@ -194,7 +191,7 @@ impl Bottle {
             }
             ComponentKind::Umu => {
                 if self.runner().kind().runner_kind() != Some(RunnerKind::Proton) {
-                    return Err(invalid_components("Wine runner must not use UMU"));
+                    return Err(BottleError::WineRunnerWithUmu.into());
                 }
                 if self.components.umu.as_ref().map(Component::id) == Some(component.id()) {
                     return Ok(());
@@ -268,9 +265,7 @@ impl Bottle {
             ComponentKind::Nvapi => self.components.nvapi.as_ref(),
             ComponentKind::LatencyFlex => self.components.latency_flex.as_ref(),
             _ => {
-                return Err(invalid_components(
-                    "component is not installed into a prefix",
-                ));
+                return Err(BottleError::InvalidPrefixComponent.into());
             }
         };
         if installed.map(Component::id) == Some(component.id()) {
@@ -331,7 +326,7 @@ impl Bottle {
             .runner()
             .kind()
             .runner_kind()
-            .ok_or_else(|| invalid_components("runner component is required"))?;
+            .ok_or(BottleError::RunnerComponentRequired)?;
         crate::runner::load_runner(
             self.runner().path(),
             kind,
@@ -405,21 +400,21 @@ impl BottleComponents {
         umu: Option<&Component>,
     ) -> Result<Self> {
         let ComponentKind::Runner { kind } = runner.kind() else {
-            return Err(invalid_components("runner component is required"));
+            return Err(BottleError::RunnerComponentRequired.into());
         };
         if winebridge.kind() != ComponentKind::Winebridge {
-            return Err(invalid_components("WineBridge component is required"));
+            return Err(BottleError::WinebridgeComponentRequired.into());
         }
         if umu.is_some_and(|component| component.kind() != ComponentKind::Umu) {
-            return Err(invalid_components("UMU component has the wrong kind"));
+            return Err(BottleError::InvalidUmuComponent.into());
         }
 
         match (kind, umu) {
             (RunnerKind::Wine, Some(_)) => {
-                return Err(invalid_components("Wine runner must not use UMU"));
+                return Err(BottleError::WineRunnerWithUmu.into());
             }
             (RunnerKind::Proton, None) => {
-                return Err(invalid_components("Proton runner requires UMU"));
+                return Err(BottleError::ProtonRunnerWithoutUmu.into());
             }
             _ => {}
         }
@@ -478,10 +473,6 @@ impl<'a> IntoIterator for &'a BottleComponents {
         .into_iter()
         .flatten()
     }
-}
-
-fn invalid_components(message: impl Into<String>) -> Error {
-    std::io::Error::new(std::io::ErrorKind::InvalidData, message.into()).into()
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]

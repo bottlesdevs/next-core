@@ -25,21 +25,7 @@ impl ComponentManager {
 
         let components = discover_components(&components_path, &index)?;
         let component_index = ComponentIndex {
-            components: components
-                .iter()
-                .map(|component| {
-                    Ok(Component {
-                        id: component.id,
-                        version: component.version.clone(),
-                        path: component
-                            .path
-                            .strip_prefix(&components_path)
-                            .map_err(io::Error::other)?
-                            .to_path_buf(),
-                        kind: component.kind,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
+            components: components.clone(),
         };
         if component_index != index || !index_path.is_file() {
             next_config::save(index_path, &component_index)?;
@@ -90,10 +76,7 @@ fn discover_components(components_path: &Path, index: &ComponentIndex) -> Result
             let Some((kind, path)) = component(&category_name, &version.path())? else {
                 continue;
             };
-            let relative = path
-                .strip_prefix(components_path)
-                .map_err(io::Error::other)?
-                .to_path_buf();
+            let relative = path.to_path_buf();
             let (id, version) = match indexed.remove(&relative) {
                 Some(entry) => (entry.id, entry.version.clone()),
                 None => (

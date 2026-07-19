@@ -15,7 +15,7 @@ use crate::{
 
 use super::{
     bottle::{BottleType, PrefixStorage},
-    error::BottleError,
+    error::VirgoError,
     manager::fvs,
 };
 
@@ -258,7 +258,7 @@ async fn apply_registry(bottle_path: &Path, layers: &[Layer], id: Uuid) -> Resul
                 stage.join(file),
                 hive,
             )
-            .map_err(|error| io::Error::other(error.to_string()))?;
+            .map_err(|error| VirgoError::Registry(error.to_string()))?;
         }
         for (file, _) in registry_files() {
             fs::rename(stage.join(file), prefix.join(file))?;
@@ -323,11 +323,11 @@ async fn ensure_base(runner: &dyn Runner) -> Result<Layer> {
             .await?
             .into_iter()
             .next()
-            .ok_or(BottleError::EmptyBase)?;
+            .ok_or(VirgoError::EmptyBase)?;
         return Ok(Layer::from_summary(&repository, Some(&commit)));
     }
     if repository_path.exists() && repository_path.read_dir()?.next().is_some() {
-        return Err(BottleError::DirtyBase(repository_path).into());
+        return Err(VirgoError::DirtyBase(repository_path).into());
     }
 
     fs::create_dir_all(&repository_path)?;
@@ -360,7 +360,7 @@ async fn ensure_adapter(runner: &dyn Runner, runner_key: &str, base: &Layer) -> 
             .await?
             .into_iter()
             .next()
-            .ok_or_else(|| BottleError::MissingCommit {
+            .ok_or_else(|| VirgoError::MissingCommit {
                 repository: destination.clone(),
                 state: "HEAD".into(),
             })?;
@@ -407,11 +407,7 @@ async fn ensure_adapter(runner: &dyn Runner, runner_key: &str, base: &Layer) -> 
 async fn cached_layer(id: Uuid) -> Result<Layer> {
     let destination = layer_cache(id);
     if !destination.join(".fvs2").is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("cached Virgo layer not found: {}", destination.display()),
-        )
-        .into());
+        return Err(VirgoError::CachedLayerNotFound(destination).into());
     }
     let client = fvs().await?;
     let repository = client.new_repository(&destination, 0).await?;
@@ -420,7 +416,7 @@ async fn cached_layer(id: Uuid) -> Result<Layer> {
         .await?
         .into_iter()
         .next()
-        .ok_or_else(|| BottleError::MissingCommit {
+        .ok_or_else(|| VirgoError::MissingCommit {
             repository: destination,
             state: "HEAD".into(),
         })?;
@@ -449,11 +445,13 @@ fn registry_files() -> [(&'static str, Hive); 2] {
 }
 
 fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -> Result<()> {
-    let old = Registry::try_from(old, hive).map_err(io::Error::other)?;
-    let new = Registry::try_from(new, hive).map_err(io::Error::other)?;
+    let old =
+        Registry::try_from(old, hive).map_err(|error| VirgoError::Registry(error.to_string()))?;
+    let new =
+        Registry::try_from(new, hive).map_err(|error| VirgoError::Registry(error.to_string()))?;
     Registry::diff(&old, &new)
         .serialize_file(output)
-        .map_err(io::Error::other)?;
+        .map_err(|error| VirgoError::Registry(error.to_string()))?;
     Ok(())
 }
 
@@ -468,7 +466,7 @@ fn remove_file(path: &Path) -> io::Result<()> {
 fn ensure_empty_dir(path: &Path) -> Result<()> {
     fs::create_dir_all(path)?;
     if path.read_dir()?.next().is_some() {
-        return Err(BottleError::DirtyMountpoint(path.to_path_buf()).into());
+        return Err(VirgoError::DirtyMountpoint(path.to_path_buf()).into());
     }
     Ok(())
 }

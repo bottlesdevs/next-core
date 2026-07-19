@@ -14,7 +14,7 @@ use crate::{
 
 use super::{
     bottle::{Bottle, BottleType, PrefixStorage},
-    error::BottleError,
+    error::{BottleError, VirgoError},
 };
 
 pub struct BottleManagerConfig {
@@ -58,12 +58,10 @@ impl BottleManager {
             }
         }
 
-        let runner_kind = runner_component.kind().runner_kind().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "runner component is required",
-            )
-        })?;
+        let runner_kind = runner_component
+            .kind()
+            .runner_kind()
+            .ok_or(BottleError::RunnerComponentRequired)?;
         let umu = umu_for_runner(runner_kind, None)?;
         let components = BottleComponents::new(runner_component, winebridge, umu.as_ref())?;
         let runner = load_runner(
@@ -101,10 +99,10 @@ impl BottleManager {
         }
         let bottle: Bottle = next_config::load(path)?;
         if bottle.id != id {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "bottle id does not match its directory",
-            )
+            return Err(BottleError::IdMismatch {
+                expected: id,
+                actual: bottle.id,
+            }
             .into());
         }
         Ok(bottle)
@@ -144,7 +142,7 @@ pub(crate) async fn fvs() -> Result<&'static Fvs2dClient> {
         let executable = config()
             .fvs2d_executable
             .as_ref()
-            .ok_or(BottleError::VirgoUnavailable)?;
+            .ok_or(VirgoError::Unavailable)?;
         Ok(Fvs2dClient::connect_or_spawn(
             executable,
             crate::utils::directories::expect()

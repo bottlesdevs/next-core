@@ -1,5 +1,4 @@
 use std::{
-    io::{self, ErrorKind},
     path::{Path, PathBuf},
     process::{Child, Command},
 };
@@ -22,11 +21,16 @@ pub struct Proton {
 impl Proton {
     pub fn new(proton_path: impl AsRef<Path>, umu_executable: impl AsRef<Path>) -> Result<Self> {
         if !proton_path.as_ref().join("proton").is_file() {
-            return Err(io::Error::new(ErrorKind::NotFound, "Proton runner not found").into());
+            return Err(
+                RunnerError::RunnerExecutableNotFound(proton_path.as_ref().join("proton")).into(),
+            );
         }
 
         if !umu_executable.as_ref().is_file() {
-            return Err(io::Error::new(ErrorKind::NotFound, "UMU executable not found").into());
+            return Err(RunnerError::RunnerExecutableNotFound(
+                umu_executable.as_ref().to_path_buf(),
+            )
+            .into());
         }
 
         Ok(Self {

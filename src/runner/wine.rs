@@ -1,7 +1,6 @@
 use super::{Runner, RunnerCommand};
 use crate::{error::Result, runner::RunnerError};
 use std::{
-    io::{self, ErrorKind},
     path::{Path, PathBuf},
     process::{Child, Command},
 };
@@ -19,13 +18,9 @@ pub struct Wine {
 impl Wine {
     /// Creates a new Wine runner with the specified executable path
     pub fn new(executable: impl AsRef<Path>) -> Result<Self> {
-        if !executable.as_ref().exists() {
-            return Err(io::Error::new(ErrorKind::NotFound, "Wine executable not found").into());
-        }
-
         if !executable.as_ref().is_file() {
             return Err(
-                io::Error::new(ErrorKind::InvalidInput, "Wine executable is not a file").into(),
+                RunnerError::RunnerExecutableNotFound(executable.as_ref().to_path_buf()).into(),
             );
         }
 

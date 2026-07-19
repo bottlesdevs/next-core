@@ -24,6 +24,8 @@ pub enum RunnerError {
     UmuExecutableMissing,
     #[error("no supported runner executable was found in {0}")]
     RunnerNotFound(PathBuf),
+    #[error("runner executable was not found: {0}")]
+    RunnerExecutableNotFound(PathBuf),
 }
 
 pub struct RunnerCommand {
