@@ -1,28 +1,11 @@
 //! Types and deserializers shared by component and dependency catalogs.
 
-use std::{collections::HashSet, num::NonZeroU32};
-
 use serde::{Deserialize, Deserializer, Serialize, de};
-use uuid::Uuid;
 
+mod catalog;
 pub mod components;
 pub mod dependencies;
 pub mod installer;
-
-pub trait Catalog {
-    type Item;
-    type Query<'catalog>
-    where
-        Self: 'catalog;
-
-    fn version(&self) -> NonZeroU32;
-    fn query(&self) -> Self::Query<'_>;
-    fn iter(&self) -> impl ExactSizeIterator<Item = &Self::Item> + DoubleEndedIterator;
-}
-
-pub(crate) trait CatalogItem {
-    fn uuid(&self) -> Uuid;
-}
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "algorithm", content = "value", rename_all = "kebab-case")]
@@ -88,47 +71,6 @@ pub enum Architecture {
     Aarch64,
 }
 
-pub(crate) fn deserialize_supported_schema_version<'de, D, const SUPPORTED_VERSION: u32>(
-    deserializer: D,
-) -> Result<NonZeroU32, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let schema_version = NonZeroU32::deserialize(deserializer)?;
-    let supported_schema_version = NonZeroU32::new(SUPPORTED_VERSION)
-        .ok_or_else(|| de::Error::custom("supported schema version cannot be zero"))?;
-
-    if schema_version != supported_schema_version {
-        return Err(de::Error::custom(format!(
-            "unsupported catalog schema version {schema_version}; expected {supported_schema_version}"
-        )));
-    }
-
-    Ok(schema_version)
-}
-
-pub(crate) fn deserialize_unique_catalog_items<'de, D, T>(
-    deserializer: D,
-) -> Result<Vec<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: CatalogItem + Deserialize<'de>,
-{
-    let items = Vec::<T>::deserialize(deserializer)?;
-    let mut ids = HashSet::new();
-
-    for item in &items {
-        if !ids.insert(item.uuid()) {
-            return Err(de::Error::custom(format!(
-                "duplicate catalog item id {}",
-                item.uuid()
-            )));
-        }
-    }
-
-    Ok(items)
-}
-
 pub(crate) fn deserialize_non_empty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -151,19 +93,6 @@ where
 
     if value.is_empty() {
         return Err(de::Error::custom("value cannot be empty"));
-    }
-
-    Ok(value)
-}
-
-pub(crate) fn deserialize_non_empty_checksum<'de, D>(deserializer: D) -> Result<Checksum, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = Checksum::deserialize(deserializer)?;
-
-    if value.value().is_empty() {
-        return Err(de::Error::custom("checksum cannot be empty"));
     }
 
     Ok(value)

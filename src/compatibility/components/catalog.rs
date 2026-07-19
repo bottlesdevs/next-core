@@ -3,9 +3,20 @@ use url::Url;
 use uuid::{NonNilUuid, Uuid};
 
 use crate::compatibility::{
-    Checksum, Target, deserialize_non_empty_checksum, deserialize_non_empty_string,
-    deserialize_non_empty_vec,
+    Checksum, Target,
+    catalog::{Artifact, Catalog, CatalogItem},
+    deserialize_non_empty_string, deserialize_non_empty_vec,
 };
+
+const CATALOG_VERSION: u32 = 1;
+
+pub type ComponentCatalog = Catalog<CatalogComponentEntry, CATALOG_VERSION>;
+
+impl CatalogItem for CatalogComponentEntry {
+    fn uuid(&self) -> Uuid {
+        self.uuid()
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CatalogComponentEntry {
@@ -54,32 +65,27 @@ impl CatalogComponentEntry {
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ComponentArtifact {
-    url: Url,
-    #[serde(deserialize_with = "deserialize_non_empty_string")]
-    file_name: String,
-    #[serde(deserialize_with = "deserialize_non_empty_checksum")]
-    checksum: Checksum,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    size: Option<u64>,
+    #[serde(flatten)]
+    artifact: Artifact,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     target: Option<Target>,
 }
 
 impl ComponentArtifact {
-    pub fn url(&self) -> &Url {
-        &self.url
+    pub fn file_name(&self) -> &str {
+        &self.artifact.file_name()
     }
 
-    pub fn file_name(&self) -> &str {
-        &self.file_name
+    pub fn url(&self) -> &Url {
+        &self.artifact.url()
     }
 
     pub fn checksum(&self) -> &Checksum {
-        &self.checksum
+        &self.artifact.checksum()
     }
 
     pub fn size(&self) -> Option<u64> {
-        self.size
+        self.artifact.size()
     }
 
     pub fn target(&self) -> Option<Target> {
@@ -180,10 +186,12 @@ mod tests {
     #[test]
     fn generic_artifacts_match_any_target() {
         let artifact = ComponentArtifact {
-            url: Url::parse("https://example.test/dxvk.tar.gz").unwrap(),
-            file_name: String::from("dxvk.tar.gz"),
-            checksum: Checksum::sha256("abc"),
-            size: None,
+            artifact: Artifact {
+                url: Url::parse("https://example.test/dxvk.tar.gz").unwrap(),
+                file_name: String::from("dxvk.tar.gz"),
+                checksum: Checksum::sha256("abc"),
+                size: None,
+            },
             target: None,
         };
 
@@ -193,17 +201,21 @@ mod tests {
     #[test]
     fn artifact_lookup_prefers_exact_target_over_generic_artifact() {
         let generic = ComponentArtifact {
-            url: Url::parse("https://example.test/generic.tar.gz").unwrap(),
-            file_name: String::from("generic.tar.gz"),
-            checksum: Checksum::sha256("abc"),
-            size: None,
+            artifact: Artifact {
+                url: Url::parse("https://example.test/generic.tar.gz").unwrap(),
+                file_name: String::from("generic.tar.gz"),
+                checksum: Checksum::sha256("abc"),
+                size: None,
+            },
             target: None,
         };
         let linux = ComponentArtifact {
-            url: Url::parse("https://example.test/linux.tar.gz").unwrap(),
-            file_name: String::from("linux.tar.gz"),
-            checksum: Checksum::sha256("def"),
-            size: None,
+            artifact: Artifact {
+                url: Url::parse("https://example.test/linux.tar.gz").unwrap(),
+                file_name: String::from("linux.tar.gz"),
+                checksum: Checksum::sha256("def"),
+                size: None,
+            },
             target: Some(Target::linux_x86_64()),
         };
         let component = CatalogComponentEntry {
