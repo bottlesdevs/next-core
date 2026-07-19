@@ -1,11 +1,22 @@
 use crate::compatibility::{
-    Architecture, Checksum, deserialize_non_empty_checksum, deserialize_non_empty_string,
+    Architecture, Checksum,
+    catalog::{Artifact, Catalog, CatalogItem},
+    deserialize_non_empty_string,
     installer::InstallStep,
 };
 use serde::{Deserialize, Serialize};
-use std::num::NonZeroU64;
 use url::Url;
 use uuid::{NonNilUuid, Uuid};
+
+const CATALOG_VERSION: u32 = 1;
+
+pub type DependencyCatalog = Catalog<CatalogDependencyEntry, CATALOG_VERSION>;
+
+impl CatalogItem for CatalogDependencyEntry {
+    fn uuid(&self) -> Uuid {
+        self.uuid()
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -45,12 +56,8 @@ impl CatalogDependencyEntry {
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DependencyResource {
-    #[serde(deserialize_with = "deserialize_non_empty_string")]
-    file_name: String,
-    url: Url,
-    #[serde(deserialize_with = "deserialize_non_empty_checksum")]
-    checksum: Checksum,
-    size: NonZeroU64,
+    #[serde(flatten)]
+    artifact: Artifact,
     target_arch: Architecture,
     #[serde(default)]
     steps: Vec<InstallStep>,
@@ -58,19 +65,19 @@ pub struct DependencyResource {
 
 impl DependencyResource {
     pub fn file_name(&self) -> &str {
-        &self.file_name
+        &self.artifact.file_name()
     }
 
     pub fn url(&self) -> &Url {
-        &self.url
+        &self.artifact.url()
     }
 
     pub fn checksum(&self) -> &Checksum {
-        &self.checksum
+        &self.artifact.checksum()
     }
 
-    pub fn size(&self) -> u64 {
-        self.size.get()
+    pub fn size(&self) -> Option<u64> {
+        self.artifact.size()
     }
 
     pub fn target_arch(&self) -> Architecture {
@@ -183,7 +190,7 @@ mod tests {
 
         let x86 = &dependency.resources()[0];
         assert_eq!(x86.file_name(), "vc_redist.x86.exe");
-        assert_eq!(x86.size(), 123456);
+        assert_eq!(x86.size(), Some(123456));
         assert_eq!(x86.target_arch(), Architecture::X86);
         assert!(matches!(
             &x86.steps()[0],
