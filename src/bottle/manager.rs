@@ -13,7 +13,7 @@ use crate::{
 };
 
 use super::{
-    bottle::{Bottle, BottleType, PrefixStorage},
+    bottle::{Bottle, BottleConfig, BottleType, PrefixStorage},
     error::{BottleError, VirgoError},
 };
 
@@ -53,7 +53,7 @@ impl BottleManager {
         let name = name.into();
         for entry in fs::read_dir(crate::utils::directories::expect().bottles())? {
             let path = entry?.path().join("bottle.toml");
-            if path.is_file() && next_config::load::<Bottle>(&path)?.name == name {
+            if path.is_file() && next_config::load::<BottleConfig>(&path)?.name == name {
                 return Err(BottleError::DuplicateName(name).into());
             }
         }
@@ -97,15 +97,15 @@ impl BottleManager {
         if !path.is_file() {
             return Err(BottleError::NotFound(id).into());
         }
-        let bottle: Bottle = next_config::load(path)?;
-        if bottle.id != id {
+        let config: BottleConfig = next_config::load(path)?;
+        if config.id != id {
             return Err(BottleError::IdMismatch {
                 expected: id,
-                actual: bottle.id,
+                actual: config.id,
             }
             .into());
         }
-        Ok(bottle)
+        Ok(Bottle::from_config(config))
     }
 
     pub fn list(&self) -> Result<Vec<Bottle>> {
@@ -113,7 +113,7 @@ impl BottleManager {
         for entry in fs::read_dir(crate::utils::directories::expect().bottles())? {
             let path = entry?.path().join("bottle.toml");
             if path.is_file() {
-                bottles.push(next_config::load(path)?);
+                bottles.push(Bottle::from_config(next_config::load(path)?));
             }
         }
         Ok(bottles)
