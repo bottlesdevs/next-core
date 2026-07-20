@@ -175,7 +175,7 @@ mod unix {
         let runner_id = bottle.runner().id();
         drop(bottle);
 
-        let reopened = manager.open(bottle_id).unwrap();
+        let mut reopened = manager.open(bottle_id).unwrap();
         assert_eq!(reopened.runner().id(), runner_id);
         assert_eq!(reopened.runner().path(), runner_root);
         assert_eq!(reopened.r#type(), BottleType::Standard);
@@ -201,6 +201,13 @@ mod unix {
             fs::read_to_string(directories.bottle(bottle_id).join("prefix/wineserver.log"))
                 .unwrap(),
             "-k\n"
+        );
+
+        reopened.stop().await.unwrap();
+        assert_eq!(
+            fs::read_to_string(directories.bottle(bottle_id).join("prefix/wineserver.log"))
+                .unwrap(),
+            "-k\n-k\n"
         );
 
         drop(reopened);

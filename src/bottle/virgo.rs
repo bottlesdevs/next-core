@@ -30,7 +30,7 @@ impl PrefixStorage {
     ) -> Result<Self> {
         match kind {
             BottleType::Standard => {
-                initialize_and_shutdown_prefix(runner, &bottle_path.join("prefix"))?;
+                initialize_and_shutdown_prefix(runner, &bottle_path.join("prefix")).await?;
                 Ok(Self::Standard)
             }
             BottleType::Virgo => {
@@ -322,7 +322,7 @@ async fn ensure_base(runner: &dyn Runner) -> Result<Layer> {
     }
 
     fs::create_dir_all(&repository_path)?;
-    if let Err(error) = initialize_and_shutdown_prefix(runner, &repository_path) {
+    if let Err(error) = initialize_and_shutdown_prefix(runner, &repository_path).await {
         let _ = fs::remove_dir_all(&base_path);
         return Err(error);
     }
@@ -371,7 +371,7 @@ async fn ensure_adapter(runner: &dyn Runner, runner_key: &str, base: &Layer) -> 
         let mount = client
             .mount(&mountpoint, vec![base.clone()], Some(&upper))
             .await?;
-        let initialized = initialize_and_shutdown_prefix(runner, &mountpoint);
+        let initialized = initialize_and_shutdown_prefix(runner, &mountpoint).await;
         let unmounted = client.unmount(&mount, UnmountMode::Normal).await;
         initialized?;
         unmounted?;

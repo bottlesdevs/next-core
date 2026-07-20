@@ -1,6 +1,7 @@
 mod proton;
 mod wine;
 
+use async_trait::async_trait;
 pub use proton::Proton;
 use thiserror::Error;
 pub use wine::Wine;
@@ -10,8 +11,9 @@ use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
-    process::{Child, ExitStatus},
+    process::ExitStatus,
 };
+use tokio::process::Child;
 
 /// Errors produced by runner setup.
 #[derive(Debug, Error)]
@@ -63,31 +65,36 @@ impl RunnerCommand {
     }
 }
 
+#[async_trait]
 pub trait Runner: Send + Sync {
     fn run(&self, prefix: &Path, command: RunnerCommand) -> Result<Child>;
 
-    fn wineboot(&self, prefix: &Path, arg: &str) -> Result<()> {
+    async fn wineboot(&self, prefix: &Path, arg: &str) -> Result<()> {
         let status = self
             .run(prefix, RunnerCommand::new("wineboot").arg(arg))?
-            .wait()?;
+            .wait()
+            .await?;
         if !status.success() {
             return Err(RunnerError::WinebootFailed(status).into());
         }
         Ok(())
     }
 
-    fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()>;
+    async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()>;
 }
 
-pub(crate) fn initialize_and_shutdown_prefix(runner: &dyn Runner, prefix: &Path) -> Result<()> {
-    let initialized = runner.wineboot(prefix, "--init");
-    let stopped = shutdown_prefix(runner, prefix);
+pub(crate) async fn initialize_and_shutdown_prefix(
+    runner: &dyn Runner,
+    prefix: &Path,
+) -> Result<()> {
+    let initialized = runner.wineboot(prefix, "--init").await;
+    let stopped = shutdown_prefix(runner, prefix).await;
     initialized?;
     stopped
 }
 
-pub(crate) fn shutdown_prefix(runner: &dyn Runner, prefix: &Path) -> Result<()> {
-    runner.wineserver(prefix, "-k")
+pub(crate) async fn shutdown_prefix(runner: &dyn Runner, prefix: &Path) -> Result<()> {
+    runner.wineserver(prefix, "-k").await
 }
 
 pub(crate) fn detect_runner_kind(path: &Path) -> Result<RunnerKind> {
