@@ -11,7 +11,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    bottle::Bottle,
+    bottle::PrefixStorage,
     compatibility::components::{
         Component, ComponentManager,
         catalog::{ComponentKind, RunnerKind},
@@ -84,75 +84,65 @@ pub(crate) trait Installable {
     fn prepare(&self) -> Result<Vec<InstallResource>>;
 }
 
+pub(crate) struct InstallInputs<'a> {
+    pub(crate) storage: &'a mut PrefixStorage,
+    pub(crate) bottle_path: &'a Path,
+    pub(crate) runner: &'a dyn Runner,
+    pub(crate) winebridge: &'a Path,
+    pub(crate) environment: &'a mut HashMap<String, String>,
+}
+
 pub(crate) async fn execute(
-    bottle: &mut Bottle,
+    inputs: InstallInputs<'_>,
     item: &impl Installable,
     replaced_id: Option<Uuid>,
 ) -> Result<()> {
     let resources = item.prepare()?;
-    let previous_environment = bottle.environment.clone();
-    let runner = bottle.load_runner()?;
-    let winebridge = bottle.components.winebridge.path().to_path_buf();
-    let bottle_path = bottle.bottle_path();
-    let storage = &mut bottle.storage;
-    let environment = &mut bottle.environment;
+    let InstallInputs {
+        storage,
+        bottle_path,
+        runner,
+        winebridge,
+        environment,
+    } = inputs;
     let installed = storage
-        .install(&bottle_path, item.id(), replaced_id, async |prefix| {
-            execute_steps(
-                runner.as_ref(),
-                prefix,
-                &winebridge,
-                environment,
-                &resources,
-            )
-            .await
+        .install(bottle_path, item.id(), replaced_id, async |prefix| {
+            execute_steps(runner, prefix, winebridge, environment, &resources).await
         })
-        .await;
-    match installed {
-        Ok(true) => Ok(()),
-        Ok(false) => {
-            replay_environment(&mut bottle.environment, &resources);
-            Ok(())
-        }
-        Err(error) => {
-            bottle.environment = previous_environment;
-            Err(error)
-        }
+        .await?;
+    if !installed {
+        replay_environment(environment, &resources);
     }
+    Ok(())
 }
 
-pub(crate) async fn uninstall(bottle: &mut Bottle, component: &Component) -> Result<()> {
+pub(crate) async fn uninstall(inputs: InstallInputs<'_>, component: &Component) -> Result<()> {
     let resources = component.prepare()?;
-    let runner = bottle.load_runner()?;
-    let winebridge = bottle.components.winebridge.path().to_path_buf();
-    let bottle_path = bottle.bottle_path();
-    let previous_environment = bottle.environment.clone();
-    let result = {
-        let storage = &mut bottle.storage;
-        let environment = &mut bottle.environment;
-        storage
-            .uninstall(
-                &bottle_path,
-                component.id(),
-                async |prefix, restore_files| {
-                    uninstall_steps(
-                        runner.as_ref(),
-                        prefix,
-                        &winebridge,
-                        environment,
-                        &resources,
-                        restore_files,
-                        component.id(),
-                    )
-                    .await
-                },
-            )
-            .await
-    };
-    if result.is_err() {
-        bottle.environment = previous_environment;
-    }
-    result
+    let InstallInputs {
+        storage,
+        bottle_path,
+        runner,
+        winebridge,
+        environment,
+    } = inputs;
+    storage
+        .uninstall(
+            bottle_path,
+            component.id(),
+            async |prefix, restore_files| {
+                uninstall_steps(
+                    runner,
+                    prefix,
+                    winebridge,
+                    environment,
+                    &resources,
+                    restore_files,
+                    component.id(),
+                )
+                .await
+            },
+        )
+        .await
 }
 
 fn replay_environment(environment: &mut HashMap<String, String>, resources: &[InstallResource]) {

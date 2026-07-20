@@ -7,5 +7,6 @@ mod virgo;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use bottle::PrefixStorage;
 pub use bottle::{Bottle, BottleType, Program};
 pub use manager::BottleManager;

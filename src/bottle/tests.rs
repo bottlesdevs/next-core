@@ -1,5 +1,8 @@
 use crate::{
-    bottle::{bottle::BottleComponents, error::BottleError},
+    bottle::{
+        bottle::{BottleComponents, BottleConfig},
+        error::BottleError,
+    },
     compatibility::{
         components::{
             Component,
@@ -55,7 +58,7 @@ fn proton_umu_components_and_dependencies_round_trip() {
         "version": "14.38"
     }))
     .unwrap();
-    let bottle = super::bottle::Bottle {
+    let config = BottleConfig {
         id,
         name: "proton".into(),
         components,
@@ -63,24 +66,23 @@ fn proton_umu_components_and_dependencies_round_trip() {
         storage: super::bottle::PrefixStorage::Standard,
         programs: Vec::new(),
         environment: [("EXAMPLE".into(), "enabled".into())].into(),
-        bridge: None,
     };
     let path = bottle_path.join("bottle.toml");
 
-    next_config::save(&path, &bottle).unwrap();
-    let loaded: super::bottle::Bottle = next_config::load(&path).unwrap();
+    next_config::save(&path, &config).unwrap();
+    let loaded: BottleConfig = next_config::load(&path).unwrap();
     let stored = std::fs::read_to_string(&path).unwrap();
     assert!(stored.contains("[umu]"));
     assert!(stored.contains("[dxvk]"));
     assert!(stored.contains("[[dependencies]]"));
     assert_eq!(
-        loaded.runner().kind(),
+        loaded.components.runner().kind(),
         ComponentKind::Runner {
             kind: RunnerKind::Proton
         }
     );
-    assert_eq!(loaded.components().umu().unwrap().version(), "umu-1");
-    assert_eq!(loaded.dependencies()[0].name(), "vcrun2022");
+    assert_eq!(loaded.components.umu().unwrap().version(), "umu-1");
+    assert_eq!(loaded.dependencies[0].name(), "vcrun2022");
     assert_eq!(loaded.environment["EXAMPLE"], "enabled");
 
     std::fs::remove_dir_all(bottle_path).unwrap();
@@ -152,6 +154,21 @@ mod unix {
         let program_id = program.id;
         bottle.add_program(program).unwrap();
         let bottle_id = bottle.id();
+        let failed_program = Program::new("Unsaved", "C:\\unsaved.exe");
+        let failed_program_id = failed_program.id;
+        let temporary = directories.bottle(bottle_id).join("bottle.tmp");
+        fs::create_dir(&temporary).unwrap();
+        assert!(bottle.add_program(failed_program).is_err());
+        assert!(bottle.program(failed_program_id).is_none());
+        let persisted: BottleConfig =
+            next_config::load(directories.bottle(bottle_id).join("bottle.toml")).unwrap();
+        assert!(
+            persisted
+                .programs
+                .iter()
+                .all(|program| program.id != failed_program_id)
+        );
+        fs::remove_dir(temporary).unwrap();
         let runner_id = bottle.runner().id();
         drop(bottle);
 
@@ -217,7 +234,7 @@ fn virgo_layers_round_trip_through_bottle_toml() {
         bottle_path.join("winebridge/bottles-winebridge.exe"),
     )
     .unwrap();
-    let bottle = super::bottle::Bottle {
+    let config = BottleConfig {
         id,
         name: "virgo".into(),
         components: BottleComponents::new(&runner, &bridge, None).unwrap(),
@@ -227,12 +244,11 @@ fn virgo_layers_round_trip_through_bottle_toml() {
         },
         programs: Vec::new(),
         environment: Default::default(),
-        bridge: None,
     };
     let path = bottle_path.join("bottle.toml");
 
-    next_config::save(&path, &bottle).unwrap();
-    let loaded: super::bottle::Bottle = next_config::load(&path).unwrap();
+    next_config::save(&path, &config).unwrap();
+    let loaded: BottleConfig = next_config::load(&path).unwrap();
     let stored = std::fs::read_to_string(&path).unwrap();
     assert!(stored.contains("[runner]"));
     assert!(stored.contains("[winebridge]"));
@@ -242,7 +258,7 @@ fn virgo_layers_round_trip_through_bottle_toml() {
         "path = \"{}\"",
         bottle_path.join("prefix").display()
     )));
-    assert_eq!(loaded.r#type(), super::bottle::BottleType::Virgo);
+    assert_eq!(loaded.storage.kind(), super::bottle::BottleType::Virgo);
     let super::bottle::PrefixStorage::Virgo { layers } = loaded.storage else {
         panic!("expected Virgo storage");
     };

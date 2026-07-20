@@ -113,7 +113,6 @@ impl PrefixStorage {
         match self {
             Self::Standard => execute(&bottle_path.join("prefix"), true).await,
             Self::Virgo { layers } => {
-                let previous_layers = layers.clone();
                 remove_cached_layer(layers, item_id);
 
                 let prefix = bottle_path.join("prefix");
@@ -123,11 +122,7 @@ impl PrefixStorage {
                 }
                 .await;
                 let unmounted = unmount_prefix(bottle_path).await;
-                let result = cleaned.and(unmounted);
-                if result.is_err() {
-                    *layers = previous_layers;
-                }
-                result
+                cleaned.and(unmounted)
             }
         }
     }
@@ -148,7 +143,6 @@ async fn install_virgo<F>(
 where
     F: for<'a> AsyncFnOnce(&'a Path) -> Result<()>,
 {
-    let previous_layers = layers.clone();
     let executed = if layer_cache(item_id).join(".fvs2").is_dir() {
         false
     } else {
@@ -164,10 +158,7 @@ where
     let destination = layer_cache(item_id).display().to_string();
     layers.retain(|layer| layer.repository_path != destination);
     layers.push(cached);
-    if let Err(error) = apply_registry(bottle_path, layers, item_id).await {
-        *layers = previous_layers;
-        return Err(error);
-    }
+    apply_registry(bottle_path, layers, item_id).await?;
     Ok(executed)
 }
 
