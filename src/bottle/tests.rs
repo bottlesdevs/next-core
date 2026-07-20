@@ -105,7 +105,10 @@ mod unix {
                 "wine",
                 "#!/bin/sh\nmkdir -p \"$WINEPREFIX\"\ntouch \"$WINEPREFIX/initialized\"\n",
             ),
-            ("wineserver", "#!/bin/sh\nexit 0\n"),
+            (
+                "wineserver",
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$WINEPREFIX/wineserver.log\"\n",
+            ),
         ] {
             let path = bin.join(name);
             fs::write(&path, script).unwrap();
@@ -193,6 +196,11 @@ mod unix {
                 .bottle(bottle_id)
                 .join("prefix/initialized")
                 .is_file()
+        );
+        assert_eq!(
+            fs::read_to_string(directories.bottle(bottle_id).join("prefix/wineserver.log"))
+                .unwrap(),
+            "-k\n"
         );
 
         drop(reopened);

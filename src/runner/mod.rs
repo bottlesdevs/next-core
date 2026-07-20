@@ -10,16 +10,16 @@ use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
-    process::Child,
+    process::{Child, ExitStatus},
 };
 
 /// Errors produced by runner setup.
 #[derive(Debug, Error)]
 pub enum RunnerError {
-    #[error("The runner process used for prefix initialization exited unsuccessfully.")]
-    PrefixInitFailed,
-    #[error("The runner process used for prefix shutdown exited unsuccessfully: {0}")]
-    PrefixShutdownFailed(&'static str),
+    #[error("wineboot exited unsuccessfully: {0}")]
+    WinebootFailed(ExitStatus),
+    #[error("wineserver exited unsuccessfully: {0}")]
+    WineserverFailed(ExitStatus),
     #[error("Proton runner requires an UMU executable")]
     UmuExecutableMissing,
     #[error("no supported runner executable was found in {0}")]
@@ -66,18 +66,28 @@ impl RunnerCommand {
 pub trait Runner: Send + Sync {
     fn run(&self, prefix: &Path, command: RunnerCommand) -> Result<Child>;
 
-    fn initialize_prefix(&self, prefix: &Path) -> Result<()>;
-
-    fn shutdown_prefix(&self, _: &Path) -> Result<()> {
+    fn wineboot(&self, prefix: &Path, arg: &str) -> Result<()> {
+        let status = self
+            .run(prefix, RunnerCommand::new("wineboot").arg(arg))?
+            .wait()?;
+        if !status.success() {
+            return Err(RunnerError::WinebootFailed(status).into());
+        }
         Ok(())
     }
+
+    fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()>;
 }
 
 pub(crate) fn initialize_and_shutdown_prefix(runner: &dyn Runner, prefix: &Path) -> Result<()> {
-    let initialized = runner.initialize_prefix(prefix);
-    let stopped = runner.shutdown_prefix(prefix);
+    let initialized = runner.wineboot(prefix, "--init");
+    let stopped = shutdown_prefix(runner, prefix);
     initialized?;
     stopped
+}
+
+pub(crate) fn shutdown_prefix(runner: &dyn Runner, prefix: &Path) -> Result<()> {
+    runner.wineserver(prefix, "-k")
 }
 
 pub(crate) fn detect_runner_kind(path: &Path) -> Result<RunnerKind> {

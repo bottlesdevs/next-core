@@ -53,13 +53,16 @@ impl Runner for Proton {
             .map_err(Into::into)
     }
 
-    fn initialize_prefix(&self, prefix: &Path) -> Result<()> {
-        let command = RunnerCommand::new("wineboot").arg("--init");
+    // See: https://github.com/Open-Wine-Components/umu-launcher/issues/593#issuecomment-3958136985
+    fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
+        let command = RunnerCommand::new(self.proton_path.join("files/bin/wineserver"))
+            .arg(arg)
+            .env("PROTONPATH", "umu-sniper");
         let status = self.run(prefix, command)?.wait()?;
-        if !status.success() {
-            return Err(RunnerError::PrefixInitFailed.into());
+        if status.success() || (arg == "-k" && status.code() == Some(1)) {
+            return Ok(());
         }
-        Ok(())
+        Err(RunnerError::WineserverFailed(status).into())
     }
 }
 
@@ -80,7 +83,7 @@ mod tests {
         fs::write(
             &umu,
             format!(
-                "#!/bin/sh\nlog='{}'\nprintf '%s|%s|%s|' \"$PROTONPATH\" \"$WINEPREFIX\" \"$WINEARCH\" >> \"$log\"\nprintf '<%s>' \"$@\" >> \"$log\"\nprintf '\\n' >> \"$log\"\n",
+                "#!/bin/sh\nlog='{}'\nprintf '%s|%s|%s|' \"$PROTONPATH\" \"$WINEPREFIX\" \"$WINEARCH\" >> \"$log\"\nprintf '<%s>' \"$@\" >> \"$log\"\nprintf '\\n' >> \"$log\"\n[ \"$2\" = -k ] && exit 1\n[ \"$2\" != --fail ]\n",
                 log.display()
             ),
         )
@@ -89,19 +92,40 @@ mod tests {
 
         let runner = Proton::new(&proton_path, &umu).unwrap();
         let prefix = root.join("prefix");
-        runner.initialize_prefix(&prefix).unwrap();
+        runner.wineboot(&prefix, "--init").unwrap();
         runner
             .run(&prefix, RunnerCommand::new("game.exe").arg("--flag"))
             .unwrap()
             .wait()
             .unwrap();
+        runner.wineserver(&prefix, "-k").unwrap();
+        assert!(matches!(
+            runner.wineboot(&prefix, "--fail"),
+            Err(crate::error::Error::Runner(RunnerError::WinebootFailed(_)))
+        ));
+        assert!(matches!(
+            runner.wineserver(&prefix, "--fail"),
+            Err(crate::error::Error::Runner(RunnerError::WineserverFailed(
+                _
+            )))
+        ));
 
         let environment = format!("{}|{}|win64|", proton_path.display(), prefix.display());
+        let wineserver_environment = format!("umu-sniper|{}|win64|", prefix.display());
         assert_eq!(
             fs::read_to_string(&log).unwrap(),
             [
                 format!("{environment}<wineboot><--init>\n"),
                 format!("{environment}<game.exe><--flag>\n"),
+                format!(
+                    "{wineserver_environment}<{}><-k>\n",
+                    proton_path.join("files/bin/wineserver").display()
+                ),
+                format!("{environment}<wineboot><--fail>\n"),
+                format!(
+                    "{wineserver_environment}<{}><--fail>\n",
+                    proton_path.join("files/bin/wineserver").display()
+                ),
             ]
             .concat()
         );

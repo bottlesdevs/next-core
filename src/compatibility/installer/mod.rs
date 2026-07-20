@@ -18,7 +18,7 @@ use crate::{
     },
     error::{Error, Result, ResultExt},
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
-    runner::{Runner, RunnerCommand},
+    runner::{Runner, RunnerCommand, shutdown_prefix},
     utils::archive,
     winebridge::WineBridgeClient,
 };
@@ -267,7 +267,7 @@ async fn execute_steps(
         Some(bridge) => bridge.shutdown().await,
         None => Ok(()),
     };
-    let runner_stopped = runner.shutdown_prefix(prefix);
+    let runner_stopped = shutdown_prefix(runner, prefix);
     result?;
     bridge_stopped?;
     runner_stopped
@@ -333,7 +333,7 @@ async fn uninstall_steps(
     if let Some(bridge) = bridge_client {
         bridge.shutdown().await.log_warn();
     }
-    runner.shutdown_prefix(prefix).log_warn();
+    shutdown_prefix(runner, prefix).log_warn();
     Ok(())
 }
 

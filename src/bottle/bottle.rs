@@ -13,7 +13,12 @@ use crate::compatibility::{
     },
     dependencies::Dependency,
 };
-use crate::{error::Result, proto::Process, runner::Runner, winebridge::WineBridgeClient};
+use crate::{
+    error::Result,
+    proto::Process,
+    runner::{Runner, shutdown_prefix},
+    winebridge::WineBridgeClient,
+};
 
 #[derive(Clone, Deserialize, Serialize, Config)]
 #[config(version = 1)]
@@ -178,7 +183,7 @@ impl Bottle {
         };
 
         if let Some(runner) = runner.as_deref()
-            && let Err(error) = runner.shutdown_prefix(&self.prefix_path())
+            && let Err(error) = shutdown_prefix(runner, &self.prefix_path())
         {
             first_error.get_or_insert(error);
         }

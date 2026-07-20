@@ -42,31 +42,14 @@ impl Runner for Wine {
             .map_err(Into::into)
     }
 
-    fn initialize_prefix(&self, prefix: &Path) -> Result<()> {
-        let command = RunnerCommand::new("wineboot").arg("--init");
-        let status = self.run(prefix, command)?.wait()?;
+    fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
+        let status = Command::new(self.executable.with_file_name("wineserver"))
+            .arg(arg)
+            .env("WINEPREFIX", prefix)
+            .env("WINEARCH", "win64")
+            .status()?;
         if !status.success() {
-            return Err(RunnerError::PrefixInitFailed.into());
-        }
-
-        Ok(())
-    }
-
-    fn shutdown_prefix(&self, prefix: &Path) -> Result<()> {
-        let wineserver = self
-            .executable
-            .parent()
-            .unwrap_or(Path::new(""))
-            .join("wineserver");
-        for arg in ["-k", "-w"] {
-            let status = Command::new(&wineserver)
-                .arg(arg)
-                .env("WINEPREFIX", prefix)
-                .env("WINEARCH", "win64")
-                .status()?;
-            if !status.success() {
-                return Err(RunnerError::PrefixShutdownFailed(arg).into());
-            }
+            return Err(RunnerError::WineserverFailed(status).into());
         }
         Ok(())
     }
