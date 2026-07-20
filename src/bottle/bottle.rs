@@ -261,7 +261,7 @@ impl Bottle {
             |draft| {
                 draft
                     .components
-                    .prefix_slot_mut(component.kind())?
+                    .slot_mut(component.kind())?
                     .take()
                     .ok_or(BottleError::ComponentNotInstalled(id))?;
                 Ok(())
@@ -276,13 +276,7 @@ impl Bottle {
         component: &Component,
         kind: ComponentKind,
     ) -> Result<()> {
-        let installed = match kind {
-            ComponentKind::Dxvk => self.components().dxvk.as_ref(),
-            ComponentKind::Vkd3d => self.components().vkd3d.as_ref(),
-            ComponentKind::Nvapi => self.components().nvapi.as_ref(),
-            ComponentKind::LatencyFlex => self.components().latency_flex.as_ref(),
-            _ => return Err(BottleError::InvalidPrefixComponent.into()),
-        };
+        let installed = self.components().slot(kind)?;
         if installed.map(Component::id) == Some(component.id()) {
             return Ok(());
         }
@@ -307,10 +301,7 @@ impl Bottle {
                 .await
             },
             |draft| {
-                draft
-                    .components
-                    .prefix_slot_mut(kind)?
-                    .replace(component.clone());
+                draft.components.slot_mut(kind)?.replace(component.clone());
                 Ok(())
             },
         )
@@ -545,7 +536,17 @@ impl BottleComponents {
         self.latency_flex.as_ref()
     }
 
-    fn prefix_slot_mut(&mut self, kind: ComponentKind) -> Result<&mut Option<Component>> {
+    fn slot(&self, kind: ComponentKind) -> Result<Option<&Component>> {
+        match kind {
+            ComponentKind::Dxvk => Ok(self.dxvk.as_ref()),
+            ComponentKind::Vkd3d => Ok(self.vkd3d.as_ref()),
+            ComponentKind::Nvapi => Ok(self.nvapi.as_ref()),
+            ComponentKind::LatencyFlex => Ok(self.latency_flex.as_ref()),
+            _ => Err(BottleError::InvalidPrefixComponent.into()),
+        }
+    }
+
+    fn slot_mut(&mut self, kind: ComponentKind) -> Result<&mut Option<Component>> {
         match kind {
             ComponentKind::Dxvk => Ok(&mut self.dxvk),
             ComponentKind::Vkd3d => Ok(&mut self.vkd3d),
@@ -615,7 +616,7 @@ pub(crate) enum PrefixStorage {
 }
 
 #[cfg(test)]
-mod update_tests {
+mod tests {
     use super::*;
 
     #[tokio::test]
@@ -653,5 +654,53 @@ mod update_tests {
         assert!(result.is_err());
         assert!(matches!(bottle.config.storage, PrefixStorage::Standard));
         assert!(bottle.config.environment.is_empty());
+    }
+
+    #[test]
+    fn component_slots_have_explicit_failure_semantics() {
+        let runner = Component::new(
+            ComponentKind::Runner {
+                kind: RunnerKind::Wine,
+            },
+            "wine",
+            "/runner",
+        )
+        .unwrap();
+        let winebridge = Component::new(ComponentKind::Winebridge, "bridge", "/bridge").unwrap();
+        let mut components = BottleComponents::new(&runner, &winebridge, None).unwrap();
+
+        for kind in [
+            ComponentKind::Dxvk,
+            ComponentKind::Vkd3d,
+            ComponentKind::Nvapi,
+            ComponentKind::LatencyFlex,
+        ] {
+            assert!(components.slot(kind).unwrap().is_none());
+            let component = Component::new(kind, "test", "/component").unwrap();
+            let id = component.id();
+            components.slot_mut(kind).unwrap().replace(component);
+            assert_eq!(components.slot(kind).unwrap().map(Component::id), Some(id));
+        }
+
+        for kind in [
+            ComponentKind::Runner {
+                kind: RunnerKind::Wine,
+            },
+            ComponentKind::Winebridge,
+            ComponentKind::Umu,
+        ] {
+            assert!(matches!(
+                components.slot(kind),
+                Err(crate::error::Error::Bottle(
+                    BottleError::InvalidPrefixComponent
+                ))
+            ));
+            assert!(matches!(
+                components.slot_mut(kind),
+                Err(crate::error::Error::Bottle(
+                    BottleError::InvalidPrefixComponent
+                ))
+            ));
+        }
     }
 }
