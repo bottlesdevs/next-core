@@ -1,7 +1,6 @@
-use std::{
-    path::{Path, PathBuf},
-    process::{Child, Command},
-};
+use async_trait::async_trait;
+use std::path::{Path, PathBuf};
+use tokio::process::{Child, Command};
 
 use super::{Runner, RunnerCommand, RunnerError};
 use crate::error::Result;
@@ -40,6 +39,7 @@ impl Proton {
     }
 }
 
+#[async_trait]
 impl Runner for Proton {
     fn run(&self, prefix: &Path, command: RunnerCommand) -> Result<Child> {
         Command::new(&self.umu_executable)
@@ -54,11 +54,11 @@ impl Runner for Proton {
     }
 
     // See: https://github.com/Open-Wine-Components/umu-launcher/issues/593#issuecomment-3958136985
-    fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
+    async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
         let command = RunnerCommand::new(self.proton_path.join("files/bin/wineserver"))
             .arg(arg)
             .env("PROTONPATH", "umu-sniper");
-        let status = self.run(prefix, command)?.wait()?;
+        let status = self.run(prefix, command)?.wait().await?;
         if status.success() || (arg == "-k" && status.code() == Some(1)) {
             return Ok(());
         }
@@ -72,8 +72,8 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn all_proton_operations_run_through_umu_with_prefix_environment() {
+    #[tokio::test]
+    async fn all_proton_operations_run_through_umu_with_prefix_environment() {
         let root = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         let proton_path = root.join("proton");
         let umu = root.join("umu-run");
@@ -92,19 +92,20 @@ mod tests {
 
         let runner = Proton::new(&proton_path, &umu).unwrap();
         let prefix = root.join("prefix");
-        runner.wineboot(&prefix, "--init").unwrap();
+        runner.wineboot(&prefix, "--init").await.unwrap();
         runner
             .run(&prefix, RunnerCommand::new("game.exe").arg("--flag"))
             .unwrap()
             .wait()
+            .await
             .unwrap();
-        runner.wineserver(&prefix, "-k").unwrap();
+        runner.wineserver(&prefix, "-k").await.unwrap();
         assert!(matches!(
-            runner.wineboot(&prefix, "--fail"),
+            runner.wineboot(&prefix, "--fail").await,
             Err(crate::error::Error::Runner(RunnerError::WinebootFailed(_)))
         ));
         assert!(matches!(
-            runner.wineserver(&prefix, "--fail"),
+            runner.wineserver(&prefix, "--fail").await,
             Err(crate::error::Error::Runner(RunnerError::WineserverFailed(
                 _
             )))

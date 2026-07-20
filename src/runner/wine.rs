@@ -1,9 +1,8 @@
 use super::{Runner, RunnerCommand};
 use crate::{error::Result, runner::RunnerError};
-use std::{
-    path::{Path, PathBuf},
-    process::{Child, Command},
-};
+use async_trait::async_trait;
+use std::path::{Path, PathBuf};
+use tokio::process::{Child, Command};
 
 /// Wine runner implementation
 ///
@@ -30,6 +29,7 @@ impl Wine {
     }
 }
 
+#[async_trait]
 impl Runner for Wine {
     fn run(&self, prefix: &Path, command: RunnerCommand) -> Result<Child> {
         Command::new(&self.executable)
@@ -42,12 +42,13 @@ impl Runner for Wine {
             .map_err(Into::into)
     }
 
-    fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
+    async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
         let status = Command::new(self.executable.with_file_name("wineserver"))
             .arg(arg)
             .env("WINEPREFIX", prefix)
             .env("WINEARCH", "win64")
-            .status()?;
+            .status()
+            .await?;
         if !status.success() {
             return Err(RunnerError::WineserverFailed(status).into());
         }

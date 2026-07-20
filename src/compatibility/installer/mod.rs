@@ -207,7 +207,7 @@ async fn execute_steps(
                         for (name, value) in environment.iter() {
                             command = command.env(name, value);
                         }
-                        let status = runner.run(prefix, command)?.wait()?;
+                        let status = runner.run(prefix, command)?.wait().await?;
                         if !status.success() {
                             return Err(InstallerError::InstallerFailed(status).into());
                         }
@@ -220,7 +220,7 @@ async fn execute_steps(
                             for (name, value) in environment.iter() {
                                 command = command.env(name, value);
                             }
-                            let status = runner.run(prefix, command)?.wait()?;
+                            let status = runner.run(prefix, command)?.wait().await?;
                             if !status.success() {
                                 return Err(InstallerError::RegisterDllFailed(status).into());
                             }
@@ -267,7 +267,7 @@ async fn execute_steps(
         Some(bridge) => bridge.shutdown().await,
         None => Ok(()),
     };
-    let runner_stopped = shutdown_prefix(runner, prefix);
+    let runner_stopped = shutdown_prefix(runner, prefix).await;
     result?;
     bridge_stopped?;
     runner_stopped
@@ -333,7 +333,7 @@ async fn uninstall_steps(
     if let Some(bridge) = bridge_client {
         bridge.shutdown().await.log_warn();
     }
-    shutdown_prefix(runner, prefix).log_warn();
+    shutdown_prefix(runner, prefix).await.log_warn();
     Ok(())
 }
 

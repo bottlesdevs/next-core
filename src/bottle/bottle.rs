@@ -183,7 +183,7 @@ impl Bottle {
         };
 
         if let Some(runner) = runner.as_deref()
-            && let Err(error) = shutdown_prefix(runner, &self.prefix_path())
+            && let Err(error) = shutdown_prefix(runner, &self.prefix_path()).await
         {
             first_error.get_or_insert(error);
         }

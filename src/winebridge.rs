@@ -2,11 +2,12 @@ use std::{
     ffi::OsString,
     fs, io,
     path::{Path, PathBuf},
-    process::{Child, ExitStatus},
+    process::ExitStatus,
     time::Duration,
 };
 
 use thiserror::Error;
+use tokio::process::Child;
 use tonic::transport::{Channel, Endpoint};
 use tonic_health::pb::{
     HealthCheckRequest, health_check_response::ServingStatus, health_client::HealthClient,
@@ -111,17 +112,10 @@ impl WineBridgeClient {
             match Self::wait_until_ready(&port_file, &mut child, Duration::from_secs(30)).await {
                 Ok(client) => client,
                 Err(error) => {
-                    if let Err(kill_error) = child.kill() {
+                    if let Err(kill_error) = child.kill().await {
                         tracing::debug!(
                             %kill_error,
                             "Failed to kill WineBridge process after startup failure"
-                        );
-                    }
-
-                    if let Err(wait_error) = child.wait() {
-                        tracing::debug!(
-                            %wait_error,
-                            "Failed to wait for WineBridge process after startup failure"
                         );
                     }
 
