@@ -9,6 +9,7 @@ pub use wine::Wine;
 
 use crate::{compatibility::components::catalog::RunnerKind, error::Result};
 use std::{
+    ffi::OsStr,
     path::{Path, PathBuf},
     process::ExitStatus,
 };
@@ -30,6 +31,21 @@ pub enum RunnerError {
 
 #[derive(Debug)]
 pub(crate) struct RunnerCommand(Command);
+
+impl RunnerCommand {
+    pub(crate) fn env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
+        self.0 = self.0.env(key, value);
+        self
+    }
+
+    pub(crate) fn envs<K: AsRef<OsStr>, V: AsRef<OsStr>>(
+        mut self,
+        envs: impl IntoIterator<Item = (K, V)>,
+    ) -> Self {
+        self.0 = self.0.envs(envs);
+        self
+    }
+}
 
 impl From<RunnerCommand> for Command {
     fn from(command: RunnerCommand) -> Self {
