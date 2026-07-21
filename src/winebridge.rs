@@ -16,7 +16,7 @@ use tonic_health::pb::{
 use crate::proto::{self, wine_bridge_client::WineBridgeClient as GrpcClient};
 use crate::{
     error::Result,
-    runner::{Command, Runner},
+    runner::{Command, Runner, Spawnable},
 };
 
 use crate::proto::{

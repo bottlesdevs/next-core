@@ -1,4 +1,4 @@
-use super::{Command, Runner, RunnerError, Wrapper};
+use super::{Command, Runner, RunnerCommand, RunnerError, Spawnable, Wrapper};
 use crate::error::Result;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
@@ -30,22 +30,26 @@ impl Wine {
 
 #[async_trait]
 impl Runner for Wine {
-    fn command(&self, prefix: &Path, inner: Command) -> Command {
-        Command::new(&self.executable)
-            .env("WINEPREFIX", prefix)
-            .env("WINEARCH", "win64")
-            .wrap(inner)
-            .into()
+    fn command(&self, prefix: &Path, inner: Command) -> RunnerCommand {
+        RunnerCommand(
+            Command::new(&self.executable)
+                .env("WINEPREFIX", prefix)
+                .env("WINEARCH", "win64")
+                .wrap(inner)
+                .into(),
+        )
     }
 
     async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
-        let status = Command::new(self.executable.with_file_name("wineserver"))
-            .arg(arg)
-            .env("WINEPREFIX", prefix)
-            .env("WINEARCH", "win64")
-            .spawn()?
-            .wait()
-            .await?;
+        let status = RunnerCommand(
+            Command::new(self.executable.with_file_name("wineserver"))
+                .arg(arg)
+                .env("WINEPREFIX", prefix)
+                .env("WINEARCH", "win64"),
+        )
+        .spawn()?
+        .wait()
+        .await?;
         if !status.success() {
             return Err(RunnerError::WineserverFailed(status).into());
         }

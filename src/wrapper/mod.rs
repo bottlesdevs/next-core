@@ -5,23 +5,35 @@ use std::{
 use tokio::process::{Child, Command as TokioCommand};
 
 pub(crate) trait Wrapper: Into<Command> + Sized {
-    fn wrap<W: Wrapper>(self, inner: W) -> Wrapped<Self, W> {
+    fn wrap<I: Into<Command>>(self, inner: I) -> Wrapped<Self, I> {
         Wrapped { outer: self, inner }
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct Wrapped<O: Wrapper, I: Wrapper> {
+pub(crate) struct Wrapped<O: Wrapper, I: Into<Command>> {
     outer: O,
     inner: I,
 }
 
-impl<O: Wrapper, I: Wrapper> Wrapper for Wrapped<O, I> {}
-impl<O: Wrapper, I: Wrapper> From<Wrapped<O, I>> for Command {
+impl<O: Wrapper, I: Into<Command>> Wrapper for Wrapped<O, I> {}
+impl<O: Wrapper, I: Into<Command>> From<Wrapped<O, I>> for Command {
     fn from(wrapped: Wrapped<O, I>) -> Self {
         wrapped.outer.into().append(wrapped.inner.into())
     }
 }
+
+pub(crate) trait Spawnable: Into<Command> + Sized {
+    fn spawn(self) -> std::io::Result<Child> {
+        let command = self.into();
+        TokioCommand::new(command.executable)
+            .args(command.args)
+            .envs(command.envs)
+            .spawn()
+    }
+}
+
+impl<O: Wrapper, I: Spawnable> Spawnable for Wrapped<O, I> {}
 
 #[derive(Clone, Debug)]
 pub(crate) struct Command {
@@ -74,12 +86,5 @@ impl Command {
         self.args.extend(inner.args);
         self.envs.extend(inner.envs);
         self
-    }
-
-    pub(crate) fn spawn(self) -> std::io::Result<Child> {
-        TokioCommand::new(self.executable)
-            .args(self.args)
-            .envs(self.envs)
-            .spawn()
     }
 }

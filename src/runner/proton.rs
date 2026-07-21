@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 
-use super::{Command, Runner, RunnerError, Wrapper};
+use super::{Command, Runner, RunnerCommand, RunnerError, Spawnable, Wrapper};
 use crate::error::Result;
 
 /// Proton runner implementation
@@ -40,13 +40,15 @@ impl Proton {
 
 #[async_trait]
 impl Runner for Proton {
-    fn command(&self, prefix: &Path, inner: Command) -> Command {
-        Command::new(&self.umu_executable)
-            .env("WINEPREFIX", prefix)
-            .env("WINEARCH", "win64")
-            .env("PROTONPATH", &self.proton_path)
-            .wrap(inner)
-            .into()
+    fn command(&self, prefix: &Path, inner: Command) -> RunnerCommand {
+        RunnerCommand(
+            Command::new(&self.umu_executable)
+                .env("WINEPREFIX", prefix)
+                .env("WINEARCH", "win64")
+                .env("PROTONPATH", &self.proton_path)
+                .wrap(inner)
+                .into(),
+        )
     }
 
     // See: https://github.com/Open-Wine-Components/umu-launcher/issues/593#issuecomment-3958136985
@@ -92,8 +94,8 @@ mod tests {
         let runner = Proton::new(&proton_path, &umu).unwrap();
         let prefix = root.join("prefix");
         runner.wineboot(&prefix, "--init").await.unwrap();
-        runner
-            .command(&prefix, Command::new("game.exe").arg("--flag"))
+        Command::new("env")
+            .wrap(runner.command(&prefix, Command::new("game.exe").arg("--flag")))
             .spawn()
             .unwrap()
             .wait()
