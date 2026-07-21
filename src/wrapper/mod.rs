@@ -1,3 +1,5 @@
+pub(crate) mod gamescope;
+
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
