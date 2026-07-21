@@ -18,7 +18,7 @@ use crate::{
     },
     error::{Error, Result, ResultExt},
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
-    runner::{Command, Runner, shutdown_prefix},
+    runner::{Command, Runner, Spawnable, shutdown_prefix},
     utils::archive,
     winebridge::WineBridgeClient,
 };

@@ -1,7 +1,7 @@
 mod proton;
 mod wine;
 
-pub(crate) use crate::wrapper::{Command, Wrapper};
+pub(crate) use crate::wrapper::{Command, Spawnable, Wrapper};
 use async_trait::async_trait;
 pub use proton::Proton;
 use thiserror::Error;
@@ -28,9 +28,20 @@ pub enum RunnerError {
     RunnerExecutableNotFound(PathBuf),
 }
 
+#[derive(Debug)]
+pub(crate) struct RunnerCommand(Command);
+
+impl From<RunnerCommand> for Command {
+    fn from(command: RunnerCommand) -> Self {
+        command.0
+    }
+}
+
+impl Spawnable for RunnerCommand {}
+
 #[async_trait]
 pub(crate) trait Runner: Send + Sync {
-    fn command(&self, prefix: &Path, inner: Command) -> Command;
+    fn command(&self, prefix: &Path, inner: Command) -> RunnerCommand;
 
     async fn wineboot(&self, prefix: &Path, arg: &str) -> Result<()> {
         let status = self
