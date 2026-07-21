@@ -16,7 +16,7 @@ use tonic_health::pb::{
 use crate::proto::{self, wine_bridge_client::WineBridgeClient as GrpcClient};
 use crate::{
     error::Result,
-    runner::{Runner, RunnerCommand},
+    runner::{Command, Runner},
 };
 
 use crate::proto::{
@@ -99,14 +99,14 @@ impl WineBridgeClient {
         }
         let _ = fs::remove_file(&port_file);
 
-        let command = RunnerCommand::new(winebridge_executable)
+        let command = Command::new(winebridge_executable)
             .env(
                 "WINEBRIDGE_PORT_FILE",
                 format!(r"C:\windows\temp\{PORT_FILE_NAME}"),
             )
             .envs(environment);
 
-        let mut child = runner.run(prefix, command)?;
+        let mut child = runner.command(prefix, command).spawn()?;
 
         let grpc_client =
             match Self::wait_until_ready(&port_file, &mut child, Duration::from_secs(30)).await {

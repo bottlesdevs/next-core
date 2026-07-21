@@ -1,6 +1,7 @@
 mod proton;
 mod wine;
 
+pub(crate) use crate::wrapper::{Command, Wrapper};
 use async_trait::async_trait;
 pub use proton::Proton;
 use thiserror::Error;
@@ -8,12 +9,9 @@ pub use wine::Wine;
 
 use crate::{compatibility::components::catalog::RunnerKind, error::Result};
 use std::{
-    collections::HashMap,
-    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::ExitStatus,
 };
-use tokio::process::Child;
 
 /// Errors produced by runner setup.
 #[derive(Debug, Error)]
@@ -30,53 +28,21 @@ pub enum RunnerError {
     RunnerExecutableNotFound(PathBuf),
 }
 
-pub struct RunnerCommand {
-    executable: PathBuf,
-    args: Vec<String>,
-    envs: HashMap<OsString, OsString>,
-}
-
-impl RunnerCommand {
-    pub fn new(executable: impl AsRef<Path>) -> Self {
-        Self {
-            executable: executable.as_ref().to_path_buf(),
-            args: Vec::new(),
-            envs: HashMap::new(),
-        }
-    }
-
-    pub fn arg(mut self, arg: impl Into<String>) -> Self {
-        self.args.push(arg.into());
-        self
-    }
-
-    pub fn env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
-        self.envs
-            .insert(key.as_ref().to_os_string(), value.as_ref().to_os_string());
-        self
-    }
-
-    pub fn envs(mut self, envs: impl IntoIterator<Item = (OsString, OsString)>) -> Self {
-        for (key, value) in envs {
-            self = self.env(key, value);
-        }
-
-        self
-    }
-}
-
 #[async_trait]
-pub trait Runner: Send + Sync {
-    fn run(&self, prefix: &Path, command: RunnerCommand) -> Result<Child>;
+pub(crate) trait Runner: Send + Sync {
+    fn command(&self, prefix: &Path, inner: Command) -> Command;
 
     async fn wineboot(&self, prefix: &Path, arg: &str) -> Result<()> {
         let status = self
-            .run(prefix, RunnerCommand::new("wineboot").arg(arg))?
+            .command(prefix, Command::new("wineboot").arg(arg))
+            .spawn()?
             .wait()
             .await?;
+
         if !status.success() {
             return Err(RunnerError::WinebootFailed(status).into());
         }
+
         Ok(())
     }
 

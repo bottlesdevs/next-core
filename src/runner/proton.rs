@@ -1,8 +1,7 @@
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
-use tokio::process::{Child, Command};
 
-use super::{Runner, RunnerCommand, RunnerError};
+use super::{Command, Runner, RunnerError, Wrapper};
 use crate::error::Result;
 
 /// Proton runner implementation
@@ -41,27 +40,27 @@ impl Proton {
 
 #[async_trait]
 impl Runner for Proton {
-    fn run(&self, prefix: &Path, command: RunnerCommand) -> Result<Child> {
+    fn command(&self, prefix: &Path, inner: Command) -> Command {
         Command::new(&self.umu_executable)
-            .arg(command.executable)
-            .args(command.args)
             .env("WINEPREFIX", prefix)
             .env("WINEARCH", "win64")
             .env("PROTONPATH", &self.proton_path)
-            .envs(command.envs)
-            .spawn()
-            .map_err(Into::into)
+            .wrap(inner)
+            .into()
     }
 
     // See: https://github.com/Open-Wine-Components/umu-launcher/issues/593#issuecomment-3958136985
     async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
-        let command = RunnerCommand::new(self.proton_path.join("files/bin/wineserver"))
+        let command = Command::new(self.proton_path.join("files/bin/wineserver"))
             .arg(arg)
             .env("PROTONPATH", "umu-sniper");
-        let status = self.run(prefix, command)?.wait().await?;
+
+        let status = self.command(prefix, command).spawn()?.wait().await?;
+
         if status.success() || (arg == "-k" && status.code() == Some(1)) {
             return Ok(());
         }
+
         Err(RunnerError::WineserverFailed(status).into())
     }
 }
@@ -94,7 +93,8 @@ mod tests {
         let prefix = root.join("prefix");
         runner.wineboot(&prefix, "--init").await.unwrap();
         runner
-            .run(&prefix, RunnerCommand::new("game.exe").arg("--flag"))
+            .command(&prefix, Command::new("game.exe").arg("--flag"))
+            .spawn()
             .unwrap()
             .wait()
             .await
