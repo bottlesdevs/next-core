@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ffi::OsString, ops::AsyncFnOnce, path::PathBuf};
+use std::{collections::HashMap, ops::AsyncFnOnce, path::PathBuf};
 
 use fvs_rs::Layer;
 use next_config::Config;
@@ -447,7 +447,8 @@ impl Bottle {
                         runner.as_ref(),
                         &prefix,
                         self.components().winebridge().path().to_path_buf(),
-                    ),
+                    )
+                    .envs(self.config.environment.clone()),
                 )
                 .await?,
             );
