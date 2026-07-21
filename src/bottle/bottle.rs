@@ -18,6 +18,7 @@ use crate::{
     proto::Process,
     runner::{Runner, shutdown_prefix},
     winebridge::WineBridgeClient,
+    wrapper::gamescope::GamescopeConfig,
 };
 
 #[derive(Clone, Deserialize, Serialize, Config)]
@@ -35,6 +36,9 @@ pub(crate) struct BottleConfig {
     pub(crate) dependencies: Vec<Dependency>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub(crate) environment: HashMap<String, String>,
+
+    #[serde(default)]
+    pub(crate) gamescope: GamescopeConfig,
 }
 
 pub struct Bottle {
@@ -58,6 +62,7 @@ impl Bottle {
                 dependencies,
                 storage,
                 programs: Vec::new(),
+                gamescope: GamescopeConfig::default(),
                 environment: HashMap::new(),
             },
             bridge: None,
@@ -641,6 +646,7 @@ mod tests {
             name: "test".into(),
             storage: PrefixStorage::Standard,
             programs: Vec::new(),
+            gamescope: GamescopeConfig::default(),
             components: BottleComponents::new(&runner, &winebridge, None).unwrap(),
             dependencies: Vec::new(),
             environment: HashMap::new(),
