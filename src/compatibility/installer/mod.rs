@@ -348,17 +348,8 @@ async fn ensure_bridge<'a>(
     environment: &HashMap<String, String>,
 ) -> Result<&'a WineBridgeClient> {
     if bridge.is_none() {
-        *bridge = Some(
-            WineBridgeClient::new(
-                runner,
-                prefix,
-                executable.to_path_buf(),
-                environment
-                    .iter()
-                    .map(|(name, value)| (name.into(), value.into())),
-            )
-            .await?,
-        );
+        let command = WineBridgeClient::command(runner, &prefix, executable);
+        *bridge = Some(WineBridgeClient::connect_or_spawn(&prefix, command).await?);
     }
     Ok(bridge.as_ref().expect("WineBridge was initialized"))
 }
