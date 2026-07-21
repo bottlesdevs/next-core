@@ -162,7 +162,7 @@ impl Bottle {
     pub async fn stop(&mut self) -> Result<()> {
         let mut first_error = None;
         if self.bridge.is_none() {
-            match WineBridgeClient::connect_existing(&self.prefix_path()).await {
+            match WineBridgeClient::try_connect(&self.prefix_path()).await {
                 Ok(bridge) => self.bridge = bridge,
                 Err(error) => first_error = Some(error),
             }
@@ -439,15 +439,15 @@ impl Bottle {
         if self.bridge.is_none() {
             let runner = self.load_runner()?;
             let prefix = self.prefix().await?;
+
             self.bridge = Some(
-                WineBridgeClient::new(
-                    runner.as_ref(),
+                WineBridgeClient::connect_or_spawn(
                     &prefix,
-                    self.components().winebridge().path().to_path_buf(),
-                    self.config
-                        .environment
-                        .iter()
-                        .map(|(name, value)| (OsString::from(name), OsString::from(value))),
+                    WineBridgeClient::command(
+                        runner.as_ref(),
+                        &prefix,
+                        self.components().winebridge().path().to_path_buf(),
+                    ),
                 )
                 .await?,
             );

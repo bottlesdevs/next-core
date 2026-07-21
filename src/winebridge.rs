@@ -1,5 +1,4 @@
 use std::{
-    ffi::OsString,
     fs, io,
     path::{Path, PathBuf},
     process::ExitStatus,
@@ -13,10 +12,13 @@ use tonic_health::pb::{
     HealthCheckRequest, health_check_response::ServingStatus, health_client::HealthClient,
 };
 
-use crate::proto::{self, wine_bridge_client::WineBridgeClient as GrpcClient};
 use crate::{
     error::Result,
     runner::{Command, Runner, Spawnable},
+};
+use crate::{
+    proto::{self, wine_bridge_client::WineBridgeClient as GrpcClient},
+    runner::RunnerCommand,
 };
 
 use crate::proto::{
@@ -39,10 +41,6 @@ pub enum BridgeError {
 }
 
 const PORT_FILE_NAME: &str = "bottles-winebridge.port";
-
-fn port_file(prefix: &Path) -> PathBuf {
-    prefix.join("drive_c/windows/temp").join(PORT_FILE_NAME)
-}
 
 fn endpoint_from_port_file(path: &Path) -> Result<Option<Endpoint>> {
     let port = match fs::read_to_string(path) {
@@ -76,120 +74,37 @@ pub struct WineBridgeClient {
 }
 
 impl WineBridgeClient {
-    /// Starts WineBridge inside `prefix` using `runner` and connects to it over gRPC.
-    ///
-    /// WineBridge binds an OS-assigned loopback port and publishes it through the
-    /// prefix before this method connects and waits for a successful health RPC.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the bridge process cannot be spawned, exits before
-    /// readiness, times out during startup, or the gRPC client cannot be created.
-    pub async fn new(
+    pub(crate) fn command(
         runner: &dyn Runner,
         prefix: &Path,
-        winebridge_executable: PathBuf,
-        environment: impl IntoIterator<Item = (OsString, OsString)>,
-    ) -> Result<Self> {
-        let port_file = port_file(prefix);
-        fs::create_dir_all(port_file.parent().expect("port file has a parent"))?;
-
-        if let Some(client) = Self::connect_existing(prefix).await? {
-            return Ok(client);
-        }
-        let _ = fs::remove_file(&port_file);
-
-        let command = Command::new(winebridge_executable)
-            .env(
+        winebridge_executable: impl AsRef<Path>,
+    ) -> RunnerCommand {
+        runner.command(
+            prefix,
+            Command::new(winebridge_executable.as_ref()).env(
                 "WINEBRIDGE_PORT_FILE",
                 format!(r"C:\windows\temp\{PORT_FILE_NAME}"),
-            )
-            .envs(environment);
-
-        let mut child = runner.command(prefix, command).spawn()?;
-
-        let grpc_client =
-            match Self::wait_until_ready(&port_file, &mut child, Duration::from_secs(30)).await {
-                Ok(client) => client,
-                Err(error) => {
-                    if let Err(kill_error) = child.kill().await {
-                        tracing::debug!(
-                            %kill_error,
-                            "Failed to kill WineBridge process after startup failure"
-                        );
-                    }
-
-                    let _ = fs::remove_file(&port_file);
-                    let _ = fs::remove_file(port_file.with_extension("tmp"));
-                    return Err(error);
-                }
-            };
-
-        Ok(Self {
-            client: grpc_client,
-            port_file,
-        })
+            ),
+        )
     }
 
-    pub(crate) async fn connect_existing(prefix: &Path) -> Result<Option<Self>> {
-        let port_file = port_file(prefix);
-        let Some(endpoint) = endpoint_from_port_file(&port_file)? else {
-            return Ok(None);
-        };
-        let Ok(channel) = endpoint.connect().await else {
-            return Ok(None);
-        };
-        let response = HealthClient::new(channel.clone())
-            .check(HealthCheckRequest {
-                service: proto::wine_bridge_server::SERVICE_NAME.to_string(),
-            })
-            .await;
-        Ok(matches!(response, Ok(response) if response.get_ref().status() == ServingStatus::Serving)
-            .then(|| Self {
-                client: GrpcClient::new(channel),
-                port_file,
-            }))
+    pub(crate) async fn connect_or_spawn(prefix: &Path, command: impl Spawnable) -> Result<Self> {
+        if let Some(client) = Self::try_connect(prefix).await? {
+            return Ok(client);
+        }
+
+        Self::connect(prefix, command.spawn()?).await
     }
 
-    async fn wait_until_ready(
-        port_file: &Path,
-        process: &mut Child,
-        timeout: Duration,
-    ) -> Result<GrpcClient<Channel>> {
+    async fn connect(prefix: &Path, mut process: Child) -> Result<Self> {
         let ready = async {
-            let mut endpoint = None;
             loop {
                 if let Some(status) = process.try_wait()? {
                     return Err(BridgeError::BridgeExited(status).into());
                 }
 
-                if endpoint.is_none() {
-                    endpoint = endpoint_from_port_file(port_file)?;
-                }
-                if let Some(endpoint) = &endpoint {
-                    match endpoint.connect().await {
-                        Ok(channel) => match HealthClient::new(channel.clone())
-                            .check(HealthCheckRequest {
-                                service: proto::wine_bridge_server::SERVICE_NAME.to_string(),
-                            })
-                            .await
-                        {
-                            Ok(response)
-                                if response.get_ref().status() == ServingStatus::Serving =>
-                            {
-                                return Ok(GrpcClient::new(channel));
-                            }
-                            Ok(_) => {
-                                tracing::debug!("WineBridge health check returned not serving")
-                            }
-                            Err(error) => {
-                                tracing::debug!(%error, "WineBridge health check failed");
-                            }
-                        },
-                        Err(error) => {
-                            tracing::debug!(%error, "WineBridge connection attempt failed");
-                        }
-                    }
+                if let Some(client) = Self::try_connect(prefix).await? {
+                    return Ok(client);
                 }
 
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -198,8 +113,36 @@ impl WineBridgeClient {
 
         tokio::select! {
             result = ready => result,
-            _ = tokio::time::sleep(timeout) => Err(BridgeError::Timeout.into()),
+            _ = tokio::time::sleep(Duration::from_secs(30)) => Err(BridgeError::Timeout.into()),
         }
+    }
+
+    pub(crate) async fn try_connect(prefix: &Path) -> Result<Option<Self>> {
+        let port_file = Self::port_file(prefix);
+
+        let Some(endpoint) = endpoint_from_port_file(&port_file)? else {
+            return Ok(None);
+        };
+
+        let Ok(channel) = endpoint.connect().await else {
+            return Ok(None);
+        };
+
+        let response = HealthClient::new(channel.clone())
+            .check(HealthCheckRequest {
+                service: proto::wine_bridge_server::SERVICE_NAME.to_string(),
+            })
+            .await;
+
+        Ok(matches!(response, Ok(response) if response.get_ref().status() == ServingStatus::Serving)
+            .then(|| Self {
+                client: GrpcClient::new(channel),
+                port_file,
+            }))
+    }
+
+    fn port_file(prefix: &Path) -> PathBuf {
+        prefix.join("drive_c/windows/temp").join(PORT_FILE_NAME)
     }
 
     // --- Process Management ---
