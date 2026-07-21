@@ -1,8 +1,7 @@
-use super::{Runner, RunnerCommand};
-use crate::{error::Result, runner::RunnerError};
+use super::{Command, Runner, RunnerError, Wrapper};
+use crate::error::Result;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
-use tokio::process::{Child, Command};
 
 /// Wine runner implementation
 ///
@@ -31,15 +30,12 @@ impl Wine {
 
 #[async_trait]
 impl Runner for Wine {
-    fn run(&self, prefix: &Path, command: RunnerCommand) -> Result<Child> {
+    fn command(&self, prefix: &Path, inner: Command) -> Command {
         Command::new(&self.executable)
-            .arg(command.executable)
-            .args(command.args)
             .env("WINEPREFIX", prefix)
             .env("WINEARCH", "win64")
-            .envs(command.envs)
-            .spawn()
-            .map_err(Into::into)
+            .wrap(inner)
+            .into()
     }
 
     async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
@@ -47,7 +43,8 @@ impl Runner for Wine {
             .arg(arg)
             .env("WINEPREFIX", prefix)
             .env("WINEARCH", "win64")
-            .status()
+            .spawn()?
+            .wait()
             .await?;
         if !status.success() {
             return Err(RunnerError::WineserverFailed(status).into());

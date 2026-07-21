@@ -69,7 +69,7 @@ impl Command {
         self
     }
 
-    fn append(mut self, inner: Self) -> Self {
+    fn append(mut self, inner: Command) -> Command {
         self.args.push(inner.executable);
         self.args.extend(inner.args);
         self.envs.extend(inner.envs);

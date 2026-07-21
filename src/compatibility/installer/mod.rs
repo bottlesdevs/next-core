@@ -18,7 +18,7 @@ use crate::{
     },
     error::{Error, Result, ResultExt},
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
-    runner::{Runner, RunnerCommand, shutdown_prefix},
+    runner::{Command, Runner, shutdown_prefix},
     utils::archive,
     winebridge::WineBridgeClient,
 };
@@ -200,27 +200,26 @@ async fn execute_steps(
                         extract_into(&resource.source, prefix, destination)?;
                     }
                     InstallStep::Execute { arguments } => {
-                        let mut command = RunnerCommand::new(&resource.source);
+                        let mut command = Command::new(&resource.source);
                         for argument in arguments {
                             command = command.arg(argument);
                         }
                         for (name, value) in environment.iter() {
                             command = command.env(name, value);
                         }
-                        let status = runner.run(prefix, command)?.wait().await?;
+                        let status = runner.command(prefix, command).spawn()?.wait().await?;
                         if !status.success() {
                             return Err(InstallerError::InstallerFailed(status).into());
                         }
                     }
                     InstallStep::RegisterDlls { dlls } => {
                         for dll in dlls {
-                            let mut command = RunnerCommand::new("regsvr32")
-                                .arg("/s")
-                                .arg(prefix.join(dll).to_string_lossy());
+                            let mut command =
+                                Command::new("regsvr32").arg("/s").arg(prefix.join(dll));
                             for (name, value) in environment.iter() {
                                 command = command.env(name, value);
                             }
-                            let status = runner.run(prefix, command)?.wait().await?;
+                            let status = runner.command(prefix, command).spawn()?.wait().await?;
                             if !status.success() {
                                 return Err(InstallerError::RegisterDllFailed(status).into());
                             }
