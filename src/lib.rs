@@ -4,6 +4,7 @@ pub mod error;
 mod runner;
 mod utils;
 mod winebridge;
+mod wrapper;
 
 pub mod proto {
     tonic::include_proto!("winebridge");
