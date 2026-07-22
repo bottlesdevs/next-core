@@ -189,7 +189,6 @@ where
     }
 
     let client = fvs().await?;
-    let lower = layers.clone();
     let result = async {
         let mount = client.mount(&prefix, layers, Some(&upper)).await?;
         let installed = async {
@@ -208,14 +207,21 @@ where
             Ok::<_, Error>(())
         }
         .await;
+        let pruned: Result<()> = match installed {
+            Ok(()) => client
+                .diff_mount(&mount, true)
+                .await
+                .map(drop)
+                .map_err(Error::from),
+            Err(error) => Err(error),
+        };
         let unmounted = client.unmount(&mount, UnmountMode::Normal).await;
-        installed?;
+        pruned?;
         unmounted?;
 
         for (file, _) in registry_files() {
             remove_file(&upper.join(file))?;
         }
-        prune_identical_to_lower(client, &stage, &upper, lower).await?;
         let repository = client.new_repository(&upper, BLOCK_SIZE).await?;
         client.commit(&repository, item_id.to_string()).await?;
         fs::create_dir_all(destination.parent().expect("cache path has a parent"))?;
@@ -231,68 +237,6 @@ where
     .await;
     let _ = fs::remove_dir_all(stage);
     result
-}
-
-const WHITEOUT_PREFIX: &str = ".wh.";
-
-async fn prune_identical_to_lower(
-    client: &fvs_rs::Fvs2dClient,
-    stage: &Path,
-    upper: &Path,
-    lower: Vec<Layer>,
-) -> Result<()> {
-    let view = stage.join("lower");
-    fs::create_dir_all(&view)?;
-    let result = async {
-        let mount = client.mount(&view, lower, None::<&Path>).await?;
-        let pruned = prune_dir(upper, upper, &view);
-        let unmounted = client.unmount(&mount, UnmountMode::Normal).await;
-        pruned?;
-        unmounted?;
-        Ok::<_, Error>(())
-    }
-    .await;
-    let _ = fs::remove_dir_all(&view);
-    result
-}
-
-fn prune_dir(root: &Path, dir: &Path, lower: &Path) -> Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            prune_dir(root, &path, lower)?;
-            if fs::read_dir(&path)?.next().is_none() {
-                let _ = fs::remove_dir(&path);
-            }
-            continue;
-        }
-        if entry.file_name().to_string_lossy().starts_with(WHITEOUT_PREFIX) {
-            continue;
-        }
-        let relative = path.strip_prefix(root).expect("upper entry under root");
-        if same_entry(&path, &lower.join(relative))? {
-            fs::remove_file(&path)?;
-        }
-    }
-    Ok(())
-}
-
-fn same_entry(upper: &Path, lower: &Path) -> Result<bool> {
-    let upper_meta = fs::symlink_metadata(upper)?;
-    let lower_meta = match fs::symlink_metadata(lower) {
-        Ok(meta) => meta,
-        Err(_) => return Ok(false),
-    };
-    if upper_meta.file_type().is_symlink() || lower_meta.file_type().is_symlink() {
-        return Ok(upper_meta.file_type().is_symlink()
-            && lower_meta.file_type().is_symlink()
-            && fs::read_link(upper)? == fs::read_link(lower)?);
-    }
-    if !upper_meta.file_type().is_file() || !lower_meta.file_type().is_file() {
-        return Ok(false);
-    }
-    Ok(upper_meta.len() == lower_meta.len() && fs::read(upper)? == fs::read(lower)?)
 }
 
 async fn apply_registry(bottle_path: &Path, layers: &[Layer], id: Uuid) -> Result<()> {
