@@ -33,6 +33,10 @@ pub enum RunnerError {
 pub(crate) struct RunnerCommand(Command);
 
 impl RunnerCommand {
+    pub(crate) fn wrapped_by(self, wrapper: impl Wrapper) -> Self {
+        Self(wrapper.wrap(self.0).into())
+    }
+
     pub(crate) fn env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
         self.0 = self.0.env(key, value);
         self

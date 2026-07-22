@@ -1,4 +1,5 @@
 pub(crate) mod gamescope;
+pub(crate) mod mangohud;
 
 use std::{
     collections::HashMap,

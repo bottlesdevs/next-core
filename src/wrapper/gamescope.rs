@@ -23,6 +23,7 @@ impl Wrapper for Gamescope {}
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct GamescopeConfig {
+    pub(crate) enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) game_width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]

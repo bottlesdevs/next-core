@@ -18,7 +18,10 @@ use crate::{
     proto::Process,
     runner::{Runner, shutdown_prefix},
     winebridge::WineBridgeClient,
-    wrapper::gamescope::GamescopeConfig,
+    wrapper::{
+        gamescope::{Gamescope, GamescopeConfig},
+        mangohud::{MangoHud, MangoHudConfig},
+    },
 };
 
 #[derive(Clone, Deserialize, Serialize, Config)]
@@ -39,6 +42,8 @@ pub(crate) struct BottleConfig {
 
     #[serde(default)]
     pub(crate) gamescope: GamescopeConfig,
+    #[serde(default)]
+    pub(crate) mangohud: MangoHudConfig,
 }
 
 pub struct Bottle {
@@ -63,6 +68,7 @@ impl Bottle {
                 storage,
                 programs: Vec::new(),
                 gamescope: GamescopeConfig::default(),
+                mangohud: MangoHudConfig::default(),
                 environment: HashMap::new(),
             },
             bridge: None,
@@ -444,19 +450,20 @@ impl Bottle {
         if self.bridge.is_none() {
             let runner = self.load_runner()?;
             let prefix = self.prefix().await?;
+            let mut command = WineBridgeClient::command(
+                runner.as_ref(),
+                &prefix,
+                self.components().winebridge().path().to_path_buf(),
+            )
+            .envs(self.config.environment.clone());
+            if self.config.mangohud.enabled {
+                command = command.wrapped_by(MangoHud::from(self.config.mangohud.clone()));
+            }
+            if self.config.gamescope.enabled {
+                command = command.wrapped_by(Gamescope::from(self.config.gamescope.clone()));
+            }
 
-            self.bridge = Some(
-                WineBridgeClient::connect_or_spawn(
-                    &prefix,
-                    WineBridgeClient::command(
-                        runner.as_ref(),
-                        &prefix,
-                        self.components().winebridge().path().to_path_buf(),
-                    )
-                    .envs(self.config.environment.clone()),
-                )
-                .await?,
-            );
+            self.bridge = Some(WineBridgeClient::connect_or_spawn(&prefix, command).await?);
         }
         Ok(self.bridge.as_ref().expect("WineBridge was initialized"))
     }
@@ -647,6 +654,7 @@ mod tests {
             storage: PrefixStorage::Standard,
             programs: Vec::new(),
             gamescope: GamescopeConfig::default(),
+            mangohud: MangoHudConfig::default(),
             components: BottleComponents::new(&runner, &winebridge, None).unwrap(),
             dependencies: Vec::new(),
             environment: HashMap::new(),

@@ -94,8 +94,9 @@ mod tests {
         let runner = Proton::new(&proton_path, &umu).unwrap();
         let prefix = root.join("prefix");
         runner.wineboot(&prefix, "--init").await.unwrap();
-        Command::new("env")
-            .wrap(runner.command(&prefix, Command::new("game.exe").arg("--flag")))
+        runner
+            .command(&prefix, Command::new("game.exe").arg("--flag"))
+            .wrapped_by(Command::new("env"))
             .spawn()
             .unwrap()
             .wait()

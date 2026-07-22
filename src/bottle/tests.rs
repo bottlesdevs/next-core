@@ -10,7 +10,10 @@ use crate::{
         },
         dependencies::Dependency,
     },
-    wrapper::gamescope::{GamescopeConfig, Scaler},
+    wrapper::{
+        gamescope::{GamescopeConfig, Scaler},
+        mangohud::MangoHudConfig,
+    },
 };
 
 #[test]
@@ -67,11 +70,13 @@ fn proton_umu_components_and_dependencies_round_trip() {
         storage: super::bottle::PrefixStorage::Standard,
         programs: Vec::new(),
         gamescope: GamescopeConfig {
+            enabled: true,
             game_width: Some(1280),
             scaler: Some(Scaler::Fit),
             fullscreen: true,
             ..Default::default()
         },
+        mangohud: MangoHudConfig { enabled: true },
         environment: [("EXAMPLE".into(), "enabled".into())].into(),
     };
     let path = bottle_path.join("bottle.toml");
@@ -82,6 +87,8 @@ fn proton_umu_components_and_dependencies_round_trip() {
     assert!(stored.contains("[umu]"));
     assert!(stored.contains("[dxvk]"));
     assert!(stored.contains("[gamescope]"));
+    assert!(stored.contains("[mangohud]"));
+    assert!(stored.contains("enabled = true"));
     assert!(stored.contains("[[dependencies]]"));
     assert_eq!(
         loaded.components.runner().kind(),
@@ -92,6 +99,7 @@ fn proton_umu_components_and_dependencies_round_trip() {
     assert_eq!(loaded.components.umu().unwrap().version(), "umu-1");
     assert_eq!(loaded.dependencies[0].name(), "vcrun2022");
     assert_eq!(loaded.gamescope, config.gamescope);
+    assert_eq!(loaded.mangohud, config.mangohud);
     assert_eq!(loaded.environment["EXAMPLE"], "enabled");
 
     std::fs::remove_dir_all(bottle_path).unwrap();
@@ -279,6 +287,7 @@ fn virgo_layers_round_trip_through_bottle_toml() {
         },
         programs: Vec::new(),
         gamescope: GamescopeConfig::default(),
+        mangohud: MangoHudConfig::default(),
         environment: Default::default(),
     };
     let path = bottle_path.join("bottle.toml");
