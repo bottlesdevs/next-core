@@ -151,17 +151,28 @@ mod unix {
             bridge_root.join("bottles-winebridge.exe"),
         )
         .unwrap();
-        let manager = BottleManager::new(None).unwrap();
-
-        let mut bottle = manager
-            .create(
-                Uuid::new_v4().to_string(),
-                BottleType::Standard,
-                &runner,
-                &bridge,
-            )
-            .await
-            .unwrap();
+        let manager = BottleManager::new(runner_root.join("bin/wine")).unwrap();
+        let id = Uuid::new_v4();
+        let bottle_path = directories.bottle(id);
+        fs::create_dir_all(&bottle_path).unwrap();
+        let storage = PrefixStorage::create(
+            BottleType::Standard,
+            &bottle_path,
+            crate::runner::load_runner(&runner_root, RunnerKind::Wine, None)
+                .unwrap()
+                .as_ref(),
+            &runner.id().to_string(),
+        )
+        .await
+        .unwrap();
+        let mut bottle = Bottle::new(
+            id,
+            Uuid::new_v4().to_string(),
+            BottleComponents::new(&runner, &bridge, None).unwrap(),
+            Vec::new(),
+            storage,
+        )
+        .unwrap();
         let program = Program::new("Game", "C:\\game.exe");
         let program_id = program.id;
         bottle.add_program(program).unwrap();
