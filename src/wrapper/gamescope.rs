@@ -3,18 +3,32 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) struct Gamescope {
     config: GamescopeConfig,
+    mangoapp: bool,
 }
 
 impl From<GamescopeConfig> for Gamescope {
     fn from(config: GamescopeConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            mangoapp: false,
+        }
+    }
+}
+
+impl Gamescope {
+    pub(crate) fn with_mangoapp(mut self) -> Self {
+        self.mangoapp = true;
+        self
     }
 }
 
 impl Into<Command> for Gamescope {
     fn into(self) -> Command {
         let args = self.config.to_args();
-        Command::new("gamescope").args(args).arg("--")
+        Command::new("gamescope")
+            .args(args)
+            .args(self.mangoapp.then_some("--mangoapp"))
+            .arg("--")
     }
 }
 

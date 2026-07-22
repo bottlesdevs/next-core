@@ -1,11 +1,39 @@
 pub(crate) mod gamescope;
 pub(crate) mod mangohud;
 
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
 };
 use tokio::process::{Child, Command as TokioCommand};
+
+use crate::runner::RunnerCommand;
+
+use self::{
+    gamescope::{Gamescope, GamescopeConfig},
+    mangohud::{MangoHud, MangoHudConfig},
+};
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub(crate) struct Wrappers {
+    pub(crate) gamescope: GamescopeConfig,
+    pub(crate) mangohud: MangoHudConfig,
+}
+
+impl Wrappers {
+    pub(crate) fn apply(&self, command: RunnerCommand) -> RunnerCommand {
+        match (self.gamescope.enabled, self.mangohud.enabled) {
+            (false, false) => command,
+            (false, true) => command.wrapped_by(MangoHud::from(self.mangohud.clone())),
+            (true, false) => command.wrapped_by(Gamescope::from(self.gamescope.clone())),
+            (true, true) => {
+                command.wrapped_by(Gamescope::from(self.gamescope.clone()).with_mangoapp())
+            }
+        }
+    }
+}
 
 pub(crate) trait Wrapper: Into<Command> + Sized {
     fn wrap<I: Into<Command>>(self, inner: I) -> Wrapped<Self, I> {
@@ -38,7 +66,7 @@ pub(crate) trait Spawnable: Into<Command> + Sized {
 
 impl<O: Wrapper, I: Spawnable> Spawnable for Wrapped<O, I> {}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Command {
     executable: OsString,
     args: Vec<OsString>,

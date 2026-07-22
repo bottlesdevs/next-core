@@ -120,3 +120,46 @@ pub(crate) fn load_runner(
         )?)),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wrapper::{Wrappers, gamescope::GamescopeConfig, mangohud::MangoHudConfig};
+
+    #[test]
+    fn configured_wrappers_lower_valid_combinations() {
+        fn command(executable: &str, args: &[&str]) -> Command {
+            Command::new(executable).args(args.iter().copied())
+        }
+
+        for (gamescope, mangohud, expected) in [
+            (false, false, command("wine", &["bridge.exe"])),
+            (
+                false,
+                true,
+                command("mangohud", &["--", "wine", "bridge.exe"]),
+            ),
+            (
+                true,
+                false,
+                command("gamescope", &["--", "wine", "bridge.exe"]),
+            ),
+            (
+                true,
+                true,
+                command("gamescope", &["--mangoapp", "--", "wine", "bridge.exe"]),
+            ),
+        ] {
+            let command = Wrappers {
+                gamescope: GamescopeConfig {
+                    enabled: gamescope,
+                    ..Default::default()
+                },
+                mangohud: MangoHudConfig { enabled: mangohud },
+            }
+            .apply(RunnerCommand(Command::new("wine").arg("bridge.exe")));
+
+            assert_eq!(Command::from(command), expected);
+        }
+    }
+}

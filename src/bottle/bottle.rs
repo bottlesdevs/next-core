@@ -18,10 +18,7 @@ use crate::{
     proto::Process,
     runner::{Runner, shutdown_prefix},
     winebridge::WineBridgeClient,
-    wrapper::{
-        gamescope::{Gamescope, GamescopeConfig},
-        mangohud::{MangoHud, MangoHudConfig},
-    },
+    wrapper::Wrappers,
 };
 
 #[derive(Clone, Deserialize, Serialize, Config)]
@@ -40,10 +37,8 @@ pub(crate) struct BottleConfig {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub(crate) environment: HashMap<String, String>,
 
-    #[serde(default)]
-    pub(crate) gamescope: GamescopeConfig,
-    #[serde(default)]
-    pub(crate) mangohud: MangoHudConfig,
+    #[serde(flatten)]
+    pub(crate) wrappers: Wrappers,
 }
 
 pub struct Bottle {
@@ -67,8 +62,7 @@ impl Bottle {
                 dependencies,
                 storage,
                 programs: Vec::new(),
-                gamescope: GamescopeConfig::default(),
-                mangohud: MangoHudConfig::default(),
+                wrappers: Wrappers::default(),
                 environment: HashMap::new(),
             },
             bridge: None,
@@ -450,18 +444,13 @@ impl Bottle {
         if self.bridge.is_none() {
             let runner = self.load_runner()?;
             let prefix = self.prefix().await?;
-            let mut command = WineBridgeClient::command(
+            let command = WineBridgeClient::command(
                 runner.as_ref(),
                 &prefix,
                 self.components().winebridge().path().to_path_buf(),
             )
             .envs(self.config.environment.clone());
-            if self.config.mangohud.enabled {
-                command = command.wrapped_by(MangoHud::from(self.config.mangohud.clone()));
-            }
-            if self.config.gamescope.enabled {
-                command = command.wrapped_by(Gamescope::from(self.config.gamescope.clone()));
-            }
+            let command = self.config.wrappers.apply(command);
 
             self.bridge = Some(WineBridgeClient::connect_or_spawn(&prefix, command).await?);
         }
@@ -653,8 +642,7 @@ mod tests {
             name: "test".into(),
             storage: PrefixStorage::Standard,
             programs: Vec::new(),
-            gamescope: GamescopeConfig::default(),
-            mangohud: MangoHudConfig::default(),
+            wrappers: Wrappers::default(),
             components: BottleComponents::new(&runner, &winebridge, None).unwrap(),
             dependencies: Vec::new(),
             environment: HashMap::new(),
