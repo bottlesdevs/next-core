@@ -37,8 +37,6 @@ pub enum BottleError {
 
 #[derive(Debug, Error)]
 pub enum VirgoError {
-    #[error("Virgo is unavailable because no fvs2d executable was configured")]
-    Unavailable,
     #[error("FVS repository {repository} has no commit {state}")]
     MissingCommit { repository: PathBuf, state: String },
     #[error("Virgo base exists but has no commits")]

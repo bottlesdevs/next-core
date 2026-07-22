@@ -14,12 +14,11 @@ use crate::{
 };
 
 use super::{
+    FVS_BLOCK_SIZE,
     bottle::{BottleType, PrefixStorage},
     error::VirgoError,
     manager::fvs,
 };
-
-const BLOCK_SIZE: u32 = 1024 * 1024;
 
 impl PrefixStorage {
     pub(crate) async fn create(
@@ -222,7 +221,7 @@ where
         for (file, _) in registry_files() {
             remove_file(&upper.join(file))?;
         }
-        let repository = client.new_repository(&upper, BLOCK_SIZE).await?;
+        let repository = client.new_repository(&upper, FVS_BLOCK_SIZE).await?;
         client.commit(&repository, item_id.to_string()).await?;
         fs::create_dir_all(destination.parent().expect("cache path has a parent"))?;
         fs::create_dir_all(
@@ -335,7 +334,9 @@ async fn ensure_base(runner: &dyn Runner) -> Result<Layer> {
         return Err(error);
     }
     let committed = async {
-        let repository = client.new_repository(&repository_path, BLOCK_SIZE).await?;
+        let repository = client
+            .new_repository(&repository_path, FVS_BLOCK_SIZE)
+            .await?;
         let commit = client.commit(&repository, "Virgo base".into()).await?;
         Ok(Layer::new(&repository, Some(&commit)))
     }
@@ -384,7 +385,7 @@ async fn ensure_adapter(runner: &dyn Runner, runner_key: &str, base: &Layer) -> 
         initialized?;
         unmounted?;
 
-        let repository = client.new_repository(&upper, BLOCK_SIZE).await?;
+        let repository = client.new_repository(&upper, FVS_BLOCK_SIZE).await?;
         let commit = client
             .commit(&repository, format!("Runner adapter {runner_key}"))
             .await?;
@@ -398,7 +399,7 @@ async fn ensure_adapter(runner: &dyn Runner, runner_key: &str, base: &Layer) -> 
     let commit = build?;
     let repository = Repository {
         repository_path: destination.display().to_string(),
-        block_size: BLOCK_SIZE,
+        block_size: FVS_BLOCK_SIZE,
     };
     Ok(Layer::new(&repository, Some(&commit)))
 }

@@ -13,12 +13,13 @@ use crate::{
 };
 
 use super::{
+    FVS_BLOCK_SIZE,
     bottle::{Bottle, BottleConfig, BottleType, PrefixStorage},
-    error::{BottleError, VirgoError},
+    error::BottleError,
 };
 
 pub struct BottleManagerConfig {
-    pub fvs2d_executable: Option<PathBuf>,
+    pub fvs2d_executable: PathBuf,
 }
 
 static CONFIG: OnceLock<BottleManagerConfig> = OnceLock::new();
@@ -27,7 +28,7 @@ static FVS: OnceCell<Fvs2dClient> = OnceCell::const_new();
 pub struct BottleManager;
 
 impl BottleManager {
-    pub fn new(fvs2d_executable: Option<PathBuf>) -> Result<Self> {
+    pub fn new(fvs2d_executable: PathBuf) -> Result<Self> {
         // TODO: Directories shouldn't be created here
         let directories =
             crate::utils::directories::get().ok_or(BottleError::ProjectDirectoriesUnavailable)?;
@@ -35,7 +36,7 @@ impl BottleManager {
         fs::create_dir_all(directories.runtime_dir())?;
 
         let config = BottleManagerConfig {
-            fvs2d_executable: fvs2d_executable.map(absolute_path).transpose()?,
+            fvs2d_executable: absolute_path(fvs2d_executable)?,
         };
 
         CONFIG.get_or_init(|| config);
@@ -82,7 +83,12 @@ impl BottleManager {
             )
             .await?;
 
-            Bottle::new(id, name, components, Vec::new(), storage)
+            let bottle = Bottle::new(id, name, components, Vec::new(), storage)?;
+            fvs()
+                .await?
+                .new_repository(&bottle_path, FVS_BLOCK_SIZE)
+                .await?;
+            Ok(bottle)
         }
         .await;
 
@@ -139,12 +145,8 @@ pub(super) fn config() -> &'static BottleManagerConfig {
 
 pub(crate) async fn fvs() -> Result<&'static Fvs2dClient> {
     FVS.get_or_try_init(|| async {
-        let executable = config()
-            .fvs2d_executable
-            .as_ref()
-            .ok_or(VirgoError::Unavailable)?;
         Ok(Fvs2dClient::connect_or_spawn(
-            executable,
+            &config().fvs2d_executable,
             crate::utils::directories::expect()
                 .runtime_dir()
                 .join("fvs2d.sock"),
