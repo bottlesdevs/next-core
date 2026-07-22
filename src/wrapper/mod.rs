@@ -17,9 +17,11 @@ use self::{
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
-pub(crate) struct Wrappers {
-    pub(crate) gamescope: GamescopeConfig,
-    pub(crate) mangohud: MangoHudConfig,
+pub struct Wrappers {
+    #[serde(default)]
+    pub gamescope: GamescopeConfig,
+    #[serde(default)]
+    pub mangohud: MangoHudConfig,
 }
 
 impl Wrappers {

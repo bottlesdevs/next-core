@@ -98,6 +98,21 @@ impl Bottle {
         &self.config.dependencies
     }
 
+    pub fn wrappers(&self) -> &Wrappers {
+        &self.config.wrappers
+    }
+
+    pub async fn set_wrappers(&mut self, wrappers: Wrappers) -> Result<()> {
+        if wrappers == self.config.wrappers {
+            return Ok(());
+        }
+        self.stop().await?;
+        self.update(move |draft| {
+            draft.wrappers = wrappers;
+            Ok(())
+        })
+    }
+
     pub fn r#type(&self) -> BottleType {
         self.config.storage.kind()
     }

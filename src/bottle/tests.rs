@@ -186,6 +186,17 @@ mod unix {
         let program = Program::new("Game", "C:\\game.exe");
         let program_id = program.id;
         bottle.add_program(program).unwrap();
+        let wrappers = Wrappers {
+            gamescope: GamescopeConfig {
+                enabled: true,
+                fullscreen: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        bottle.set_wrappers(wrappers.clone()).await.unwrap();
+        bottle.set_wrappers(wrappers.clone()).await.unwrap();
+        assert_eq!(bottle.wrappers(), &wrappers);
         let bottle_id = bottle.id();
         let failed_program = Program::new("Unsaved", "C:\\unsaved.exe");
         let failed_program_id = failed_program.id;
@@ -210,6 +221,7 @@ mod unix {
         assert_eq!(reopened.runner().path(), runner_root);
         assert_eq!(reopened.r#type(), BottleType::Standard);
         assert_eq!(reopened.program(program_id).unwrap().name, "Game");
+        assert_eq!(reopened.wrappers(), &wrappers);
         let stored = fs::read_to_string(directories.bottle(bottle_id).join("bottle.toml")).unwrap();
         assert!(stored.contains("[runner]"));
         assert!(stored.contains("type = \"runner\""));
@@ -230,14 +242,14 @@ mod unix {
         assert_eq!(
             fs::read_to_string(directories.bottle(bottle_id).join("prefix/wineserver.log"))
                 .unwrap(),
-            "-k\n"
+            "-k\n-k\n"
         );
 
         reopened.stop().await.unwrap();
         assert_eq!(
             fs::read_to_string(directories.bottle(bottle_id).join("prefix/wineserver.log"))
                 .unwrap(),
-            "-k\n-k\n"
+            "-k\n-k\n-k\n"
         );
 
         drop(reopened);

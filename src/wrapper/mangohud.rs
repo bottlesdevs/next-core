@@ -22,8 +22,9 @@ impl Wrapper for MangoHud {}
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
-pub(crate) struct MangoHudConfig {
-    pub(crate) enabled: bool,
+pub struct MangoHudConfig {
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub enabled: bool,
 }
 
 impl MangoHudConfig {

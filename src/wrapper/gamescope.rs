@@ -36,33 +36,36 @@ impl Wrapper for Gamescope {}
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
-pub(crate) struct GamescopeConfig {
-    pub(crate) enabled: bool,
+pub struct GamescopeConfig {
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) game_width: Option<u32>,
+    pub game_width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) game_height: Option<u32>,
+    pub game_height: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) output_width: Option<u32>,
+    pub output_width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) output_height: Option<u32>,
+    pub output_height: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) frame_rate: Option<u32>,
+    pub frame_rate: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) unfocused_frame_rate: Option<u32>,
+    pub unfocused_frame_rate: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) scaler: Option<Scaler>,
+    pub scaler: Option<Scaler>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) filter: Option<Filter>,
+    pub filter: Option<Filter>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) sharpness: Option<u8>,
-    pub(crate) borderless: bool,
-    pub(crate) fullscreen: bool,
+    pub sharpness: Option<u8>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub borderless: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fullscreen: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Scaler {
+pub enum Scaler {
     Auto,
     Integer,
     Fit,
@@ -84,7 +87,7 @@ impl Scaler {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Filter {
+pub enum Filter {
     Linear,
     Nearest,
     Fsr,
