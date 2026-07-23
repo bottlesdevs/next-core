@@ -13,7 +13,6 @@ pub use crate::wrapper::{
     gamescope::{Filter as GamescopeFilter, GamescopeConfig, Scaler as GamescopeScaler},
     mangohud::MangoHudConfig,
 };
-pub(crate) use bottle::PrefixStorage;
 pub use bottle::{Bottle, BottleType, Program};
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 pub use manager::BottleManager;

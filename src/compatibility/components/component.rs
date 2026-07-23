@@ -51,11 +51,7 @@ impl Component {
 }
 
 impl Installable for Component {
-    fn id(&self) -> Uuid {
-        self.id()
-    }
-
-    fn prepare(&self) -> Result<Vec<InstallResource>> {
+    fn prepare(&self, _directories: &crate::Directories) -> Result<Vec<InstallResource>> {
         let Some(steps) = component_steps(self.kind()) else {
             return Ok(Vec::new());
         };

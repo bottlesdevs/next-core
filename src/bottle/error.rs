@@ -23,6 +23,8 @@ pub enum BottleError {
     ComponentNotUninstallable(Uuid),
     #[error("runner component is required")]
     RunnerComponentRequired,
+    #[error("runner components must be installed with Bottle::install_runner")]
+    RunnerRequiresExplicitInstall,
     #[error("WineBridge component is required")]
     WinebridgeComponentRequired,
     #[error("UMU component has the wrong kind")]

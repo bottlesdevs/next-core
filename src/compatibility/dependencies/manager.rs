@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::{NonNilUuid, Uuid};
 
 use super::{Dependency, catalog::CatalogDependencyEntry};
-use crate::{compatibility::Architecture, error::Result};
+use crate::{Directories, compatibility::Architecture, error::Result};
 
 #[derive(Debug, Default, Deserialize, Serialize, Config)]
 #[config(version = 1)]
@@ -19,8 +19,8 @@ pub struct DependencyManager {
 }
 
 impl DependencyManager {
-    pub fn new() -> Result<Self> {
-        let root = crate::utils::directories::expect().dependencies();
+    pub fn load(directories: &Directories) -> Result<Self> {
+        let root = directories.dependencies();
         fs::create_dir_all(&root)?;
         let root = fs::canonicalize(root)?;
         let index_path = root.join("index.toml");

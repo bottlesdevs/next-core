@@ -5,15 +5,15 @@ use serde::{Deserialize, Serialize};
 use uuid::{NonNilUuid, Uuid};
 
 use super::{Component, catalog::ComponentKind};
-use crate::{error::Result, runner::detect_runner_kind};
+use crate::{Directories, error::Result, runner::detect_runner_kind};
 
 pub struct ComponentManager {
     components: Vec<Component>,
 }
 
 impl ComponentManager {
-    pub fn new() -> Result<Self> {
-        let component_dir = crate::utils::directories::expect().components();
+    pub fn load(directories: &Directories) -> Result<Self> {
+        let component_dir = directories.components();
         fs::create_dir_all(&component_dir)?;
         let components_path = fs::canonicalize(component_dir)?;
         let index_path = components_path.join("index.toml");
@@ -120,6 +120,7 @@ fn component(directory: &str, path: &Path) -> Result<Option<(ComponentKind, std:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Directories;
 
     #[test]
     fn discovers_extracted_components_and_executable_paths() {
@@ -161,5 +162,29 @@ mod tests {
         );
 
         fs::remove_dir_all(components_path).unwrap();
+    }
+
+    #[test]
+    fn discovery_is_scoped_to_the_supplied_root_and_preserves_indexed_ids() {
+        let root = std::env::temp_dir().join(format!("bottles-next-components-{}", Uuid::new_v4()));
+        let left = Directories {
+            data_dir: root.join("left"),
+            runtime_dir: root.join("left-run"),
+        };
+        let right = Directories {
+            data_dir: root.join("right"),
+            runtime_dir: root.join("right-run"),
+        };
+        fs::create_dir_all(left.components().join("dxvk/1")).unwrap();
+        fs::create_dir_all(right.components().join("dxvk/1")).unwrap();
+
+        let first = ComponentManager::load(&left).unwrap();
+        let left_id = first.components()[0].id();
+        let second = ComponentManager::load(&left).unwrap();
+        let right = ComponentManager::load(&right).unwrap();
+
+        assert_eq!(second.components()[0].id(), left_id);
+        assert_ne!(right.components()[0].id(), left_id);
+        fs::remove_dir_all(root).unwrap();
     }
 }

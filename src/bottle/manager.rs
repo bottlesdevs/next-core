@@ -1,15 +1,13 @@
-use std::{fs, path::PathBuf, sync::OnceLock};
+use std::{fs, io};
 
-use fvs_rs::Fvs2dClient;
-use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 use crate::{
+    Context,
     bottle::bottle::BottleComponents,
-    compatibility::{components::Component, installer::umu_for_runner},
-    error::Result,
+    compatibility::components::Component,
+    error::{Result, ResultExt},
     runner::load_runner,
-    utils::absolute_path,
 };
 
 use super::{
@@ -18,30 +16,13 @@ use super::{
     error::BottleError,
 };
 
-pub struct BottleManagerConfig {
-    pub fvs2d_executable: PathBuf,
+pub struct BottleManager {
+    context: Context,
 }
 
-static CONFIG: OnceLock<BottleManagerConfig> = OnceLock::new();
-static FVS: OnceCell<Fvs2dClient> = OnceCell::const_new();
-
-pub struct BottleManager;
-
 impl BottleManager {
-    pub fn new(fvs2d_executable: PathBuf) -> Result<Self> {
-        // TODO: Directories shouldn't be created here
-        let directories =
-            crate::utils::directories::get().ok_or(BottleError::ProjectDirectoriesUnavailable)?;
-        fs::create_dir_all(directories.bottles())?;
-        fs::create_dir_all(directories.runtime_dir())?;
-
-        let config = BottleManagerConfig {
-            fvs2d_executable: absolute_path(fvs2d_executable)?,
-        };
-
-        CONFIG.get_or_init(|| config);
-
-        Ok(Self)
+    pub fn new(context: Context) -> Self {
+        Self { context }
     }
 
     pub async fn create(
@@ -50,9 +31,13 @@ impl BottleManager {
         kind: BottleType,
         runner_component: &Component,
         winebridge: &Component,
+        umu: Option<&Component>,
     ) -> Result<Bottle> {
+        fs::create_dir_all(self.context.directories().bottles())?;
+        fs::create_dir_all(self.context.directories().runtime_dir())?;
+
         let name = name.into();
-        for entry in fs::read_dir(crate::utils::directories::expect().bottles())? {
+        for entry in fs::read_dir(self.context.directories().bottles())? {
             let path = entry?.path().join("bottle.toml");
             if path.is_file() && next_config::load::<BottleConfig>(&path)?.name == name {
                 return Err(BottleError::DuplicateName(name).into());
@@ -63,12 +48,11 @@ impl BottleManager {
             .kind()
             .runner_kind()
             .ok_or(BottleError::RunnerComponentRequired)?;
-        let umu = umu_for_runner(runner_kind, None)?;
-        let components = BottleComponents::new(runner_component, winebridge, umu.as_ref())?;
+        let components = BottleComponents::new(runner_component, winebridge, umu)?;
         let runner = load_runner(
             runner_component.path(),
             runner_kind,
-            umu.as_ref().map(Component::path),
+            umu.map(Component::path),
         )?;
         let id = Uuid::new_v4();
         let bottle_path = self.bottle_path(id);
@@ -80,11 +64,20 @@ impl BottleManager {
                 &bottle_path,
                 runner.as_ref(),
                 &runner_component.id().to_string(),
+                &self.context,
             )
             .await?;
 
-            let bottle = Bottle::new(id, name, components, Vec::new(), storage)?;
-            fvs()
+            let bottle = Bottle::new(
+                id,
+                name,
+                components,
+                Vec::new(),
+                storage,
+                self.context.clone(),
+            )?;
+            self.context
+                .fvs()
                 .await?
                 .new_repository(&bottle_path, FVS_BLOCK_SIZE)
                 .await?;
@@ -111,15 +104,23 @@ impl BottleManager {
             }
             .into());
         }
-        Ok(Bottle::from_config(config))
+        Ok(Bottle::from_config(config, self.context.clone()))
     }
 
     pub fn list(&self) -> Result<Vec<Bottle>> {
-        let mut bottles: Vec<Bottle> = Vec::new();
-        for entry in fs::read_dir(crate::utils::directories::expect().bottles())? {
+        let entries = match fs::read_dir(self.context.directories().bottles()) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut bottles = Vec::new();
+        for entry in entries {
             let path = entry?.path().join("bottle.toml");
             if path.is_file() {
-                bottles.push(Bottle::from_config(next_config::load(path)?));
+                let Some(config) = next_config::load::<BottleConfig>(path).log_error() else {
+                    continue;
+                };
+                bottles.push(Bottle::from_config(config, self.context.clone()));
             }
         }
         Ok(bottles)
@@ -132,26 +133,7 @@ impl BottleManager {
         Ok(())
     }
 
-    fn bottle_path(&self, id: Uuid) -> PathBuf {
-        crate::utils::directories::expect().bottle(id)
+    fn bottle_path(&self, id: Uuid) -> std::path::PathBuf {
+        self.context.directories().bottle(id)
     }
-}
-
-pub(super) fn config() -> &'static BottleManagerConfig {
-    CONFIG
-        .get()
-        .expect("BottleManager initialized runtime configuration")
-}
-
-pub(crate) async fn fvs() -> Result<&'static Fvs2dClient> {
-    FVS.get_or_try_init(|| async {
-        Ok(Fvs2dClient::connect_or_spawn(
-            &config().fvs2d_executable,
-            crate::utils::directories::expect()
-                .runtime_dir()
-                .join("fvs2d.sock"),
-        )
-        .await?)
-    })
-    .await
 }

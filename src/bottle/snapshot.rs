@@ -6,20 +6,23 @@ use crate::error::Result;
 
 use super::{
     Bottle, FVS_BLOCK_SIZE, Snapshot, SnapshotSummary, bottle::BottleConfig, error::BottleError,
-    manager::fvs,
 };
 
 impl Bottle {
     pub async fn create_snapshot(&mut self, message: impl Into<String>) -> Result<Snapshot> {
         self.stop().await?;
-        Ok(fvs()
+        Ok(self
+            .context
+            .fvs()
             .await?
             .commit(&self.snapshot_repository(), message.into())
             .await?)
     }
 
     pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
-        Ok(fvs()
+        Ok(self
+            .context
+            .fvs()
             .await?
             .list_commits(&self.snapshot_repository())
             .await?)
@@ -28,7 +31,9 @@ impl Bottle {
     pub async fn rollback(&mut self, state_id_or_prefix: &str) -> Result<String> {
         self.stop().await?;
         let id = self.id();
-        let response: RestoreResponse = fvs()
+        let response: RestoreResponse = self
+            .context
+            .fvs()
             .await?
             .restore(
                 &self.snapshot_repository(),

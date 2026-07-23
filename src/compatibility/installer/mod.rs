@@ -11,11 +11,6 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    bottle::PrefixStorage,
-    compatibility::components::{
-        Component, ComponentManager,
-        catalog::{ComponentKind, RunnerKind},
-    },
     error::{Error, Result, ResultExt},
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
     runner::{Command, Runner, Spawnable, shutdown_prefix},
@@ -28,8 +23,6 @@ pub(super) use recipes::component_steps;
 
 #[derive(Debug, Error)]
 pub enum InstallerError {
-    #[error("Proton runner requires a locally available UMU")]
-    UmuUnavailable,
     #[error("installer exited with status {0}")]
     InstallerFailed(std::process::ExitStatus),
     #[error("regsvr32 exited with status {0}")]
@@ -80,13 +73,11 @@ pub(crate) struct InstallResource {
 }
 
 pub(crate) trait Installable {
-    fn id(&self) -> Uuid;
-    fn prepare(&self) -> Result<Vec<InstallResource>>;
+    fn prepare(&self, directories: &crate::Directories) -> Result<Vec<InstallResource>>;
 }
 
 pub(crate) struct InstallInputs<'a> {
-    pub(crate) storage: &'a mut PrefixStorage,
-    pub(crate) bottle_path: &'a Path,
+    pub(crate) prefix: &'a Path,
     pub(crate) runner: &'a dyn Runner,
     pub(crate) winebridge: &'a Path,
     pub(crate) environment: &'a mut HashMap<String, String>,
@@ -94,83 +85,50 @@ pub(crate) struct InstallInputs<'a> {
 
 pub(crate) async fn execute(
     inputs: InstallInputs<'_>,
-    item: &impl Installable,
-    replaced_id: Option<Uuid>,
+    resources: &[InstallResource],
 ) -> Result<()> {
-    let resources = item.prepare()?;
     let InstallInputs {
-        storage,
-        bottle_path,
+        prefix,
         runner,
         winebridge,
         environment,
     } = inputs;
-    let installed = storage
-        .install(bottle_path, item.id(), replaced_id, async |prefix| {
-            execute_steps(runner, prefix, winebridge, environment, &resources).await
-        })
-        .await?;
-    if !installed {
-        replay_environment(environment, &resources);
-    }
-    Ok(())
+    execute_steps(runner, prefix, winebridge, environment, resources).await
 }
 
-pub(crate) async fn uninstall(inputs: InstallInputs<'_>, component: &Component) -> Result<()> {
-    let resources = component.prepare()?;
+pub(crate) async fn uninstall(
+    inputs: InstallInputs<'_>,
+    resources: &[InstallResource],
+    restore_files: bool,
+    item_id: Uuid,
+) -> Result<()> {
     let InstallInputs {
-        storage,
-        bottle_path,
+        prefix,
         runner,
         winebridge,
         environment,
     } = inputs;
-    storage
-        .uninstall(
-            bottle_path,
-            component.id(),
-            async |prefix, restore_files| {
-                uninstall_steps(
-                    runner,
-                    prefix,
-                    winebridge,
-                    environment,
-                    &resources,
-                    restore_files,
-                    component.id(),
-                )
-                .await
-            },
-        )
-        .await
+    uninstall_steps(
+        runner,
+        prefix,
+        winebridge,
+        environment,
+        resources,
+        restore_files,
+        item_id,
+    )
+    .await
 }
 
-fn replay_environment(environment: &mut HashMap<String, String>, resources: &[InstallResource]) {
+pub(crate) fn replay_environment(
+    environment: &mut HashMap<String, String>,
+    resources: &[InstallResource],
+) {
     for step in resources.iter().flat_map(|resource| &resource.steps) {
         if let InstallStep::SetEnvironment { name, value } = step {
             environment.insert(name.clone(), value.clone());
         }
     }
-}
-
-pub(crate) fn umu_for_runner(
-    kind: RunnerKind,
-    installed: Option<&Component>,
-) -> Result<Option<Component>> {
-    if kind == RunnerKind::Wine {
-        return Ok(None);
-    }
-    if let Some(umu) = installed {
-        return Ok(Some(umu.clone()));
-    }
-    ComponentManager::new()?
-        .components()
-        .iter()
-        .filter(|component| component.kind() == ComponentKind::Umu)
-        .max_by(|left, right| left.version().cmp(right.version()))
-        .cloned()
-        .map(Some)
-        .ok_or_else(|| InstallerError::UmuUnavailable.into())
 }
 
 async fn execute_steps(
@@ -349,8 +307,8 @@ async fn ensure_bridge<'a>(
 ) -> Result<&'a WineBridgeClient> {
     if bridge.is_none() {
         let command =
-            WineBridgeClient::command(runner, &prefix, executable).envs(environment.clone());
-        *bridge = Some(WineBridgeClient::connect_or_spawn(&prefix, command).await?);
+            WineBridgeClient::command(runner, prefix, executable).envs(environment.clone());
+        *bridge = Some(WineBridgeClient::connect_or_spawn(prefix, command).await?);
     }
     Ok(bridge.as_ref().expect("WineBridge was initialized"))
 }
@@ -383,8 +341,9 @@ fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
 }
 
 fn extract_into(archive: &Path, prefix: &Path, destination: &Path) -> Result<()> {
-    let stage = crate::utils::directories::expect()
-        .data_dir()
+    let stage = prefix
+        .parent()
+        .expect("prefix has a parent")
         .join(".staging")
         .join(Uuid::new_v4().to_string());
     fs::create_dir_all(&stage)?;

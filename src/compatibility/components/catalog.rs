@@ -7,6 +7,7 @@ use crate::compatibility::{
     catalog::{Artifact, Catalog, CatalogItem},
     deserialize_non_empty_string, deserialize_non_empty_vec,
 };
+use crate::runner::RunnerKind;
 
 const CATALOG_VERSION: u32 = 1;
 
@@ -126,13 +127,6 @@ impl ComponentKind {
             _ => None,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RunnerKind {
-    Wine,
-    Proton,
 }
 
 #[cfg(test)]

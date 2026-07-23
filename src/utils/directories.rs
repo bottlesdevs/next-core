@@ -1,40 +1,33 @@
 use std::{
     path::{Path, PathBuf},
-    sync::LazyLock,
+    sync::Arc,
 };
 
-#[cfg(not(test))]
 use ::directories::ProjectDirs;
+use fvs_rs::Fvs2dClient;
+use tokio::sync::OnceCell;
 use uuid::Uuid;
 
+use crate::{bottle::error::BottleError, error::Result, utils::absolute_path};
+
+#[derive(Clone, Debug)]
 pub struct Directories {
-    data_dir: PathBuf,
-    runtime_dir: PathBuf,
+    pub data_dir: PathBuf,
+    pub runtime_dir: PathBuf,
 }
 
-pub static DIRECTORIES: LazyLock<Option<Directories>> = LazyLock::new(Directories::new);
-
 impl Directories {
-    #[cfg(not(test))]
-    fn new() -> Option<Self> {
-        let project = ProjectDirs::from("com", "usebottles", "bottles-next")?;
+    pub fn for_project(project_name: &str) -> Result<Self> {
+        let project = ProjectDirs::from("com", "usebottles", project_name)
+            .ok_or(BottleError::ProjectDirectoriesUnavailable)?;
         let data_dir = project.data_local_dir().to_path_buf();
         let runtime_dir = project
             .runtime_dir()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| data_dir.join("runtime"));
-        Some(Self {
+        Ok(Self {
             data_dir,
             runtime_dir,
-        })
-    }
-
-    #[cfg(test)]
-    fn new() -> Option<Self> {
-        let root = std::env::temp_dir().join(format!("bottles-next-{}", std::process::id()));
-        Some(Self {
-            data_dir: root.join("data"),
-            runtime_dir: root.join("run"),
         })
     }
 
@@ -63,10 +56,64 @@ impl Directories {
     }
 }
 
-pub fn get() -> Option<&'static Directories> {
-    DIRECTORIES.as_ref()
+struct ContextInner {
+    directories: Directories,
+    fvs2d_executable: PathBuf,
+    fvs: OnceCell<Fvs2dClient>,
 }
 
-pub(crate) fn expect() -> &'static Directories {
-    get().expect("BottleManager validated application directories")
+#[derive(Clone)]
+pub struct Context(Arc<ContextInner>);
+
+impl Context {
+    pub fn new(directories: Directories, fvs2d_executable: impl Into<PathBuf>) -> Result<Self> {
+        Ok(Self(Arc::new(ContextInner {
+            directories,
+            fvs2d_executable: absolute_path(fvs2d_executable.into())?,
+            fvs: OnceCell::new(),
+        })))
+    }
+
+    pub fn directories(&self) -> &Directories {
+        &self.0.directories
+    }
+
+    pub(crate) async fn fvs(&self) -> Result<&Fvs2dClient> {
+        self.0
+            .fvs
+            .get_or_try_init(|| async {
+                std::fs::create_dir_all(self.0.directories.runtime_dir())?;
+                Ok(Fvs2dClient::connect_or_spawn(
+                    &self.0.fvs2d_executable,
+                    self.0.directories.runtime_dir().join("fvs2d.sock"),
+                )
+                .await?)
+            })
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contexts_keep_independent_roots_and_fvs_configuration() {
+        let left = Directories {
+            data_dir: "/left/data".into(),
+            runtime_dir: "/left/run".into(),
+        };
+        let right = Directories {
+            data_dir: "/right/data".into(),
+            runtime_dir: "/right/run".into(),
+        };
+        let left = Context::new(left, "/left/fvs2d").unwrap();
+        let right = Context::new(right, "/right/fvs2d").unwrap();
+
+        assert_eq!(left.directories().data_dir(), Path::new("/left/data"));
+        assert_eq!(right.directories().data_dir(), Path::new("/right/data"));
+        assert_eq!(left.0.fvs2d_executable, Path::new("/left/fvs2d"));
+        assert_eq!(right.0.fvs2d_executable, Path::new("/right/fvs2d"));
+        assert!(!Arc::ptr_eq(&left.0, &right.0));
+    }
 }

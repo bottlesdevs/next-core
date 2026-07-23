@@ -9,6 +9,7 @@ use regdiff_rs::prelude::{Diff, Hive, Registry, apply_files};
 use uuid::Uuid;
 
 use crate::{
+    Context,
     error::{Error, Result},
     runner::{Runner, initialize_and_shutdown_prefix},
 };
@@ -17,7 +18,6 @@ use super::{
     FVS_BLOCK_SIZE,
     bottle::{BottleType, PrefixStorage},
     error::VirgoError,
-    manager::fvs,
 };
 
 impl PrefixStorage {
@@ -26,6 +26,7 @@ impl PrefixStorage {
         bottle_path: &Path,
         runner: &dyn Runner,
         runner_key: &str,
+        context: &Context,
     ) -> Result<Self> {
         match kind {
             BottleType::Standard => {
@@ -35,7 +36,7 @@ impl PrefixStorage {
             BottleType::Virgo => {
                 fs::create_dir_all(bottle_path.join("upper"))?;
                 Ok(Self::Virgo {
-                    layers: base_layers(runner, runner_key).await?,
+                    layers: base_layers(runner, runner_key, context).await?,
                 })
             }
         }
@@ -48,16 +49,16 @@ impl PrefixStorage {
         }
     }
 
-    pub(crate) async fn prepare(&self, bottle_path: &Path) -> Result<()> {
+    pub(crate) async fn prepare(&self, bottle_path: &Path, context: &Context) -> Result<()> {
         if let Self::Virgo { layers } = self {
-            mount_layers(bottle_path, layers.clone()).await?;
+            mount_layers(bottle_path, layers.clone(), context).await?;
         }
         Ok(())
     }
 
-    pub(crate) async fn stop(&self, bottle_path: &Path) -> Result<()> {
+    pub(crate) async fn stop(&self, bottle_path: &Path, context: &Context) -> Result<()> {
         if matches!(self, Self::Virgo { .. }) {
-            unmount_prefix(bottle_path).await?;
+            unmount_prefix(bottle_path, context).await?;
         }
         Ok(())
     }
@@ -67,13 +68,14 @@ impl PrefixStorage {
         runner: &dyn Runner,
         runner_key: &str,
         installed: &[Uuid],
+        context: &Context,
     ) -> Result<()> {
         let Self::Virgo { layers } = self else {
             return Ok(());
         };
-        let mut rebuilt = base_layers(runner, runner_key).await?;
+        let mut rebuilt = base_layers(runner, runner_key, context).await?;
         for id in installed {
-            rebuilt.push(cached_layer(*id).await?);
+            rebuilt.push(cached_layer(*id, context).await?);
         }
         *layers = rebuilt;
         Ok(())
@@ -85,6 +87,7 @@ impl PrefixStorage {
         item_id: Uuid,
         replaced_id: Option<Uuid>,
         execute: F,
+        context: &Context,
     ) -> Result<bool>
     where
         F: for<'a> AsyncFnOnce(&'a Path) -> Result<()>,
@@ -95,7 +98,7 @@ impl PrefixStorage {
                 Ok(true)
             }
             Self::Virgo { layers } => {
-                install_virgo(bottle_path, layers, item_id, replaced_id, execute).await
+                install_virgo(bottle_path, layers, item_id, replaced_id, execute, context).await
             }
         }
     }
@@ -105,6 +108,7 @@ impl PrefixStorage {
         bottle_path: &Path,
         item_id: Uuid,
         execute: F,
+        context: &Context,
     ) -> Result<()>
     where
         F: for<'a> AsyncFnOnce(&'a Path, bool) -> Result<()>,
@@ -112,23 +116,23 @@ impl PrefixStorage {
         match self {
             Self::Standard => execute(&bottle_path.join("prefix"), true).await,
             Self::Virgo { layers } => {
-                remove_cached_layer(layers, item_id);
+                remove_cached_layer(layers, item_id, context);
 
                 let prefix = bottle_path.join("prefix");
                 let cleaned = async {
-                    mount_layers(bottle_path, layers.clone()).await?;
+                    mount_layers(bottle_path, layers.clone(), context).await?;
                     execute(&prefix, false).await
                 }
                 .await;
-                let unmounted = unmount_prefix(bottle_path).await;
+                let unmounted = unmount_prefix(bottle_path, context).await;
                 cleaned.and(unmounted)
             }
         }
     }
 }
 
-fn remove_cached_layer(layers: &mut Vec<Layer>, id: Uuid) {
-    let repository = layer_cache(id).display().to_string();
+fn remove_cached_layer(layers: &mut Vec<Layer>, id: Uuid, context: &Context) {
+    let repository = layer_cache(id, context).display().to_string();
     layers.retain(|layer| layer.repository_path != repository);
 }
 
@@ -138,35 +142,41 @@ async fn install_virgo<F>(
     item_id: Uuid,
     replaced_id: Option<Uuid>,
     execute: F,
+    context: &Context,
 ) -> Result<bool>
 where
     F: for<'a> AsyncFnOnce(&'a Path) -> Result<()>,
 {
-    let executed = if layer_cache(item_id).join(".fvs2").is_dir() {
+    let executed = if layer_cache(item_id, context).join(".fvs2").is_dir() {
         false
     } else {
-        cache_install(layers.clone(), item_id, execute).await?;
+        cache_install(layers.clone(), item_id, execute, context).await?;
         true
     };
 
-    let cached = cached_layer(item_id).await?;
+    let cached = cached_layer(item_id, context).await?;
     if let Some(id) = replaced_id {
-        let replaced = layer_cache(id).display().to_string();
+        let replaced = layer_cache(id, context).display().to_string();
         layers.retain(|layer| layer.repository_path != replaced);
     }
-    let destination = layer_cache(item_id).display().to_string();
+    let destination = layer_cache(item_id, context).display().to_string();
     layers.retain(|layer| layer.repository_path != destination);
     layers.push(cached);
-    apply_registry(bottle_path, layers, item_id).await?;
+    apply_registry(bottle_path, layers, item_id, context).await?;
     Ok(executed)
 }
 
-async fn cache_install<F>(layers: Vec<Layer>, item_id: Uuid, execute: F) -> Result<()>
+async fn cache_install<F>(
+    layers: Vec<Layer>,
+    item_id: Uuid,
+    execute: F,
+    context: &Context,
+) -> Result<()>
 where
     F: for<'a> AsyncFnOnce(&'a Path) -> Result<()>,
 {
-    let destination = layer_cache(item_id);
-    let registry_destination = registry_cache(item_id);
+    let destination = layer_cache(item_id, context);
+    let registry_destination = registry_cache(item_id, context);
     if destination.exists() {
         fs::remove_dir_all(&destination)?;
     }
@@ -175,7 +185,8 @@ where
     }
 
     // UUID-only caches assume compatible lower layers.
-    let stage = crate::utils::directories::expect()
+    let stage = context
+        .directories()
         .data_dir()
         .join("virgo/.staging")
         .join(Uuid::new_v4().to_string());
@@ -187,7 +198,7 @@ where
         fs::create_dir_all(path)?;
     }
 
-    let client = fvs().await?;
+    let client = context.fvs().await?;
     let result = async {
         let mount = client.mount(&prefix, layers, Some(&upper)).await?;
         let installed = async {
@@ -238,13 +249,18 @@ where
     result
 }
 
-async fn apply_registry(bottle_path: &Path, layers: &[Layer], id: Uuid) -> Result<()> {
-    let patches = registry_cache(id);
+async fn apply_registry(
+    bottle_path: &Path,
+    layers: &[Layer],
+    id: Uuid,
+    context: &Context,
+) -> Result<()> {
+    let patches = registry_cache(id, context);
     if !patches.is_dir() {
         return Ok(());
     }
 
-    mount_layers(bottle_path, layers.to_vec()).await?;
+    mount_layers(bottle_path, layers.to_vec(), context).await?;
     let prefix = bottle_path.join("prefix");
     let stage = prefix.join(format!(".bottles-next-registry-{}", Uuid::new_v4()));
     fs::create_dir_all(&stage)?;
@@ -264,15 +280,15 @@ async fn apply_registry(bottle_path: &Path, layers: &[Layer], id: Uuid) -> Resul
         Ok(())
     })();
     let _ = fs::remove_dir_all(stage);
-    let unmounted = unmount_prefix(bottle_path).await;
+    let unmounted = unmount_prefix(bottle_path, context).await;
     applied?;
     unmounted
 }
 
-async fn mount_layers(bottle_path: &Path, layers: Vec<Layer>) -> Result<()> {
+async fn mount_layers(bottle_path: &Path, layers: Vec<Layer>, context: &Context) -> Result<()> {
     let prefix = bottle_path.join("prefix");
     let mountpoint = prefix.display().to_string();
-    let client = fvs().await?;
+    let client = context.fvs().await?;
     if client.list_mounts().await?.into_iter().any(|mount| {
         mount
             .spec
@@ -288,9 +304,9 @@ async fn mount_layers(bottle_path: &Path, layers: Vec<Layer>) -> Result<()> {
     Ok(())
 }
 
-async fn unmount_prefix(bottle_path: &Path) -> Result<()> {
+async fn unmount_prefix(bottle_path: &Path, context: &Context) -> Result<()> {
     let mountpoint = bottle_path.join("prefix").display().to_string();
-    let client = fvs().await?;
+    let client = context.fvs().await?;
     if let Some(mount) = client.list_mounts().await?.into_iter().find(|mount| {
         mount
             .spec
@@ -302,17 +318,19 @@ async fn unmount_prefix(bottle_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn base_layers(runner: &dyn Runner, runner_key: &str) -> Result<Vec<Layer>> {
-    let base = ensure_base(runner).await?;
-    let adapter = ensure_adapter(runner, runner_key, &base).await?;
+async fn base_layers(
+    runner: &dyn Runner,
+    runner_key: &str,
+    context: &Context,
+) -> Result<Vec<Layer>> {
+    let base = ensure_base(runner, context).await?;
+    let adapter = ensure_adapter(runner, runner_key, &base, context).await?;
     Ok(vec![base, adapter])
 }
 
-async fn ensure_base(runner: &dyn Runner) -> Result<Layer> {
-    let client = fvs().await?;
-    let base_path = crate::utils::directories::expect()
-        .data_dir()
-        .join("virgo/base");
+async fn ensure_base(runner: &dyn Runner, context: &Context) -> Result<Layer> {
+    let client = context.fvs().await?;
+    let base_path = context.directories().data_dir().join("virgo/base");
     let repository_path = base_path.join("prefix");
     if repository_path.join(".fvs2").is_dir() {
         let repository = client.new_repository(&repository_path, 0).await?;
@@ -347,9 +365,15 @@ async fn ensure_base(runner: &dyn Runner) -> Result<Layer> {
     committed
 }
 
-async fn ensure_adapter(runner: &dyn Runner, runner_key: &str, base: &Layer) -> Result<Layer> {
-    let client = fvs().await?;
-    let destination = crate::utils::directories::expect()
+async fn ensure_adapter(
+    runner: &dyn Runner,
+    runner_key: &str,
+    base: &Layer,
+    context: &Context,
+) -> Result<Layer> {
+    let client = context.fvs().await?;
+    let destination = context
+        .directories()
         .data_dir()
         .join("virgo/adapters")
         .join(runner_key);
@@ -367,7 +391,8 @@ async fn ensure_adapter(runner: &dyn Runner, runner_key: &str, base: &Layer) -> 
         return Ok(Layer::from_summary(&repository, Some(&commit)));
     }
 
-    let stage = crate::utils::directories::expect()
+    let stage = context
+        .directories()
         .data_dir()
         .join("virgo/.staging")
         .join(Uuid::new_v4().to_string());
@@ -404,12 +429,12 @@ async fn ensure_adapter(runner: &dyn Runner, runner_key: &str, base: &Layer) -> 
     Ok(Layer::new(&repository, Some(&commit)))
 }
 
-async fn cached_layer(id: Uuid) -> Result<Layer> {
-    let destination = layer_cache(id);
+async fn cached_layer(id: Uuid, context: &Context) -> Result<Layer> {
+    let destination = layer_cache(id, context);
     if !destination.join(".fvs2").is_dir() {
         return Err(VirgoError::CachedLayerNotFound(destination).into());
     }
-    let client = fvs().await?;
+    let client = context.fvs().await?;
     let repository = client.new_repository(&destination, 0).await?;
     let commit = client
         .list_commits(&repository)
@@ -423,15 +448,17 @@ async fn cached_layer(id: Uuid) -> Result<Layer> {
     Ok(Layer::from_summary(&repository, Some(&commit)))
 }
 
-fn layer_cache(id: Uuid) -> PathBuf {
-    crate::utils::directories::expect()
+fn layer_cache(id: Uuid, context: &Context) -> PathBuf {
+    context
+        .directories()
         .data_dir()
         .join("virgo/layers")
         .join(id.to_string())
 }
 
-fn registry_cache(id: Uuid) -> PathBuf {
-    crate::utils::directories::expect()
+fn registry_cache(id: Uuid, context: &Context) -> PathBuf {
+    context
+        .directories()
         .data_dir()
         .join("virgo/registry")
         .join(id.to_string())

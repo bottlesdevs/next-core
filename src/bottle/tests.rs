@@ -1,15 +1,15 @@
 use crate::{
+    Context, Directories,
     bottle::{
+        BottleManager,
         bottle::{BottleComponents, BottleConfig},
         error::BottleError,
     },
     compatibility::{
-        components::{
-            Component,
-            catalog::{ComponentKind, RunnerKind},
-        },
+        components::{Component, catalog::ComponentKind},
         dependencies::Dependency,
     },
+    runner::RunnerKind,
     wrapper::{
         Wrappers,
         gamescope::{GamescopeConfig, Scaler},
@@ -17,10 +17,67 @@ use crate::{
     },
 };
 
+fn test_directories() -> Directories {
+    let root = std::env::temp_dir().join(format!("bottles-next-{}", uuid::Uuid::new_v4()));
+    Directories {
+        data_dir: root.join("data"),
+        runtime_dir: root.join("run"),
+    }
+}
+
+#[test]
+fn bottle_managers_are_scoped_to_their_context_roots() {
+    let id = uuid::Uuid::new_v4();
+    let left = test_directories();
+    let right = test_directories();
+
+    for (directories, name) in [(&left, "left"), (&right, "right")] {
+        let runner = Component::new(
+            ComponentKind::Runner {
+                kind: RunnerKind::Wine,
+            },
+            "wine",
+            directories.data_dir().join("runner"),
+        )
+        .unwrap();
+        let bridge = Component::new(
+            ComponentKind::Winebridge,
+            "bridge",
+            directories.data_dir().join("winebridge.exe"),
+        )
+        .unwrap();
+        let config = BottleConfig {
+            id,
+            name: name.into(),
+            storage: super::bottle::PrefixStorage::Standard,
+            programs: Vec::new(),
+            components: BottleComponents::new(&runner, &bridge, None).unwrap(),
+            dependencies: Vec::new(),
+            environment: Default::default(),
+            wrappers: Wrappers::default(),
+        };
+        next_config::save(directories.bottle(id).join("bottle.toml"), &config).unwrap();
+    }
+
+    let left_manager =
+        BottleManager::new(Context::new(left.clone(), left.data_dir().join("fvs2d")).unwrap());
+    let right_manager =
+        BottleManager::new(Context::new(right.clone(), right.data_dir().join("fvs2d")).unwrap());
+
+    assert_eq!(left_manager.open(id).unwrap().name(), "left");
+    assert_eq!(right_manager.open(id).unwrap().name(), "right");
+    assert_eq!(left_manager.list().unwrap()[0].name(), "left");
+    assert_eq!(right_manager.list().unwrap()[0].name(), "right");
+
+    std::fs::remove_dir_all(left.data_dir).unwrap();
+    std::fs::remove_dir_all(right.data_dir).unwrap();
+}
+
 #[test]
 fn proton_umu_components_and_dependencies_round_trip() {
+    let directories = test_directories();
     let id = uuid::Uuid::new_v4();
-    let bottle_path = crate::utils::directories::expect().bottle(id);
+    let bottle_path = directories.bottle(id);
     let proton = Component::new(
         ComponentKind::Runner {
             kind: RunnerKind::Proton,
@@ -104,7 +161,7 @@ fn proton_umu_components_and_dependencies_round_trip() {
     assert_eq!(loaded.wrappers, config.wrappers);
     assert_eq!(loaded.environment["EXAMPLE"], "enabled");
 
-    std::fs::remove_dir_all(bottle_path).unwrap();
+    std::fs::remove_dir_all(directories.data_dir).unwrap();
 }
 
 #[cfg(unix)]
@@ -115,6 +172,7 @@ mod unix {
 
     use super::super::*;
     use super::*;
+    use crate::bottle::bottle::PrefixStorage;
 
     fn install_wine(runner_path: &Path) {
         let bin = runner_path.join("bin");
@@ -137,7 +195,9 @@ mod unix {
 
     #[tokio::test]
     async fn components_and_programs_round_trip_through_bottle_toml() {
-        let directories = crate::utils::directories::expect();
+        let directories = test_directories();
+        let context =
+            Context::new(directories.clone(), directories.data_dir().join("fvs2d")).unwrap();
         let assets = directories
             .data_dir()
             .join(format!("test-assets-{}", Uuid::new_v4()));
@@ -161,7 +221,7 @@ mod unix {
             bridge_root.join("bottles-winebridge.exe"),
         )
         .unwrap();
-        let manager = BottleManager::new(runner_root.join("bin/wine")).unwrap();
+        let manager = BottleManager::new(context.clone());
         let id = Uuid::new_v4();
         let bottle_path = directories.bottle(id);
         fs::create_dir_all(&bottle_path).unwrap();
@@ -172,6 +232,7 @@ mod unix {
                 .unwrap()
                 .as_ref(),
             &runner.id().to_string(),
+            &context,
         )
         .await
         .unwrap();
@@ -181,6 +242,7 @@ mod unix {
             BottleComponents::new(&runner, &bridge, None).unwrap(),
             Vec::new(),
             storage,
+            context,
         )
         .unwrap();
         let program = Program::new("Game", "C:\\game.exe");
@@ -255,6 +317,7 @@ mod unix {
         drop(reopened);
         fs::remove_dir_all(directories.bottle(bottle_id)).unwrap();
         fs::remove_dir_all(assets).unwrap();
+        fs::remove_dir_all(directories.data_dir).unwrap();
     }
 }
 
@@ -262,8 +325,9 @@ mod unix {
 fn virgo_layers_round_trip_through_bottle_toml() {
     use fvs_rs::{Commit, Layer, Repository};
 
+    let directories = test_directories();
     let id = uuid::Uuid::new_v4();
-    let bottle_path = crate::utils::directories::expect().bottle(id);
+    let bottle_path = directories.bottle(id);
     let repository = Repository {
         repository_path: bottle_path.join("repo").display().to_string(),
         block_size: 4096,
@@ -322,5 +386,5 @@ fn virgo_layers_round_trip_through_bottle_toml() {
     };
     assert_eq!(layers, vec![expected]);
 
-    std::fs::remove_dir_all(bottle_path).unwrap();
+    std::fs::remove_dir_all(directories.data_dir).unwrap();
 }

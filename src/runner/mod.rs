@@ -4,15 +4,23 @@ mod wine;
 pub(crate) use crate::wrapper::{Command, Spawnable, Wrapper};
 use async_trait::async_trait;
 pub use proton::Proton;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 pub use wine::Wine;
 
-use crate::{compatibility::components::catalog::RunnerKind, error::Result};
+use crate::error::Result;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
     process::ExitStatus,
 };
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RunnerKind {
+    Wine,
+    Proton,
+}
 
 /// Errors produced by runner setup.
 #[derive(Debug, Error)]
@@ -35,11 +43,6 @@ pub(crate) struct RunnerCommand(Command);
 impl RunnerCommand {
     pub(crate) fn wrapped_by(self, wrapper: impl Wrapper) -> Self {
         Self(wrapper.wrap(self.0).into())
-    }
-
-    pub(crate) fn env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
-        self.0 = self.0.env(key, value);
-        self
     }
 
     pub(crate) fn envs<K: AsRef<OsStr>, V: AsRef<OsStr>>(

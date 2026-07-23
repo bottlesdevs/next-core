@@ -34,14 +34,8 @@ impl Dependency {
 }
 
 impl Installable for Dependency {
-    fn id(&self) -> Uuid {
-        self.id()
-    }
-
-    fn prepare(&self) -> Result<Vec<InstallResource>> {
-        let root = crate::utils::directories::expect()
-            .dependencies()
-            .join(self.id().to_string());
+    fn prepare(&self, directories: &crate::Directories) -> Result<Vec<InstallResource>> {
+        let root = directories.dependencies().join(self.id().to_string());
         self.resources
             .iter()
             .filter(|resource| {
