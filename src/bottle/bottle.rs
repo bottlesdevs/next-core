@@ -6,13 +6,13 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::error::BottleError;
-use crate::compatibility::{
-    components::{Component, catalog::ComponentKind},
-    dependencies::Dependency,
-    installer::Installable,
-};
 use crate::{
     Context,
+    compatibility::{
+        components::{Component, catalog::ComponentKind},
+        dependencies::Dependency,
+        installer::Installable,
+    },
     error::Result,
     proto::Process,
     runner::{Runner, RunnerKind, shutdown_prefix},
@@ -100,6 +100,45 @@ impl Bottle {
 
     pub fn dependencies(&self) -> &[Dependency] {
         &self.config.dependencies
+    }
+
+    pub fn environment(&self) -> &Environment {
+        &self.config.environment
+    }
+
+    pub async fn set_env(
+        &mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<()> {
+        let key = key.into();
+        let value = value.into();
+        if value.contains('\0') {
+            return Err(BottleError::InvalidEnvironmentValue(key).into());
+        }
+        if self.config.environment.get(&key) == Some(&value) {
+            return Ok(());
+        }
+        self.update(async move |bottle| {
+            bottle.stop().await?;
+            bottle.config.environment.insert(key, value);
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn unset_env(&mut self, key: impl AsRef<str>) -> Result<()> {
+        let key = key.as_ref();
+        if self.config.environment.get(key).is_none() {
+            return Ok(());
+        }
+        let key = key.to_owned();
+        self.update(async move |bottle| {
+            bottle.stop().await?;
+            bottle.config.environment.remove(&key);
+            Ok(())
+        })
+        .await
     }
 
     pub fn wrappers(&self) -> &Wrappers {

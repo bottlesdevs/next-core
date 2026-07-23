@@ -15,6 +15,12 @@ pub enum BottleError {
     IdMismatch { expected: Uuid, actual: Uuid },
     #[error("program name and executable must not be empty")]
     InvalidProgram,
+    #[error(
+        "invalid environment variable name {0:?}: names must be non-empty and contain neither '=' nor NUL"
+    )]
+    InvalidEnvironmentName(String),
+    #[error("environment variable {0:?} contains NUL in its value")]
+    InvalidEnvironmentValue(String),
     #[error("program {0} was not found")]
     ProgramNotFound(Uuid),
     #[error("component {0} is not installed")]

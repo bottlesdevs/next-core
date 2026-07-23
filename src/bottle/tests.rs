@@ -10,6 +10,7 @@ use crate::{
         dependencies::Dependency,
     },
     runner::RunnerKind,
+    utils::environment::Environment,
     wrapper::{
         Wrappers,
         gamescope::{GamescopeConfig, Scaler},
@@ -120,7 +121,7 @@ fn proton_umu_components_and_dependencies_round_trip() {
         "version": "14.38"
     }))
     .unwrap();
-    let mut environment = crate::utils::environment::Environment::default();
+    let mut environment = Environment::default();
     environment.insert("EXAMPLE".into(), "enabled".into());
     let config = BottleConfig {
         id,
@@ -307,14 +308,14 @@ mod unix {
         assert_eq!(
             fs::read_to_string(directories.bottle(bottle_id).join("prefix/wineserver.log"))
                 .unwrap(),
-            "-k\n-k\n"
+            "-k\n-k\n-k\n-k\n"
         );
 
         reopened.stop().await.unwrap();
         assert_eq!(
             fs::read_to_string(directories.bottle(bottle_id).join("prefix/wineserver.log"))
                 .unwrap(),
-            "-k\n-k\n-k\n"
+            "-k\n-k\n-k\n-k\n-k\n"
         );
 
         drop(reopened);
