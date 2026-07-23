@@ -88,15 +88,12 @@ impl PrefixStorage {
         replaced_id: Option<Uuid>,
         execute: F,
         context: &Context,
-    ) -> Result<bool>
+    ) -> Result<()>
     where
         F: for<'a> AsyncFnOnce(&'a Path) -> Result<()>,
     {
         match self {
-            Self::Standard => {
-                execute(&bottle_path.join("prefix")).await?;
-                Ok(true)
-            }
+            Self::Standard => execute(&bottle_path.join("prefix")).await,
             Self::Virgo { layers } => {
                 install_virgo(bottle_path, layers, item_id, replaced_id, execute, context).await
             }
@@ -143,16 +140,13 @@ async fn install_virgo<F>(
     replaced_id: Option<Uuid>,
     execute: F,
     context: &Context,
-) -> Result<bool>
+) -> Result<()>
 where
     F: for<'a> AsyncFnOnce(&'a Path) -> Result<()>,
 {
-    let executed = if layer_cache(item_id, context).join(".fvs2").is_dir() {
-        false
-    } else {
+    if !layer_cache(item_id, context).join(".fvs2").is_dir() {
         cache_install(layers.clone(), item_id, execute, context).await?;
-        true
-    };
+    }
 
     let cached = cached_layer(item_id, context).await?;
     if let Some(id) = replaced_id {
@@ -163,7 +157,7 @@ where
     layers.retain(|layer| layer.repository_path != destination);
     layers.push(cached);
     apply_registry(bottle_path, layers, item_id, context).await?;
-    Ok(executed)
+    Ok(())
 }
 
 async fn cache_install<F>(

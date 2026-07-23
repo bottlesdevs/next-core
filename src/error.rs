@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{
+pub use crate::{
     bottle::error::{BottleError, VirgoError},
     compatibility::installer::InstallerError,
     runner::RunnerError,

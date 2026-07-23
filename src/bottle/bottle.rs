@@ -11,7 +11,7 @@ use crate::{
     compatibility::{
         components::{Component, catalog::ComponentKind},
         dependencies::Dependency,
-        installer::Installable,
+        installer::{InstallResource, Installable},
     },
     error::Result,
     proto::Process,
@@ -375,16 +375,29 @@ impl Bottle {
         }
         let replaced_id = installed.map(Component::id);
         let resources = component.prepare(self.context.directories())?;
-        let winebridge = self.components().winebridge.path().to_path_buf();
-        self.update(async |bottle| {
+        self.install_item(component.id(), replaced_id, resources, |config| {
+            config.components.slot_mut(kind)?.replace(component.clone());
+            Ok(())
+        })
+        .await
+    }
+
+    async fn install_item<F>(
+        &mut self,
+        item_id: Uuid,
+        replaced_id: Option<Uuid>,
+        resources: Vec<InstallResource>,
+        update_config: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(&mut BottleConfig) -> Result<()>,
+    {
+        self.update(async move |bottle| {
             bottle.stop().await?;
-            bottle
-                .config
-                .components
-                .slot_mut(kind)?
-                .replace(component.clone());
+            update_config(&mut bottle.config)?;
 
             let runner = bottle.load_runner()?;
+            let winebridge = bottle.components().winebridge.path().to_path_buf();
             let bottle_path = bottle.bottle_path();
             let context = bottle.context.clone();
             let BottleConfig {
@@ -392,10 +405,10 @@ impl Bottle {
                 environment,
                 ..
             } = &mut bottle.config;
-            let installed = storage
+            storage
                 .install(
                     &bottle_path,
-                    component.id(),
+                    item_id,
                     replaced_id,
                     async |prefix| {
                         crate::compatibility::installer::execute(
@@ -412,9 +425,7 @@ impl Bottle {
                     &context,
                 )
                 .await?;
-            if !installed {
-                crate::compatibility::installer::replay_environment(environment, &resources);
-            }
+            crate::compatibility::installer::replay_environment(environment, &resources);
             Ok(())
         })
         .await
@@ -430,42 +441,8 @@ impl Bottle {
             return Ok(());
         }
         let resources = dependency.prepare(self.context.directories())?;
-        let winebridge = self.components().winebridge.path().to_path_buf();
-        self.update(async |bottle| {
-            bottle.stop().await?;
-            bottle.config.dependencies.push(dependency.clone());
-
-            let runner = bottle.load_runner()?;
-            let bottle_path = bottle.bottle_path();
-            let context = bottle.context.clone();
-            let BottleConfig {
-                storage,
-                environment,
-                ..
-            } = &mut bottle.config;
-            let installed = storage
-                .install(
-                    &bottle_path,
-                    dependency.id(),
-                    None,
-                    async |prefix| {
-                        crate::compatibility::installer::execute(
-                            crate::compatibility::installer::InstallInputs {
-                                prefix,
-                                runner: runner.as_ref(),
-                                winebridge: &winebridge,
-                                environment,
-                            },
-                            &resources,
-                        )
-                        .await
-                    },
-                    &context,
-                )
-                .await?;
-            if !installed {
-                crate::compatibility::installer::replay_environment(environment, &resources);
-            }
+        self.install_item(dependency.id(), None, resources, |config| {
+            config.dependencies.push(dependency.clone());
             Ok(())
         })
         .await
