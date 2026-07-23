@@ -21,6 +21,10 @@ pub enum BottleError {
     InvalidEnvironmentName(String),
     #[error("environment variable {0:?} contains NUL in its value")]
     InvalidEnvironmentValue(String),
+    #[error("DLL name {0:?} must be non-empty and contain no NUL bytes")]
+    InvalidDllName(String),
+    #[error("DLL override mode is required")]
+    DllOverrideModeRequired,
     #[error("program {0} was not found")]
     ProgramNotFound(Uuid),
     #[error("component {0} is not installed")]

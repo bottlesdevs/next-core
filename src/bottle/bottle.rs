@@ -13,11 +13,11 @@ use crate::{
         dependencies::Dependency,
         installer::{InstallResource, Installable},
     },
-    error::Result,
-    proto::Process,
+    error::{Error, Result},
+    proto::{self, DllOverrideMode, Process},
     runner::{Runner, RunnerKind, shutdown_prefix},
     utils::environment::Environment,
-    winebridge::WineBridgeClient,
+    winebridge::{BridgeError, WineBridgeClient},
     wrapper::Wrappers,
 };
 
@@ -139,6 +139,36 @@ impl Bottle {
             Ok(())
         })
         .await
+    }
+
+    pub async fn dll_overrides(&mut self) -> Result<Vec<DllOverride>> {
+        let overrides = match self.ensure_bridge().await?.list_dll_overrides().await {
+            Ok(overrides) => overrides,
+            Err(Error::Status(status)) if status.code() == tonic::Code::NotFound => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        overrides.into_iter().map(DllOverride::from_proto).collect()
+    }
+
+    pub async fn set_dll_override(
+        &mut self,
+        dll: impl Into<String>,
+        mode: DllOverrideMode,
+    ) -> Result<()> {
+        if mode == DllOverrideMode::Unspecified {
+            return Err(BottleError::DllOverrideModeRequired.into());
+        }
+        self.ensure_bridge()
+            .await?
+            .set_dll_override(dll, mode)
+            .await
+    }
+
+    pub async fn unset_dll_override(&mut self, dll: impl Into<String>) -> Result<()> {
+        match self.ensure_bridge().await?.delete_dll_override(dll).await {
+            Err(Error::Status(status)) if status.code() == tonic::Code::NotFound => Ok(()),
+            result => result,
+        }
     }
 
     pub fn wrappers(&self) -> &Wrappers {
@@ -676,6 +706,28 @@ impl<'a> IntoIterator for &'a BottleComponents {
         ]
         .into_iter()
         .flatten()
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct DllOverride(proto::DllOverride);
+
+impl DllOverride {
+    fn from_proto(value: proto::DllOverride) -> Result<Self> {
+        let mode = DllOverrideMode::try_from(value.mode)
+            .map_err(|_| BridgeError::InvalidResponse("DLL override has an invalid mode"))?;
+        if mode == DllOverrideMode::Unspecified {
+            return Err(BridgeError::InvalidResponse("DLL override mode is unspecified").into());
+        }
+        Ok(Self(value))
+    }
+
+    pub fn dll(&self) -> &str {
+        &self.0.dll
+    }
+
+    pub fn mode(&self) -> DllOverrideMode {
+        self.0.mode()
     }
 }
 
