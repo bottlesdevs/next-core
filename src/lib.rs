@@ -6,7 +6,7 @@ mod utils;
 mod winebridge;
 mod wrapper;
 
-pub use utils::directories::{Context, Directories};
+pub use utils::{context::Context, directories::Directories};
 
 pub mod proto {
     tonic::include_proto!("winebridge");

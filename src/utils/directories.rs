@@ -1,14 +1,10 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::{Path, PathBuf};
 
 use ::directories::ProjectDirs;
-use fvs_rs::Fvs2dClient;
-use tokio::sync::OnceCell;
+
 use uuid::Uuid;
 
-use crate::{bottle::error::BottleError, error::Result, utils::absolute_path};
+use crate::{bottle::error::BottleError, error::Result};
 
 #[derive(Clone, Debug)]
 pub struct Directories {
@@ -53,67 +49,5 @@ impl Directories {
 
     pub fn dependencies(&self) -> PathBuf {
         self.data_dir.join("dependencies")
-    }
-}
-
-struct ContextInner {
-    directories: Directories,
-    fvs2d_executable: PathBuf,
-    fvs: OnceCell<Fvs2dClient>,
-}
-
-#[derive(Clone)]
-pub struct Context(Arc<ContextInner>);
-
-impl Context {
-    pub fn new(directories: Directories, fvs2d_executable: impl Into<PathBuf>) -> Result<Self> {
-        Ok(Self(Arc::new(ContextInner {
-            directories,
-            fvs2d_executable: absolute_path(fvs2d_executable.into())?,
-            fvs: OnceCell::new(),
-        })))
-    }
-
-    pub fn directories(&self) -> &Directories {
-        &self.0.directories
-    }
-
-    pub(crate) async fn fvs(&self) -> Result<&Fvs2dClient> {
-        self.0
-            .fvs
-            .get_or_try_init(|| async {
-                std::fs::create_dir_all(self.0.directories.runtime_dir())?;
-                Ok(Fvs2dClient::connect_or_spawn(
-                    &self.0.fvs2d_executable,
-                    self.0.directories.runtime_dir().join("fvs2d.sock"),
-                )
-                .await?)
-            })
-            .await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn contexts_keep_independent_roots_and_fvs_configuration() {
-        let left = Directories {
-            data_dir: "/left/data".into(),
-            runtime_dir: "/left/run".into(),
-        };
-        let right = Directories {
-            data_dir: "/right/data".into(),
-            runtime_dir: "/right/run".into(),
-        };
-        let left = Context::new(left, "/left/fvs2d").unwrap();
-        let right = Context::new(right, "/right/fvs2d").unwrap();
-
-        assert_eq!(left.directories().data_dir(), Path::new("/left/data"));
-        assert_eq!(right.directories().data_dir(), Path::new("/right/data"));
-        assert_eq!(left.0.fvs2d_executable, Path::new("/left/fvs2d"));
-        assert_eq!(right.0.fvs2d_executable, Path::new("/right/fvs2d"));
-        assert!(!Arc::ptr_eq(&left.0, &right.0));
     }
 }
