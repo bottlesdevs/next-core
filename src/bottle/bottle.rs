@@ -562,7 +562,7 @@ impl Bottle {
     }
 
     /// Prepare the prefix and connect to or start its managed WineBridge.
-    pub async fn ensure_bridge(&mut self) -> Result<&WineBridgeClient> {
+    async fn ensure_bridge(&mut self) -> Result<&WineBridgeClient> {
         if self.bridge.is_none() {
             let runner = self.load_runner()?;
             let prefix = self.prefix().await?;

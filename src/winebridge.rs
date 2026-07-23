@@ -68,7 +68,7 @@ fn endpoint_from_port_file(path: &Path) -> Result<Option<Endpoint>> {
 /// every WineBridge capability through the generated client.
 ///
 /// WineBridge remains available for other clients until the bottle is stopped.
-pub struct WineBridgeClient {
+pub(crate) struct WineBridgeClient {
     client: GrpcClient<Channel>,
     port_file: PathBuf,
 }
