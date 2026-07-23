@@ -120,6 +120,8 @@ fn proton_umu_components_and_dependencies_round_trip() {
         "version": "14.38"
     }))
     .unwrap();
+    let mut environment = crate::utils::environment::Environment::default();
+    environment.insert("EXAMPLE".into(), "enabled".into());
     let config = BottleConfig {
         id,
         name: "proton".into(),
@@ -137,7 +139,7 @@ fn proton_umu_components_and_dependencies_round_trip() {
             },
             mangohud: MangoHudConfig { enabled: true },
         },
-        environment: [("EXAMPLE".into(), "enabled".into())].into(),
+        environment,
     };
     let path = bottle_path.join("bottle.toml");
 
@@ -159,7 +161,7 @@ fn proton_umu_components_and_dependencies_round_trip() {
     assert_eq!(loaded.components.umu().unwrap().version(), "umu-1");
     assert_eq!(loaded.dependencies[0].name(), "vcrun2022");
     assert_eq!(loaded.wrappers, config.wrappers);
-    assert_eq!(loaded.environment["EXAMPLE"], "enabled");
+    assert_eq!(loaded.environment, config.environment);
 
     std::fs::remove_dir_all(directories.data_dir).unwrap();
 }

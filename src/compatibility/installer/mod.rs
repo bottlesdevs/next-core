@@ -1,7 +1,6 @@
 mod recipes;
 
 use std::{
-    collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
 };
@@ -14,7 +13,7 @@ use crate::{
     error::{Error, Result, ResultExt},
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
     runner::{Command, Runner, Spawnable, shutdown_prefix},
-    utils::archive,
+    utils::{archive, environment::Environment},
     winebridge::WineBridgeClient,
 };
 
@@ -80,7 +79,7 @@ pub(crate) struct InstallInputs<'a> {
     pub(crate) prefix: &'a Path,
     pub(crate) runner: &'a dyn Runner,
     pub(crate) winebridge: &'a Path,
-    pub(crate) environment: &'a mut HashMap<String, String>,
+    pub(crate) environment: &'a mut Environment,
 }
 
 pub(crate) async fn execute(
@@ -120,10 +119,7 @@ pub(crate) async fn uninstall(
     .await
 }
 
-pub(crate) fn replay_environment(
-    environment: &mut HashMap<String, String>,
-    resources: &[InstallResource],
-) {
+pub(crate) fn replay_environment(environment: &mut Environment, resources: &[InstallResource]) {
     for step in resources.iter().flat_map(|resource| &resource.steps) {
         if let InstallStep::SetEnvironment { name, value } = step {
             environment.insert(name.clone(), value.clone());
@@ -135,7 +131,7 @@ async fn execute_steps(
     runner: &dyn Runner,
     prefix: &Path,
     winebridge: &Path,
-    environment: &mut HashMap<String, String>,
+    environment: &mut Environment,
     resources: &[InstallResource],
 ) -> Result<()> {
     let mut bridge_client = None;
@@ -234,7 +230,7 @@ async fn uninstall_steps(
     runner: &dyn Runner,
     prefix: &Path,
     winebridge: &Path,
-    environment: &mut HashMap<String, String>,
+    environment: &mut Environment,
     resources: &[InstallResource],
     restore_files: bool,
     component_id: Uuid,
@@ -303,11 +299,11 @@ async fn ensure_bridge<'a>(
     runner: &dyn Runner,
     prefix: &Path,
     executable: &Path,
-    environment: &HashMap<String, String>,
+    environment: &Environment,
 ) -> Result<&'a WineBridgeClient> {
     if bridge.is_none() {
         let command =
-            WineBridgeClient::command(runner, prefix, executable).envs(environment.clone());
+            WineBridgeClient::command(runner, prefix, executable).envs(environment.iter());
         *bridge = Some(WineBridgeClient::connect_or_spawn(prefix, command).await?);
     }
     Ok(bridge.as_ref().expect("WineBridge was initialized"))

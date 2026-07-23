@@ -1,6 +1,7 @@
 pub(crate) mod archive;
 pub(crate) mod context;
 pub(crate) mod directories;
+pub(crate) mod environment;
 
 use crate::error::Result;
 use std::path::PathBuf;

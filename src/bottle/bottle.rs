@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::AsyncFnOnce, path::PathBuf};
+use std::{ops::AsyncFnOnce, path::PathBuf};
 
 use fvs_rs::Layer;
 use next_config::Config;
@@ -16,6 +16,7 @@ use crate::{
     error::Result,
     proto::Process,
     runner::{Runner, RunnerKind, shutdown_prefix},
+    utils::environment::Environment,
     winebridge::WineBridgeClient,
     wrapper::Wrappers,
 };
@@ -33,8 +34,8 @@ pub(crate) struct BottleConfig {
     pub(crate) components: BottleComponents,
     #[serde(default)]
     pub(crate) dependencies: Vec<Dependency>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub(crate) environment: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Environment::is_empty")]
+    pub(crate) environment: Environment,
 
     #[serde(flatten)]
     pub(crate) wrappers: Wrappers,
@@ -64,7 +65,7 @@ impl Bottle {
                 storage,
                 programs: Vec::new(),
                 wrappers: Wrappers::default(),
-                environment: HashMap::new(),
+                environment: Environment::default(),
             },
             bridge: None,
             context,
@@ -531,7 +532,7 @@ impl Bottle {
                 &prefix,
                 self.components().winebridge().path(),
             )
-            .envs(self.config.environment.clone());
+            .envs(self.config.environment.iter());
             let command = self.config.wrappers.apply(command);
 
             self.bridge = Some(WineBridgeClient::connect_or_spawn(&prefix, command).await?);
@@ -747,7 +748,7 @@ mod tests {
                 wrappers: Wrappers::default(),
                 components: BottleComponents::new(&runner, &winebridge, None).unwrap(),
                 dependencies: Vec::new(),
-                environment: HashMap::new(),
+                environment: Environment::default(),
             },
             context,
         );
@@ -806,7 +807,7 @@ mod tests {
                 wrappers: Wrappers::default(),
                 components: BottleComponents::new(&wine, &winebridge, None).unwrap(),
                 dependencies: Vec::new(),
-                environment: HashMap::new(),
+                environment: Environment::default(),
             },
             context,
         );

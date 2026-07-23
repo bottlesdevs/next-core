@@ -2,13 +2,10 @@ pub(crate) mod gamescope;
 pub(crate) mod mangohud;
 
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    ffi::{OsStr, OsString},
-};
+use std::ffi::{OsStr, OsString};
 use tokio::process::{Child, Command as TokioCommand};
 
-use crate::runner::RunnerCommand;
+use crate::{runner::RunnerCommand, utils::environment::Environment};
 
 use self::{
     gamescope::{Gamescope, GamescopeConfig},
@@ -72,7 +69,7 @@ impl<O: Wrapper, I: Spawnable> Spawnable for Wrapped<O, I> {}
 pub(crate) struct Command {
     executable: OsString,
     args: Vec<OsString>,
-    envs: HashMap<OsString, OsString>,
+    envs: Environment<OsString>,
 }
 
 impl Wrapper for Command {}
@@ -82,7 +79,7 @@ impl Command {
         Self {
             executable: executable.as_ref().to_os_string(),
             args: Vec::new(),
-            envs: HashMap::new(),
+            envs: Environment::default(),
         }
     }
 
