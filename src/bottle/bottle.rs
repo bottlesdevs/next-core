@@ -47,7 +47,7 @@ pub struct Bottle {
 }
 
 impl Bottle {
-    pub(crate) fn new(
+    pub(crate) async fn new(
         id: Uuid,
         name: String,
         components: BottleComponents,
@@ -69,7 +69,7 @@ impl Bottle {
             bridge: None,
             context,
         };
-        bottle.update(|_| Ok(()))?;
+        bottle.update(async |_| Ok(())).await?;
         Ok(bottle)
     }
 
@@ -109,11 +109,12 @@ impl Bottle {
         if wrappers == self.config.wrappers {
             return Ok(());
         }
-        self.stop().await?;
-        self.update(move |draft| {
-            draft.wrappers = wrappers;
+        self.update(async move |bottle| {
+            bottle.stop().await?;
+            bottle.config.wrappers = wrappers;
             Ok(())
         })
+        .await
     }
 
     pub fn r#type(&self) -> BottleType {
@@ -128,29 +129,29 @@ impl Bottle {
         self.config.programs.iter().find(|program| program.id == id)
     }
 
-    pub fn add_program(&mut self, program: Program) -> Result<()> {
+    pub async fn add_program(&mut self, program: Program) -> Result<()> {
         if program.name.trim().is_empty() || program.executable.trim().is_empty() {
             return Err(BottleError::InvalidProgram.into());
         }
 
-        self.update(move |draft| {
-            draft.programs.push(program);
+        self.update(async move |bottle| {
+            bottle.config.programs.push(program);
             Ok(())
         })
+        .await
     }
 
-    pub fn remove_program(&mut self, id: Uuid) -> Result<Program> {
-        let mut removed = None;
-        self.update(|draft| {
-            let index = draft
+    pub async fn remove_program(&mut self, id: Uuid) -> Result<Program> {
+        self.update(async |bottle| {
+            let index = bottle
+                .config
                 .programs
                 .iter()
                 .position(|program| program.id == id)
                 .ok_or(BottleError::ProgramNotFound(id))?;
-            removed = Some(draft.programs.remove(index));
-            Ok(())
-        })?;
-        Ok(removed.expect("the program was removed from the draft"))
+            Ok(bottle.config.programs.remove(index))
+        })
+        .await
     }
 
     /// Launch a tracked program, starting WineBridge if it is not already running.
@@ -234,11 +235,12 @@ impl Bottle {
                 if self.components().winebridge.id() == component.id() {
                     return Ok(());
                 }
-                self.stop().await?;
-                self.update(|draft| {
-                    draft.components.winebridge = component.clone();
+                self.update(async |bottle| {
+                    bottle.stop().await?;
+                    bottle.config.components.winebridge = component.clone();
                     Ok(())
                 })
+                .await
             }
             ComponentKind::Umu => {
                 if self.runner().kind().runner_kind() != Some(RunnerKind::Proton) {
@@ -247,11 +249,12 @@ impl Bottle {
                 if self.components().umu.as_ref().map(Component::id) == Some(component.id()) {
                     return Ok(());
                 }
-                self.stop().await?;
-                self.update(|draft| {
-                    draft.components.umu = Some(component.clone());
+                self.update(async |bottle| {
+                    bottle.stop().await?;
+                    bottle.config.components.umu = Some(component.clone());
                     Ok(())
                 })
+                .await
             }
             kind => self.install_prefix_component(component, kind).await,
         }
@@ -278,39 +281,45 @@ impl Bottle {
 
         let resources = component.prepare(self.context.directories())?;
         let winebridge = self.components().winebridge.path().to_path_buf();
-        self.update_after(
-            async |storage, environment, runner, bottle_path, context| {
-                storage
-                    .uninstall(
-                        bottle_path,
-                        component.id(),
-                        async |prefix, restore_files| {
-                            crate::compatibility::installer::uninstall(
-                                crate::compatibility::installer::InstallInputs {
-                                    prefix,
-                                    runner,
-                                    winebridge: &winebridge,
-                                    environment,
-                                },
-                                &resources,
-                                restore_files,
-                                component.id(),
-                            )
-                            .await
-                        },
-                        context,
-                    )
-                    .await
-            },
-            |draft| {
-                draft
-                    .components
-                    .slot_mut(component.kind())?
-                    .take()
-                    .ok_or(BottleError::ComponentNotInstalled(id))?;
-                Ok(())
-            },
-        )
+        self.update(async |bottle| {
+            bottle.stop().await?;
+            bottle
+                .config
+                .components
+                .slot_mut(component.kind())?
+                .take()
+                .ok_or(BottleError::ComponentNotInstalled(id))?;
+
+            let runner = bottle.load_runner()?;
+            let bottle_path = bottle.bottle_path();
+            let context = bottle.context.clone();
+            let BottleConfig {
+                storage,
+                environment,
+                ..
+            } = &mut bottle.config;
+            storage
+                .uninstall(
+                    &bottle_path,
+                    component.id(),
+                    async |prefix, restore_files| {
+                        crate::compatibility::installer::uninstall(
+                            crate::compatibility::installer::InstallInputs {
+                                prefix,
+                                runner: runner.as_ref(),
+                                winebridge: &winebridge,
+                                environment,
+                            },
+                            &resources,
+                            restore_files,
+                            component.id(),
+                        )
+                        .await
+                    },
+                    &context,
+                )
+                .await
+        })
         .await?;
         Ok(component)
     }
@@ -327,38 +336,47 @@ impl Bottle {
         let replaced_id = installed.map(Component::id);
         let resources = component.prepare(self.context.directories())?;
         let winebridge = self.components().winebridge.path().to_path_buf();
-        self.update_after(
-            async |storage, environment, runner, bottle_path, context| {
-                let installed = storage
-                    .install(
-                        bottle_path,
-                        component.id(),
-                        replaced_id,
-                        async |prefix| {
-                            crate::compatibility::installer::execute(
-                                crate::compatibility::installer::InstallInputs {
-                                    prefix,
-                                    runner,
-                                    winebridge: &winebridge,
-                                    environment,
-                                },
-                                &resources,
-                            )
-                            .await
-                        },
-                        context,
-                    )
-                    .await?;
-                if !installed {
-                    crate::compatibility::installer::replay_environment(environment, &resources);
-                }
-                Ok(())
-            },
-            |draft| {
-                draft.components.slot_mut(kind)?.replace(component.clone());
-                Ok(())
-            },
-        )
+        self.update(async |bottle| {
+            bottle.stop().await?;
+            bottle
+                .config
+                .components
+                .slot_mut(kind)?
+                .replace(component.clone());
+
+            let runner = bottle.load_runner()?;
+            let bottle_path = bottle.bottle_path();
+            let context = bottle.context.clone();
+            let BottleConfig {
+                storage,
+                environment,
+                ..
+            } = &mut bottle.config;
+            let installed = storage
+                .install(
+                    &bottle_path,
+                    component.id(),
+                    replaced_id,
+                    async |prefix| {
+                        crate::compatibility::installer::execute(
+                            crate::compatibility::installer::InstallInputs {
+                                prefix,
+                                runner: runner.as_ref(),
+                                winebridge: &winebridge,
+                                environment,
+                            },
+                            &resources,
+                        )
+                        .await
+                    },
+                    &context,
+                )
+                .await?;
+            if !installed {
+                crate::compatibility::installer::replay_environment(environment, &resources);
+            }
+            Ok(())
+        })
         .await
     }
 
@@ -373,38 +391,43 @@ impl Bottle {
         }
         let resources = dependency.prepare(self.context.directories())?;
         let winebridge = self.components().winebridge.path().to_path_buf();
-        self.update_after(
-            async |storage, environment, runner, bottle_path, context| {
-                let installed = storage
-                    .install(
-                        bottle_path,
-                        dependency.id(),
-                        None,
-                        async |prefix| {
-                            crate::compatibility::installer::execute(
-                                crate::compatibility::installer::InstallInputs {
-                                    prefix,
-                                    runner,
-                                    winebridge: &winebridge,
-                                    environment,
-                                },
-                                &resources,
-                            )
-                            .await
-                        },
-                        context,
-                    )
-                    .await?;
-                if !installed {
-                    crate::compatibility::installer::replay_environment(environment, &resources);
-                }
-                Ok(())
-            },
-            |draft| {
-                draft.dependencies.push(dependency.clone());
-                Ok(())
-            },
-        )
+        self.update(async |bottle| {
+            bottle.stop().await?;
+            bottle.config.dependencies.push(dependency.clone());
+
+            let runner = bottle.load_runner()?;
+            let bottle_path = bottle.bottle_path();
+            let context = bottle.context.clone();
+            let BottleConfig {
+                storage,
+                environment,
+                ..
+            } = &mut bottle.config;
+            let installed = storage
+                .install(
+                    &bottle_path,
+                    dependency.id(),
+                    None,
+                    async |prefix| {
+                        crate::compatibility::installer::execute(
+                            crate::compatibility::installer::InstallInputs {
+                                prefix,
+                                runner: runner.as_ref(),
+                                winebridge: &winebridge,
+                                environment,
+                            },
+                            &resources,
+                        )
+                        .await
+                    },
+                    &context,
+                )
+                .await?;
+            if !installed {
+                crate::compatibility::installer::replay_environment(environment, &resources);
+            }
+            Ok(())
+        })
         .await
     }
 
@@ -425,78 +448,60 @@ impl Bottle {
             .map(Component::id)
             .chain(self.dependencies().iter().map(Dependency::id))
             .collect::<Vec<_>>();
-        self.update_after(
-            async |storage, _, runner, _, context| {
-                storage
-                    .rebuild(runner, &component.id().to_string(), &installed, context)
-                    .await
-            },
-            move |draft| {
-                draft.components.runner = component.clone();
-                draft.components.umu = umu.cloned();
-                Ok(())
-            },
-        )
+        self.update(async |bottle| {
+            bottle.stop().await?;
+            bottle.config.components.runner = component.clone();
+            bottle.config.components.umu = umu.cloned();
+
+            let runner = bottle.load_runner()?;
+            let context = bottle.context.clone();
+            bottle
+                .config
+                .storage
+                .rebuild(
+                    runner.as_ref(),
+                    &component.id().to_string(),
+                    &installed,
+                    &context,
+                )
+                .await
+        })
         .await
     }
 
     pub(crate) fn load_runner(&self) -> Result<Box<dyn Runner>> {
-        Self::load_runner_from(&self.config)
-    }
-
-    fn load_runner_from(config: &BottleConfig) -> Result<Box<dyn Runner>> {
-        let kind = config
+        let kind = self
+            .config
             .components
             .runner()
             .kind()
             .runner_kind()
             .ok_or(BottleError::RunnerComponentRequired)?;
         crate::runner::load_runner(
-            config.components.runner().path(),
+            self.config.components.runner().path(),
             kind,
-            config.components.umu().map(Component::path),
+            self.config.components.umu().map(Component::path),
         )
     }
 
-    fn update<F>(&mut self, update: F) -> Result<()>
+    async fn update<F, R>(&mut self, operation: F) -> Result<R>
     where
-        F: FnOnce(&mut BottleConfig) -> Result<()>,
+        F: for<'a> AsyncFnOnce(&'a mut Bottle) -> Result<R>,
     {
-        let mut draft = self.config.clone();
-        update(&mut draft)?;
-        next_config::save(self.bottle_path().join("bottle.toml"), &draft)?;
-        self.config = draft;
-        Ok(())
-    }
-
-    async fn update_after<E, C>(&mut self, effect: E, commit: C) -> Result<()>
-    where
-        E: for<'a> AsyncFnOnce(
-            &'a mut PrefixStorage,
-            &'a mut HashMap<String, String>,
-            &'a dyn Runner,
-            &'a std::path::Path,
-            &'a Context,
-        ) -> Result<()>,
-        C: FnOnce(&mut BottleConfig) -> Result<()>,
-    {
-        self.stop().await?;
-        let mut draft = self.config.clone();
-        commit(&mut draft)?;
-        let runner = Self::load_runner_from(&draft)?;
         let bottle_path = self.bottle_path();
-        let context = self.context.clone();
-        effect(
-            &mut draft.storage,
-            &mut draft.environment,
-            runner.as_ref(),
-            &bottle_path,
-            &context,
-        )
-        .await?;
-        next_config::save(bottle_path.join("bottle.toml"), &draft)?;
-        self.config = draft;
-        Ok(())
+        let previous = self.config.clone();
+        let value = match operation(self).await {
+            Ok(value) => value,
+            Err(error) => {
+                self.config = previous;
+                return Err(error);
+            }
+        };
+        if let Err(error) = next_config::save(bottle_path.join("bottle.toml"), &self.config) {
+            self.config = previous;
+            return Err(error.into());
+        }
+        Ok(value)
     }
 
     pub(crate) fn bottle_path(&self) -> PathBuf {
@@ -705,7 +710,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(unix)]
-    async fn failed_effect_does_not_publish_working_config() {
+    async fn failed_update_does_not_publish_working_config() {
         use std::{fs, os::unix::fs::PermissionsExt};
 
         let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
@@ -748,14 +753,14 @@ mod tests {
         );
 
         let result = bottle
-            .update_after(
-                async |storage, environment, _, _, _| {
-                    *storage = PrefixStorage::Virgo { layers: Vec::new() };
-                    environment.insert("CHANGED".into(), "yes".into());
-                    Err(BottleError::InvalidProgram.into())
-                },
-                |_| Ok(()),
-            )
+            .update(async |bottle| {
+                bottle.config.storage = PrefixStorage::Virgo { layers: Vec::new() };
+                bottle
+                    .config
+                    .environment
+                    .insert("CHANGED".into(), "yes".into());
+                Err::<(), _>(BottleError::InvalidProgram.into())
+            })
             .await;
 
         assert!(result.is_err());

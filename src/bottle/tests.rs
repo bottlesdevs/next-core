@@ -244,10 +244,11 @@ mod unix {
             storage,
             context,
         )
+        .await
         .unwrap();
         let program = Program::new("Game", "C:\\game.exe");
         let program_id = program.id;
-        bottle.add_program(program).unwrap();
+        bottle.add_program(program).await.unwrap();
         let wrappers = Wrappers {
             gamescope: GamescopeConfig {
                 enabled: true,
@@ -264,7 +265,7 @@ mod unix {
         let failed_program_id = failed_program.id;
         let temporary = directories.bottle(bottle_id).join("bottle.tmp");
         fs::create_dir(&temporary).unwrap();
-        assert!(bottle.add_program(failed_program).is_err());
+        assert!(bottle.add_program(failed_program).await.is_err());
         assert!(bottle.program(failed_program_id).is_none());
         let persisted: BottleConfig =
             next_config::load(directories.bottle(bottle_id).join("bottle.toml")).unwrap();

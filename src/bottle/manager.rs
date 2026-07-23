@@ -75,7 +75,8 @@ impl BottleManager {
                 Vec::new(),
                 storage,
                 self.context.clone(),
-            )?;
+            )
+            .await?;
             self.context
                 .fvs()
                 .await?
