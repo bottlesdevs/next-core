@@ -9,7 +9,4 @@ mod wrapper;
 pub use runner::RunnerKind;
 pub use utils::{context::Context, directories::Directories, environment::Environment};
 
-pub mod proto {
-    tonic::include_proto!("winebridge");
-    tonic::include_proto!("bottles");
-}
+pub(crate) use next_proto::winebridge as proto;

@@ -308,14 +308,14 @@ mod unix {
         assert_eq!(
             fs::read_to_string(directories.bottle(bottle_id).join("prefix/wineserver.log"))
                 .unwrap(),
-            "-k\n-k\n-k\n-k\n"
+            "-k\n-k\n"
         );
 
         reopened.stop().await.unwrap();
         assert_eq!(
             fs::read_to_string(directories.bottle(bottle_id).join("prefix/wineserver.log"))
                 .unwrap(),
-            "-k\n-k\n-k\n-k\n-k\n"
+            "-k\n-k\n-k\n"
         );
 
         drop(reopened);

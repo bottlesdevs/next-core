@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 async-trait.workspace = true
 next-config.workspace = true
+next-proto.workspace = true
 fvs-rs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -20,9 +21,3 @@ tar.workspace = true
 regdiff-rs.workspace = true
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde"] }
-prost.workspace = true
-prost-types.workspace = true
-tonic-prost.workspace = true
-
-[build-dependencies]
-tonic-prost-build.workspace = true
