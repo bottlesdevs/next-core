@@ -17,7 +17,10 @@ tonic-health.workspace = true
 tokio.workspace = true
 directories.workspace = true
 flate2.workspace = true
+futures-core.workspace = true
 tar.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
 regdiff-rs.workspace = true
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde"] }
