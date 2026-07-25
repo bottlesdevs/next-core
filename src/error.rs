@@ -37,6 +37,10 @@ pub enum Error {
     Archive(#[from] ArchiveError),
     #[error("installer error: {0}")]
     Installer(#[from] InstallerError),
+    #[error("operation cancelled")]
+    Cancelled,
+    #[error("operation task failed: {0}")]
+    OperationTask(String),
 }
 
 #[allow(dead_code)]
