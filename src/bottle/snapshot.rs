@@ -13,25 +13,19 @@ use super::{
 
 impl Bottle {
     pub async fn create_snapshot(&self, message: impl Into<String>) -> Result<Snapshot> {
-        let stop = self.stop();
+        self.stop().await?;
         let repository = self.snapshot_repository();
-        let cx = self.cx.clone();
-        let message = message.into();
-        let runtime = self.cx.clone();
-        let operation: Operation<_, ()> = runtime.spawn(move |_, _| async move {
-            stop.await?;
-            Ok(cx.fvs().await?.commit(&repository, message).await?)
-        });
-        operation.await
+        Ok(self
+            .cx
+            .fvs()
+            .await?
+            .commit(&repository, message.into())
+            .await?)
     }
 
     pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
         let repository = self.snapshot_repository();
-        let cx = self.cx.clone();
-        let runtime = self.cx.clone();
-        let operation: Operation<_, ()> = runtime
-            .spawn(move |_, _| async move { Ok(cx.fvs().await?.list_commits(&repository).await?) });
-        operation.await
+        Ok(self.cx.fvs().await?.list_commits(&repository).await?)
     }
 
     pub fn rollback(&self, state_id_or_prefix: &str) -> Operation<String, RollbackProgress> {

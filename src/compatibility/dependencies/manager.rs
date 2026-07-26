@@ -30,7 +30,6 @@ impl DependencyManager {
             .context
             .spawn_blocking(move || {
                 let root = directories.dependencies();
-                fs::create_dir_all(&root)?;
                 let root = fs::canonicalize(root)?;
                 let index_path = root.join("index.toml");
                 let index = if index_path.is_file() {

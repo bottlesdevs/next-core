@@ -23,7 +23,6 @@ impl ComponentManager {
             .context
             .spawn_blocking(move || {
                 let component_dir = directories.components();
-                fs::create_dir_all(&component_dir)?;
                 let components_path = fs::canonicalize(component_dir)?;
                 let index_path = components_path.join("index.toml");
                 let index = if index_path.is_file() {
