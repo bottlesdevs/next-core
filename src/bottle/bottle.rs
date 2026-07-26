@@ -829,10 +829,7 @@ mod tests {
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
         }
         let context = Context::new(
-            crate::Directories {
-                data_dir: root.join("data"),
-                runtime_dir: root.join("run"),
-            },
+            crate::Directories::from_path(root.join("data")).unwrap(),
             root.join("fvs2d"),
         )
         .unwrap();
@@ -911,10 +908,7 @@ mod tests {
     async fn runner_install_requires_the_explicit_runner_api_and_umu_selection() {
         let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
         let context = Context::new(
-            crate::Directories {
-                data_dir: root.join("data"),
-                runtime_dir: root.join("run"),
-            },
+            crate::Directories::from_path(root.join("data")).unwrap(),
             root.join("fvs2d"),
         )
         .unwrap();

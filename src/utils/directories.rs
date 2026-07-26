@@ -7,46 +7,45 @@ use uuid::Uuid;
 use crate::{bottle::error::BottleError, error::Result};
 
 #[derive(Clone, Debug)]
-pub struct Directories {
-    pub data_dir: PathBuf,
-    pub runtime_dir: PathBuf,
-}
+pub struct Directories(ProjectDirs);
 
 impl Directories {
     pub async fn for_project(project_name: &str) -> Result<Self> {
-        let project = ProjectDirs::from("com", "usebottles", project_name)
-            .ok_or(BottleError::ProjectDirectoriesUnavailable)?;
-        let data_dir = project.data_local_dir().to_path_buf();
-        let runtime_dir = project
-            .runtime_dir()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| data_dir.join("runtime"));
-        let directories = Self {
-            data_dir,
-            runtime_dir,
-        };
-        for directory in [
-            directories.data_dir.clone(),
-            directories.runtime_dir.clone(),
-            directories.bottles(),
-            directories.components(),
-            directories.dependencies(),
-        ] {
+        let directories = Self(
+            ProjectDirs::from("com", "usebottles", project_name)
+                .ok_or(BottleError::ProjectDirectoriesUnavailable)?,
+        );
+        for directory in directories.paths() {
             tokio::fs::create_dir_all(directory).await?;
         }
         Ok(directories)
     }
 
-    pub fn data_dir(&self) -> &Path {
-        &self.data_dir
+    #[cfg(test)]
+    pub(crate) fn from_path(path: impl Into<PathBuf>) -> Result<Self> {
+        let directories = Self(
+            ProjectDirs::from_path(path.into())
+                .ok_or(BottleError::ProjectDirectoriesUnavailable)?,
+        );
+        for directory in directories.paths() {
+            std::fs::create_dir_all(directory)?;
+        }
+        Ok(directories)
     }
 
-    pub fn runtime_dir(&self) -> &Path {
-        &self.runtime_dir
+    pub fn data_dir(&self) -> &Path {
+        self.0.data_local_dir()
+    }
+
+    pub fn runtime_dir(&self) -> PathBuf {
+        self.0
+            .runtime_dir()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.data_dir().join("runtime"))
     }
 
     pub fn bottles(&self) -> PathBuf {
-        self.data_dir.join("bottles")
+        self.data_dir().join("bottles")
     }
 
     pub fn bottle(&self, id: Uuid) -> PathBuf {
@@ -54,10 +53,20 @@ impl Directories {
     }
 
     pub fn components(&self) -> PathBuf {
-        self.data_dir.join("components")
+        self.data_dir().join("components")
     }
 
     pub fn dependencies(&self) -> PathBuf {
-        self.data_dir.join("dependencies")
+        self.data_dir().join("dependencies")
+    }
+
+    fn paths(&self) -> [PathBuf; 5] {
+        [
+            self.data_dir().to_path_buf(),
+            self.runtime_dir(),
+            self.bottles(),
+            self.components(),
+            self.dependencies(),
+        ]
     }
 }

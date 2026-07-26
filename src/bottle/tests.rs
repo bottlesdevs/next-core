@@ -20,10 +20,7 @@ use crate::{
 
 fn test_directories() -> Directories {
     let root = std::env::temp_dir().join(format!("bottles-next-{}", uuid::Uuid::new_v4()));
-    Directories {
-        data_dir: root.join("data"),
-        runtime_dir: root.join("run"),
-    }
+    Directories::from_path(root).unwrap()
 }
 
 #[tokio::test]
@@ -82,8 +79,8 @@ async fn bottle_managers_are_scoped_to_their_context_roots() {
         "right"
     );
 
-    std::fs::remove_dir_all(left.data_dir).unwrap();
-    std::fs::remove_dir_all(right.data_dir).unwrap();
+    std::fs::remove_dir_all(left.data_dir()).unwrap();
+    std::fs::remove_dir_all(right.data_dir()).unwrap();
 }
 
 #[test]
@@ -176,7 +173,7 @@ fn proton_umu_components_and_dependencies_round_trip() {
     assert_eq!(loaded.wrappers, config.wrappers);
     assert_eq!(loaded.environment, config.environment);
 
-    std::fs::remove_dir_all(directories.data_dir).unwrap();
+    std::fs::remove_dir_all(directories.data_dir()).unwrap();
 }
 
 #[cfg(unix)]
@@ -339,7 +336,7 @@ mod unix {
         drop(reopened);
         fs::remove_dir_all(directories.bottle(bottle_id)).unwrap();
         fs::remove_dir_all(assets).unwrap();
-        fs::remove_dir_all(directories.data_dir).unwrap();
+        fs::remove_dir_all(directories.data_dir()).unwrap();
     }
 }
 
@@ -405,5 +402,5 @@ fn virgo_layers_round_trip_through_bottle_toml() {
     assert_eq!(loaded.kind(), super::bottle::BottleType::Virgo);
     assert!(stored.contains("state"));
 
-    std::fs::remove_dir_all(directories.data_dir).unwrap();
+    std::fs::remove_dir_all(directories.data_dir()).unwrap();
 }
