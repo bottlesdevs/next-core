@@ -43,7 +43,11 @@ impl Bottle {
                 false,
             )
             .await?;
-        let config: BottleConfig = next_config::load(self.bottle_path().join("bottle.toml"))?;
+        let path = self.bottle_path().join("bottle.toml");
+        let config: BottleConfig = self
+            .context
+            .spawn_blocking(move || Ok(next_config::load(path)?))
+            .await?;
         if config.id != id {
             return Err(BottleError::IdMismatch {
                 expected: id,

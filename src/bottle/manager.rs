@@ -33,16 +33,25 @@ impl BottleManager {
         winebridge: &Component,
         umu: Option<&Component>,
     ) -> Result<Bottle> {
-        fs::create_dir_all(self.context.directories().bottles())?;
-        fs::create_dir_all(self.context.directories().runtime_dir())?;
-
         let name = name.into();
-        for entry in fs::read_dir(self.context.directories().bottles())? {
-            let path = entry?.path().join("bottle.toml");
-            if path.is_file() && next_config::load::<BottleConfig>(&path)?.name == name {
-                return Err(BottleError::DuplicateName(name).into());
-            }
-        }
+        let bottles_path = self.context.directories().bottles();
+        let runtime_path = self.context.directories().runtime_dir().to_path_buf();
+        let checked_name = name.clone();
+        self.context
+            .spawn_blocking(move || {
+                fs::create_dir_all(&bottles_path)?;
+                fs::create_dir_all(runtime_path)?;
+                for entry in fs::read_dir(bottles_path)? {
+                    let path = entry?.path().join("bottle.toml");
+                    if path.is_file()
+                        && next_config::load::<BottleConfig>(&path)?.name == checked_name
+                    {
+                        return Err(BottleError::DuplicateName(checked_name).into());
+                    }
+                }
+                Ok(())
+            })
+            .await?;
 
         let runner_kind = runner_component
             .kind()
@@ -56,7 +65,13 @@ impl BottleManager {
         )?;
         let id = Uuid::new_v4();
         let bottle_path = self.bottle_path(id);
-        fs::create_dir_all(&bottle_path)?;
+        let path = bottle_path.clone();
+        self.context
+            .spawn_blocking(move || {
+                fs::create_dir_all(path)?;
+                Ok(())
+            })
+            .await?;
 
         let result = async {
             let storage = PrefixStorage::create(
@@ -87,51 +102,79 @@ impl BottleManager {
         .await;
 
         if result.is_err() {
-            let _ = fs::remove_dir_all(bottle_path);
+            let _ = self
+                .context
+                .spawn_blocking(move || {
+                    fs::remove_dir_all(bottle_path)?;
+                    Ok(())
+                })
+                .await;
         }
         result
     }
 
-    pub fn open(&self, id: Uuid) -> Result<Bottle> {
+    pub async fn open(&self, id: Uuid) -> Result<Bottle> {
         let path = self.bottle_path(id).join("bottle.toml");
-        if !path.is_file() {
-            return Err(BottleError::NotFound(id).into());
-        }
-        let config: BottleConfig = next_config::load(path)?;
-        if config.id != id {
-            return Err(BottleError::IdMismatch {
-                expected: id,
-                actual: config.id,
-            }
-            .into());
-        }
+        let config = self
+            .context
+            .spawn_blocking(move || {
+                if !path.is_file() {
+                    return Err(BottleError::NotFound(id).into());
+                }
+                let config: BottleConfig = next_config::load(path)?;
+                if config.id != id {
+                    return Err(BottleError::IdMismatch {
+                        expected: id,
+                        actual: config.id,
+                    }
+                    .into());
+                }
+                Ok(config)
+            })
+            .await?;
         Ok(Bottle::from_config(config, self.context.clone()))
     }
 
-    pub fn list(&self) -> Result<Vec<Bottle>> {
-        let entries = match fs::read_dir(self.context.directories().bottles()) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.into()),
-        };
-        let mut bottles = Vec::new();
-        for entry in entries {
-            let path = entry?.path().join("bottle.toml");
-            if path.is_file() {
-                let Some(config) = next_config::load::<BottleConfig>(path).log_error() else {
-                    continue;
+    pub async fn list(&self) -> Result<Vec<Bottle>> {
+        let bottles_path = self.context.directories().bottles();
+        let configs = self
+            .context
+            .spawn_blocking(move || {
+                let entries = match fs::read_dir(bottles_path) {
+                    Ok(entries) => entries,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+                    Err(error) => return Err(error.into()),
                 };
-                bottles.push(Bottle::from_config(config, self.context.clone()));
-            }
-        }
-        Ok(bottles)
+                let mut configs = Vec::new();
+                for entry in entries {
+                    let path = entry?.path().join("bottle.toml");
+                    if path.is_file() {
+                        let Some(config) = next_config::load::<BottleConfig>(path).log_error()
+                        else {
+                            continue;
+                        };
+                        configs.push(config);
+                    }
+                }
+                Ok(configs)
+            })
+            .await?;
+        Ok(configs
+            .into_iter()
+            .map(|config| Bottle::from_config(config, self.context.clone()))
+            .collect())
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let mut bottle = self.open(id)?;
+        let mut bottle = self.open(id).await?;
         bottle.stop().await?;
-        fs::remove_dir_all(self.bottle_path(id))?;
-        Ok(())
+        let path = self.bottle_path(id);
+        self.context
+            .spawn_blocking(move || {
+                fs::remove_dir_all(path)?;
+                Ok(())
+            })
+            .await
     }
 
     fn bottle_path(&self, id: Uuid) -> std::path::PathBuf {
