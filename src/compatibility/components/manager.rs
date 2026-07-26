@@ -181,14 +181,8 @@ mod tests {
     #[tokio::test]
     async fn discovery_is_scoped_to_the_supplied_root_and_preserves_indexed_ids() {
         let root = std::env::temp_dir().join(format!("bottles-next-components-{}", Uuid::new_v4()));
-        let left = Directories {
-            data_dir: root.join("left"),
-            runtime_dir: root.join("left-run"),
-        };
-        let right = Directories {
-            data_dir: root.join("right"),
-            runtime_dir: root.join("right-run"),
-        };
+        let left = Directories::from_path(root.join("left")).unwrap();
+        let right = Directories::from_path(root.join("right")).unwrap();
         fs::create_dir_all(left.components().join("dxvk/1")).unwrap();
         fs::create_dir_all(right.components().join("dxvk/1")).unwrap();
 
