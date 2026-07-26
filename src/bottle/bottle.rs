@@ -1,29 +1,29 @@
-use std::{ops::AsyncFnOnce, path::PathBuf};
+use std::{future::Future, ops::AsyncFnOnce, path::PathBuf};
 
 use fvs_rs::Layer;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::error::BottleError;
+use super::{edit::BottleEdit, error::BottleError};
 use crate::{
-    Context,
+    Context, Operation,
     compatibility::{
         components::{Component, catalog::ComponentKind},
         dependencies::Dependency,
         installer::{InstallResource, Installable},
     },
     error::{Error, Result},
-    proto::{self, DllOverrideMode, Process},
+    proto::{DllOverride, DllOverrideMode, Process},
     runner::{Runner, RunnerKind, shutdown_prefix},
     utils::environment::Environment,
-    winebridge::{BridgeError, WineBridgeClient},
+    winebridge::WineBridgeClient,
     wrapper::Wrappers,
 };
 
-#[derive(Clone, Deserialize, Serialize, Config)]
+#[derive(Clone, Debug, Deserialize, Serialize, Config)]
 #[config(version = 1)]
-pub(crate) struct BottleConfig {
+pub struct BottleState {
     pub(crate) id: Uuid,
     pub(crate) name: String,
     pub(crate) storage: PrefixStorage,
@@ -41,10 +41,21 @@ pub(crate) struct BottleConfig {
     pub(crate) wrappers: Wrappers,
 }
 
+impl BottleState {
+    pub fn kind(&self) -> BottleType {
+        self.storage.kind()
+    }
+}
+
 pub struct Bottle {
-    pub(crate) config: BottleConfig,
-    pub(crate) bridge: Option<WineBridgeClient>,
-    pub(crate) context: Context,
+    pub(crate) state: BottleState,
+    pub(crate) cx: Context,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeleteProgress {
+    Stopping,
+    Removing,
 }
 
 impl Bottle {
@@ -56,8 +67,8 @@ impl Bottle {
         storage: PrefixStorage,
         context: Context,
     ) -> Result<Self> {
-        let mut bottle = Self {
-            config: BottleConfig {
+        let bottle = Self {
+            state: BottleState {
                 id,
                 name,
                 components,
@@ -67,234 +78,198 @@ impl Bottle {
                 wrappers: Wrappers::default(),
                 environment: Environment::default(),
             },
-            bridge: None,
-            context,
+            cx: context,
         };
-        bottle.update(async |_| Ok(())).await?;
+        bottle.save().await?;
         Ok(bottle)
     }
 
-    pub(crate) fn from_config(config: BottleConfig, context: Context) -> Self {
-        Self {
-            config,
-            bridge: None,
-            context,
-        }
+    pub(crate) fn from_state(state: BottleState, cx: Context) -> Self {
+        Self { state, cx }
+    }
+
+    pub fn state(&self) -> &BottleState {
+        &self.state
+    }
+
+    pub fn edit(self) -> BottleEdit {
+        BottleEdit::new(self)
+    }
+
+    pub fn delete(self) -> crate::Operation<(), DeleteProgress> {
+        let runtime = self.cx.clone();
+        let cx = self.cx.clone();
+        runtime.spawn(move |progress, cancellation| async move {
+            progress.send_replace(Some(DeleteProgress::Stopping));
+            self.stop().await?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            progress.send_replace(Some(DeleteProgress::Removing));
+            let path = cx.directories().bottle(self.id());
+            cx.spawn_blocking(move || {
+                std::fs::remove_dir_all(path)?;
+                Ok(())
+            })
+            .await
+        })
     }
 
     pub fn id(&self) -> Uuid {
-        self.config.id
+        self.state.id
     }
 
     pub fn name(&self) -> &str {
-        &self.config.name
+        &self.state.name
     }
 
     pub fn components(&self) -> &BottleComponents {
-        &self.config.components
+        &self.state.components
     }
 
     pub fn runner(&self) -> &Component {
-        self.config.components.runner()
+        self.state.components.runner()
     }
 
     pub fn dependencies(&self) -> &[Dependency] {
-        &self.config.dependencies
+        &self.state.dependencies
     }
 
     pub fn environment(&self) -> &Environment {
-        &self.config.environment
+        &self.state.environment
     }
 
-    pub async fn set_env(
-        &mut self,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Result<()> {
-        let key = key.into();
-        let value = value.into();
-        if value.contains('\0') {
-            return Err(BottleError::InvalidEnvironmentValue(key).into());
-        }
-        if self.config.environment.get(&key) == Some(&value) {
-            return Ok(());
-        }
-        self.update(async move |bottle| {
-            bottle.stop().await?;
-            bottle.config.environment.insert(key, value);
-            Ok(())
+    pub async fn dll_overrides(&self) -> Result<Vec<DllOverride>> {
+        self.with_bridge(|bridge| async move {
+            match bridge.list_dll_overrides().await {
+                Ok(overrides) => Ok(overrides),
+                Err(Error::Status(status)) if status.code() == tonic::Code::NotFound => {
+                    Ok(Vec::new())
+                }
+                Err(error) => Err(error),
+            }
         })
         .await
-    }
-
-    pub async fn unset_env(&mut self, key: impl AsRef<str>) -> Result<()> {
-        let key = key.as_ref();
-        if self.config.environment.get(key).is_none() {
-            return Ok(());
-        }
-        let key = key.to_owned();
-        self.update(async move |bottle| {
-            bottle.stop().await?;
-            bottle.config.environment.remove(&key);
-            Ok(())
-        })
-        .await
-    }
-
-    pub async fn dll_overrides(&mut self) -> Result<Vec<DllOverride>> {
-        let overrides = match self.ensure_bridge().await?.list_dll_overrides().await {
-            Ok(overrides) => overrides,
-            Err(Error::Status(status)) if status.code() == tonic::Code::NotFound => Vec::new(),
-            Err(error) => return Err(error),
-        };
-        overrides.into_iter().map(DllOverride::from_proto).collect()
     }
 
     pub async fn set_dll_override(
-        &mut self,
+        &self,
         dll: impl Into<String>,
         mode: DllOverrideMode,
     ) -> Result<()> {
+        let dll = dll.into();
         if mode == DllOverrideMode::Unspecified {
             return Err(BottleError::DllOverrideModeRequired.into());
         }
-        self.ensure_bridge()
-            .await?
-            .set_dll_override(dll, mode)
+        self.with_bridge(move |bridge| async move { bridge.set_dll_override(dll, mode).await })
             .await
     }
 
-    pub async fn unset_dll_override(&mut self, dll: impl Into<String>) -> Result<()> {
-        match self.ensure_bridge().await?.delete_dll_override(dll).await {
-            Err(Error::Status(status)) if status.code() == tonic::Code::NotFound => Ok(()),
-            result => result,
-        }
+    pub async fn unset_dll_override(&self, dll: impl Into<String>) -> Result<()> {
+        let dll = dll.into();
+        self.with_bridge(move |bridge| async move {
+            match bridge.delete_dll_override(dll).await {
+                Err(Error::Status(status)) if status.code() == tonic::Code::NotFound => Ok(()),
+                result => result,
+            }
+        })
+        .await
     }
 
     pub fn wrappers(&self) -> &Wrappers {
-        &self.config.wrappers
-    }
-
-    pub async fn set_wrappers(&mut self, wrappers: Wrappers) -> Result<()> {
-        if wrappers == self.config.wrappers {
-            return Ok(());
-        }
-        self.update(async move |bottle| {
-            bottle.stop().await?;
-            bottle.config.wrappers = wrappers;
-            Ok(())
-        })
-        .await
+        &self.state.wrappers
     }
 
     pub fn r#type(&self) -> BottleType {
-        self.config.storage.kind()
+        self.state.kind()
     }
 
     pub fn programs(&self) -> &[Program] {
-        &self.config.programs
+        &self.state.programs
     }
 
     pub fn program(&self, id: Uuid) -> Option<&Program> {
-        self.config.programs.iter().find(|program| program.id == id)
-    }
-
-    pub async fn add_program(&mut self, program: Program) -> Result<()> {
-        if program.name.trim().is_empty() || program.executable.trim().is_empty() {
-            return Err(BottleError::InvalidProgram.into());
-        }
-
-        self.update(async move |bottle| {
-            bottle.config.programs.push(program);
-            Ok(())
-        })
-        .await
-    }
-
-    pub async fn remove_program(&mut self, id: Uuid) -> Result<Program> {
-        self.update(async |bottle| {
-            let index = bottle
-                .config
-                .programs
-                .iter()
-                .position(|program| program.id == id)
-                .ok_or(BottleError::ProgramNotFound(id))?;
-            Ok(bottle.config.programs.remove(index))
-        })
-        .await
+        self.state.programs.iter().find(|program| program.id == id)
     }
 
     /// Launch a tracked program, starting WineBridge if it is not already running.
-    pub async fn run(&mut self, id: Uuid) -> Result<u32> {
+    pub async fn run(&self, id: Uuid) -> Result<u32> {
         let program = self
             .program(id)
             .cloned()
             .ok_or(BottleError::ProgramNotFound(id))?;
-        self.ensure_bridge()
-            .await?
-            .launch_process(
-                program.id,
-                program.executable,
-                program.args,
-                program.working_directory,
-                program.new_console,
-            )
-            .await
+        self.with_bridge(move |bridge| async move {
+            bridge
+                .launch_process(
+                    program.id,
+                    program.executable,
+                    program.args,
+                    program.working_directory,
+                    program.new_console,
+                )
+                .await
+        })
+        .await
     }
 
     /// List processes, starting WineBridge if it is not already running.
-    pub async fn processes(&mut self) -> Result<Vec<Process>> {
-        self.ensure_bridge().await?.list_processes().await
+    pub async fn processes(&self) -> Result<Vec<Process>> {
+        self.with_bridge(|bridge| async move { bridge.list_processes().await })
+            .await
     }
 
     /// Kill a tracked program by UUID, starting WineBridge if necessary.
-    pub async fn kill(&mut self, id: Uuid) -> Result<()> {
+    pub async fn kill(&self, id: Uuid) -> Result<()> {
         if self.program(id).is_none() {
             return Err(BottleError::ProgramNotFound(id).into());
         }
-        self.ensure_bridge().await?.kill_process(id).await
+        self.with_bridge(move |bridge| async move { bridge.kill_process(id).await })
+            .await
     }
 
     /// Stop WineBridge, wineserver, and prefix storage.
-    pub async fn stop(&mut self) -> Result<()> {
-        let mut first_error = None;
-        if self.bridge.is_none() {
-            match WineBridgeClient::try_connect(&self.prefix_path()).await {
-                Ok(bridge) => self.bridge = bridge,
-                Err(error) => first_error = Some(error),
+    pub fn stop(&self) -> Operation<(), ()> {
+        let prefix_path = self.prefix_path();
+        let runner = self.load_runner();
+        let storage = self.state.storage.clone();
+        let bottle_path = self.bottle_path();
+        let cx = self.cx.clone();
+        let runtime = self.cx.clone();
+        runtime.spawn(move |_, _| async move {
+            let mut first_error = None;
+            match WineBridgeClient::try_connect(&prefix_path).await {
+                Ok(Some(bridge)) => {
+                    if let Err(error) = bridge.shutdown().await {
+                        first_error.get_or_insert(error);
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
             }
-        }
-        if let Some(bridge) = self.bridge.take()
-            && let Err(error) = bridge.shutdown().await
-        {
-            first_error.get_or_insert(error);
-        }
 
-        let runner = match self.load_runner() {
-            Ok(runner) => Some(runner),
-            Err(error) => {
+            let runner = match runner {
+                Ok(runner) => Some(runner),
+                Err(error) => {
+                    first_error.get_or_insert(error);
+
+                    None
+                }
+            };
+
+            if let Some(runner) = runner.as_deref()
+                && let Err(error) = shutdown_prefix(runner, &prefix_path).await
+            {
                 first_error.get_or_insert(error);
-
-                None
             }
-        };
 
-        if let Some(runner) = runner.as_deref()
-            && let Err(error) = shutdown_prefix(runner, &self.prefix_path()).await
-        {
-            first_error.get_or_insert(error);
-        }
+            if let Err(error) = storage.stop(&bottle_path, &cx).await {
+                first_error.get_or_insert(error);
+            }
 
-        if let Err(error) = self
-            .config
-            .storage
-            .stop(&self.bottle_path(), &self.context)
-            .await
-        {
-            first_error.get_or_insert(error);
-        }
-
-        first_error.map_or(Ok(()), Err)
+            first_error.map_or(Ok(()), Err)
+        })
     }
 
     /// Standard-prefix effects completed before a metadata error are not rolled back.
@@ -307,7 +282,7 @@ impl Bottle {
                 }
                 self.update(async |bottle| {
                     bottle.stop().await?;
-                    bottle.config.components.winebridge = component.clone();
+                    bottle.state.components.winebridge = component.clone();
                     Ok(())
                 })
                 .await
@@ -321,7 +296,7 @@ impl Bottle {
                 }
                 self.update(async |bottle| {
                     bottle.stop().await?;
-                    bottle.config.components.umu = Some(component.clone());
+                    bottle.state.components.umu = Some(component.clone());
                     Ok(())
                 })
                 .await
@@ -349,12 +324,12 @@ impl Bottle {
             .cloned()
             .ok_or(BottleError::ComponentNotInstalled(id))?;
 
-        let resources = component.prepare(self.context.directories())?;
+        let resources = component.prepare(self.cx.directories())?;
         let winebridge = self.components().winebridge.path().to_path_buf();
         self.update(async |bottle| {
             bottle.stop().await?;
             bottle
-                .config
+                .state
                 .components
                 .slot_mut(component.kind())?
                 .take()
@@ -362,12 +337,12 @@ impl Bottle {
 
             let runner = bottle.load_runner()?;
             let bottle_path = bottle.bottle_path();
-            let context = bottle.context.clone();
-            let BottleConfig {
+            let context = bottle.cx.clone();
+            let BottleState {
                 storage,
                 environment,
                 ..
-            } = &mut bottle.config;
+            } = &mut bottle.state;
             storage
                 .uninstall(
                     &bottle_path,
@@ -404,7 +379,7 @@ impl Bottle {
             return Ok(());
         }
         let replaced_id = installed.map(Component::id);
-        let resources = component.prepare(self.context.directories())?;
+        let resources = component.prepare(self.cx.directories())?;
         self.install_item(component.id(), replaced_id, resources, |config| {
             config.components.slot_mut(kind)?.replace(component.clone());
             Ok(())
@@ -420,21 +395,21 @@ impl Bottle {
         update_config: F,
     ) -> Result<()>
     where
-        F: FnOnce(&mut BottleConfig) -> Result<()>,
+        F: FnOnce(&mut BottleState) -> Result<()>,
     {
         self.update(async move |bottle| {
             bottle.stop().await?;
-            update_config(&mut bottle.config)?;
+            update_config(&mut bottle.state)?;
 
             let runner = bottle.load_runner()?;
             let winebridge = bottle.components().winebridge.path().to_path_buf();
             let bottle_path = bottle.bottle_path();
-            let context = bottle.context.clone();
-            let BottleConfig {
+            let context = bottle.cx.clone();
+            let BottleState {
                 storage,
                 environment,
                 ..
-            } = &mut bottle.config;
+            } = &mut bottle.state;
             storage
                 .install(
                     &bottle_path,
@@ -471,7 +446,7 @@ impl Bottle {
         {
             return Ok(());
         }
-        let resources = dependency.prepare(self.context.directories())?;
+        let resources = dependency.prepare(self.cx.directories())?;
         self.install_item(dependency.id(), None, resources, |config| {
             config.dependencies.push(dependency.clone());
             Ok(())
@@ -498,13 +473,13 @@ impl Bottle {
             .collect::<Vec<_>>();
         self.update(async |bottle| {
             bottle.stop().await?;
-            bottle.config.components.runner = component.clone();
-            bottle.config.components.umu = umu.cloned();
+            bottle.state.components.runner = component.clone();
+            bottle.state.components.umu = umu.cloned();
 
             let runner = bottle.load_runner()?;
-            let context = bottle.context.clone();
+            let context = bottle.cx.clone();
             bottle
-                .config
+                .state
                 .storage
                 .rebuild(
                     runner.as_ref(),
@@ -519,16 +494,16 @@ impl Bottle {
 
     pub(crate) fn load_runner(&self) -> Result<Box<dyn Runner>> {
         let kind = self
-            .config
+            .state
             .components
             .runner()
             .kind()
             .runner_kind()
             .ok_or(BottleError::RunnerComponentRequired)?;
         crate::runner::load_runner(
-            self.config.components.runner().path(),
+            self.state.components.runner().path(),
             kind,
-            self.config.components.umu().map(Component::path),
+            self.state.components.umu().map(Component::path),
         )
     }
 
@@ -536,63 +511,64 @@ impl Bottle {
     where
         F: for<'a> AsyncFnOnce(&'a mut Bottle) -> Result<R>,
     {
-        let bottle_path = self.bottle_path();
-        let previous = self.config.clone();
+        let previous = self.state.clone();
         let value = match operation(self).await {
             Ok(value) => value,
             Err(error) => {
-                self.config = previous;
+                self.state = previous;
                 return Err(error);
             }
         };
-        let config = self.config.clone();
-        if let Err(error) = self
-            .context
-            .spawn_blocking(move || {
-                next_config::save(bottle_path.join("bottle.toml"), &config)?;
-                Ok(())
-            })
-            .await
-        {
-            self.config = previous;
+        if let Err(error) = self.save().await {
+            self.state = previous;
             return Err(error);
         }
         Ok(value)
     }
 
     pub(crate) fn bottle_path(&self) -> PathBuf {
-        self.context.directories().bottle(self.id())
+        self.cx.directories().bottle(self.id())
     }
 
     pub(crate) fn prefix_path(&self) -> PathBuf {
         self.bottle_path().join("prefix")
     }
 
-    pub(crate) async fn prefix(&mut self) -> Result<PathBuf> {
-        let bottle_path = self.bottle_path();
-        self.config
-            .storage
-            .prepare(&bottle_path, &self.context)
-            .await?;
-        Ok(bottle_path.join("prefix"))
+    async fn save(&self) -> Result<()> {
+        let path = self.bottle_path().join("bottle.toml");
+        let state = self.state.clone();
+        self.cx
+            .spawn_blocking(move || {
+                next_config::save(path, &state)?;
+                Ok(())
+            })
+            .await
     }
 
-    /// Prepare the prefix and connect to or start its managed WineBridge.
-    async fn ensure_bridge(&mut self) -> Result<&WineBridgeClient> {
-        if self.bridge.is_none() {
-            let runner = self.load_runner()?;
-            let prefix = self.prefix().await?;
-            let command = WineBridgeClient::command(
+    async fn with_bridge<T, F, Fut>(&self, work: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(WineBridgeClient) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
+        let runner = self.load_runner()?;
+        let bottle_path = self.bottle_path();
+        let prefix = self.prefix_path();
+        let storage = self.state.storage.clone();
+        let cx = self.cx.clone();
+        let command = self.state.wrappers.apply(
+            WineBridgeClient::command(
                 runner.as_ref(),
                 &prefix,
                 self.components().winebridge().path(),
             )
-            .envs(self.config.environment.iter());
-            let command = self.config.wrappers.apply(command);
-
-            self.bridge = Some(WineBridgeClient::connect_or_spawn(&prefix, command).await?);
-        }
-        Ok(self.bridge.as_ref().expect("WineBridge was initialized"))
+            .envs(self.state.environment.iter()),
+        );
+        let operation: Operation<_, ()> = self.cx.spawn(move |_, _| async move {
+            storage.prepare(&bottle_path, &cx).await?;
+            work(WineBridgeClient::connect_or_spawn(&prefix, command).await?).await
+        });
+        operation.await
     }
 }
 
@@ -718,28 +694,6 @@ impl<'a> IntoIterator for &'a BottleComponents {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct DllOverride(proto::DllOverride);
-
-impl DllOverride {
-    fn from_proto(value: proto::DllOverride) -> Result<Self> {
-        let mode = DllOverrideMode::try_from(value.mode)
-            .map_err(|_| BridgeError::InvalidResponse("DLL override has an invalid mode"))?;
-        if mode == DllOverrideMode::Unspecified {
-            return Err(BridgeError::InvalidResponse("DLL override mode is unspecified").into());
-        }
-        Ok(Self(value))
-    }
-
-    pub fn dll(&self) -> &str {
-        &self.0.dll
-    }
-
-    pub fn mode(&self) -> DllOverrideMode {
-        self.0.mode()
-    }
-}
-
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Program {
     pub id: Uuid,
@@ -816,8 +770,8 @@ mod tests {
         )
         .unwrap();
         let winebridge = Component::new(ComponentKind::Winebridge, "bridge", "/bridge").unwrap();
-        let mut bottle = Bottle::from_config(
-            BottleConfig {
+        let mut bottle = Bottle::from_state(
+            BottleState {
                 id: Uuid::new_v4(),
                 name: "test".into(),
                 storage: PrefixStorage::Standard,
@@ -832,9 +786,9 @@ mod tests {
 
         let result = bottle
             .update(async |bottle| {
-                bottle.config.storage = PrefixStorage::Virgo { layers: Vec::new() };
+                bottle.state.storage = PrefixStorage::Virgo { layers: Vec::new() };
                 bottle
-                    .config
+                    .state
                     .environment
                     .insert("CHANGED".into(), "yes".into());
                 Err::<(), _>(BottleError::InvalidProgram.into())
@@ -842,8 +796,8 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        assert!(matches!(bottle.config.storage, PrefixStorage::Standard));
-        assert!(bottle.config.environment.is_empty());
+        assert!(matches!(bottle.state.storage, PrefixStorage::Standard));
+        assert!(bottle.state.environment.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -875,8 +829,8 @@ mod tests {
         )
         .unwrap();
         let winebridge = Component::new(ComponentKind::Winebridge, "bridge", "/bridge").unwrap();
-        let mut bottle = Bottle::from_config(
-            BottleConfig {
+        let mut bottle = Bottle::from_state(
+            BottleState {
                 id: Uuid::new_v4(),
                 name: "test".into(),
                 storage: PrefixStorage::Standard,

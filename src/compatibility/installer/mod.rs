@@ -103,22 +103,7 @@ pub(crate) async fn uninstall(
     restore_files: bool,
     item_id: Uuid,
 ) -> Result<()> {
-    let InstallInputs {
-        prefix,
-        runner,
-        winebridge,
-        environment,
-    } = inputs;
-    uninstall_steps(
-        runner,
-        prefix,
-        winebridge,
-        environment,
-        resources,
-        restore_files,
-        item_id,
-    )
-    .await
+    uninstall_steps(inputs, resources, restore_files, item_id).await
 }
 
 pub(crate) fn replay_environment(environment: &mut Environment, resources: &[InstallResource]) {
@@ -235,14 +220,17 @@ async fn execute_steps(
 }
 
 async fn uninstall_steps(
-    runner: &dyn Runner,
-    prefix: &Path,
-    winebridge: &Path,
-    environment: &mut Environment,
+    inputs: InstallInputs<'_>,
     resources: &[InstallResource],
     restore_files: bool,
     component_id: Uuid,
 ) -> Result<()> {
+    let InstallInputs {
+        prefix,
+        runner,
+        winebridge,
+        environment,
+    } = inputs;
     let mut bridge_client = None;
 
     for resource in resources.iter().rev() {

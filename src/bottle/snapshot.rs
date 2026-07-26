@@ -2,61 +2,72 @@ use std::path::Path;
 
 use fvs_rs::{Repository, RestoreResponse};
 
-use crate::error::Result;
+use crate::{
+    Operation,
+    error::{Error, Result},
+};
 
 use super::{
-    Bottle, FVS_BLOCK_SIZE, Snapshot, SnapshotSummary, bottle::BottleConfig, error::BottleError,
+    Bottle, FVS_BLOCK_SIZE, Snapshot, SnapshotSummary, bottle::BottleState, error::BottleError,
 };
 
 impl Bottle {
-    pub async fn create_snapshot(&mut self, message: impl Into<String>) -> Result<Snapshot> {
-        self.stop().await?;
-        Ok(self
-            .context
-            .fvs()
-            .await?
-            .commit(&self.snapshot_repository(), message.into())
-            .await?)
+    pub async fn create_snapshot(&self, message: impl Into<String>) -> Result<Snapshot> {
+        let stop = self.stop();
+        let repository = self.snapshot_repository();
+        let cx = self.cx.clone();
+        let message = message.into();
+        let runtime = self.cx.clone();
+        let operation: Operation<_, ()> = runtime.spawn(move |_, _| async move {
+            stop.await?;
+            Ok(cx.fvs().await?.commit(&repository, message).await?)
+        });
+        operation.await
     }
 
     pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
-        Ok(self
-            .context
-            .fvs()
-            .await?
-            .list_commits(&self.snapshot_repository())
-            .await?)
+        let repository = self.snapshot_repository();
+        let cx = self.cx.clone();
+        let runtime = self.cx.clone();
+        let operation: Operation<_, ()> = runtime
+            .spawn(move |_, _| async move { Ok(cx.fvs().await?.list_commits(&repository).await?) });
+        operation.await
     }
 
-    pub async fn rollback(&mut self, state_id_or_prefix: &str) -> Result<String> {
-        self.stop().await?;
+    pub fn rollback(&self, state_id_or_prefix: &str) -> Operation<String, RollbackProgress> {
+        let stop = self.stop();
         let id = self.id();
-        let response: RestoreResponse = self
-            .context
-            .fvs()
-            .await?
-            .restore(
-                &self.snapshot_repository(),
-                state_id_or_prefix,
-                None::<&Path>,
-                true,
-                false,
-            )
-            .await?;
-        let path = self.bottle_path().join("bottle.toml");
-        let config: BottleConfig = self
-            .context
-            .spawn_blocking(move || Ok(next_config::load(path)?))
-            .await?;
-        if config.id != id {
-            return Err(BottleError::IdMismatch {
-                expected: id,
-                actual: config.id,
+        let repository = self.snapshot_repository();
+        let bottle_path = self.bottle_path();
+        let cx = self.cx.clone();
+        let runtime = self.cx.clone();
+        let state_id_or_prefix = state_id_or_prefix.to_owned();
+        runtime.spawn(move |progress, cancellation| async move {
+            progress.send_replace(Some(RollbackProgress::Stopping));
+            stop.await?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
             }
-            .into());
-        }
-        self.config = config;
-        Ok(response.state_id)
+
+            progress.send_replace(Some(RollbackProgress::Restoring));
+            let response: RestoreResponse = cx
+                .fvs()
+                .await?
+                .restore(&repository, &state_id_or_prefix, None::<&Path>, true, false)
+                .await?;
+            let path = bottle_path.join("bottle.toml");
+            let state: BottleState = cx
+                .spawn_blocking(move || Ok(next_config::load(path)?))
+                .await?;
+            if state.id != id {
+                return Err(BottleError::IdMismatch {
+                    expected: id,
+                    actual: state.id,
+                }
+                .into());
+            }
+            Ok(response.state_id)
+        })
     }
 
     fn snapshot_repository(&self) -> Repository {
@@ -65,4 +76,10 @@ impl Bottle {
             block_size: FVS_BLOCK_SIZE,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RollbackProgress {
+    Stopping,
+    Restoring,
 }
