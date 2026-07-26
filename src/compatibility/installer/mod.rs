@@ -10,6 +10,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
+    Context,
     error::{Error, Result, ResultExt},
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
     runner::{Command, Runner, Spawnable, shutdown_prefix},
@@ -83,6 +84,7 @@ pub(crate) struct InstallInputs<'a> {
 }
 
 pub(crate) async fn execute(
+    context: &Context,
     inputs: InstallInputs<'_>,
     resources: &[InstallResource],
 ) -> Result<()> {
@@ -92,7 +94,7 @@ pub(crate) async fn execute(
         winebridge,
         environment,
     } = inputs;
-    execute_steps(runner, prefix, winebridge, environment, resources).await
+    execute_steps(context, runner, prefix, winebridge, environment, resources).await
 }
 
 pub(crate) async fn uninstall(
@@ -128,6 +130,7 @@ pub(crate) fn replay_environment(environment: &mut Environment, resources: &[Ins
 }
 
 async fn execute_steps(
+    context: &Context,
     runner: &dyn Runner,
     prefix: &Path,
     winebridge: &Path,
@@ -151,7 +154,12 @@ async fn execute_steps(
                         install_file(&source, prefix, destination)?;
                     }
                     InstallStep::Extract { destination } => {
-                        extract_into(&resource.source, prefix, destination)?;
+                        let archive = resource.source.clone();
+                        let prefix = prefix.to_path_buf();
+                        let destination = destination.clone();
+                        context
+                            .spawn_blocking(move || extract_into(&archive, &prefix, &destination))
+                            .await?;
                     }
                     InstallStep::Execute { arguments } => {
                         let mut command = Command::new(&resource.source);

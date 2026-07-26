@@ -26,8 +26,8 @@ fn test_directories() -> Directories {
     }
 }
 
-#[test]
-fn bottle_managers_are_scoped_to_their_context_roots() {
+#[tokio::test]
+async fn bottle_managers_are_scoped_to_their_context_roots() {
     let id = uuid::Uuid::new_v4();
     let left = test_directories();
     let right = test_directories();
@@ -65,10 +65,10 @@ fn bottle_managers_are_scoped_to_their_context_roots() {
     let right_manager =
         BottleManager::new(Context::new(right.clone(), right.data_dir().join("fvs2d")).unwrap());
 
-    assert_eq!(left_manager.open(id).unwrap().name(), "left");
-    assert_eq!(right_manager.open(id).unwrap().name(), "right");
-    assert_eq!(left_manager.list().unwrap()[0].name(), "left");
-    assert_eq!(right_manager.list().unwrap()[0].name(), "right");
+    assert_eq!(left_manager.open(id).await.unwrap().name(), "left");
+    assert_eq!(right_manager.open(id).await.unwrap().name(), "right");
+    assert_eq!(left_manager.list().await.unwrap()[0].name(), "left");
+    assert_eq!(right_manager.list().await.unwrap()[0].name(), "right");
 
     std::fs::remove_dir_all(left.data_dir).unwrap();
     std::fs::remove_dir_all(right.data_dir).unwrap();
@@ -282,7 +282,7 @@ mod unix {
         let runner_id = bottle.runner().id();
         drop(bottle);
 
-        let mut reopened = manager.open(bottle_id).unwrap();
+        let mut reopened = manager.open(bottle_id).await.unwrap();
         assert_eq!(reopened.runner().id(), runner_id);
         assert_eq!(reopened.runner().path(), runner_root);
         assert_eq!(reopened.r#type(), BottleType::Standard);

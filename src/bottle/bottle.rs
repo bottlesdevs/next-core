@@ -442,6 +442,7 @@ impl Bottle {
                     replaced_id,
                     async |prefix| {
                         crate::compatibility::installer::execute(
+                            &context,
                             crate::compatibility::installer::InstallInputs {
                                 prefix,
                                 runner: runner.as_ref(),
@@ -544,9 +545,17 @@ impl Bottle {
                 return Err(error);
             }
         };
-        if let Err(error) = next_config::save(bottle_path.join("bottle.toml"), &self.config) {
+        let config = self.config.clone();
+        if let Err(error) = self
+            .context
+            .spawn_blocking(move || {
+                next_config::save(bottle_path.join("bottle.toml"), &config)?;
+                Ok(())
+            })
+            .await
+        {
             self.config = previous;
-            return Err(error.into());
+            return Err(error);
         }
         Ok(value)
     }

@@ -61,7 +61,7 @@ impl<T, P> Future for Operation<T, P> {
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         match Pin::new(&mut self.task).poll(context) {
             Poll::Ready(Ok(result)) => Poll::Ready(result),
-            Poll::Ready(Err(error)) => Poll::Ready(Err(std::io::Error::other(error).into())),
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error.into())),
             Poll::Pending => Poll::Pending,
         }
     }

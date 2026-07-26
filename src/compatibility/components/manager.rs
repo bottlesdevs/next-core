@@ -5,32 +5,47 @@ use serde::{Deserialize, Serialize};
 use uuid::{NonNilUuid, Uuid};
 
 use super::{Component, catalog::ComponentKind};
-use crate::{Directories, error::Result, runner::detect_runner_kind};
+use crate::{Context, error::Result, runner::detect_runner_kind};
 
 pub struct ComponentManager {
+    context: Context,
     components: Vec<Component>,
 }
 
 impl ComponentManager {
-    pub fn load(directories: &Directories) -> Result<Self> {
-        let component_dir = directories.components();
-        fs::create_dir_all(&component_dir)?;
-        let components_path = fs::canonicalize(component_dir)?;
-        let index_path = components_path.join("index.toml");
-        let index = if index_path.is_file() {
-            next_config::load(&index_path)?
-        } else {
-            ComponentIndex::default()
+    pub async fn load(context: Context) -> Result<Self> {
+        let manager = Self {
+            context,
+            components: Vec::new(),
         };
+        let directories = manager.context.directories().clone();
+        let components = manager
+            .context
+            .spawn_blocking(move || {
+                let component_dir = directories.components();
+                fs::create_dir_all(&component_dir)?;
+                let components_path = fs::canonicalize(component_dir)?;
+                let index_path = components_path.join("index.toml");
+                let index = if index_path.is_file() {
+                    next_config::load(&index_path)?
+                } else {
+                    ComponentIndex::default()
+                };
 
-        let components = discover_components(&components_path, &index)?;
-        let component_index = ComponentIndex {
-            components: components.clone(),
-        };
-        if component_index != index || !index_path.is_file() {
-            next_config::save(index_path, &component_index)?;
-        }
-        Ok(Self { components })
+                let components = discover_components(&components_path, &index)?;
+                let component_index = ComponentIndex {
+                    components: components.clone(),
+                };
+                if component_index != index || !index_path.is_file() {
+                    next_config::save(index_path, &component_index)?;
+                }
+                Ok(components)
+            })
+            .await?;
+        Ok(Self {
+            components,
+            ..manager
+        })
     }
 
     pub fn components(&self) -> &[Component] {
@@ -120,7 +135,7 @@ fn component(directory: &str, path: &Path) -> Result<Option<(ComponentKind, std:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Directories;
+    use crate::{Context, Directories};
 
     #[test]
     fn discovers_extracted_components_and_executable_paths() {
@@ -164,8 +179,8 @@ mod tests {
         fs::remove_dir_all(components_path).unwrap();
     }
 
-    #[test]
-    fn discovery_is_scoped_to_the_supplied_root_and_preserves_indexed_ids() {
+    #[tokio::test]
+    async fn discovery_is_scoped_to_the_supplied_root_and_preserves_indexed_ids() {
         let root = std::env::temp_dir().join(format!("bottles-next-components-{}", Uuid::new_v4()));
         let left = Directories {
             data_dir: root.join("left"),
@@ -178,10 +193,12 @@ mod tests {
         fs::create_dir_all(left.components().join("dxvk/1")).unwrap();
         fs::create_dir_all(right.components().join("dxvk/1")).unwrap();
 
-        let first = ComponentManager::load(&left).unwrap();
+        let left_context = Context::new(left.clone(), left.data_dir().join("fvs2d")).unwrap();
+        let right_context = Context::new(right.clone(), right.data_dir().join("fvs2d")).unwrap();
+        let first = ComponentManager::load(left_context.clone()).await.unwrap();
         let left_id = first.components()[0].id();
-        let second = ComponentManager::load(&left).unwrap();
-        let right = ComponentManager::load(&right).unwrap();
+        let second = ComponentManager::load(left_context).await.unwrap();
+        let right = ComponentManager::load(right_context).await.unwrap();
 
         assert_eq!(second.components()[0].id(), left_id);
         assert_ne!(right.components()[0].id(), left_id);

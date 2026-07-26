@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::{NonNilUuid, Uuid};
 
 use super::{Dependency, catalog::CatalogDependencyEntry};
-use crate::{Directories, compatibility::Architecture, error::Result};
+use crate::{Context, compatibility::Architecture, error::Result};
 
 #[derive(Debug, Default, Deserialize, Serialize, Config)]
 #[config(version = 1)]
@@ -15,55 +15,70 @@ struct DependencyIndex {
 }
 
 pub struct DependencyManager {
+    context: Context,
     dependencies: Vec<Dependency>,
 }
 
 impl DependencyManager {
-    pub fn load(directories: &Directories) -> Result<Self> {
-        let root = directories.dependencies();
-        fs::create_dir_all(&root)?;
-        let root = fs::canonicalize(root)?;
-        let index_path = root.join("index.toml");
-        let index = if index_path.is_file() {
-            next_config::load(&index_path)?
-        } else {
-            let index = DependencyIndex::default();
-            next_config::save(&index_path, &index)?;
-            index
+    pub async fn load(context: Context) -> Result<Self> {
+        let manager = Self {
+            context,
+            dependencies: Vec::new(),
         };
+        let directories = manager.context.directories().clone();
+        let dependencies = manager
+            .context
+            .spawn_blocking(move || {
+                let root = directories.dependencies();
+                fs::create_dir_all(&root)?;
+                let root = fs::canonicalize(root)?;
+                let index_path = root.join("index.toml");
+                let index = if index_path.is_file() {
+                    next_config::load(&index_path)?
+                } else {
+                    let index = DependencyIndex::default();
+                    next_config::save(&index_path, &index)?;
+                    index
+                };
 
-        let mut dependencies = Vec::with_capacity(index.dependencies.len());
-        for entry in index.dependencies {
-            let id = entry.uuid();
-            let resources = entry
-                .resources()
-                .iter()
-                .filter(|resource| {
-                    matches!(
-                        resource.target_arch(),
-                        Architecture::X86 | Architecture::X86_64
-                    )
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            if resources.is_empty()
-                || resources.iter().any(|resource| {
-                    !root
-                        .join(id.to_string())
-                        .join(resource.file_name())
-                        .is_file()
-                })
-            {
-                continue;
-            }
-            dependencies.push(Dependency {
-                id: NonNilUuid::new(id).expect("catalog UUID is non-nil"),
-                name: entry.name().to_string(),
-                version: entry.version().to_string(),
-                resources,
-            });
-        }
-        Ok(Self { dependencies })
+                let mut dependencies = Vec::with_capacity(index.dependencies.len());
+                for entry in index.dependencies {
+                    let id = entry.uuid();
+                    let resources = entry
+                        .resources()
+                        .iter()
+                        .filter(|resource| {
+                            matches!(
+                                resource.target_arch(),
+                                Architecture::X86 | Architecture::X86_64
+                            )
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if resources.is_empty()
+                        || resources.iter().any(|resource| {
+                            !root
+                                .join(id.to_string())
+                                .join(resource.file_name())
+                                .is_file()
+                        })
+                    {
+                        continue;
+                    }
+                    dependencies.push(Dependency {
+                        id: NonNilUuid::new(id).expect("catalog UUID is non-nil"),
+                        name: entry.name().to_string(),
+                        version: entry.version().to_string(),
+                        resources,
+                    });
+                }
+                Ok(dependencies)
+            })
+            .await?;
+        Ok(Self {
+            dependencies,
+            ..manager
+        })
     }
 
     pub fn dependencies(&self) -> &[Dependency] {
