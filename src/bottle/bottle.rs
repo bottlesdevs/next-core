@@ -1,8 +1,9 @@
-use std::{future::Future, ops::AsyncFnOnce, path::PathBuf};
+use std::{future::Future, ops::AsyncFnOnce, path::PathBuf, sync::Arc};
 
 use fvs_rs::Layer;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::{edit::BottleEdit, error::BottleError};
@@ -11,7 +12,9 @@ use crate::{
     compatibility::{
         components::{Component, catalog::ComponentKind},
         dependencies::Dependency,
-        installer::{InstallResource, Installable},
+        installer::{
+            InstallProgress, InstallResource, InstallStep, Installable, UninstallProgress,
+        },
     },
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
@@ -42,13 +45,54 @@ pub struct BottleState {
 }
 
 impl BottleState {
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn components(&self) -> &BottleComponents {
+        &self.components
+    }
+
+    pub fn runner(&self) -> &Component {
+        self.components.runner()
+    }
+
+    pub fn dependencies(&self) -> &[Dependency] {
+        &self.dependencies
+    }
+
+    pub fn environment(&self) -> &Environment {
+        &self.environment
+    }
+
+    pub fn wrappers(&self) -> &Wrappers {
+        &self.wrappers
+    }
+
+    pub fn r#type(&self) -> BottleType {
+        self.kind()
+    }
+
+    pub fn programs(&self) -> &[Program] {
+        &self.programs
+    }
+
+    pub fn program(&self, id: Uuid) -> Option<&Program> {
+        self.programs.iter().find(|program| program.id == id)
+    }
+
     pub fn kind(&self) -> BottleType {
         self.storage.kind()
     }
 }
 
 pub struct Bottle {
-    pub(crate) state: BottleState,
+    pub(crate) state: Arc<Mutex<BottleState>>,
+    pub(crate) id: Uuid,
     pub(crate) cx: Context,
 }
 
@@ -67,8 +111,8 @@ impl Bottle {
         storage: PrefixStorage,
         context: Context,
     ) -> Result<Self> {
-        let bottle = Self {
-            state: BottleState {
+        let bottle = Self::from_state(
+            BottleState {
                 id,
                 name,
                 components,
@@ -78,22 +122,26 @@ impl Bottle {
                 wrappers: Wrappers::default(),
                 environment: Environment::default(),
             },
-            cx: context,
-        };
+            context,
+        );
         bottle.save().await?;
         Ok(bottle)
     }
 
     pub(crate) fn from_state(state: BottleState, cx: Context) -> Self {
-        Self { state, cx }
+        Self {
+            id: state.id,
+            state: Arc::new(Mutex::new(state)),
+            cx,
+        }
     }
 
-    pub fn state(&self) -> &BottleState {
-        &self.state
+    pub async fn state(&self) -> BottleState {
+        self.state.lock().await.clone()
     }
 
-    pub fn edit(self) -> BottleEdit {
-        BottleEdit::new(self)
+    pub async fn edit(&self) -> BottleEdit<'_> {
+        BottleEdit::new(self.state.lock().await, self.cx.clone())
     }
 
     pub fn delete(self) -> crate::Operation<(), DeleteProgress> {
@@ -106,37 +154,13 @@ impl Bottle {
                 return Err(Error::Cancelled);
             }
             progress.send_replace(Some(DeleteProgress::Removing));
-            let path = cx.directories().bottle(self.id());
+            let path = cx.directories().bottle(self.id);
             cx.spawn_blocking(move || {
                 std::fs::remove_dir_all(path)?;
                 Ok(())
             })
             .await
         })
-    }
-
-    pub fn id(&self) -> Uuid {
-        self.state.id
-    }
-
-    pub fn name(&self) -> &str {
-        &self.state.name
-    }
-
-    pub fn components(&self) -> &BottleComponents {
-        &self.state.components
-    }
-
-    pub fn runner(&self) -> &Component {
-        self.state.components.runner()
-    }
-
-    pub fn dependencies(&self) -> &[Dependency] {
-        &self.state.dependencies
-    }
-
-    pub fn environment(&self) -> &Environment {
-        &self.state.environment
     }
 
     pub async fn dll_overrides(&self) -> Result<Vec<DllOverride>> {
@@ -176,25 +200,12 @@ impl Bottle {
         .await
     }
 
-    pub fn wrappers(&self) -> &Wrappers {
-        &self.state.wrappers
-    }
-
-    pub fn r#type(&self) -> BottleType {
-        self.state.kind()
-    }
-
-    pub fn programs(&self) -> &[Program] {
-        &self.state.programs
-    }
-
-    pub fn program(&self, id: Uuid) -> Option<&Program> {
-        self.state.programs.iter().find(|program| program.id == id)
-    }
-
     /// Launch a tracked program, starting WineBridge if it is not already running.
     pub async fn run(&self, id: Uuid) -> Result<u32> {
         let program = self
+            .state
+            .lock()
+            .await
             .program(id)
             .cloned()
             .ok_or(BottleError::ProgramNotFound(id))?;
@@ -220,7 +231,7 @@ impl Bottle {
 
     /// Kill a tracked program by UUID, starting WineBridge if necessary.
     pub async fn kill(&self, id: Uuid) -> Result<()> {
-        if self.program(id).is_none() {
+        if self.state.lock().await.program(id).is_none() {
             return Err(BottleError::ProgramNotFound(id).into());
         }
         self.with_bridge(move |bridge| async move { bridge.kill_process(id).await })
@@ -229,187 +240,190 @@ impl Bottle {
 
     /// Stop WineBridge, wineserver, and prefix storage.
     pub fn stop(&self) -> Operation<(), ()> {
-        let prefix_path = self.prefix_path();
-        let runner = self.load_runner();
-        let storage = self.state.storage.clone();
-        let bottle_path = self.bottle_path();
+        let state = self.state.clone();
         let cx = self.cx.clone();
         let runtime = self.cx.clone();
         runtime.spawn(move |_, _| async move {
-            let mut first_error = None;
-            match WineBridgeClient::try_connect(&prefix_path).await {
-                Ok(Some(bridge)) => {
-                    if let Err(error) = bridge.shutdown().await {
-                        first_error.get_or_insert(error);
-                    }
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    first_error.get_or_insert(error);
-                }
-            }
-
-            let runner = match runner {
-                Ok(runner) => Some(runner),
-                Err(error) => {
-                    first_error.get_or_insert(error);
-
-                    None
-                }
-            };
-
-            if let Some(runner) = runner.as_deref()
-                && let Err(error) = shutdown_prefix(runner, &prefix_path).await
-            {
-                first_error.get_or_insert(error);
-            }
-
-            if let Err(error) = storage.stop(&bottle_path, &cx).await {
-                first_error.get_or_insert(error);
-            }
-
-            first_error.map_or(Ok(()), Err)
+            let state = state.lock().await;
+            Self::stop_state(&state, &cx).await
         })
     }
 
     /// Standard-prefix effects completed before a metadata error are not rolled back.
-    pub async fn install_component(&mut self, component: &Component) -> Result<()> {
-        match component.kind() {
-            ComponentKind::Runner { .. } => Err(BottleError::RunnerRequiresExplicitInstall.into()),
-            ComponentKind::Winebridge => {
-                if self.components().winebridge.id() == component.id() {
-                    return Ok(());
-                }
-                self.update(async |bottle| {
-                    bottle.stop().await?;
-                    bottle.state.components.winebridge = component.clone();
-                    Ok(())
-                })
-                .await
+    pub fn install_component(&self, component: &Component) -> Operation<(), InstallProgress> {
+        let component = component.clone();
+        let state = self.state.clone();
+        let cx = self.cx.clone();
+        let runtime = self.cx.clone();
+        runtime.spawn(move |progress, _| async move {
+            let kind = component.kind();
+            if matches!(kind, ComponentKind::Runner { .. }) {
+                return Err(BottleError::RunnerRequiresExplicitInstall.into());
             }
-            ComponentKind::Umu => {
-                if self.runner().kind().runner_kind() != Some(RunnerKind::Proton) {
-                    return Err(BottleError::WineRunnerWithUmu.into());
+            let mut state = state.lock().await;
+            match kind {
+                ComponentKind::Runner { .. } => unreachable!(),
+                ComponentKind::Winebridge => {
+                    if state.components.winebridge.id() == component.id() {
+                        return Ok(());
+                    }
+                    Self::update(&mut state, &cx, async |state| {
+                        Self::stop_state(state, &cx).await?;
+                        state.components.winebridge = component.clone();
+                        Ok(())
+                    })
+                    .await
                 }
-                if self.components().umu.as_ref().map(Component::id) == Some(component.id()) {
-                    return Ok(());
+                ComponentKind::Umu => {
+                    if state.components.runner().kind().runner_kind() != Some(RunnerKind::Proton) {
+                        return Err(BottleError::WineRunnerWithUmu.into());
+                    }
+                    if state.components.umu.as_ref().map(Component::id) == Some(component.id()) {
+                        return Ok(());
+                    }
+                    Self::update(&mut state, &cx, async |state| {
+                        Self::stop_state(state, &cx).await?;
+                        state.components.umu = Some(component.clone());
+                        Ok(())
+                    })
+                    .await
                 }
-                self.update(async |bottle| {
-                    bottle.stop().await?;
-                    bottle.state.components.umu = Some(component.clone());
-                    Ok(())
-                })
-                .await
+                kind => {
+                    Self::install_prefix_component(&mut state, &cx, &component, kind, move |step| {
+                        progress.send_replace(Some(step.into()));
+                    })
+                    .await
+                }
             }
-            kind => self.install_prefix_component(component, kind).await,
-        }
+        })
     }
 
     /// Standard-prefix effects completed before a metadata error are not rolled back.
-    pub async fn uninstall_component(&mut self, id: Uuid) -> Result<Component> {
-        if self.runner().id() == id
-            || self.components().winebridge().id() == id
-            || self
-                .components()
-                .umu()
-                .is_some_and(|component| component.id() == id)
-        {
-            return Err(BottleError::ComponentNotUninstallable(id).into());
-        }
+    pub fn uninstall_component(&self, id: Uuid) -> Operation<Component, UninstallProgress> {
+        let state = self.state.clone();
+        let cx = self.cx.clone();
+        let runtime = self.cx.clone();
+        runtime.spawn(move |progress, _| async move {
+            let mut state = state.lock().await;
+            if state.components.runner().id() == id
+                || state.components.winebridge().id() == id
+                || state
+                    .components
+                    .umu()
+                    .is_some_and(|component| component.id() == id)
+            {
+                return Err(BottleError::ComponentNotUninstallable(id).into());
+            }
 
-        let component = self
-            .components()
-            .into_iter()
-            .find(|component| component.id() == id)
-            .cloned()
-            .ok_or(BottleError::ComponentNotInstalled(id))?;
-
-        let resources = component.prepare(self.cx.directories())?;
-        let winebridge = self.components().winebridge.path().to_path_buf();
-        self.update(async |bottle| {
-            bottle.stop().await?;
-            bottle
-                .state
+            let component = state
                 .components
-                .slot_mut(component.kind())?
-                .take()
+                .into_iter()
+                .find(|component| component.id() == id)
+                .cloned()
                 .ok_or(BottleError::ComponentNotInstalled(id))?;
 
-            let runner = bottle.load_runner()?;
-            let bottle_path = bottle.bottle_path();
-            let context = bottle.cx.clone();
-            let BottleState {
-                storage,
-                environment,
-                ..
-            } = &mut bottle.state;
-            storage
-                .uninstall(
-                    &bottle_path,
-                    component.id(),
-                    async |prefix, restore_files| {
-                        crate::compatibility::installer::uninstall(
-                            crate::compatibility::installer::InstallInputs {
-                                prefix,
-                                runner: runner.as_ref(),
-                                winebridge: &winebridge,
-                                environment,
-                            },
-                            &resources,
-                            restore_files,
-                            component.id(),
-                        )
-                        .await
-                    },
-                    &context,
-                )
-                .await
+            let resources = component.prepare(cx.directories())?;
+            let winebridge = state.components.winebridge.path().to_path_buf();
+            Self::update(&mut state, &cx, async |state| {
+                Self::stop_state(state, &cx).await?;
+                state
+                    .components
+                    .slot_mut(component.kind())?
+                    .take()
+                    .ok_or(BottleError::ComponentNotInstalled(id))?;
+
+                let runner = Self::load_runner(state)?;
+                let bottle_path = cx.directories().bottle(state.id);
+                let context = cx.clone();
+                let BottleState {
+                    storage,
+                    environment,
+                    ..
+                } = state;
+                storage
+                    .uninstall(
+                        &bottle_path,
+                        component.id(),
+                        async |prefix, restore_files| {
+                            crate::compatibility::installer::uninstall(
+                                crate::compatibility::installer::InstallInputs {
+                                    prefix,
+                                    runner: runner.as_ref(),
+                                    winebridge: &winebridge,
+                                    environment,
+                                },
+                                &resources,
+                                restore_files,
+                                component.id(),
+                                move |step| {
+                                    progress.send_replace(Some(step.into()));
+                                },
+                            )
+                            .await
+                        },
+                        &context,
+                    )
+                    .await
+            })
+            .await?;
+            Ok(component)
         })
-        .await?;
-        Ok(component)
     }
 
     async fn install_prefix_component(
-        &mut self,
+        state: &mut BottleState,
+        cx: &Context,
         component: &Component,
         kind: ComponentKind,
+        on_step: impl Fn(&InstallStep) + Send,
     ) -> Result<()> {
-        let installed = self.components().slot(kind)?;
+        let installed = state.components.slot(kind)?;
         if installed.map(Component::id) == Some(component.id()) {
             return Ok(());
         }
         let replaced_id = installed.map(Component::id);
-        let resources = component.prepare(self.cx.directories())?;
-        self.install_item(component.id(), replaced_id, resources, |config| {
-            config.components.slot_mut(kind)?.replace(component.clone());
-            Ok(())
-        })
+        let resources = component.prepare(cx.directories())?;
+        Self::install_item(
+            state,
+            cx,
+            component.id(),
+            replaced_id,
+            resources,
+            |config| {
+                config.components.slot_mut(kind)?.replace(component.clone());
+                Ok(())
+            },
+            on_step,
+        )
         .await
     }
 
-    async fn install_item<F>(
-        &mut self,
+    async fn install_item<F, O>(
+        state: &mut BottleState,
+        cx: &Context,
         item_id: Uuid,
         replaced_id: Option<Uuid>,
         resources: Vec<InstallResource>,
         update_config: F,
+        on_step: O,
     ) -> Result<()>
     where
         F: FnOnce(&mut BottleState) -> Result<()>,
+        O: Fn(&InstallStep) + Send,
     {
-        self.update(async move |bottle| {
-            bottle.stop().await?;
-            update_config(&mut bottle.state)?;
+        Self::update(state, cx, async move |state| {
+            Self::stop_state(state, cx).await?;
+            update_config(state)?;
 
-            let runner = bottle.load_runner()?;
-            let winebridge = bottle.components().winebridge.path().to_path_buf();
-            let bottle_path = bottle.bottle_path();
-            let context = bottle.cx.clone();
+            let runner = Self::load_runner(state)?;
+            let winebridge = state.components.winebridge.path().to_path_buf();
+            let bottle_path = cx.directories().bottle(state.id);
+            let context = cx.clone();
             let BottleState {
                 storage,
                 environment,
                 ..
-            } = &mut bottle.state;
+            } = state;
             storage
                 .install(
                     &bottle_path,
@@ -425,6 +439,7 @@ impl Bottle {
                                 environment,
                             },
                             &resources,
+                            on_step,
                         )
                         .await
                     },
@@ -438,96 +453,114 @@ impl Bottle {
     }
 
     /// Standard-prefix effects completed before a metadata error are not rolled back.
-    pub async fn install_dependency(&mut self, dependency: &Dependency) -> Result<()> {
-        if self
-            .dependencies()
-            .iter()
-            .any(|installed| installed.id() == dependency.id())
-        {
-            return Ok(());
-        }
-        let resources = dependency.prepare(self.cx.directories())?;
-        self.install_item(dependency.id(), None, resources, |config| {
-            config.dependencies.push(dependency.clone());
-            Ok(())
+    pub fn install_dependency(&self, dependency: &Dependency) -> Operation<(), InstallProgress> {
+        let dependency = dependency.clone();
+        let state = self.state.clone();
+        let cx = self.cx.clone();
+        let runtime = self.cx.clone();
+        runtime.spawn(move |progress, _| async move {
+            let mut state = state.lock().await;
+            if state
+                .dependencies
+                .iter()
+                .any(|installed| installed.id() == dependency.id())
+            {
+                return Ok(());
+            }
+            let resources = dependency.prepare(cx.directories())?;
+            Self::install_item(
+                &mut state,
+                &cx,
+                dependency.id(),
+                None,
+                resources,
+                |config| {
+                    config.dependencies.push(dependency.clone());
+                    Ok(())
+                },
+                move |step| {
+                    progress.send_replace(Some(step.into()));
+                },
+            )
+            .await
         })
-        .await
     }
 
     pub async fn install_runner(
-        &mut self,
+        &self,
         component: &Component,
         umu: Option<&Component>,
     ) -> Result<()> {
-        BottleComponents::new(component, self.components().winebridge(), umu)?;
-        if self.runner().id() == component.id()
-            && self.components().umu().map(Component::id) == umu.map(Component::id)
+        let mut state = self.state.lock().await;
+        BottleComponents::new(component, state.components.winebridge(), umu)?;
+        if state.components.runner().id() == component.id()
+            && state.components.umu().map(Component::id) == umu.map(Component::id)
         {
             return Ok(());
         }
-        let installed = self
-            .components()
+        let installed = (&state.components)
             .into_iter()
             .map(Component::id)
-            .chain(self.dependencies().iter().map(Dependency::id))
+            .chain(state.dependencies.iter().map(Dependency::id))
             .collect::<Vec<_>>();
-        self.update(async |bottle| {
-            bottle.stop().await?;
-            bottle.state.components.runner = component.clone();
-            bottle.state.components.umu = umu.cloned();
+        Self::update(&mut state, &self.cx, async |state| {
+            Self::stop_state(state, &self.cx).await?;
+            state.components.runner = component.clone();
+            state.components.umu = umu.cloned();
 
-            let runner = bottle.load_runner()?;
-            let context = bottle.cx.clone();
-            bottle
-                .state
+            let runner = Self::load_runner(state)?;
+            state
                 .storage
                 .rebuild(
                     runner.as_ref(),
                     &component.id().to_string(),
                     &installed,
-                    &context,
+                    &self.cx,
                 )
                 .await
         })
         .await
     }
 
-    pub(crate) fn load_runner(&self) -> Result<Box<dyn Runner>> {
-        let kind = self
-            .state
+    fn load_runner(state: &BottleState) -> Result<Box<dyn Runner>> {
+        let kind = state
             .components
             .runner()
             .kind()
             .runner_kind()
             .ok_or(BottleError::RunnerComponentRequired)?;
         crate::runner::load_runner(
-            self.state.components.runner().path(),
+            state.components.runner().path(),
             kind,
-            self.state.components.umu().map(Component::path),
+            state.components.umu().map(Component::path),
         )
     }
 
-    async fn update<F, R>(&mut self, operation: F) -> Result<R>
+    pub(super) async fn update<F, R>(
+        state: &mut BottleState,
+        cx: &Context,
+        operation: F,
+    ) -> Result<R>
     where
-        F: for<'a> AsyncFnOnce(&'a mut Bottle) -> Result<R>,
+        F: for<'a> AsyncFnOnce(&'a mut BottleState) -> Result<R>,
     {
-        let previous = self.state.clone();
-        let value = match operation(self).await {
+        let previous = state.clone();
+        let value = match operation(state).await {
             Ok(value) => value,
             Err(error) => {
-                self.state = previous;
+                *state = previous;
                 return Err(error);
             }
         };
-        if let Err(error) = self.save().await {
-            self.state = previous;
+        if let Err(error) = Self::save_state(state, cx).await {
+            *state = previous;
             return Err(error);
         }
         Ok(value)
     }
 
     pub(crate) fn bottle_path(&self) -> PathBuf {
-        self.cx.directories().bottle(self.id())
+        self.cx.directories().bottle(self.id)
     }
 
     pub(crate) fn prefix_path(&self) -> PathBuf {
@@ -535,14 +568,54 @@ impl Bottle {
     }
 
     async fn save(&self) -> Result<()> {
-        let path = self.bottle_path().join("bottle.toml");
-        let state = self.state.clone();
-        self.cx
-            .spawn_blocking(move || {
-                next_config::save(path, &state)?;
-                Ok(())
-            })
-            .await
+        let state = self.state.lock().await;
+        Self::save_state(&state, &self.cx).await
+    }
+
+    async fn save_state(state: &BottleState, cx: &Context) -> Result<()> {
+        let path = cx.directories().bottle(state.id).join("bottle.toml");
+        let state = state.clone();
+        cx.spawn_blocking(move || {
+            next_config::save(path, &state)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn stop_state(state: &BottleState, cx: &Context) -> Result<()> {
+        let bottle_path = cx.directories().bottle(state.id);
+        let prefix_path = bottle_path.join("prefix");
+        let runner = Self::load_runner(state);
+        let storage = state.storage.clone();
+        let mut first_error = None;
+        match WineBridgeClient::try_connect(&prefix_path).await {
+            Ok(Some(bridge)) => {
+                if let Err(error) = bridge.shutdown().await {
+                    first_error.get_or_insert(error);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+
+        let runner = match runner {
+            Ok(runner) => Some(runner),
+            Err(error) => {
+                first_error.get_or_insert(error);
+                None
+            }
+        };
+        if let Some(runner) = runner.as_deref()
+            && let Err(error) = shutdown_prefix(runner, &prefix_path).await
+        {
+            first_error.get_or_insert(error);
+        }
+        if let Err(error) = storage.stop(&bottle_path, cx).await {
+            first_error.get_or_insert(error);
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     async fn with_bridge<T, F, Fut>(&self, work: F) -> Result<T>
@@ -551,19 +624,21 @@ impl Bottle {
         F: FnOnce(WineBridgeClient) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
-        let runner = self.load_runner()?;
+        let state = self.state.lock().await;
+        let runner = Self::load_runner(&state)?;
         let bottle_path = self.bottle_path();
         let prefix = self.prefix_path();
-        let storage = self.state.storage.clone();
+        let storage = state.storage.clone();
         let cx = self.cx.clone();
-        let command = self.state.wrappers.apply(
+        let command = state.wrappers.apply(
             WineBridgeClient::command(
                 runner.as_ref(),
                 &prefix,
-                self.components().winebridge().path(),
+                state.components.winebridge().path(),
             )
-            .envs(self.state.environment.iter()),
+            .envs(state.environment.iter()),
         );
+        drop(state);
         let operation: Operation<_, ()> = self.cx.spawn(move |_, _| async move {
             storage.prepare(&bottle_path, &cx).await?;
             work(WineBridgeClient::connect_or_spawn(&prefix, command).await?).await
@@ -742,7 +817,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(unix)]
-    async fn failed_update_does_not_publish_working_config() {
+    async fn updates_are_serialized_and_failed_updates_are_rolled_back() {
         use std::{fs, os::unix::fs::PermissionsExt};
 
         let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
@@ -761,6 +836,8 @@ mod tests {
             root.join("fvs2d"),
         )
         .unwrap();
+        let id = Uuid::new_v4();
+        fs::create_dir_all(context.directories().bottle(id)).unwrap();
         let runner = Component::new(
             ComponentKind::Runner {
                 kind: RunnerKind::Wine,
@@ -770,9 +847,9 @@ mod tests {
         )
         .unwrap();
         let winebridge = Component::new(ComponentKind::Winebridge, "bridge", "/bridge").unwrap();
-        let mut bottle = Bottle::from_state(
+        let bottle = Bottle::from_state(
             BottleState {
-                id: Uuid::new_v4(),
+                id,
                 name: "test".into(),
                 storage: PrefixStorage::Standard,
                 programs: Vec::new(),
@@ -783,21 +860,50 @@ mod tests {
             },
             context,
         );
+        bottle.save().await.unwrap();
 
-        let result = bottle
-            .update(async |bottle| {
-                bottle.state.storage = PrefixStorage::Virgo { layers: Vec::new() };
-                bottle
-                    .state
-                    .environment
-                    .insert("CHANGED".into(), "yes".into());
-                Err::<(), _>(BottleError::InvalidProgram.into())
-            })
-            .await;
+        let mut state = bottle.state.lock().await;
+        let result = Bottle::update(&mut state, &bottle.cx, async |state| {
+            state.storage = PrefixStorage::Virgo { layers: Vec::new() };
+            state.environment.insert("CHANGED".into(), "yes".into());
+            Err::<(), _>(BottleError::InvalidProgram.into())
+        })
+        .await;
 
         assert!(result.is_err());
-        assert!(matches!(bottle.state.storage, PrefixStorage::Standard));
-        assert!(bottle.state.environment.is_empty());
+        assert!(matches!(state.storage, PrefixStorage::Standard));
+        assert!(state.environment.is_empty());
+        drop(state);
+
+        let first_state = bottle.state.clone();
+        let first_cx = bottle.cx.clone();
+        let first = async move {
+            let mut state = first_state.lock().await;
+            Bottle::update(&mut state, &first_cx, async |state| {
+                state.environment.insert("FIRST".into(), "yes".into());
+                tokio::task::yield_now().await;
+                Ok(())
+            })
+            .await
+        };
+        let second_state = bottle.state.clone();
+        let second_cx = bottle.cx.clone();
+        let second = async move {
+            let mut state = second_state.lock().await;
+            Bottle::update(&mut state, &second_cx, async |state| {
+                state.environment.insert("SECOND".into(), "yes".into());
+                Ok(())
+            })
+            .await
+        };
+        let (first, second) = tokio::join!(first, second);
+        first.unwrap();
+        second.unwrap();
+
+        let state = bottle.state.lock().await;
+        assert_eq!(state.environment.get("FIRST"), Some("yes"));
+        assert_eq!(state.environment.get("SECOND"), Some("yes"));
+        drop(state);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -829,7 +935,7 @@ mod tests {
         )
         .unwrap();
         let winebridge = Component::new(ComponentKind::Winebridge, "bridge", "/bridge").unwrap();
-        let mut bottle = Bottle::from_state(
+        let bottle = Bottle::from_state(
             BottleState {
                 id: Uuid::new_v4(),
                 name: "test".into(),

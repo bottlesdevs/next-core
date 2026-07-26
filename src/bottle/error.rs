@@ -7,8 +7,6 @@ use uuid::Uuid;
 pub enum BottleError {
     #[error("application directories are unavailable on this platform")]
     ProjectDirectoriesUnavailable,
-    #[error("a bottle named {0:?} already exists")]
-    DuplicateName(String),
     #[error("bottle {0} was not found")]
     NotFound(Uuid),
     #[error("bottle ID {actual} does not match directory ID {expected}")]
