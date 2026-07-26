@@ -66,6 +66,50 @@ pub enum InstallStep {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InstallProgress {
+    Copy,
+    Execute,
+    Extract,
+    RegisterDlls,
+    SetRegistryValue,
+    SetDllOverrides,
+    SetEnvironment,
+}
+
+impl From<&InstallStep> for InstallProgress {
+    fn from(step: &InstallStep) -> Self {
+        match step {
+            InstallStep::Copy { .. } => Self::Copy,
+            InstallStep::Execute { .. } => Self::Execute,
+            InstallStep::Extract { .. } => Self::Extract,
+            InstallStep::RegisterDlls { .. } => Self::RegisterDlls,
+            InstallStep::SetRegistryValue { .. } => Self::SetRegistryValue,
+            InstallStep::SetDllOverrides { .. } => Self::SetDllOverrides,
+            InstallStep::SetEnvironment { .. } => Self::SetEnvironment,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UninstallProgress {
+    RevertFile,
+    RemoveDllOverrides,
+    RemoveEnvironmentVariable,
+    SkipUnsupported,
+}
+
+impl From<&InstallStep> for UninstallProgress {
+    fn from(step: &InstallStep) -> Self {
+        match step {
+            InstallStep::Copy { .. } => Self::RevertFile,
+            InstallStep::SetDllOverrides { .. } => Self::RemoveDllOverrides,
+            InstallStep::SetEnvironment { .. } => Self::RemoveEnvironmentVariable,
+            _ => Self::SkipUnsupported,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct InstallResource {
     pub(crate) source: PathBuf,
@@ -87,6 +131,7 @@ pub(crate) async fn execute(
     context: &Context,
     inputs: InstallInputs<'_>,
     resources: &[InstallResource],
+    on_step: impl Fn(&InstallStep) + Send,
 ) -> Result<()> {
     let InstallInputs {
         prefix,
@@ -98,6 +143,7 @@ pub(crate) async fn execute(
     let result = async {
         for resource in resources {
             for step in &resource.steps {
+                on_step(step);
                 execute_step(
                     context,
                     InstallInputs {
@@ -132,6 +178,7 @@ pub(crate) async fn uninstall(
     resources: &[InstallResource],
     restore_files: bool,
     item_id: Uuid,
+    on_step: impl Fn(&InstallStep) + Send,
 ) -> Result<()> {
     let InstallInputs {
         prefix,
@@ -143,6 +190,7 @@ pub(crate) async fn uninstall(
 
     for resource in resources.iter().rev() {
         for step in resource.steps.iter().rev() {
+            on_step(step);
             uninstall_step(
                 InstallInputs {
                     prefix,

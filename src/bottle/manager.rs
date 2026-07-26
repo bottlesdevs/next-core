@@ -108,25 +108,25 @@ impl BottleManager {
     }
 
     pub async fn open(&self, id: Uuid) -> Result<Bottle> {
-        let path = self.bottle_path(id).join("bottle.toml");
-        let config = self
+        let path = self.context.directories().bottle(id).join("bottle.toml");
+        let state = self
             .context
             .spawn_blocking(move || {
                 if !path.is_file() {
                     return Err(BottleError::NotFound(id).into());
                 }
-                let config: BottleState = next_config::load(path)?;
-                if config.id != id {
+                let state: BottleState = next_config::load(path)?;
+                if state.id != id {
                     return Err(BottleError::IdMismatch {
                         expected: id,
-                        actual: config.id,
+                        actual: state.id,
                     }
                     .into());
                 }
-                Ok(config)
+                Ok(state)
             })
             .await?;
-        Ok(Bottle::from_state(config, self.context.clone()))
+        Ok(Bottle::from_state(state, self.context.clone()))
     }
 
     pub async fn list(&self) -> Result<Vec<Bottle>> {
@@ -157,9 +157,5 @@ impl BottleManager {
             .into_iter()
             .map(|config| Bottle::from_state(config, self.context.clone()))
             .collect())
-    }
-
-    fn bottle_path(&self, id: Uuid) -> std::path::PathBuf {
-        self.context.directories().bottle(id)
     }
 }

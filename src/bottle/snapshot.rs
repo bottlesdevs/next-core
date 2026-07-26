@@ -36,9 +36,10 @@ impl Bottle {
 
     pub fn rollback(&self, state_id_or_prefix: &str) -> Operation<String, RollbackProgress> {
         let stop = self.stop();
-        let id = self.id();
+        let id = self.id;
         let repository = self.snapshot_repository();
         let bottle_path = self.bottle_path();
+        let current_state = self.state.clone();
         let cx = self.cx.clone();
         let runtime = self.cx.clone();
         let state_id_or_prefix = state_id_or_prefix.to_owned();
@@ -50,6 +51,7 @@ impl Bottle {
             }
 
             progress.send_replace(Some(RollbackProgress::Restoring));
+            let mut current_state = current_state.lock().await;
             let response: RestoreResponse = cx
                 .fvs()
                 .await?
@@ -66,6 +68,7 @@ impl Bottle {
                 }
                 .into());
             }
+            *current_state = state;
             Ok(response.state_id)
         })
     }

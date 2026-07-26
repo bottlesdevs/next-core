@@ -65,10 +65,22 @@ async fn bottle_managers_are_scoped_to_their_context_roots() {
     let right_manager =
         BottleManager::new(Context::new(right.clone(), right.data_dir().join("fvs2d")).unwrap());
 
-    assert_eq!(left_manager.open(id).await.unwrap().name(), "left");
-    assert_eq!(right_manager.open(id).await.unwrap().name(), "right");
-    assert_eq!(left_manager.list().await.unwrap()[0].name(), "left");
-    assert_eq!(right_manager.list().await.unwrap()[0].name(), "right");
+    assert_eq!(
+        left_manager.open(id).await.unwrap().state().await.name(),
+        "left"
+    );
+    assert_eq!(
+        right_manager.open(id).await.unwrap().state().await.name(),
+        "right"
+    );
+    assert_eq!(
+        left_manager.list().await.unwrap()[0].state().await.name(),
+        "left"
+    );
+    assert_eq!(
+        right_manager.list().await.unwrap()[0].state().await.name(),
+        "right"
+    );
 
     std::fs::remove_dir_all(left.data_dir).unwrap();
     std::fs::remove_dir_all(right.data_dir).unwrap();
@@ -259,20 +271,20 @@ mod unix {
             },
             ..Default::default()
         };
-        let mut edit = bottle.edit();
+        let mut edit = bottle.edit().await;
         edit.add_program(program).set_wrappers(wrappers.clone());
-        let bottle = edit.commit().await.unwrap();
-        assert_eq!(bottle.wrappers(), &wrappers);
-        let bottle_id = bottle.id();
+        edit.commit().await.unwrap();
+        assert_eq!(bottle.state().await.wrappers(), &wrappers);
+        let bottle_id = bottle.state().await.id();
         let failed_program = Program::new("Unsaved", "C:\\unsaved.exe");
         let failed_program_id = failed_program.id;
         let temporary = directories.bottle(bottle_id).join("bottle.tmp");
         fs::create_dir(&temporary).unwrap();
-        let mut edit = bottle.edit();
+        let mut edit = bottle.edit().await;
         edit.add_program(failed_program);
         assert!(edit.commit().await.is_err());
         let bottle = manager.open(bottle_id).await.unwrap();
-        assert!(bottle.program(failed_program_id).is_none());
+        assert!(bottle.state().await.program(failed_program_id).is_none());
         let persisted: BottleState =
             next_config::load(directories.bottle(bottle_id).join("bottle.toml")).unwrap();
         assert!(
@@ -282,15 +294,18 @@ mod unix {
                 .all(|program| program.id != failed_program_id)
         );
         fs::remove_dir(temporary).unwrap();
-        let runner_id = bottle.runner().id();
+        let runner_id = bottle.state().await.runner().id();
         drop(bottle);
 
         let reopened = manager.open(bottle_id).await.unwrap();
-        assert_eq!(reopened.runner().id(), runner_id);
-        assert_eq!(reopened.runner().path(), runner_root);
-        assert_eq!(reopened.r#type(), BottleType::Standard);
-        assert_eq!(reopened.program(program_id).unwrap().name, "Game");
-        assert_eq!(reopened.wrappers(), &wrappers);
+        assert_eq!(reopened.state().await.runner().id(), runner_id);
+        assert_eq!(reopened.state().await.runner().path(), runner_root);
+        assert_eq!(reopened.state().await.r#type(), BottleType::Standard);
+        assert_eq!(
+            reopened.state().await.program(program_id).unwrap().name,
+            "Game"
+        );
+        assert_eq!(reopened.state().await.wrappers(), &wrappers);
         let stored = fs::read_to_string(directories.bottle(bottle_id).join("bottle.toml")).unwrap();
         assert!(stored.contains("[runner]"));
         assert!(stored.contains("type = \"runner\""));
