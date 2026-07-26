@@ -13,7 +13,7 @@ pub struct Directories {
 }
 
 impl Directories {
-    pub fn for_project(project_name: &str) -> Result<Self> {
+    pub async fn for_project(project_name: &str) -> Result<Self> {
         let project = ProjectDirs::from("com", "usebottles", project_name)
             .ok_or(BottleError::ProjectDirectoriesUnavailable)?;
         let data_dir = project.data_local_dir().to_path_buf();
@@ -21,10 +21,20 @@ impl Directories {
             .runtime_dir()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| data_dir.join("runtime"));
-        Ok(Self {
+        let directories = Self {
             data_dir,
             runtime_dir,
-        })
+        };
+        for directory in [
+            directories.data_dir.clone(),
+            directories.runtime_dir.clone(),
+            directories.bottles(),
+            directories.components(),
+            directories.dependencies(),
+        ] {
+            tokio::fs::create_dir_all(directory).await?;
+        }
+        Ok(directories)
     }
 
     pub fn data_dir(&self) -> &Path {
