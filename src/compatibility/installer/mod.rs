@@ -94,7 +94,37 @@ pub(crate) async fn execute(
         winebridge,
         environment,
     } = inputs;
-    execute_steps(context, runner, prefix, winebridge, environment, resources).await
+    let mut bridge = None;
+    let result = async {
+        for resource in resources {
+            for step in &resource.steps {
+                execute_step(
+                    context,
+                    InstallInputs {
+                        prefix,
+                        runner,
+                        winebridge,
+                        environment: &mut *environment,
+                    },
+                    &mut bridge,
+                    resource,
+                    step,
+                )
+                .await?;
+            }
+        }
+        Ok::<_, Error>(())
+    }
+    .await;
+
+    let bridge_stopped = match bridge {
+        Some(bridge) => bridge.shutdown().await,
+        None => Ok(()),
+    };
+    let runner_stopped = shutdown_prefix(runner, prefix).await;
+    result?;
+    bridge_stopped?;
+    runner_stopped
 }
 
 pub(crate) async fn uninstall(
@@ -103,7 +133,37 @@ pub(crate) async fn uninstall(
     restore_files: bool,
     item_id: Uuid,
 ) -> Result<()> {
-    uninstall_steps(inputs, resources, restore_files, item_id).await
+    let InstallInputs {
+        prefix,
+        runner,
+        winebridge,
+        environment,
+    } = inputs;
+    let mut bridge = None;
+
+    for resource in resources.iter().rev() {
+        for step in resource.steps.iter().rev() {
+            uninstall_step(
+                InstallInputs {
+                    prefix,
+                    runner,
+                    winebridge,
+                    environment: &mut *environment,
+                },
+                &mut bridge,
+                step,
+                restore_files,
+                item_id,
+            )
+            .await;
+        }
+    }
+
+    if let Some(bridge) = bridge {
+        bridge.shutdown().await.log_warn();
+    }
+    shutdown_prefix(runner, prefix).await.log_warn();
+    Ok(())
 }
 
 pub(crate) fn replay_environment(environment: &mut Environment, resources: &[InstallResource]) {
@@ -114,116 +174,12 @@ pub(crate) fn replay_environment(environment: &mut Environment, resources: &[Ins
     }
 }
 
-async fn execute_steps(
+async fn execute_step(
     context: &Context,
-    runner: &dyn Runner,
-    prefix: &Path,
-    winebridge: &Path,
-    environment: &mut Environment,
-    resources: &[InstallResource],
-) -> Result<()> {
-    let mut bridge_client = None;
-    let result = async {
-        for resource in resources {
-            for step in &resource.steps {
-                match step {
-                    InstallStep::Copy {
-                        source,
-                        destination,
-                    } => {
-                        let source = if source.as_os_str().is_empty() {
-                            resource.source.clone()
-                        } else {
-                            resource.source.join(source)
-                        };
-                        install_file(&source, prefix, destination)?;
-                    }
-                    InstallStep::Extract { destination } => {
-                        let archive = resource.source.clone();
-                        let prefix = prefix.to_path_buf();
-                        let destination = destination.clone();
-                        context
-                            .spawn_blocking(move || extract_into(&archive, &prefix, &destination))
-                            .await?;
-                    }
-                    InstallStep::Execute { arguments } => {
-                        let mut command = Command::new(&resource.source);
-                        for argument in arguments {
-                            command = command.arg(argument);
-                        }
-                        for (name, value) in environment.iter() {
-                            command = command.env(name, value);
-                        }
-                        let status = runner.command(prefix, command).spawn()?.wait().await?;
-                        if !status.success() {
-                            return Err(InstallerError::InstallerFailed(status).into());
-                        }
-                    }
-                    InstallStep::RegisterDlls { dlls } => {
-                        for dll in dlls {
-                            let mut command =
-                                Command::new("regsvr32").arg("/s").arg(prefix.join(dll));
-                            for (name, value) in environment.iter() {
-                                command = command.env(name, value);
-                            }
-                            let status = runner.command(prefix, command).spawn()?.wait().await?;
-                            if !status.success() {
-                                return Err(InstallerError::RegisterDllFailed(status).into());
-                            }
-                        }
-                    }
-                    InstallStep::SetRegistryValue {
-                        hive,
-                        key,
-                        name,
-                        value,
-                    } => {
-                        ensure_bridge(&mut bridge_client, runner, prefix, winebridge, environment)
-                            .await?
-                            .set_registry_value(*hive, key.clone(), name.clone(), value.clone())
-                            .await?;
-                    }
-                    InstallStep::SetDllOverrides { dlls, mode } => {
-                        let bridge = ensure_bridge(
-                            &mut bridge_client,
-                            runner,
-                            prefix,
-                            winebridge,
-                            environment,
-                        )
-                        .await?;
-                        for dll in dlls {
-                            bridge.set_dll_override(dll.clone(), *mode).await?;
-                        }
-                    }
-                    InstallStep::SetEnvironment { name, value } => {
-                        environment.insert(name.clone(), value.clone());
-                        if let Some(bridge) = bridge_client.take() {
-                            bridge.shutdown().await?;
-                        }
-                    }
-                }
-            }
-        }
-        Ok::<_, Error>(())
-    }
-    .await;
-
-    let bridge_stopped = match bridge_client {
-        Some(bridge) => bridge.shutdown().await,
-        None => Ok(()),
-    };
-    let runner_stopped = shutdown_prefix(runner, prefix).await;
-    result?;
-    bridge_stopped?;
-    runner_stopped
-}
-
-async fn uninstall_steps(
     inputs: InstallInputs<'_>,
-    resources: &[InstallResource],
-    restore_files: bool,
-    component_id: Uuid,
+    bridge: &mut Option<WineBridgeClient>,
+    resource: &InstallResource,
+    step: &InstallStep,
 ) -> Result<()> {
     let InstallInputs {
         prefix,
@@ -231,59 +187,125 @@ async fn uninstall_steps(
         winebridge,
         environment,
     } = inputs;
-    let mut bridge_client = None;
-
-    for resource in resources.iter().rev() {
-        for step in resource.steps.iter().rev() {
-            match step {
-                InstallStep::Copy { destination, .. } if restore_files => {
-                    uninstall_file(prefix, destination).log_warn();
+    match step {
+        InstallStep::Copy {
+            source,
+            destination,
+        } => {
+            let source = if source.as_os_str().is_empty() {
+                resource.source.clone()
+            } else {
+                resource.source.join(source)
+            };
+            install_file(&source, prefix, destination)?;
+        }
+        InstallStep::Extract { destination } => {
+            let archive = resource.source.clone();
+            let prefix = prefix.to_path_buf();
+            let destination = destination.clone();
+            context
+                .spawn_blocking(move || extract_into(&archive, &prefix, &destination))
+                .await?;
+        }
+        InstallStep::Execute { arguments } => {
+            let mut command = Command::new(&resource.source);
+            for argument in arguments {
+                command = command.arg(argument);
+            }
+            for (name, value) in environment.iter() {
+                command = command.env(name, value);
+            }
+            let status = runner.command(prefix, command).spawn()?.wait().await?;
+            if !status.success() {
+                return Err(InstallerError::InstallerFailed(status).into());
+            }
+        }
+        InstallStep::RegisterDlls { dlls } => {
+            for dll in dlls {
+                let mut command = Command::new("regsvr32").arg("/s").arg(prefix.join(dll));
+                for (name, value) in environment.iter() {
+                    command = command.env(name, value);
                 }
-                InstallStep::Copy { .. } => {}
-                InstallStep::SetEnvironment { name, .. } => {
-                    environment.remove(name);
-                }
-                InstallStep::SetDllOverrides { dlls, .. } => {
-                    let bridge = match ensure_bridge(
-                        &mut bridge_client,
-                        runner,
-                        prefix,
-                        winebridge,
-                        environment,
-                    )
-                    .await
-                    {
-                        Ok(bridge) => bridge,
-                        Err(error) => {
-                            tracing::warn!(%error);
-                            continue;
-                        }
-                    };
-                    for dll in dlls.iter().rev() {
-                        match bridge.delete_dll_override(dll.clone()).await {
-                            Err(error) if is_not_found(&error) => {}
-                            result => {
-                                result.log_warn();
-                            }
-                        }
-                    }
-                }
-                unsupported => {
-                    tracing::warn!(
-                        %component_id,
-                        step = ?unsupported,
-                        "skipping unsupported component uninstall action"
-                    );
+                let status = runner.command(prefix, command).spawn()?.wait().await?;
+                if !status.success() {
+                    return Err(InstallerError::RegisterDllFailed(status).into());
                 }
             }
         }
+        InstallStep::SetRegistryValue {
+            hive,
+            key,
+            name,
+            value,
+        } => {
+            ensure_bridge(bridge, runner, prefix, winebridge, environment)
+                .await?
+                .set_registry_value(*hive, key.clone(), name.clone(), value.clone())
+                .await?;
+        }
+        InstallStep::SetDllOverrides { dlls, mode } => {
+            let bridge = ensure_bridge(bridge, runner, prefix, winebridge, environment).await?;
+            for dll in dlls {
+                bridge.set_dll_override(dll.clone(), *mode).await?;
+            }
+        }
+        InstallStep::SetEnvironment { name, value } => {
+            environment.insert(name.clone(), value.clone());
+            if let Some(bridge) = bridge.take() {
+                bridge.shutdown().await?;
+            }
+        }
     }
-
-    if let Some(bridge) = bridge_client {
-        bridge.shutdown().await.log_warn();
-    }
-    shutdown_prefix(runner, prefix).await.log_warn();
     Ok(())
+}
+
+async fn uninstall_step(
+    inputs: InstallInputs<'_>,
+    bridge: &mut Option<WineBridgeClient>,
+    step: &InstallStep,
+    restore_files: bool,
+    component_id: Uuid,
+) {
+    let InstallInputs {
+        prefix,
+        runner,
+        winebridge,
+        environment,
+    } = inputs;
+    match step {
+        InstallStep::Copy { destination, .. } if restore_files => {
+            uninstall_file(prefix, destination).log_warn();
+        }
+        InstallStep::Copy { .. } => {}
+        InstallStep::SetEnvironment { name, .. } => {
+            environment.remove(name);
+        }
+        InstallStep::SetDllOverrides { dlls, .. } => {
+            let bridge = match ensure_bridge(bridge, runner, prefix, winebridge, environment).await
+            {
+                Ok(bridge) => bridge,
+                Err(error) => {
+                    tracing::warn!(%error);
+                    return;
+                }
+            };
+            for dll in dlls.iter().rev() {
+                match bridge.delete_dll_override(dll.clone()).await {
+                    Err(error) if is_not_found(&error) => {}
+                    result => {
+                        result.log_warn();
+                    }
+                }
+            }
+        }
+        unsupported => {
+            tracing::warn!(
+                %component_id,
+                step = ?unsupported,
+                "skipping unsupported component uninstall action"
+            );
+        }
+    }
 }
 
 fn is_not_found(error: &Error) -> bool {
