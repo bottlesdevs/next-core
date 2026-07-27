@@ -318,6 +318,11 @@ mod unix {
             "Game"
         );
         assert_eq!(reopened.state().await.wrappers(), &wrappers);
+        let same = manager.open(bottle_id).await.unwrap();
+        let mut edit = reopened.edit();
+        edit.rename("Shared");
+        edit.commit().await.unwrap();
+        assert_eq!(same.state().await.name(), "Shared");
         let stored = fs::read_to_string(directories.bottle(bottle_id).join("bottle.toml")).unwrap();
         assert!(stored.contains("[runner]"));
         assert!(stored.contains("type = \"runner\""));

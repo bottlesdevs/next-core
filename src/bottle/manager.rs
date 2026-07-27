@@ -1,5 +1,10 @@
-use std::{fs, io};
+use std::{
+    collections::HashMap,
+    fs, io,
+    sync::{Arc, Weak},
+};
 
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
@@ -26,11 +31,15 @@ pub enum CreateProgress {
 #[derive(Clone)]
 pub struct BottleManager {
     context: Context,
+    cache: Arc<Mutex<HashMap<Uuid, Weak<Mutex<BottleState>>>>>,
 }
 
 impl BottleManager {
     pub(crate) fn new(context: Context) -> Self {
-        Self { context }
+        Self {
+            context,
+            cache: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     pub fn create(
@@ -46,6 +55,7 @@ impl BottleManager {
         let winebridge = winebridge.clone();
         let umu = umu.cloned();
         let cx = self.context.clone();
+        let cache = self.cache.clone();
         self.context
             .spawn(move |progress, cancellation| async move {
                 progress.send_replace(Some(CreateProgress::Preparing));
@@ -92,7 +102,7 @@ impl BottleManager {
                     if cancellation.is_cancelled() {
                         return Err(Error::Cancelled);
                     }
-                    Ok(bottle)
+                    Ok(Self::intern(&cache, bottle).await)
                 }
                 .await;
 
@@ -109,6 +119,9 @@ impl BottleManager {
     }
 
     pub async fn open(&self, id: Uuid) -> Result<Bottle> {
+        if let Some(bottle) = self.cached(id).await {
+            return Ok(bottle);
+        }
         let path = self.context.directories().bottle(id).join("bottle.toml");
         let state = self
             .context
@@ -127,7 +140,7 @@ impl BottleManager {
                 Ok(state)
             })
             .await?;
-        Ok(Bottle::from_state(state, self.context.clone()))
+        Ok(Self::intern(&self.cache, Bottle::from_state(state, self.context.clone())).await)
     }
 
     pub async fn list(&self) -> Result<Vec<Bottle>> {
@@ -154,9 +167,37 @@ impl BottleManager {
                 Ok(configs)
             })
             .await?;
-        Ok(configs
-            .into_iter()
-            .map(|config| Bottle::from_state(config, self.context.clone()))
-            .collect())
+        let mut bottles = Vec::with_capacity(configs.len());
+        for config in configs {
+            bottles.push(
+                Self::intern(
+                    &self.cache,
+                    Bottle::from_state(config, self.context.clone()),
+                )
+                .await,
+            );
+        }
+        Ok(bottles)
+    }
+
+    async fn cached(&self, id: Uuid) -> Option<Bottle> {
+        self.cache
+            .lock()
+            .await
+            .get(&id)
+            .and_then(Weak::upgrade)
+            .map(|state| Bottle::from_shared_state(id, state, self.context.clone()))
+    }
+
+    async fn intern(
+        cache: &Mutex<HashMap<Uuid, Weak<Mutex<BottleState>>>>,
+        bottle: Bottle,
+    ) -> Bottle {
+        let mut cache = cache.lock().await;
+        if let Some(state) = cache.get(&bottle.id).and_then(Weak::upgrade) {
+            return Bottle::from_shared_state(bottle.id, state, bottle.cx.clone());
+        }
+        cache.insert(bottle.id, Arc::downgrade(&bottle.state));
+        bottle
     }
 }
