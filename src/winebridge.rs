@@ -100,6 +100,9 @@ impl WineBridgeClient {
         let ready = async {
             loop {
                 if let Some(status) = process.try_wait()? {
+                    if let Some(client) = Self::try_connect(prefix).await? {
+                        return Ok(client);
+                    }
                     return Err(BridgeError::BridgeExited(status).into());
                 }
 
