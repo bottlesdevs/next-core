@@ -80,10 +80,6 @@ impl BottleState {
         &self.wrappers
     }
 
-    pub fn r#type(&self) -> BottleType {
-        self.kind()
-    }
-
     pub fn programs(&self) -> &[Program] {
         &self.programs
     }

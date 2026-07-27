@@ -332,7 +332,7 @@ mod unix {
         let reopened = manager.open(bottle_id).await.unwrap();
         assert_eq!(reopened.state().runner().id(), runner_id);
         assert_eq!(reopened.state().runner().path(), runner_root);
-        assert_eq!(reopened.state().r#type(), BottleType::Standard);
+        assert_eq!(reopened.state().kind(), BottleType::Standard);
         assert_eq!(reopened.state().program(program_id).unwrap().name, "Game");
         assert_eq!(reopened.state().wrappers(), &wrappers);
         let same = manager.open(bottle_id).await.unwrap();
