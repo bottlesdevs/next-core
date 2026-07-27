@@ -13,7 +13,7 @@ pub struct ComponentManager {
 }
 
 impl ComponentManager {
-    pub async fn load(context: Context) -> Result<Self> {
+    pub(crate) async fn load(context: Context) -> Result<Self> {
         let manager = Self {
             context,
             components: Vec::new(),

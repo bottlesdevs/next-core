@@ -15,10 +15,13 @@ struct ContextInner {
 }
 
 #[derive(Clone)]
-pub struct Context(Arc<ContextInner>);
+pub(crate) struct Context(Arc<ContextInner>);
 
 impl Context {
-    pub fn new(directories: Directories, fvs2d_executable: impl Into<PathBuf>) -> Result<Self> {
+    pub(crate) fn new(
+        directories: Directories,
+        fvs2d_executable: impl Into<PathBuf>,
+    ) -> Result<Self> {
         Ok(Self(Arc::new(ContextInner {
             directories,
             fvs2d_executable: absolute_path(fvs2d_executable.into())?,
@@ -27,11 +30,11 @@ impl Context {
         })))
     }
 
-    pub fn directories(&self) -> &Directories {
+    pub(crate) fn directories(&self) -> &Directories {
         &self.0.directories
     }
 
-    pub fn spawn<T, P, F, Fut>(&self, work: F) -> Operation<T, P>
+    pub(crate) fn spawn<T, P, F, Fut>(&self, work: F) -> Operation<T, P>
     where
         T: Send + 'static,
         P: Clone + Send + Sync + 'static,
