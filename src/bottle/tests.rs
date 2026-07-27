@@ -63,9 +63,18 @@ async fn bottle_managers_are_scoped_to_their_context_roots() {
     let right_manager =
         BottleManager::new(Context::new(right.clone(), right.data_dir().join("fvs2d")).unwrap());
 
-    assert_eq!(left_manager.open(id).await.unwrap().state().name(), "left");
     assert_eq!(
-        right_manager.open(id).await.unwrap().state().name(),
+        left_manager.open(id).await.unwrap().state().unwrap().name(),
+        "left"
+    );
+    assert_eq!(
+        right_manager
+            .open(id)
+            .await
+            .unwrap()
+            .state()
+            .unwrap()
+            .name(),
         "right"
     );
     assert_eq!(
@@ -73,6 +82,7 @@ async fn bottle_managers_are_scoped_to_their_context_roots() {
             .as_ref()
             .unwrap()
             .state()
+            .unwrap()
             .name(),
         "left"
     );
@@ -81,6 +91,7 @@ async fn bottle_managers_are_scoped_to_their_context_roots() {
             .as_ref()
             .unwrap()
             .state()
+            .unwrap()
             .name(),
         "right"
     );
@@ -297,7 +308,7 @@ mod unix {
             mangohud: MangoHudConfig { enabled: true },
         };
         let mut edit = bottle.edit();
-        assert_eq!(bottle.state().id(), id);
+        assert_eq!(bottle.state().unwrap().id(), id);
         edit.add_program(program)
             .set_gamescope(GamescopeConfig {
                 enabled: true,
@@ -306,8 +317,8 @@ mod unix {
             })
             .set_mangohud(MangoHudConfig { enabled: true });
         edit.commit().await.unwrap();
-        assert_eq!(bottle.state().wrappers(), &wrappers);
-        let bottle_id = bottle.state().id();
+        assert_eq!(bottle.state().unwrap().wrappers(), &wrappers);
+        let bottle_id = bottle.state().unwrap().id();
         let failed_program = Program::new("Unsaved", "C:\\unsaved.exe");
         let failed_program_id = failed_program.id;
         let temporary = directories.bottle(bottle_id).join("bottle.tmp");
@@ -316,7 +327,7 @@ mod unix {
         edit.add_program(failed_program);
         assert!(edit.commit().await.is_err());
         let bottle = manager.open(bottle_id).await.unwrap();
-        assert!(bottle.state().program(failed_program_id).is_none());
+        assert!(bottle.state().unwrap().program(failed_program_id).is_none());
         let persisted: BottleState =
             next_config::load(directories.bottle(bottle_id).join("bottle.toml")).unwrap();
         assert!(
@@ -326,20 +337,23 @@ mod unix {
                 .all(|program| program.id != failed_program_id)
         );
         fs::remove_dir(temporary).unwrap();
-        let runner_id = bottle.state().runner().id();
+        let runner_id = bottle.state().unwrap().runner().id();
         drop(bottle);
 
         let reopened = manager.open(bottle_id).await.unwrap();
-        assert_eq!(reopened.state().runner().id(), runner_id);
-        assert_eq!(reopened.state().runner().path(), runner_root);
-        assert_eq!(reopened.state().kind(), BottleType::Standard);
-        assert_eq!(reopened.state().program(program_id).unwrap().name, "Game");
-        assert_eq!(reopened.state().wrappers(), &wrappers);
+        assert_eq!(reopened.state().unwrap().runner().id(), runner_id);
+        assert_eq!(reopened.state().unwrap().runner().path(), runner_root);
+        assert_eq!(reopened.state().unwrap().kind(), BottleType::Standard);
+        assert_eq!(
+            reopened.state().unwrap().program(program_id).unwrap().name,
+            "Game"
+        );
+        assert_eq!(reopened.state().unwrap().wrappers(), &wrappers);
         let same = manager.open(bottle_id).await.unwrap();
         let mut edit = reopened.edit();
         edit.rename("Shared");
         edit.commit().await.unwrap();
-        assert_eq!(same.state().name(), "Shared");
+        assert_eq!(same.state().unwrap().name(), "Shared");
         let stored = fs::read_to_string(directories.bottle(bottle_id).join("bottle.toml")).unwrap();
         assert!(stored.contains("[runner]"));
         assert!(stored.contains("type = \"runner\""));
@@ -371,6 +385,10 @@ mod unix {
         );
 
         manager.delete(bottle_id).await.unwrap();
+        assert!(matches!(
+            same.state(),
+            Err(crate::error::Error::Bottle(BottleError::Deleted(id))) if id == bottle_id
+        ));
         let edit = same.edit();
         assert!(matches!(
             edit.commit().await,

@@ -3,10 +3,7 @@ use std::{
     future::Future,
     ops::AsyncFnOnce,
     path::PathBuf,
-    sync::{
-        Arc, Weak,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Weak},
 };
 
 use next_config::Config;
@@ -96,11 +93,10 @@ impl BottleState {
 pub(crate) type BottleCache = Mutex<HashMap<Uuid, Weak<BottleInner>>>;
 
 pub(crate) struct BottleInner {
-    pub(crate) published: watch::Sender<Arc<BottleState>>,
+    pub(crate) published: watch::Sender<Option<Arc<BottleState>>>,
     pub(crate) write: Mutex<()>,
     pub(crate) id: Uuid,
     pub(crate) cx: Context,
-    deleted: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -140,13 +136,12 @@ impl Bottle {
 
     pub(crate) fn from_state(state: BottleState, cx: Context) -> Self {
         let id = state.id;
-        let (published, _) = watch::channel(Arc::new(state));
+        let (published, _) = watch::channel(Some(Arc::new(state)));
         Self::from_inner(Arc::new(BottleInner {
             id,
             published,
             write: Mutex::new(()),
             cx,
-            deleted: AtomicBool::new(false),
         }))
     }
 
@@ -154,8 +149,12 @@ impl Bottle {
         Self(inner)
     }
 
-    pub fn state(&self) -> Arc<BottleState> {
-        self.0.published.borrow().clone()
+    pub fn state(&self) -> Result<Arc<BottleState>> {
+        self.0
+            .published
+            .borrow()
+            .clone()
+            .ok_or_else(|| BottleError::Deleted(self.0.id).into())
     }
 
     pub fn edit(&self) -> BottleEdit {
@@ -201,9 +200,8 @@ impl Bottle {
 
     /// Launch a tracked program, starting WineBridge if it is not already running.
     pub async fn run(&self, id: Uuid) -> Result<u32> {
-        self.ensure_exists()?;
         let program = self
-            .state()
+            .state()?
             .program(id)
             .cloned()
             .ok_or(BottleError::ProgramNotFound(id))?;
@@ -229,8 +227,7 @@ impl Bottle {
 
     /// Kill a tracked program by UUID, starting WineBridge if necessary.
     pub async fn kill(&self, id: Uuid) -> Result<()> {
-        self.ensure_exists()?;
-        if self.state().program(id).is_none() {
+        if self.state()?.program(id).is_none() {
             return Err(BottleError::ProgramNotFound(id).into());
         }
         self.with_bridge(move |bridge| async move { bridge.kill_process(id).await })
@@ -240,8 +237,8 @@ impl Bottle {
     /// Stop WineBridge, wineserver, and prefix storage.
     pub async fn stop(&self) -> Result<()> {
         let _write = self.0.write.lock().await;
-        self.ensure_exists()?;
-        Self::stop_state(&self.state(), &self.0.cx).await
+        let state = self.state()?;
+        Self::stop_state(&state, &self.0.cx).await
     }
 
     /// Prefix effects completed before a metadata save error are not rolled back.
@@ -564,11 +561,11 @@ impl Bottle {
     }
 
     pub(crate) fn is_deleted(&self) -> bool {
-        self.0.deleted.load(Ordering::Acquire)
+        self.0.published.borrow().is_none()
     }
 
     pub(crate) fn mark_deleted(&self) {
-        self.0.deleted.store(true, Ordering::Release);
+        self.0.published.send_replace(None);
     }
 
     pub(super) async fn update<F, R>(&self, operation: F) -> Result<R>
@@ -576,8 +573,7 @@ impl Bottle {
         F: for<'a> AsyncFnOnce(&'a mut BottleState, Context) -> Result<R>,
     {
         let _write = self.0.write.lock().await;
-        self.ensure_exists()?;
-        let mut draft = BottleState::clone(&self.0.published.borrow());
+        let mut draft = self.state()?.as_ref().clone();
         let value = operation(&mut draft, self.0.cx.clone()).await?;
         Self::save_state(&draft, &self.0.cx).await?;
         self.publish(draft);
@@ -587,10 +583,10 @@ impl Bottle {
     pub(crate) fn publish(&self, state: BottleState) {
         let next = Arc::new(state);
         self.0.published.send_if_modified(|published| {
-            if **published == *next {
+            if published.as_deref() == Some(next.as_ref()) {
                 false
             } else {
-                *published = next;
+                *published = Some(next);
                 true
             }
         });
@@ -605,7 +601,7 @@ impl Bottle {
     }
 
     async fn save(&self) -> Result<()> {
-        let state = self.state();
+        let state = self.state()?;
         Self::save_state(&state, &self.0.cx).await
     }
 
@@ -661,8 +657,7 @@ impl Bottle {
         F: FnOnce(WineBridgeClient) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
-        self.ensure_exists()?;
-        let state = self.state();
+        let state = self.state()?;
         let runner = Self::load_runner(&state)?;
         let bottle_path = self.bottle_path();
         let prefix = self.prefix_path();
@@ -895,7 +890,7 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        let state = bottle.state();
+        let state = bottle.state().unwrap();
         assert!(matches!(state.storage, PrefixStorage::Standard));
         assert!(state.environment.is_empty());
 
@@ -922,7 +917,7 @@ mod tests {
         first.unwrap();
         second.unwrap();
 
-        let state = bottle.state();
+        let state = bottle.state().unwrap();
         assert_eq!(state.environment.get("FIRST"), Some("yes"));
         assert_eq!(state.environment.get("SECOND"), Some("yes"));
         fs::remove_dir_all(root).unwrap();
