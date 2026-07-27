@@ -12,7 +12,7 @@ use crate::{
     },
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
-    runner::{Runner, RunnerKind, shutdown_prefix},
+    runner::{Runner, shutdown_prefix},
     winebridge::WineBridgeClient,
 };
 
@@ -322,50 +322,81 @@ impl Bottle {
         Ok(())
     }
 
-    pub async fn install_runner(
-        &self,
-        component: &Component,
-        umu: Option<&Component>,
-    ) -> Result<()> {
-        let selection = match component.kind().runner_kind() {
-            Some(RunnerKind::Wine) if umu.is_none() => RunnerSelection::wine(component.clone())?,
-            Some(RunnerKind::Proton) => RunnerSelection::proton(
-                component.clone(),
-                umu.cloned().ok_or(BottleError::ProtonRunnerWithoutUmu)?,
-            )?,
-            Some(RunnerKind::Wine) => return Err(BottleError::WineRunnerWithUmu.into()),
-            None => return Err(BottleError::RunnerComponentRequired.into()),
-        };
-        self.update(async |state, cx| {
-            if state.runner == selection {
-                return Ok(());
-            }
-            let installed = [
-                state.dxvk.as_ref(),
-                state.vkd3d.as_ref(),
-                state.nvapi.as_ref(),
-                state.latency_flex.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            .map(Component::id)
-            .chain(state.dependencies.iter().map(|dependency| dependency.id()))
-            .collect::<Vec<_>>();
-            Self::stop_state(state, &cx).await?;
-            state.runner = selection;
+    pub fn set_runner(&self, selection: RunnerSelection) -> Operation<(), SetRunnerProgress> {
+        let bottle = self.clone();
+        self.0.cx.spawn(move |progress, cancellation| async move {
+            selection.validate()?;
+            bottle
+                .update(async |state, cx| {
+                    if state.runner == selection {
+                        return Ok(());
+                    }
+                    if cancellation.is_cancelled() {
+                        return Err(Error::Cancelled);
+                    }
+                    let installed = [
+                        state.dxvk.as_ref(),
+                        state.vkd3d.as_ref(),
+                        state.nvapi.as_ref(),
+                        state.latency_flex.as_ref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .map(Component::id)
+                    .chain(state.dependencies.iter().map(|dependency| dependency.id()))
+                    .collect::<Vec<_>>();
+                    progress.send_replace(Some(SetRunnerProgress::Stopping));
+                    Self::stop_state(state, &cx).await?;
+                    if cancellation.is_cancelled() {
+                        return Err(Error::Cancelled);
+                    }
+                    state.runner = selection;
 
-            let runner = Self::load_runner(state)?;
-            state
-                .storage
-                .rebuild(
-                    runner.as_ref(),
-                    &state.runner.runner().id().to_string(),
-                    &installed,
-                    &cx,
-                )
+                    progress.send_replace(Some(SetRunnerProgress::Rebuilding));
+                    let runner = Self::load_runner(state)?;
+                    state
+                        .storage
+                        .rebuild(
+                            runner.as_ref(),
+                            &state.runner.runner().id().to_string(),
+                            &installed,
+                            &cx,
+                        )
+                        .await?;
+                    if cancellation.is_cancelled() {
+                        return Err(Error::Cancelled);
+                    }
+                    Ok(())
+                })
                 .await
         })
-        .await
+    }
+
+    pub fn set_winebridge(&self, winebridge: &Component) -> Operation<(), SetWinebridgeProgress> {
+        let winebridge = winebridge.clone();
+        let bottle = self.clone();
+        self.0.cx.spawn(move |progress, cancellation| async move {
+            if winebridge.kind() != ComponentKind::Winebridge {
+                return Err(BottleError::WinebridgeComponentRequired.into());
+            }
+            bottle
+                .update(async |state, cx| {
+                    if state.winebridge.id() == winebridge.id() {
+                        return Ok(());
+                    }
+                    if cancellation.is_cancelled() {
+                        return Err(Error::Cancelled);
+                    }
+                    progress.send_replace(Some(SetWinebridgeProgress::Stopping));
+                    Self::stop_state(state, &cx).await?;
+                    if cancellation.is_cancelled() {
+                        return Err(Error::Cancelled);
+                    }
+                    state.winebridge = winebridge;
+                    Ok(())
+                })
+                .await
+        })
     }
 
     fn load_runner(state: &BottleState) -> Result<Box<dyn Runner>> {
@@ -435,4 +466,15 @@ impl Bottle {
         });
         operation.await
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SetRunnerProgress {
+    Stopping,
+    Rebuilding,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SetWinebridgeProgress {
+    Stopping,
 }
