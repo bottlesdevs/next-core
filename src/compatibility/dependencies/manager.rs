@@ -20,7 +20,7 @@ pub struct DependencyManager {
 }
 
 impl DependencyManager {
-    pub async fn load(context: Context) -> Result<Self> {
+    pub(crate) async fn load(context: Context) -> Result<Self> {
         let manager = Self {
             context,
             dependencies: Vec::new(),

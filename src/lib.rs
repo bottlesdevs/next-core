@@ -1,5 +1,6 @@
 mod bottle;
 mod compatibility;
+mod core;
 pub mod error;
 mod operation;
 mod runner;
@@ -18,8 +19,10 @@ pub use compatibility::{
     dependencies::{Dependency, DependencyManager},
     installer::{InstallProgress, UninstallProgress},
 };
+pub use core::Core;
 pub use operation::Operation;
 pub use runner::RunnerKind;
-pub use utils::{context::Context, directories::Directories, environment::Environment};
+pub use utils::{directories::Directories as Paths, environment::Environment};
 
 pub(crate) use next_proto::winebridge as proto;
+pub(crate) use utils::{context::Context, directories::Directories};

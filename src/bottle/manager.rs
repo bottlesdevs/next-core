@@ -23,12 +23,13 @@ pub enum CreateProgress {
     InitializingRepository,
 }
 
+#[derive(Clone)]
 pub struct BottleManager {
     context: Context,
 }
 
 impl BottleManager {
-    pub fn new(context: Context) -> Self {
+    pub(crate) fn new(context: Context) -> Self {
         Self { context }
     }
 
