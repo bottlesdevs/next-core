@@ -50,19 +50,14 @@ impl Context {
     }
 
     pub(crate) async fn fvs(&self) -> Result<&Fvs2dClient> {
-        let context = self.clone();
         self.0
             .fvs
-            .get_or_try_init(|| async move {
-                let runtime = context.clone();
-                let operation: Operation<_, ()> = runtime.spawn(move |_, _| async move {
-                    Ok(Fvs2dClient::connect_or_spawn(
-                        &context.0.fvs2d_executable,
-                        context.0.directories.runtime_dir().join("fvs2d.sock"),
-                    )
-                    .await?)
-                });
-                operation.await
+            .get_or_try_init(|| async {
+                Ok(Fvs2dClient::connect_or_spawn(
+                    &self.0.fvs2d_executable,
+                    self.0.directories.runtime_dir().join("fvs2d.sock"),
+                )
+                .await?)
             })
             .await
     }
