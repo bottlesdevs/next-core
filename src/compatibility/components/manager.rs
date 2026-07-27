@@ -8,19 +8,13 @@ use super::{Component, catalog::ComponentKind};
 use crate::{Context, error::Result, runner::detect_runner_kind};
 
 pub struct ComponentManager {
-    context: Context,
     components: Vec<Component>,
 }
 
 impl ComponentManager {
     pub(crate) async fn load(context: Context) -> Result<Self> {
-        let manager = Self {
-            context,
-            components: Vec::new(),
-        };
-        let directories = manager.context.directories().clone();
-        let components = manager
-            .context
+        let directories = context.directories().clone();
+        let components = context
             .spawn_blocking(move || {
                 let component_dir = directories.components();
                 let components_path = fs::canonicalize(component_dir)?;
@@ -41,10 +35,7 @@ impl ComponentManager {
                 Ok(components)
             })
             .await?;
-        Ok(Self {
-            components,
-            ..manager
-        })
+        Ok(Self { components })
     }
 
     pub fn components(&self) -> &[Component] {
