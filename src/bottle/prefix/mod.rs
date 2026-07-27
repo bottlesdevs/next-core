@@ -32,19 +32,43 @@ pub(crate) enum PrefixStorage {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransactionProgress {
-    pub phase: String,
-    pub current: i64,
-    pub total: i64,
-    pub message: String,
+    pub phase: TransactionPhase,
+    pub transfer: Transfer,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TransactionPhase {
+    Hashing,
+    Restoring,
+    Done,
+    Other(String),
+}
+
+impl From<&str> for TransactionPhase {
+    fn from(phase: &str) -> Self {
+        match phase {
+            "hashing" => Self::Hashing,
+            "restoring" => Self::Restoring,
+            "done" => Self::Done,
+            other => Self::Other(other.to_owned()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Transfer {
+    pub current: u64,
+    pub total: Option<u64>,
 }
 
 impl From<&Progress> for TransactionProgress {
     fn from(progress: &Progress) -> Self {
         Self {
-            phase: progress.phase.clone(),
-            current: progress.current,
-            total: progress.total,
-            message: progress.message.clone(),
+            phase: progress.phase.as_str().into(),
+            transfer: Transfer {
+                current: progress.current.try_into().unwrap_or_default(),
+                total: progress.total.try_into().ok().filter(|total| *total > 0),
+            },
         }
     }
 }
@@ -271,11 +295,17 @@ mod tests {
 
     #[tokio::test]
     async fn finish_commit_forwards_progress_and_returns_terminal_result() {
-        let updates = [
+        let frames = [
             Progress {
                 phase: "hashing".into(),
                 current: 1,
                 total: 2,
+                ..Default::default()
+            },
+            Progress {
+                phase: "indexing".into(),
+                current: -1,
+                total: -1,
                 ..Default::default()
             },
             Progress {
@@ -288,15 +318,40 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let mut phases = Vec::new();
+        let mut updates = Vec::new();
 
-        let commit = finish_commit(stream::iter(updates.map(Ok::<_, FvsError>)), |progress| {
-            phases.push(progress.phase.clone())
+        let commit = finish_commit(stream::iter(frames.map(Ok::<_, FvsError>)), |progress| {
+            updates.push(TransactionProgress::from(progress))
         })
         .await
         .unwrap();
 
-        assert_eq!(phases, ["hashing", "done"]);
+        assert_eq!(
+            updates,
+            [
+                TransactionProgress {
+                    phase: TransactionPhase::Hashing,
+                    transfer: Transfer {
+                        current: 1,
+                        total: Some(2),
+                    },
+                },
+                TransactionProgress {
+                    phase: TransactionPhase::Other("indexing".into()),
+                    transfer: Transfer {
+                        current: 0,
+                        total: None,
+                    },
+                },
+                TransactionProgress {
+                    phase: TransactionPhase::Done,
+                    transfer: Transfer {
+                        current: 0,
+                        total: None,
+                    },
+                },
+            ]
+        );
         assert_eq!(commit.state_id, "checkpoint");
     }
 }

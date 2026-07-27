@@ -3,12 +3,13 @@ mod wine;
 
 pub(crate) use crate::wrapper::{Command, Spawnable, Wrapper};
 use async_trait::async_trait;
-pub use proton::Proton;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-pub use wine::Wine;
 
 use crate::error::Result;
+use proton::Proton;
+use wine::Wine;
+
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
