@@ -128,11 +128,12 @@ impl Bottle {
     }
 
     pub(crate) fn from_state(state: BottleState, cx: Context) -> Self {
-        Self {
-            id: state.id,
-            state: Arc::new(Mutex::new(state)),
-            cx,
-        }
+        let id = state.id;
+        Self::from_shared_state(id, Arc::new(Mutex::new(state)), cx)
+    }
+
+    pub(crate) fn from_shared_state(id: Uuid, state: Arc<Mutex<BottleState>>, cx: Context) -> Self {
+        Self { id, state, cx }
     }
 
     pub async fn state(&self) -> BottleState {
