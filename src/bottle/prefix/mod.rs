@@ -20,7 +20,7 @@ use super::{FVS_BLOCK_SIZE, bottle::BottleType};
 
 pub(super) const CHECKPOINT_MESSAGE: &str = "bottles-next:auto-checkpoint";
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind")]
 pub(crate) enum PrefixStorage {
     Standard,

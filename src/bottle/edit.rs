@@ -73,47 +73,48 @@ impl BottleEdit {
     pub async fn commit(self) -> Result<()> {
         let BottleEdit { inner, changes } = self;
         let bottle = Bottle::from_inner(inner);
-        bottle.ensure_exists()?;
-        let mut state = bottle.0.state.lock().await;
-        Bottle::update(&mut state, &bottle.0.cx, async move |state| {
-            for change in changes {
-                match change {
-                    Change::Rename(name) => state.name = name,
-                    Change::SetEnv(key, value) => {
-                        if key.is_empty() || key.contains('=') || key.contains('\0') {
-                            return Err(BottleError::InvalidEnvironmentName(key).into());
+        bottle
+            .update(async move |state, _| {
+                for change in changes {
+                    match change {
+                        Change::Rename(name) => state.name = name,
+                        Change::SetEnv(key, value) => {
+                            if key.is_empty() || key.contains('=') || key.contains('\0') {
+                                return Err(BottleError::InvalidEnvironmentName(key).into());
+                            }
+                            if value.contains('\0') {
+                                return Err(BottleError::InvalidEnvironmentValue(key).into());
+                            }
+                            state.environment.insert(key, value);
                         }
-                        if value.contains('\0') {
-                            return Err(BottleError::InvalidEnvironmentValue(key).into());
+                        Change::UnsetEnv(key) => {
+                            if key.is_empty() || key.contains('=') || key.contains('\0') {
+                                return Err(BottleError::InvalidEnvironmentName(key).into());
+                            }
+                            state.environment.remove(&key);
                         }
-                        state.environment.insert(key, value);
-                    }
-                    Change::UnsetEnv(key) => {
-                        if key.is_empty() || key.contains('=') || key.contains('\0') {
-                            return Err(BottleError::InvalidEnvironmentName(key).into());
+                        Change::AddProgram(program) => {
+                            if program.name.trim().is_empty()
+                                || program.executable.trim().is_empty()
+                            {
+                                return Err(BottleError::InvalidProgram.into());
+                            }
+                            state.programs.push(program);
                         }
-                        state.environment.remove(&key);
-                    }
-                    Change::AddProgram(program) => {
-                        if program.name.trim().is_empty() || program.executable.trim().is_empty() {
-                            return Err(BottleError::InvalidProgram.into());
+                        Change::RemoveProgram(id) => {
+                            let index = state
+                                .programs
+                                .iter()
+                                .position(|program| program.id == id)
+                                .ok_or(BottleError::ProgramNotFound(id))?;
+                            state.programs.remove(index);
                         }
-                        state.programs.push(program);
+                        Change::SetGamescope(config) => state.wrappers.gamescope = config,
+                        Change::SetMangoHud(config) => state.wrappers.mangohud = config,
                     }
-                    Change::RemoveProgram(id) => {
-                        let index = state
-                            .programs
-                            .iter()
-                            .position(|program| program.id == id)
-                            .ok_or(BottleError::ProgramNotFound(id))?;
-                        state.programs.remove(index);
-                    }
-                    Change::SetGamescope(config) => state.wrappers.gamescope = config,
-                    Change::SetMangoHud(config) => state.wrappers.mangohud = config,
                 }
-            }
-            Ok(())
-        })
-        .await
+                Ok(())
+            })
+            .await
     }
 }
