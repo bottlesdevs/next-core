@@ -7,9 +7,14 @@ use futures_core::Stream;
 use futures_util::TryStreamExt;
 use fvs_rs::{Commit, Layer, Progress, Repository, RestoreResponse, error::Error as FvsError};
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{Context, error::Result, runner::Runner};
+use crate::{
+    Context,
+    error::{Error, Result},
+    runner::Runner,
+};
 
 use super::{FVS_BLOCK_SIZE, bottle::BottleType};
 
@@ -109,6 +114,7 @@ impl PrefixStorage {
         replaced_id: Option<Uuid>,
         execute: F,
         context: &Context,
+        cancellation: &CancellationToken,
         on_progress: P,
     ) -> Result<()>
     where
@@ -124,7 +130,7 @@ impl PrefixStorage {
                 }
             }
         };
-        transact(bottle_path, context, work, on_progress).await
+        transact(bottle_path, context, work, cancellation, on_progress).await
     }
 
     pub(crate) async fn uninstall<F, P>(
@@ -133,6 +139,7 @@ impl PrefixStorage {
         item_id: Uuid,
         execute: F,
         context: &Context,
+        cancellation: &CancellationToken,
         on_progress: P,
     ) -> Result<()>
     where
@@ -147,7 +154,7 @@ impl PrefixStorage {
                 }
             }
         };
-        transact(bottle_path, context, work, on_progress).await
+        transact(bottle_path, context, work, cancellation, on_progress).await
     }
 }
 
@@ -155,6 +162,7 @@ async fn transact<F, T, P>(
     bottle_path: &Path,
     context: &Context,
     work: F,
+    cancellation: &CancellationToken,
     mut on_progress: P,
 ) -> Result<T>
 where
@@ -175,13 +183,22 @@ where
     })
     .await?;
 
-    match work.await {
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+
+    let result = work.await;
+    let result = if result.is_ok() && cancellation.is_cancelled() {
+        Err(Error::Cancelled)
+    } else {
+        result
+    };
+    match result {
         Ok(value) => Ok(value),
         Err(error) => {
             let restored = async {
-                let stream = context
-                    .fvs()
-                    .await?
+                let client = context.fvs().await?;
+                let stream = client
                     .restore_stream(
                         &repository,
                         &checkpoint.state_id,

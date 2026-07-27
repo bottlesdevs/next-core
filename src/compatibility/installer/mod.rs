@@ -7,6 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
@@ -154,6 +155,7 @@ pub(crate) async fn execute(
     context: &Context,
     inputs: InstallInputs<'_>,
     resources: &[InstallResource],
+    cancellation: &CancellationToken,
     on_step: impl Fn(&InstallStep) + Send,
 ) -> Result<()> {
     let InstallInputs {
@@ -164,6 +166,7 @@ pub(crate) async fn execute(
     } = inputs;
     let mut bridge = None;
     let result = async {
+        check_cancellation(cancellation)?;
         for resource in resources {
             for step in &resource.steps {
                 on_step(step);
@@ -178,8 +181,10 @@ pub(crate) async fn execute(
                     &mut bridge,
                     resource,
                     step,
+                    cancellation,
                 )
                 .await?;
+                check_cancellation(cancellation)?;
             }
         }
         Ok::<_, Error>(())
@@ -201,6 +206,7 @@ pub(crate) async fn uninstall(
     resources: &[InstallResource],
     restore_files: bool,
     item_id: Uuid,
+    cancellation: &CancellationToken,
     on_step: impl Fn(&InstallStep) + Send,
 ) -> Result<()> {
     let InstallInputs {
@@ -211,30 +217,37 @@ pub(crate) async fn uninstall(
     } = inputs;
     let mut bridge = None;
 
-    for resource in resources.iter().rev() {
-        for step in resource.steps.iter().rev() {
-            on_step(step);
-            uninstall_step(
-                InstallInputs {
-                    prefix,
-                    runner,
-                    winebridge,
-                    environment: &mut *environment,
-                },
-                &mut bridge,
-                step,
-                restore_files,
-                item_id,
-            )
-            .await;
+    let result = async {
+        check_cancellation(cancellation)?;
+        for resource in resources.iter().rev() {
+            for step in resource.steps.iter().rev() {
+                on_step(step);
+                uninstall_step(
+                    InstallInputs {
+                        prefix,
+                        runner,
+                        winebridge,
+                        environment: &mut *environment,
+                    },
+                    &mut bridge,
+                    step,
+                    restore_files,
+                    item_id,
+                    cancellation,
+                )
+                .await?;
+                check_cancellation(cancellation)?;
+            }
         }
+        Ok(())
     }
+    .await;
 
     if let Some(bridge) = bridge {
         bridge.shutdown().await.log_warn();
     }
     shutdown_prefix(runner, prefix).await.log_warn();
-    Ok(())
+    result
 }
 
 pub(crate) fn replay_environment(environment: &mut Environment, resources: &[InstallResource]) {
@@ -251,6 +264,7 @@ async fn execute_step(
     bridge: &mut Option<WineBridgeClient>,
     resource: &InstallResource,
     step: &InstallStep,
+    cancellation: &CancellationToken,
 ) -> Result<()> {
     let InstallInputs {
         prefix,
@@ -286,18 +300,21 @@ async fn execute_step(
             for (name, value) in environment.iter() {
                 command = command.env(name, value);
             }
-            let status = runner.command(prefix, command).spawn()?.wait().await?;
+            let status =
+                wait_for_child(runner.command(prefix, command).spawn()?, cancellation).await?;
             if !status.success() {
                 return Err(InstallerError::InstallerFailed(status).into());
             }
         }
         InstallStep::RegisterDlls { dlls } => {
             for dll in dlls {
+                check_cancellation(cancellation)?;
                 let mut command = Command::new("regsvr32").arg("/s").arg(prefix.join(dll));
                 for (name, value) in environment.iter() {
                     command = command.env(name, value);
                 }
-                let status = runner.command(prefix, command).spawn()?.wait().await?;
+                let status =
+                    wait_for_child(runner.command(prefix, command).spawn()?, cancellation).await?;
                 if !status.success() {
                     return Err(InstallerError::RegisterDllFailed(status).into());
                 }
@@ -309,14 +326,16 @@ async fn execute_step(
             name,
             value,
         } => {
-            ensure_bridge(bridge, runner, prefix, winebridge, environment)
-                .await?
+            let bridge = ensure_bridge(bridge, runner, prefix, winebridge, environment).await?;
+            check_cancellation(cancellation)?;
+            bridge
                 .set_registry_value(*hive, key.clone(), name.clone(), value.clone())
                 .await?;
         }
         InstallStep::SetDllOverrides { dlls, mode } => {
             let bridge = ensure_bridge(bridge, runner, prefix, winebridge, environment).await?;
             for dll in dlls {
+                check_cancellation(cancellation)?;
                 bridge.set_dll_override(dll.clone(), *mode).await?;
             }
         }
@@ -336,7 +355,8 @@ async fn uninstall_step(
     step: &InstallStep,
     restore_files: bool,
     component_id: Uuid,
-) {
+    cancellation: &CancellationToken,
+) -> Result<()> {
     let InstallInputs {
         prefix,
         runner,
@@ -357,10 +377,11 @@ async fn uninstall_step(
                 Ok(bridge) => bridge,
                 Err(error) => {
                     tracing::warn!(%error);
-                    return;
+                    return Ok(());
                 }
             };
             for dll in dlls.iter().rev() {
+                check_cancellation(cancellation)?;
                 match bridge.delete_dll_override(dll.clone()).await {
                     Err(error) if is_not_found(&error) => {}
                     result => {
@@ -375,6 +396,29 @@ async fn uninstall_step(
                 step = ?unsupported,
                 "skipping unsupported component uninstall action"
             );
+        }
+    }
+    check_cancellation(cancellation)
+}
+
+fn check_cancellation(cancellation: &CancellationToken) -> Result<()> {
+    if cancellation.is_cancelled() {
+        Err(Error::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+async fn wait_for_child(
+    mut child: tokio::process::Child,
+    cancellation: &CancellationToken,
+) -> Result<std::process::ExitStatus> {
+    tokio::select! {
+        biased;
+        status = child.wait() => Ok(status?),
+        _ = cancellation.cancelled() => {
+            child.kill().await?;
+            Err(Error::Cancelled)
         }
     }
 }

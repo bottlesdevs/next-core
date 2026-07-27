@@ -4,6 +4,7 @@ use futures_util::FutureExt;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{PrefixStorage, edit::BottleEdit, error::BottleError};
@@ -255,7 +256,7 @@ impl Bottle {
         let state = self.state.clone();
         let cx = self.cx.clone();
         let runtime = self.cx.clone();
-        runtime.spawn(move |progress, _| async move {
+        runtime.spawn(move |progress, cancellation| async move {
             let kind = component.kind();
             if matches!(kind, ComponentKind::Runner { .. }) {
                 return Err(BottleError::RunnerRequiresExplicitInstall.into());
@@ -269,6 +270,9 @@ impl Bottle {
                     }
                     Self::update(&mut state, &cx, async |state| {
                         Self::stop_state(state, &cx).await?;
+                        if cancellation.is_cancelled() {
+                            return Err(Error::Cancelled);
+                        }
                         state.components.winebridge = component.clone();
                         Ok(())
                     })
@@ -283,14 +287,24 @@ impl Bottle {
                     }
                     Self::update(&mut state, &cx, async |state| {
                         Self::stop_state(state, &cx).await?;
+                        if cancellation.is_cancelled() {
+                            return Err(Error::Cancelled);
+                        }
                         state.components.umu = Some(component.clone());
                         Ok(())
                     })
                     .await
                 }
                 kind => {
-                    Self::install_prefix_component(&mut state, &cx, &component, kind, progress)
-                        .await
+                    Self::install_prefix_component(
+                        &mut state,
+                        &cx,
+                        &component,
+                        kind,
+                        progress,
+                        &cancellation,
+                    )
+                    .await
                 }
             }
         })
@@ -301,7 +315,7 @@ impl Bottle {
         let state = self.state.clone();
         let cx = self.cx.clone();
         let runtime = self.cx.clone();
-        runtime.spawn(move |progress, _| async move {
+        runtime.spawn(move |progress, cancellation| async move {
             let mut state = state.lock().await;
             if state.components.runner().id() == id
                 || state.components.winebridge().id() == id
@@ -325,6 +339,9 @@ impl Bottle {
             let prefix_progress = progress.clone();
             Self::update(&mut state, &cx, async |state| {
                 Self::stop_state(state, &cx).await?;
+                if cancellation.is_cancelled() {
+                    return Err(Error::Cancelled);
+                }
                 state
                     .components
                     .slot_mut(component.kind())?
@@ -354,6 +371,7 @@ impl Bottle {
                                 &resources,
                                 restore_files,
                                 component.id(),
+                                &cancellation,
                                 move |step| {
                                     progress.send_replace(Some(step.into()));
                                 },
@@ -361,6 +379,7 @@ impl Bottle {
                             .await
                         },
                         &context,
+                        &cancellation,
                         move |event| {
                             prefix_progress.send_replace(Some(event.into()));
                         },
@@ -378,6 +397,7 @@ impl Bottle {
         component: &Component,
         kind: ComponentKind,
         progress: tokio::sync::watch::Sender<Option<InstallProgress>>,
+        cancellation: &CancellationToken,
     ) -> Result<()> {
         let installed = state.components.slot(kind)?;
         if installed.map(Component::id) == Some(component.id()) {
@@ -396,10 +416,12 @@ impl Bottle {
                 Ok(())
             },
             progress,
+            cancellation,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn install_item<F>(
         state: &mut BottleState,
         cx: &Context,
@@ -408,6 +430,7 @@ impl Bottle {
         resources: Vec<InstallResource>,
         update_config: F,
         progress: tokio::sync::watch::Sender<Option<InstallProgress>>,
+        cancellation: &CancellationToken,
     ) -> Result<()>
     where
         F: FnOnce(&mut BottleState) -> Result<()>,
@@ -415,6 +438,9 @@ impl Bottle {
         Self::update(state, cx, async move |state| {
             Self::stop_state(state, cx).await?;
             update_config(state)?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
 
             let runner = Self::load_runner(state)?;
             let winebridge = state.components.winebridge.path().to_path_buf();
@@ -441,6 +467,7 @@ impl Bottle {
                                 environment,
                             },
                             &resources,
+                            cancellation,
                             move |step| {
                                 step_progress.send_replace(Some(step.into()));
                             },
@@ -448,6 +475,7 @@ impl Bottle {
                         .await
                     },
                     &context,
+                    cancellation,
                     move |event| {
                         progress.send_replace(Some(event.into()));
                     },
@@ -465,7 +493,7 @@ impl Bottle {
         let state = self.state.clone();
         let cx = self.cx.clone();
         let runtime = self.cx.clone();
-        runtime.spawn(move |progress, _| async move {
+        runtime.spawn(move |progress, cancellation| async move {
             let mut state = state.lock().await;
             if state
                 .dependencies
@@ -486,6 +514,7 @@ impl Bottle {
                     Ok(())
                 },
                 progress,
+                &cancellation,
             )
             .await
         })
