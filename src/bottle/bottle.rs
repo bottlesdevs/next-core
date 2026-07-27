@@ -242,14 +242,10 @@ impl Bottle {
     }
 
     /// Stop WineBridge, wineserver, and prefix storage.
-    pub fn stop(&self) -> Operation<(), ()> {
-        let bottle = self.clone();
-        self.0.cx.spawn(move |_, _| async move {
-            let _write = bottle.0.write.lock().await;
-            bottle.ensure_exists()?;
-            let state = bottle.state();
-            Self::stop_state(&state, &bottle.0.cx).await
-        })
+    pub async fn stop(&self) -> Result<()> {
+        let _write = self.0.write.lock().await;
+        self.ensure_exists()?;
+        Self::stop_state(&self.state(), &self.0.cx).await
     }
 
     /// Prefix effects completed before a metadata save error are not rolled back.

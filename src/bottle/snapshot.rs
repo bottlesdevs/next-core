@@ -19,13 +19,13 @@ impl Bottle {
         &self,
         message: impl Into<String>,
     ) -> Operation<Snapshot, SnapshotProgress> {
-        let stop = self.stop();
+        let bottle = self.clone();
         let repository = self.snapshot_repository();
         let cx = self.0.cx.clone();
         let message = message.into();
         self.0.cx.spawn(move |progress, cancellation| async move {
             progress.send_replace(Some(SnapshotProgress::Stopping));
-            stop.await?;
+            bottle.stop().await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
@@ -53,7 +53,6 @@ impl Bottle {
     }
 
     pub fn rollback(&self, state_id_or_prefix: &str) -> Operation<String, RollbackProgress> {
-        let stop = self.stop();
         let bottle = self.clone();
         let repository = self.snapshot_repository();
         let bottle_path = self.bottle_path();
@@ -62,7 +61,7 @@ impl Bottle {
         let state_id_or_prefix = state_id_or_prefix.to_owned();
         runtime.spawn(move |progress, cancellation| async move {
             progress.send_replace(Some(RollbackProgress::Stopping));
-            stop.await?;
+            bottle.stop().await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
