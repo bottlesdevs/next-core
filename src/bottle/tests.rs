@@ -1,9 +1,6 @@
 use crate::{
     Context, Directories,
-    bottle::{
-        BottleComponents, BottleManager, BottleState, BottleType, RunnerSelection,
-        error::BottleError,
-    },
+    bottle::{BottleManager, BottleState, BottleType, RunnerSelection, error::BottleError},
     compatibility::{
         components::{Component, catalog::ComponentKind},
         dependencies::Dependency,
@@ -49,11 +46,12 @@ async fn bottle_managers_are_scoped_to_their_context_roots() {
             name: name.into(),
             storage: super::PrefixStorage::Standard,
             programs: Vec::new(),
-            components: BottleComponents::new(
-                RunnerSelection::wine(runner.clone()).unwrap(),
-                &bridge,
-            )
-            .unwrap(),
+            runner: RunnerSelection::wine(runner.clone()).unwrap(),
+            winebridge: bridge,
+            dxvk: None,
+            vkd3d: None,
+            nvapi: None,
+            latency_flex: None,
             dependencies: Vec::new(),
             environment: Default::default(),
             wrappers: Wrappers::default(),
@@ -146,12 +144,6 @@ fn proton_umu_components_and_dependencies_round_trip() {
     .unwrap();
     let umu = Component::new(ComponentKind::Umu, "umu-1", bottle_path.join("umu/umu-run")).unwrap();
     let dxvk = Component::new(ComponentKind::Dxvk, "dxvk-1", bottle_path.join("dxvk")).unwrap();
-    let mut components = BottleComponents::new(
-        RunnerSelection::proton(proton.clone(), umu.clone()).unwrap(),
-        &bridge,
-    )
-    .unwrap();
-    components.dxvk = Some(dxvk);
     let dependency: Dependency = serde_json::from_value(serde_json::json!({
         "id": "00000000-0000-0000-0000-000000000001",
         "name": "vcrun2022",
@@ -163,7 +155,12 @@ fn proton_umu_components_and_dependencies_round_trip() {
     let config = BottleState {
         id,
         name: "proton".into(),
-        components,
+        runner: RunnerSelection::proton(proton.clone(), umu.clone()).unwrap(),
+        winebridge: bridge,
+        dxvk: Some(dxvk),
+        vkd3d: None,
+        nvapi: None,
+        latency_flex: None,
         dependencies: vec![dependency],
         storage: super::PrefixStorage::Standard,
         programs: Vec::new(),
@@ -189,10 +186,10 @@ fn proton_umu_components_and_dependencies_round_trip() {
     assert!(stored.contains("[gamescope]"));
     assert!(stored.contains("[mangohud]"));
     assert!(stored.contains("enabled = true"));
-    assert!(stored.contains("[[dependencies]]"));
     assert_eq!(loaded.runner().kind(), RunnerKind::Proton);
-    assert_eq!(loaded.components.umu().unwrap().version(), "umu-1");
-    assert_eq!(loaded.dependencies[0].name(), "vcrun2022");
+    assert_eq!(loaded.runner().umu().unwrap().version(), "umu-1");
+    assert!(stored.contains("[[dependencies]]"));
+    assert_eq!(loaded.dependencies()[0].name(), "vcrun2022");
     assert_eq!(loaded.wrappers, config.wrappers);
     assert_eq!(loaded.environment, config.environment);
 
@@ -274,8 +271,8 @@ mod unix {
         let bottle = Bottle::new(
             id,
             Uuid::new_v4().to_string(),
-            BottleComponents::new(RunnerSelection::wine(runner.clone()).unwrap(), &bridge).unwrap(),
-            Vec::new(),
+            RunnerSelection::wine(runner.clone()).unwrap(),
+            bridge,
             storage,
             context,
         )
@@ -428,8 +425,12 @@ fn virgo_layers_round_trip_through_bottle_toml() {
     let config = BottleState {
         id,
         name: "virgo".into(),
-        components: BottleComponents::new(RunnerSelection::wine(runner.clone()).unwrap(), &bridge)
-            .unwrap(),
+        runner: RunnerSelection::wine(runner.clone()).unwrap(),
+        winebridge: bridge,
+        dxvk: None,
+        vkd3d: None,
+        nvapi: None,
+        latency_flex: None,
         dependencies: Vec::new(),
         storage: super::PrefixStorage::Virgo {
             layers: vec![expected.clone()],

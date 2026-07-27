@@ -4,8 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     Context, Operation,
-    bottle::BottleComponents,
-    compatibility::components::Component,
+    compatibility::components::{Component, catalog::ComponentKind},
     error::{Error, Result},
     runner::load_runner,
 };
@@ -51,11 +50,15 @@ impl BottleManager {
         self.context
             .spawn(move |progress, cancellation| async move {
                 progress.send_replace(Some(CreateProgress::Preparing));
-                let components = BottleComponents::new(runner, &winebridge)?;
+                let selection = runner;
+                selection.validate()?;
+                if winebridge.kind() != ComponentKind::Winebridge {
+                    return Err(BottleError::WinebridgeComponentRequired.into());
+                }
                 let runner = load_runner(
-                    components.runner().runner().path(),
-                    components.runner().kind(),
-                    components.runner().umu().map(Component::path),
+                    selection.runner().path(),
+                    selection.kind(),
+                    selection.umu().map(Component::path),
                 )?;
                 let id = Uuid::new_v4();
                 let bottle_path = cx.directories().bottle(id);
@@ -72,7 +75,7 @@ impl BottleManager {
                         kind,
                         &bottle_path,
                         runner.as_ref(),
-                        &components.runner().runner().id().to_string(),
+                        &selection.runner().id().to_string(),
                         &cx,
                     )
                     .await?;
@@ -81,7 +84,7 @@ impl BottleManager {
                     }
 
                     let bottle =
-                        Bottle::new(id, name, components, Vec::new(), storage, cx.clone()).await?;
+                        Bottle::new(id, name, selection, winebridge, storage, cx.clone()).await?;
                     progress.send_replace(Some(CreateProgress::InitializingRepository));
                     cx.fvs()
                         .await?
