@@ -19,7 +19,7 @@ pub use bottle::{Bottle, BottleComponents, BottleState, BottleType, DeleteProgre
 pub use edit::BottleEdit;
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 pub use manager::{BottleManager, CreateProgress};
-pub use prefix::TransactionProgress;
+pub use prefix::{TransactionPhase, TransactionProgress, Transfer};
 pub use snapshot::{RollbackProgress, SnapshotProgress};
 
 pub(crate) use prefix::{PrefixProgress, PrefixStorage};
