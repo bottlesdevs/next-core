@@ -30,6 +30,7 @@ async fn bottle_managers_are_scoped_to_their_context_roots() {
     let right = test_directories();
 
     for (directories, name) in [(&left, "left"), (&right, "right")] {
+        std::fs::create_dir_all(directories.bottle(id)).unwrap();
         let runner = Component::new(
             ComponentKind::Runner {
                 kind: RunnerKind::Wine,
@@ -88,6 +89,7 @@ fn proton_umu_components_and_dependencies_round_trip() {
     let directories = test_directories();
     let id = uuid::Uuid::new_v4();
     let bottle_path = directories.bottle(id);
+    std::fs::create_dir_all(&bottle_path).unwrap();
     let proton = Component::new(
         ComponentKind::Runner {
             kind: RunnerKind::Proton,
@@ -268,7 +270,14 @@ mod unix {
             },
             ..Default::default()
         };
-        let mut edit = bottle.edit().await;
+        let mut edit = bottle.edit();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), bottle.state())
+                .await
+                .unwrap()
+                .id(),
+            id
+        );
         edit.add_program(program).set_wrappers(wrappers.clone());
         edit.commit().await.unwrap();
         assert_eq!(bottle.state().await.wrappers(), &wrappers);
@@ -277,7 +286,7 @@ mod unix {
         let failed_program_id = failed_program.id;
         let temporary = directories.bottle(bottle_id).join("bottle.tmp");
         fs::create_dir(&temporary).unwrap();
-        let mut edit = bottle.edit().await;
+        let mut edit = bottle.edit();
         edit.add_program(failed_program);
         assert!(edit.commit().await.is_err());
         let bottle = manager.open(bottle_id).await.unwrap();
@@ -347,6 +356,7 @@ fn virgo_layers_round_trip_through_bottle_toml() {
     let directories = test_directories();
     let id = uuid::Uuid::new_v4();
     let bottle_path = directories.bottle(id);
+    std::fs::create_dir_all(&bottle_path).unwrap();
     let repository = Repository {
         repository_path: bottle_path.join("repo").display().to_string(),
         block_size: 4096,

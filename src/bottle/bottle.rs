@@ -141,8 +141,8 @@ impl Bottle {
         self.state.lock().await.clone()
     }
 
-    pub async fn edit(&self) -> BottleEdit<'_> {
-        BottleEdit::new(self.state.lock().await, self.cx.clone())
+    pub fn edit(&self) -> BottleEdit {
+        BottleEdit::new(self.state.clone(), self.cx.clone())
     }
 
     pub fn delete(self) -> crate::Operation<(), DeleteProgress> {
