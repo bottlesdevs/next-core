@@ -61,7 +61,7 @@ impl BottleState {
         &self.components
     }
 
-    pub fn runner(&self) -> &Component {
+    pub fn runner(&self) -> &RunnerSelection {
         self.components.runner()
     }
 
@@ -265,20 +265,22 @@ impl Bottle {
                         Ok(())
                     }
                     ComponentKind::Umu => {
-                        if state.components.runner().kind().runner_kind()
-                            != Some(RunnerKind::Proton)
-                        {
+                        let RunnerSelection::Proton { umu, .. } = &mut state.components.runner
+                        else {
                             return Err(BottleError::WineRunnerWithUmu.into());
-                        }
-                        if state.components.umu.as_ref().map(Component::id) == Some(component.id())
-                        {
+                        };
+                        if umu.id() == component.id() {
                             return Ok(());
                         }
                         Self::stop_state(state, &cx).await?;
                         if cancellation.is_cancelled() {
                             return Err(Error::Cancelled);
                         }
-                        state.components.umu = Some(component.clone());
+                        let RunnerSelection::Proton { umu, .. } = &mut state.components.runner
+                        else {
+                            unreachable!()
+                        };
+                        *umu = component.clone();
                         Ok(())
                     }
                     kind => {
@@ -303,7 +305,7 @@ impl Bottle {
         self.0.cx.spawn(move |progress, cancellation| async move {
             bottle
                 .update(async |state, cx| {
-                    if state.components.runner().id() == id
+                    if state.components.runner().runner().id() == id
                         || state.components.winebridge().id() == id
                         || state
                             .components
@@ -508,11 +510,17 @@ impl Bottle {
         component: &Component,
         umu: Option<&Component>,
     ) -> Result<()> {
+        let selection = match component.kind().runner_kind() {
+            Some(RunnerKind::Wine) if umu.is_none() => RunnerSelection::wine(component.clone())?,
+            Some(RunnerKind::Proton) => RunnerSelection::proton(
+                component.clone(),
+                umu.cloned().ok_or(BottleError::ProtonRunnerWithoutUmu)?,
+            )?,
+            Some(RunnerKind::Wine) => return Err(BottleError::WineRunnerWithUmu.into()),
+            None => return Err(BottleError::RunnerComponentRequired.into()),
+        };
         self.update(async |state, cx| {
-            BottleComponents::new(component, state.components.winebridge(), umu)?;
-            if state.components.runner().id() == component.id()
-                && state.components.umu().map(Component::id) == umu.map(Component::id)
-            {
+            if state.components.runner == selection {
                 return Ok(());
             }
             let installed = (&state.components)
@@ -521,15 +529,14 @@ impl Bottle {
                 .chain(state.dependencies.iter().map(Dependency::id))
                 .collect::<Vec<_>>();
             Self::stop_state(state, &cx).await?;
-            state.components.runner = component.clone();
-            state.components.umu = umu.cloned();
+            state.components.runner = selection;
 
             let runner = Self::load_runner(state)?;
             state
                 .storage
                 .rebuild(
                     runner.as_ref(),
-                    &component.id().to_string(),
+                    &state.components.runner().runner().id().to_string(),
                     &installed,
                     &cx,
                 )
@@ -539,16 +546,11 @@ impl Bottle {
     }
 
     fn load_runner(state: &BottleState) -> Result<Box<dyn Runner>> {
-        let kind = state
-            .components
-            .runner()
-            .kind()
-            .runner_kind()
-            .ok_or(BottleError::RunnerComponentRequired)?;
+        state.components.runner().validate()?;
         crate::runner::load_runner(
-            state.components.runner().path(),
-            kind,
-            state.components.umu().map(Component::path),
+            state.components.runner().runner().path(),
+            state.components.runner().kind(),
+            state.components.runner().umu().map(Component::path),
         )
     }
 
@@ -680,11 +682,63 @@ impl Bottle {
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum RunnerSelection {
+    Wine { runner: Component },
+    Proton { runner: Component, umu: Component },
+}
+
+impl RunnerSelection {
+    pub fn wine(runner: Component) -> Result<Self> {
+        let selection = Self::Wine { runner };
+        selection.validate()?;
+        Ok(selection)
+    }
+
+    pub fn proton(runner: Component, umu: Component) -> Result<Self> {
+        let selection = Self::Proton { runner, umu };
+        selection.validate()?;
+        Ok(selection)
+    }
+
+    pub fn runner(&self) -> &Component {
+        match self {
+            Self::Wine { runner } | Self::Proton { runner, .. } => runner,
+        }
+    }
+
+    pub fn umu(&self) -> Option<&Component> {
+        match self {
+            Self::Wine { .. } => None,
+            Self::Proton { umu, .. } => Some(umu),
+        }
+    }
+
+    pub fn kind(&self) -> RunnerKind {
+        match self {
+            Self::Wine { .. } => RunnerKind::Wine,
+            Self::Proton { .. } => RunnerKind::Proton,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.runner().kind().runner_kind() != Some(self.kind()) {
+            return Err(BottleError::RunnerComponentRequired.into());
+        }
+        if self
+            .umu()
+            .is_some_and(|component| component.kind() != ComponentKind::Umu)
+        {
+            return Err(BottleError::InvalidUmuComponent.into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BottleComponents {
-    pub(crate) runner: Component,
+    pub(crate) runner: RunnerSelection,
     pub(crate) winebridge: Component,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) umu: Option<Component>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) dxvk: Option<Component>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -700,35 +754,15 @@ pub struct BottleComponents {
 }
 
 impl BottleComponents {
-    pub fn new(
-        runner: &Component,
-        winebridge: &Component,
-        umu: Option<&Component>,
-    ) -> Result<Self> {
-        let ComponentKind::Runner { kind } = runner.kind() else {
-            return Err(BottleError::RunnerComponentRequired.into());
-        };
+    pub fn new(runner: RunnerSelection, winebridge: &Component) -> Result<Self> {
+        runner.validate()?;
         if winebridge.kind() != ComponentKind::Winebridge {
             return Err(BottleError::WinebridgeComponentRequired.into());
         }
-        if umu.is_some_and(|component| component.kind() != ComponentKind::Umu) {
-            return Err(BottleError::InvalidUmuComponent.into());
-        }
-
-        match (kind, umu) {
-            (RunnerKind::Wine, Some(_)) => {
-                return Err(BottleError::WineRunnerWithUmu.into());
-            }
-            (RunnerKind::Proton, None) => {
-                return Err(BottleError::ProtonRunnerWithoutUmu.into());
-            }
-            _ => {}
-        }
 
         Ok(Self {
-            runner: runner.clone(),
+            runner,
             winebridge: winebridge.clone(),
-            umu: umu.cloned(),
             dxvk: None,
             vkd3d: None,
             nvapi: None,
@@ -736,7 +770,7 @@ impl BottleComponents {
         })
     }
 
-    pub fn runner(&self) -> &Component {
+    pub fn runner(&self) -> &RunnerSelection {
         &self.runner
     }
 
@@ -745,7 +779,7 @@ impl BottleComponents {
     }
 
     pub fn umu(&self) -> Option<&Component> {
-        self.umu.as_ref()
+        self.runner.umu()
     }
 
     pub fn dxvk(&self) -> Option<&Component> {
@@ -873,7 +907,11 @@ mod tests {
                 storage: PrefixStorage::Standard,
                 programs: Vec::new(),
                 wrappers: Wrappers::default(),
-                components: BottleComponents::new(&runner, &winebridge, None).unwrap(),
+                components: BottleComponents::new(
+                    RunnerSelection::wine(runner.clone()).unwrap(),
+                    &winebridge,
+                )
+                .unwrap(),
                 dependencies: Vec::new(),
                 environment: Environment::default(),
             },
@@ -955,7 +993,11 @@ mod tests {
                 storage: PrefixStorage::Standard,
                 programs: Vec::new(),
                 wrappers: Wrappers::default(),
-                components: BottleComponents::new(&wine, &winebridge, None).unwrap(),
+                components: BottleComponents::new(
+                    RunnerSelection::wine(wine.clone()).unwrap(),
+                    &winebridge,
+                )
+                .unwrap(),
                 dependencies: Vec::new(),
                 environment: Environment::default(),
             },
@@ -987,7 +1029,9 @@ mod tests {
         )
         .unwrap();
         let winebridge = Component::new(ComponentKind::Winebridge, "bridge", "/bridge").unwrap();
-        let mut components = BottleComponents::new(&runner, &winebridge, None).unwrap();
+        let mut components =
+            BottleComponents::new(RunnerSelection::wine(runner.clone()).unwrap(), &winebridge)
+                .unwrap();
 
         for kind in [
             ComponentKind::Dxvk,
