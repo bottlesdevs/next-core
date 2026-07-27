@@ -164,7 +164,6 @@ pub(crate) async fn execute(
         winebridge,
         environment,
     } = inputs;
-    let mut bridge = None;
     let result = async {
         check_cancellation(cancellation)?;
         for resource in resources {
@@ -178,7 +177,6 @@ pub(crate) async fn execute(
                         winebridge,
                         environment: &mut *environment,
                     },
-                    &mut bridge,
                     resource,
                     step,
                     cancellation,
@@ -191,10 +189,7 @@ pub(crate) async fn execute(
     }
     .await;
 
-    let bridge_stopped = match bridge {
-        Some(bridge) => bridge.shutdown().await,
-        None => Ok(()),
-    };
+    let bridge_stopped = shutdown_bridge(prefix).await;
     let runner_stopped = shutdown_prefix(runner, prefix).await;
     result?;
     bridge_stopped?;
@@ -215,7 +210,6 @@ pub(crate) async fn uninstall(
         winebridge,
         environment,
     } = inputs;
-    let mut bridge = None;
 
     let result = async {
         check_cancellation(cancellation)?;
@@ -229,7 +223,6 @@ pub(crate) async fn uninstall(
                         winebridge,
                         environment: &mut *environment,
                     },
-                    &mut bridge,
                     step,
                     restore_files,
                     item_id,
@@ -243,9 +236,7 @@ pub(crate) async fn uninstall(
     }
     .await;
 
-    if let Some(bridge) = bridge {
-        bridge.shutdown().await.log_warn();
-    }
+    shutdown_bridge(prefix).await.log_warn();
     shutdown_prefix(runner, prefix).await.log_warn();
     result
 }
@@ -261,7 +252,6 @@ pub(crate) fn replay_environment(environment: &mut Environment, resources: &[Ins
 async fn execute_step(
     context: &Context,
     inputs: InstallInputs<'_>,
-    bridge: &mut Option<WineBridgeClient>,
     resource: &InstallResource,
     step: &InstallStep,
     cancellation: &CancellationToken,
@@ -326,14 +316,18 @@ async fn execute_step(
             name,
             value,
         } => {
-            let bridge = ensure_bridge(bridge, runner, prefix, winebridge, environment).await?;
+            let command =
+                WineBridgeClient::command(runner, prefix, winebridge).envs(environment.iter());
+            let bridge = WineBridgeClient::connect_or_spawn(prefix, command).await?;
             check_cancellation(cancellation)?;
             bridge
                 .set_registry_value(*hive, key.clone(), name.clone(), value.clone())
                 .await?;
         }
         InstallStep::SetDllOverrides { dlls, mode } => {
-            let bridge = ensure_bridge(bridge, runner, prefix, winebridge, environment).await?;
+            let command =
+                WineBridgeClient::command(runner, prefix, winebridge).envs(environment.iter());
+            let bridge = WineBridgeClient::connect_or_spawn(prefix, command).await?;
             for dll in dlls {
                 check_cancellation(cancellation)?;
                 bridge.set_dll_override(dll.clone(), *mode).await?;
@@ -341,9 +335,7 @@ async fn execute_step(
         }
         InstallStep::SetEnvironment { name, value } => {
             environment.insert(name.clone(), value.clone());
-            if let Some(bridge) = bridge.take() {
-                bridge.shutdown().await?;
-            }
+            shutdown_bridge(prefix).await?;
         }
     }
     Ok(())
@@ -351,7 +343,6 @@ async fn execute_step(
 
 async fn uninstall_step(
     inputs: InstallInputs<'_>,
-    bridge: &mut Option<WineBridgeClient>,
     step: &InstallStep,
     restore_files: bool,
     component_id: Uuid,
@@ -370,10 +361,12 @@ async fn uninstall_step(
         InstallStep::Copy { .. } => {}
         InstallStep::SetEnvironment { name, .. } => {
             environment.remove(name);
+            shutdown_bridge(prefix).await.log_warn();
         }
         InstallStep::SetDllOverrides { dlls, .. } => {
-            let bridge = match ensure_bridge(bridge, runner, prefix, winebridge, environment).await
-            {
+            let command =
+                WineBridgeClient::command(runner, prefix, winebridge).envs(environment.iter());
+            let bridge = match WineBridgeClient::connect_or_spawn(prefix, command).await {
                 Ok(bridge) => bridge,
                 Err(error) => {
                     tracing::warn!(%error);
@@ -427,19 +420,11 @@ fn is_not_found(error: &Error) -> bool {
     matches!(error, Error::Status(status) if status.code() == tonic::Code::NotFound)
 }
 
-async fn ensure_bridge<'a>(
-    bridge: &'a mut Option<WineBridgeClient>,
-    runner: &dyn Runner,
-    prefix: &Path,
-    executable: &Path,
-    environment: &Environment,
-) -> Result<&'a WineBridgeClient> {
-    if bridge.is_none() {
-        let command =
-            WineBridgeClient::command(runner, prefix, executable).envs(environment.iter());
-        *bridge = Some(WineBridgeClient::connect_or_spawn(prefix, command).await?);
+async fn shutdown_bridge(prefix: &Path) -> Result<()> {
+    if let Some(bridge) = WineBridgeClient::try_connect(prefix).await? {
+        bridge.shutdown().await?;
     }
-    Ok(bridge.as_ref().expect("WineBridge was initialized"))
+    Ok(())
 }
 
 fn install_file(source: &Path, prefix: &Path, relative: &Path) -> Result<()> {
