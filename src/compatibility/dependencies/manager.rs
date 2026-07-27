@@ -15,19 +15,13 @@ struct DependencyIndex {
 }
 
 pub struct DependencyManager {
-    context: Context,
     dependencies: Vec<Dependency>,
 }
 
 impl DependencyManager {
     pub(crate) async fn load(context: Context) -> Result<Self> {
-        let manager = Self {
-            context,
-            dependencies: Vec::new(),
-        };
-        let directories = manager.context.directories().clone();
-        let dependencies = manager
-            .context
+        let directories = context.directories().clone();
+        let dependencies = context
             .spawn_blocking(move || {
                 let root = directories.dependencies();
                 let root = fs::canonicalize(root)?;
@@ -74,10 +68,7 @@ impl DependencyManager {
                 Ok(dependencies)
             })
             .await?;
-        Ok(Self {
-            dependencies,
-            ..manager
-        })
+        Ok(Self { dependencies })
     }
 
     pub fn dependencies(&self) -> &[Dependency] {
