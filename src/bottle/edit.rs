@@ -1,4 +1,5 @@
-use tokio::sync::MutexGuard;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::{
@@ -8,8 +9,8 @@ use super::{
 use crate::{Context, error::Result, wrapper::Wrappers};
 
 #[must_use = "edits do nothing unless committed"]
-pub struct BottleEdit<'a> {
-    state: MutexGuard<'a, BottleState>,
+pub struct BottleEdit {
+    state: Arc<Mutex<BottleState>>,
     cx: Context,
     changes: Vec<Change>,
 }
@@ -23,8 +24,8 @@ enum Change {
     SetWrappers(Wrappers),
 }
 
-impl<'a> BottleEdit<'a> {
-    pub(super) fn new(state: MutexGuard<'a, BottleState>, cx: Context) -> Self {
+impl BottleEdit {
+    pub(super) fn new(state: Arc<Mutex<BottleState>>, cx: Context) -> Self {
         Self {
             state,
             cx,
@@ -64,11 +65,8 @@ impl<'a> BottleEdit<'a> {
     }
 
     pub async fn commit(self) -> Result<()> {
-        let BottleEdit {
-            mut state,
-            cx,
-            changes,
-        } = self;
+        let BottleEdit { state, cx, changes } = self;
+        let mut state = state.lock().await;
         Bottle::update(&mut state, &cx, async move |state| {
             for change in changes {
                 match change {
