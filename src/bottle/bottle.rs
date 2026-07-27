@@ -1,5 +1,6 @@
 use std::{future::Future, ops::AsyncFnOnce, path::PathBuf, sync::Arc};
 
+use futures_util::FutureExt;
 use fvs_rs::Layer;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
@@ -203,12 +204,14 @@ impl Bottle {
     /// Launch a tracked program, starting WineBridge if it is not already running.
     pub async fn run(&self, id: Uuid) -> Result<u32> {
         let program = self
-            .state
-            .lock()
-            .await
-            .program(id)
-            .cloned()
-            .ok_or(BottleError::ProgramNotFound(id))?;
+            .state()
+            .map(|state| {
+                state
+                    .program(id)
+                    .cloned()
+                    .ok_or(BottleError::ProgramNotFound(id))
+            })
+            .await?;
         self.with_bridge(move |bridge| async move {
             bridge
                 .launch_process(
