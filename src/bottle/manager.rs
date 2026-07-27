@@ -6,7 +6,7 @@ use crate::{
     Context, Operation,
     bottle::bottle::BottleComponents,
     compatibility::components::Component,
-    error::{Error, Result, ResultExt},
+    error::{Error, Result},
     runner::load_runner,
 };
 
@@ -163,7 +163,7 @@ impl BottleManager {
             })
     }
 
-    pub async fn list(&self) -> Result<Vec<Bottle>> {
+    pub async fn list(&self) -> Result<Vec<Result<Bottle>>> {
         let bottles_path = self.context.directories().bottles();
         let configs = self
             .context
@@ -177,11 +177,7 @@ impl BottleManager {
                 for entry in entries {
                     let path = entry?.path().join("bottle.toml");
                     if path.is_file() {
-                        let Some(config) = next_config::load::<BottleState>(path).log_error()
-                        else {
-                            continue;
-                        };
-                        configs.push(config);
+                        configs.push(next_config::load::<BottleState>(path).map_err(Error::from));
                     }
                 }
                 Ok(configs)
@@ -189,13 +185,14 @@ impl BottleManager {
             .await?;
         let mut bottles = Vec::with_capacity(configs.len());
         for config in configs {
-            bottles.push(
-                Self::intern(
+            bottles.push(match config {
+                Ok(config) => Ok(Self::intern(
                     &self.cache,
                     Bottle::from_state(config, self.context.clone()),
                 )
-                .await,
-            );
+                .await),
+                Err(error) => Err(error),
+            });
         }
         Ok(bottles)
     }
