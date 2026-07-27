@@ -6,7 +6,11 @@ use super::{
     bottle::{Bottle, BottleState, Program},
     error::BottleError,
 };
-use crate::{Context, error::Result, wrapper::Wrappers};
+use crate::{
+    Context,
+    error::Result,
+    wrapper::{gamescope::GamescopeConfig, mangohud::MangoHudConfig},
+};
 
 #[must_use = "edits do nothing unless committed"]
 pub struct BottleEdit {
@@ -21,7 +25,8 @@ enum Change {
     UnsetEnv(String),
     AddProgram(Program),
     RemoveProgram(Uuid),
-    SetWrappers(Wrappers),
+    SetGamescope(GamescopeConfig),
+    SetMangoHud(MangoHudConfig),
 }
 
 impl BottleEdit {
@@ -59,8 +64,13 @@ impl BottleEdit {
         self
     }
 
-    pub fn set_wrappers(&mut self, wrappers: Wrappers) -> &mut Self {
-        self.changes.push(Change::SetWrappers(wrappers));
+    pub fn set_gamescope(&mut self, config: GamescopeConfig) -> &mut Self {
+        self.changes.push(Change::SetGamescope(config));
+        self
+    }
+
+    pub fn set_mangohud(&mut self, config: MangoHudConfig) -> &mut Self {
+        self.changes.push(Change::SetMangoHud(config));
         self
     }
 
@@ -100,7 +110,8 @@ impl BottleEdit {
                             .ok_or(BottleError::ProgramNotFound(id))?;
                         state.programs.remove(index);
                     }
-                    Change::SetWrappers(wrappers) => state.wrappers = wrappers,
+                    Change::SetGamescope(config) => state.wrappers.gamescope = config,
+                    Change::SetMangoHud(config) => state.wrappers.mangohud = config,
                 }
             }
             Ok(())

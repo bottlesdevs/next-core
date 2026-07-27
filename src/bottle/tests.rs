@@ -268,7 +268,7 @@ mod unix {
                 fullscreen: true,
                 ..Default::default()
             },
-            ..Default::default()
+            mangohud: MangoHudConfig { enabled: true },
         };
         let mut edit = bottle.edit();
         assert_eq!(
@@ -278,7 +278,13 @@ mod unix {
                 .id(),
             id
         );
-        edit.add_program(program).set_wrappers(wrappers.clone());
+        edit.add_program(program)
+            .set_gamescope(GamescopeConfig {
+                enabled: true,
+                fullscreen: true,
+                ..Default::default()
+            })
+            .set_mangohud(MangoHudConfig { enabled: true });
         edit.commit().await.unwrap();
         assert_eq!(bottle.state().await.wrappers(), &wrappers);
         let bottle_id = bottle.state().await.id();
