@@ -54,10 +54,9 @@ impl Bottle {
 
     pub fn rollback(&self, state_id_or_prefix: &str) -> Operation<String, RollbackProgress> {
         let stop = self.stop();
-        let id = self.0.id;
+        let bottle = self.clone();
         let repository = self.snapshot_repository();
         let bottle_path = self.bottle_path();
-        let current_state = self.0.state.clone();
         let cx = self.0.cx.clone();
         let runtime = self.0.cx.clone();
         let state_id_or_prefix = state_id_or_prefix.to_owned();
@@ -68,7 +67,8 @@ impl Bottle {
                 return Err(Error::Cancelled);
             }
 
-            let mut current_state = current_state.lock().await;
+            let _write = bottle.0.write.lock().await;
+            bottle.ensure_exists()?;
             let stream = cx
                 .fvs()
                 .await?
@@ -82,14 +82,14 @@ impl Bottle {
             let state: BottleState = cx
                 .spawn_blocking(move || Ok(next_config::load(path)?))
                 .await?;
-            if state.id != id {
+            if state.id != bottle.0.id {
                 return Err(BottleError::IdMismatch {
-                    expected: id,
+                    expected: bottle.0.id,
                     actual: state.id,
                 }
                 .into());
             }
-            *current_state = state;
+            bottle.publish(state);
             Ok(response.state_id)
         })
     }
