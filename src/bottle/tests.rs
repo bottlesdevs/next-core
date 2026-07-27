@@ -48,7 +48,7 @@ async fn bottle_managers_are_scoped_to_their_context_roots() {
         let config = BottleState {
             id,
             name: name.into(),
-            storage: super::bottle::PrefixStorage::Standard,
+            storage: super::PrefixStorage::Standard,
             programs: Vec::new(),
             components: BottleComponents::new(&runner, &bridge, None).unwrap(),
             dependencies: Vec::new(),
@@ -139,7 +139,7 @@ fn proton_umu_components_and_dependencies_round_trip() {
         name: "proton".into(),
         components,
         dependencies: vec![dependency],
-        storage: super::bottle::PrefixStorage::Standard,
+        storage: super::PrefixStorage::Standard,
         programs: Vec::new(),
         wrappers: Wrappers {
             gamescope: GamescopeConfig {
@@ -186,7 +186,7 @@ mod unix {
 
     use super::super::*;
     use super::*;
-    use crate::bottle::bottle::PrefixStorage;
+    use crate::bottle::PrefixStorage;
 
     fn install_wine(runner_path: &Path) {
         let bin = runner_path.join("bin");
@@ -389,7 +389,7 @@ fn virgo_layers_round_trip_through_bottle_toml() {
         name: "virgo".into(),
         components: BottleComponents::new(&runner, &bridge, None).unwrap(),
         dependencies: Vec::new(),
-        storage: super::bottle::PrefixStorage::Virgo {
+        storage: super::PrefixStorage::Virgo {
             layers: vec![expected.clone()],
         },
         programs: Vec::new(),

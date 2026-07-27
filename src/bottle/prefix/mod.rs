@@ -1,0 +1,285 @@
+mod standard;
+mod virgo;
+
+use std::{future::Future, path::Path};
+
+use futures_core::Stream;
+use futures_util::TryStreamExt;
+use fvs_rs::{Commit, Layer, Progress, Repository, RestoreResponse, error::Error as FvsError};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::{Context, error::Result, runner::Runner};
+
+use super::{FVS_BLOCK_SIZE, bottle::BottleType};
+
+pub(super) const CHECKPOINT_MESSAGE: &str = "bottles-next:auto-checkpoint";
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "kind")]
+pub(crate) enum PrefixStorage {
+    Standard,
+    Virgo {
+        #[serde(default)]
+        layers: Vec<Layer>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionProgress {
+    pub phase: String,
+    pub current: i64,
+    pub total: i64,
+    pub message: String,
+}
+
+impl From<&Progress> for TransactionProgress {
+    fn from(progress: &Progress) -> Self {
+        Self {
+            phase: progress.phase.clone(),
+            current: progress.current,
+            total: progress.total,
+            message: progress.message.clone(),
+        }
+    }
+}
+
+pub(crate) enum PrefixProgress {
+    Checkpoint(TransactionProgress),
+    Restore(TransactionProgress),
+}
+
+impl PrefixStorage {
+    pub(crate) async fn create(
+        kind: BottleType,
+        bottle_path: &Path,
+        runner: &dyn Runner,
+        runner_key: &str,
+        context: &Context,
+    ) -> Result<Self> {
+        match kind {
+            BottleType::Standard => {
+                standard::create(bottle_path, runner).await?;
+                Ok(Self::Standard)
+            }
+            BottleType::Virgo => Ok(Self::Virgo {
+                layers: virgo::create(bottle_path, runner, runner_key, context).await?,
+            }),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> BottleType {
+        match self {
+            Self::Standard => BottleType::Standard,
+            Self::Virgo { .. } => BottleType::Virgo,
+        }
+    }
+
+    pub(crate) async fn prepare(&self, bottle_path: &Path, context: &Context) -> Result<()> {
+        match self {
+            Self::Standard => Ok(()),
+            Self::Virgo { layers } => virgo::prepare(bottle_path, layers, context).await,
+        }
+    }
+
+    pub(crate) async fn stop(&self, bottle_path: &Path, context: &Context) -> Result<()> {
+        match self {
+            Self::Standard => Ok(()),
+            Self::Virgo { .. } => virgo::stop(bottle_path, context).await,
+        }
+    }
+
+    pub(crate) async fn rebuild(
+        &mut self,
+        runner: &dyn Runner,
+        runner_key: &str,
+        installed: &[Uuid],
+        context: &Context,
+    ) -> Result<()> {
+        let Self::Virgo { layers } = self else {
+            return Ok(());
+        };
+        virgo::rebuild(layers, runner, runner_key, installed, context).await
+    }
+
+    pub(crate) async fn install<F, P>(
+        &mut self,
+        bottle_path: &Path,
+        item_id: Uuid,
+        replaced_id: Option<Uuid>,
+        execute: F,
+        context: &Context,
+        on_progress: P,
+    ) -> Result<()>
+    where
+        F: for<'a> std::ops::AsyncFnOnce(&'a Path) -> Result<()>,
+        P: FnMut(PrefixProgress),
+    {
+        let work = async {
+            match self {
+                Self::Standard => standard::install(bottle_path, execute).await,
+                Self::Virgo { layers } => {
+                    virgo::install(bottle_path, layers, item_id, replaced_id, execute, context)
+                        .await
+                }
+            }
+        };
+        transact(bottle_path, context, work, on_progress).await
+    }
+
+    pub(crate) async fn uninstall<F, P>(
+        &mut self,
+        bottle_path: &Path,
+        item_id: Uuid,
+        execute: F,
+        context: &Context,
+        on_progress: P,
+    ) -> Result<()>
+    where
+        F: for<'a> std::ops::AsyncFnOnce(&'a Path, bool) -> Result<()>,
+        P: FnMut(PrefixProgress),
+    {
+        let work = async {
+            match self {
+                Self::Standard => standard::uninstall(bottle_path, execute).await,
+                Self::Virgo { layers } => {
+                    virgo::uninstall(bottle_path, layers, item_id, execute, context).await
+                }
+            }
+        };
+        transact(bottle_path, context, work, on_progress).await
+    }
+}
+
+async fn transact<F, T, P>(
+    bottle_path: &Path,
+    context: &Context,
+    work: F,
+    mut on_progress: P,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+    P: FnMut(PrefixProgress),
+{
+    let repository = Repository {
+        repository_path: bottle_path.display().to_string(),
+        block_size: FVS_BLOCK_SIZE,
+    };
+    let stream = context
+        .fvs()
+        .await?
+        .commit_stream(&repository, CHECKPOINT_MESSAGE.into())
+        .await?;
+    let checkpoint = finish_commit(stream, |progress| {
+        on_progress(PrefixProgress::Checkpoint(progress.into()));
+    })
+    .await?;
+
+    match work.await {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            let restored = async {
+                let stream = context
+                    .fvs()
+                    .await?
+                    .restore_stream(
+                        &repository,
+                        &checkpoint.state_id,
+                        None::<&Path>,
+                        true,
+                        false,
+                    )
+                    .await?;
+                finish_restore(stream, |progress| {
+                    on_progress(PrefixProgress::Restore(progress.into()));
+                })
+                .await
+            }
+            .await;
+            if let Err(failed) = restored {
+                tracing::error!(%failed, "prefix rollback failed after {error}");
+            }
+            Err(error)
+        }
+    }
+}
+
+pub(crate) async fn finish_commit(
+    stream: impl Stream<Item = std::result::Result<Progress, FvsError>>,
+    on_progress: impl FnMut(&Progress),
+) -> Result<Commit> {
+    finish_stream(
+        stream,
+        on_progress,
+        |progress| progress.result_commit,
+        "commit",
+    )
+    .await
+}
+
+pub(crate) async fn finish_restore(
+    stream: impl Stream<Item = std::result::Result<Progress, FvsError>>,
+    on_progress: impl FnMut(&Progress),
+) -> Result<RestoreResponse> {
+    finish_stream(
+        stream,
+        on_progress,
+        |progress| progress.result_restore,
+        "restore",
+    )
+    .await
+}
+
+async fn finish_stream<T>(
+    stream: impl Stream<Item = std::result::Result<Progress, FvsError>>,
+    mut on_progress: impl FnMut(&Progress),
+    mut result: impl FnMut(Progress) -> Option<T>,
+    operation: &'static str,
+) -> Result<T> {
+    futures_util::pin_mut!(stream);
+    while let Some(progress) = stream.try_next().await? {
+        on_progress(&progress);
+        if progress.done {
+            return result(progress).ok_or(FvsError::MissingStreamResult(operation).into());
+        }
+    }
+    Err(FvsError::MissingStreamResult(operation).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use futures_util::stream;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn finish_commit_forwards_progress_and_returns_terminal_result() {
+        let updates = [
+            Progress {
+                phase: "hashing".into(),
+                current: 1,
+                total: 2,
+                ..Default::default()
+            },
+            Progress {
+                phase: "done".into(),
+                done: true,
+                result_commit: Some(Commit {
+                    state_id: "checkpoint".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ];
+        let mut phases = Vec::new();
+
+        let commit = finish_commit(stream::iter(updates.map(Ok::<_, FvsError>)), |progress| {
+            phases.push(progress.phase.clone())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(phases, ["hashing", "done"]);
+        assert_eq!(commit.state_id, "checkpoint");
+    }
+}

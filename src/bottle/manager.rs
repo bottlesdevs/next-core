@@ -11,8 +11,8 @@ use crate::{
 };
 
 use super::{
-    FVS_BLOCK_SIZE,
-    bottle::{Bottle, BottleState, BottleType, PrefixStorage},
+    FVS_BLOCK_SIZE, PrefixStorage,
+    bottle::{Bottle, BottleState, BottleType},
     error::BottleError,
 };
 

@@ -3,8 +3,8 @@ mod bottle;
 mod edit;
 pub(crate) mod error;
 mod manager;
+pub(crate) mod prefix;
 mod snapshot;
-mod virgo;
 
 #[cfg(test)]
 mod tests;
@@ -19,6 +19,9 @@ pub use bottle::{Bottle, BottleComponents, BottleState, BottleType, DeleteProgre
 pub use edit::BottleEdit;
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 pub use manager::{BottleManager, CreateProgress};
-pub use snapshot::RollbackProgress;
+pub use prefix::TransactionProgress;
+pub use snapshot::{RollbackProgress, SnapshotProgress};
+
+pub(crate) use prefix::{PrefixProgress, PrefixStorage};
 
 pub(super) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
