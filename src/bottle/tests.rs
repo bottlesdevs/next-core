@@ -68,14 +68,46 @@ async fn bottle_managers_are_scoped_to_their_context_roots() {
         right_manager.open(id).await.unwrap().state().name(),
         "right"
     );
-    assert_eq!(left_manager.list().await.unwrap()[0].state().name(), "left");
     assert_eq!(
-        right_manager.list().await.unwrap()[0].state().name(),
+        left_manager.list().await.unwrap()[0]
+            .as_ref()
+            .unwrap()
+            .state()
+            .name(),
+        "left"
+    );
+    assert_eq!(
+        right_manager.list().await.unwrap()[0]
+            .as_ref()
+            .unwrap()
+            .state()
+            .name(),
         "right"
     );
 
     std::fs::remove_dir_all(left.data_dir()).unwrap();
     std::fs::remove_dir_all(right.data_dir()).unwrap();
+}
+
+#[tokio::test]
+async fn list_reports_corrupt_bottles() {
+    let directories = test_directories();
+    let id = uuid::Uuid::new_v4();
+    std::fs::create_dir_all(directories.bottle(id)).unwrap();
+    std::fs::write(
+        directories.bottle(id).join("bottle.toml"),
+        "not valid toml =",
+    )
+    .unwrap();
+    let manager = BottleManager::new(
+        Context::new(directories.clone(), directories.data_dir().join("fvs2d")).unwrap(),
+    );
+
+    let bottles = manager.list().await.unwrap();
+
+    assert_eq!(bottles.len(), 1);
+    assert!(bottles[0].is_err());
+    std::fs::remove_dir_all(directories.data_dir()).unwrap();
 }
 
 #[test]
