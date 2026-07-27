@@ -1,3 +1,5 @@
+//! Snapshot history operations.
+
 use std::path::Path;
 
 use fvs_rs::{Repository, RestoreResponse};
@@ -9,9 +11,9 @@ use crate::{
 
 use super::{
     Bottle, FVS_BLOCK_SIZE, Snapshot, SnapshotSummary,
-    bottle::BottleState,
     error::BottleError,
     prefix::{CHECKPOINT_MESSAGE, TransactionProgress, finish_commit, finish_restore},
+    state::BottleState,
 };
 
 impl Bottle {

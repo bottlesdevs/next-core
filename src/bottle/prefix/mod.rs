@@ -16,7 +16,7 @@ use crate::{
     runner::Runner,
 };
 
-use super::{FVS_BLOCK_SIZE, bottle::BottleType};
+use super::{FVS_BLOCK_SIZE, state::BottleType};
 
 pub(super) const CHECKPOINT_MESSAGE: &str = "bottles-next:auto-checkpoint";
 

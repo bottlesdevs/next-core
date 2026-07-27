@@ -1,8 +1,8 @@
 use uuid::Uuid;
 
 use super::{
-    bottle::{Bottle, Program},
     error::BottleError,
+    state::{Bottle, Program},
 };
 use crate::{
     error::Result,

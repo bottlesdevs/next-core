@@ -1,8 +1,7 @@
 use crate::{
     Context, Directories,
     bottle::{
-        BottleManager,
-        bottle::{BottleComponents, BottleState, RunnerSelection},
+        BottleComponents, BottleManager, BottleState, BottleType, RunnerSelection,
         error::BottleError,
     },
     compatibility::{
@@ -452,7 +451,7 @@ fn virgo_layers_round_trip_through_bottle_toml() {
         "path = \"{}\"",
         bottle_path.join("prefix").display()
     )));
-    assert_eq!(loaded.kind(), super::bottle::BottleType::Virgo);
+    assert_eq!(loaded.kind(), BottleType::Virgo);
     assert!(stored.contains("state"));
 
     std::fs::remove_dir_all(directories.data_dir()).unwrap();
