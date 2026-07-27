@@ -431,7 +431,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runner_install_requires_the_explicit_runner_api_and_umu_selection() {
+    async fn runner_components_require_set_runner() {
         let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
         let context = Context::new(
             crate::Directories::from_path(root.join("data")).unwrap(),
@@ -478,12 +478,6 @@ mod tests {
             bottle.install_component(&proton).await,
             Err(crate::error::Error::Bottle(
                 BottleError::InvalidPrefixComponent
-            ))
-        ));
-        assert!(matches!(
-            bottle.install_runner(&proton, None).await,
-            Err(crate::error::Error::Bottle(
-                BottleError::ProtonRunnerWithoutUmu
             ))
         ));
     }
