@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     Context,
+    bottle::{PrefixProgress, TransactionProgress},
     error::{Error, Result, ResultExt},
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
     runner::{Command, Runner, Spawnable, shutdown_prefix},
@@ -68,6 +69,8 @@ pub enum InstallStep {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstallProgress {
+    Checkpoint(TransactionProgress),
+    Restore(TransactionProgress),
     Copy,
     Execute,
     Extract,
@@ -75,6 +78,15 @@ pub enum InstallProgress {
     SetRegistryValue,
     SetDllOverrides,
     SetEnvironment,
+}
+
+impl From<PrefixProgress> for InstallProgress {
+    fn from(progress: PrefixProgress) -> Self {
+        match progress {
+            PrefixProgress::Checkpoint(progress) => Self::Checkpoint(progress),
+            PrefixProgress::Restore(progress) => Self::Restore(progress),
+        }
+    }
 }
 
 impl From<&InstallStep> for InstallProgress {
@@ -93,10 +105,21 @@ impl From<&InstallStep> for InstallProgress {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UninstallProgress {
+    Checkpoint(TransactionProgress),
+    Restore(TransactionProgress),
     RevertFile,
     RemoveDllOverrides,
     RemoveEnvironmentVariable,
     SkipUnsupported,
+}
+
+impl From<PrefixProgress> for UninstallProgress {
+    fn from(progress: PrefixProgress) -> Self {
+        match progress {
+            PrefixProgress::Checkpoint(progress) => Self::Checkpoint(progress),
+            PrefixProgress::Restore(progress) => Self::Restore(progress),
+        }
+    }
 }
 
 impl From<&InstallStep> for UninstallProgress {

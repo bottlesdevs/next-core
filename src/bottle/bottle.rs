@@ -1,21 +1,18 @@
 use std::{future::Future, ops::AsyncFnOnce, path::PathBuf, sync::Arc};
 
 use futures_util::FutureExt;
-use fvs_rs::Layer;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use super::{edit::BottleEdit, error::BottleError};
+use super::{PrefixStorage, edit::BottleEdit, error::BottleError};
 use crate::{
     Context, Operation,
     compatibility::{
         components::{Component, catalog::ComponentKind},
         dependencies::Dependency,
-        installer::{
-            InstallProgress, InstallResource, InstallStep, Installable, UninstallProgress,
-        },
+        installer::{InstallProgress, InstallResource, Installable, UninstallProgress},
     },
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
@@ -252,7 +249,7 @@ impl Bottle {
         })
     }
 
-    /// Standard-prefix effects completed before a metadata error are not rolled back.
+    /// Prefix effects completed before a metadata save error are not rolled back.
     pub fn install_component(&self, component: &Component) -> Operation<(), InstallProgress> {
         let component = component.clone();
         let state = self.state.clone();
@@ -292,16 +289,14 @@ impl Bottle {
                     .await
                 }
                 kind => {
-                    Self::install_prefix_component(&mut state, &cx, &component, kind, move |step| {
-                        progress.send_replace(Some(step.into()));
-                    })
-                    .await
+                    Self::install_prefix_component(&mut state, &cx, &component, kind, progress)
+                        .await
                 }
             }
         })
     }
 
-    /// Standard-prefix effects completed before a metadata error are not rolled back.
+    /// Prefix effects completed before a metadata save error are not rolled back.
     pub fn uninstall_component(&self, id: Uuid) -> Operation<Component, UninstallProgress> {
         let state = self.state.clone();
         let cx = self.cx.clone();
@@ -327,6 +322,7 @@ impl Bottle {
 
             let resources = component.prepare(cx.directories())?;
             let winebridge = state.components.winebridge.path().to_path_buf();
+            let prefix_progress = progress.clone();
             Self::update(&mut state, &cx, async |state| {
                 Self::stop_state(state, &cx).await?;
                 state
@@ -365,6 +361,9 @@ impl Bottle {
                             .await
                         },
                         &context,
+                        move |event| {
+                            prefix_progress.send_replace(Some(event.into()));
+                        },
                     )
                     .await
             })
@@ -378,7 +377,7 @@ impl Bottle {
         cx: &Context,
         component: &Component,
         kind: ComponentKind,
-        on_step: impl Fn(&InstallStep) + Send,
+        progress: tokio::sync::watch::Sender<Option<InstallProgress>>,
     ) -> Result<()> {
         let installed = state.components.slot(kind)?;
         if installed.map(Component::id) == Some(component.id()) {
@@ -396,23 +395,22 @@ impl Bottle {
                 config.components.slot_mut(kind)?.replace(component.clone());
                 Ok(())
             },
-            on_step,
+            progress,
         )
         .await
     }
 
-    async fn install_item<F, O>(
+    async fn install_item<F>(
         state: &mut BottleState,
         cx: &Context,
         item_id: Uuid,
         replaced_id: Option<Uuid>,
         resources: Vec<InstallResource>,
         update_config: F,
-        on_step: O,
+        progress: tokio::sync::watch::Sender<Option<InstallProgress>>,
     ) -> Result<()>
     where
         F: FnOnce(&mut BottleState) -> Result<()>,
-        O: Fn(&InstallStep) + Send,
     {
         Self::update(state, cx, async move |state| {
             Self::stop_state(state, cx).await?;
@@ -427,6 +425,7 @@ impl Bottle {
                 environment,
                 ..
             } = state;
+            let step_progress = progress.clone();
             storage
                 .install(
                     &bottle_path,
@@ -442,11 +441,16 @@ impl Bottle {
                                 environment,
                             },
                             &resources,
-                            on_step,
+                            move |step| {
+                                step_progress.send_replace(Some(step.into()));
+                            },
                         )
                         .await
                     },
                     &context,
+                    move |event| {
+                        progress.send_replace(Some(event.into()));
+                    },
                 )
                 .await?;
             crate::compatibility::installer::replay_environment(environment, &resources);
@@ -455,7 +459,7 @@ impl Bottle {
         .await
     }
 
-    /// Standard-prefix effects completed before a metadata error are not rolled back.
+    /// Prefix effects completed before a metadata save error are not rolled back.
     pub fn install_dependency(&self, dependency: &Dependency) -> Operation<(), InstallProgress> {
         let dependency = dependency.clone();
         let state = self.state.clone();
@@ -481,9 +485,7 @@ impl Bottle {
                     config.dependencies.push(dependency.clone());
                     Ok(())
                 },
-                move |step| {
-                    progress.send_replace(Some(step.into()));
-                },
+                progress,
             )
             .await
         })
@@ -802,16 +804,6 @@ impl Program {
 pub enum BottleType {
     Standard,
     Virgo,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "kind")]
-pub(crate) enum PrefixStorage {
-    Standard,
-    Virgo {
-        #[serde(default)]
-        layers: Vec<Layer>,
-    },
 }
 
 #[cfg(test)]
