@@ -12,7 +12,7 @@ use crate::{
 
 use super::{
     FVS_BLOCK_SIZE, PrefixStorage,
-    bottle::{Bottle, BottleCache, BottleState, BottleType, DeleteProgress},
+    bottle::{Bottle, BottleCache, BottleState, BottleType, DeleteProgress, RunnerSelection},
     error::BottleError,
 };
 
@@ -41,28 +41,21 @@ impl BottleManager {
         &self,
         name: impl Into<String>,
         kind: BottleType,
-        runner: &Component,
+        runner: RunnerSelection,
         winebridge: &Component,
-        umu: Option<&Component>,
     ) -> Operation<Bottle, CreateProgress> {
         let name = name.into();
-        let runner = runner.clone();
         let winebridge = winebridge.clone();
-        let umu = umu.cloned();
         let cx = self.context.clone();
         let cache = self.cache.clone();
         self.context
             .spawn(move |progress, cancellation| async move {
                 progress.send_replace(Some(CreateProgress::Preparing));
-                let runner_kind = runner
-                    .kind()
-                    .runner_kind()
-                    .ok_or(BottleError::RunnerComponentRequired)?;
-                let components = BottleComponents::new(&runner, &winebridge, umu.as_ref())?;
+                let components = BottleComponents::new(runner, &winebridge)?;
                 let runner = load_runner(
-                    runner.path(),
-                    runner_kind,
-                    umu.as_ref().map(Component::path),
+                    components.runner().runner().path(),
+                    components.runner().kind(),
+                    components.runner().umu().map(Component::path),
                 )?;
                 let id = Uuid::new_v4();
                 let bottle_path = cx.directories().bottle(id);
@@ -79,7 +72,7 @@ impl BottleManager {
                         kind,
                         &bottle_path,
                         runner.as_ref(),
-                        &components.runner().id().to_string(),
+                        &components.runner().runner().id().to_string(),
                         &cx,
                     )
                     .await?;

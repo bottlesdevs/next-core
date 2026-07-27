@@ -15,7 +15,9 @@ pub use crate::wrapper::{
     gamescope::{Filter as GamescopeFilter, GamescopeConfig, Scaler as GamescopeScaler},
     mangohud::MangoHudConfig,
 };
-pub use bottle::{Bottle, BottleComponents, BottleState, BottleType, DeleteProgress, Program};
+pub use bottle::{
+    Bottle, BottleComponents, BottleState, BottleType, DeleteProgress, Program, RunnerSelection,
+};
 pub use edit::BottleEdit;
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 pub use manager::{BottleManager, CreateProgress};

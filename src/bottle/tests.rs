@@ -2,7 +2,7 @@ use crate::{
     Context, Directories,
     bottle::{
         BottleManager,
-        bottle::{BottleComponents, BottleState},
+        bottle::{BottleComponents, BottleState, RunnerSelection},
         error::BottleError,
     },
     compatibility::{
@@ -50,7 +50,11 @@ async fn bottle_managers_are_scoped_to_their_context_roots() {
             name: name.into(),
             storage: super::PrefixStorage::Standard,
             programs: Vec::new(),
-            components: BottleComponents::new(&runner, &bridge, None).unwrap(),
+            components: BottleComponents::new(
+                RunnerSelection::wine(runner.clone()).unwrap(),
+                &bridge,
+            )
+            .unwrap(),
             dependencies: Vec::new(),
             environment: Default::default(),
             wrappers: Wrappers::default(),
@@ -135,14 +139,6 @@ fn proton_umu_components_and_dependencies_round_trip() {
         bottle_path.join("proton"),
     )
     .unwrap();
-    let wine = Component::new(
-        ComponentKind::Runner {
-            kind: RunnerKind::Wine,
-        },
-        "wine-1",
-        bottle_path.join("wine"),
-    )
-    .unwrap();
     let bridge = Component::new(
         ComponentKind::Winebridge,
         "bridge-1",
@@ -151,17 +147,11 @@ fn proton_umu_components_and_dependencies_round_trip() {
     .unwrap();
     let umu = Component::new(ComponentKind::Umu, "umu-1", bottle_path.join("umu/umu-run")).unwrap();
     let dxvk = Component::new(ComponentKind::Dxvk, "dxvk-1", bottle_path.join("dxvk")).unwrap();
-    assert!(matches!(
-        BottleComponents::new(&proton, &bridge, None),
-        Err(crate::error::Error::Bottle(
-            BottleError::ProtonRunnerWithoutUmu
-        ))
-    ));
-    assert!(matches!(
-        BottleComponents::new(&wine, &bridge, Some(&umu)),
-        Err(crate::error::Error::Bottle(BottleError::WineRunnerWithUmu))
-    ));
-    let mut components = BottleComponents::new(&proton, &bridge, Some(&umu)).unwrap();
+    let mut components = BottleComponents::new(
+        RunnerSelection::proton(proton.clone(), umu.clone()).unwrap(),
+        &bridge,
+    )
+    .unwrap();
     components.dxvk = Some(dxvk);
     let dependency: Dependency = serde_json::from_value(serde_json::json!({
         "id": "00000000-0000-0000-0000-000000000001",
@@ -195,18 +185,13 @@ fn proton_umu_components_and_dependencies_round_trip() {
     next_config::save(&path, &config).unwrap();
     let loaded: BottleState = next_config::load(&path).unwrap();
     let stored = std::fs::read_to_string(&path).unwrap();
-    assert!(stored.contains("[umu]"));
+    assert!(stored.contains("[runner.umu]"));
     assert!(stored.contains("[dxvk]"));
     assert!(stored.contains("[gamescope]"));
     assert!(stored.contains("[mangohud]"));
     assert!(stored.contains("enabled = true"));
     assert!(stored.contains("[[dependencies]]"));
-    assert_eq!(
-        loaded.components.runner().kind(),
-        ComponentKind::Runner {
-            kind: RunnerKind::Proton
-        }
-    );
+    assert_eq!(loaded.runner().kind(), RunnerKind::Proton);
     assert_eq!(loaded.components.umu().unwrap().version(), "umu-1");
     assert_eq!(loaded.dependencies[0].name(), "vcrun2022");
     assert_eq!(loaded.wrappers, config.wrappers);
@@ -290,7 +275,7 @@ mod unix {
         let bottle = Bottle::new(
             id,
             Uuid::new_v4().to_string(),
-            BottleComponents::new(&runner, &bridge, None).unwrap(),
+            BottleComponents::new(RunnerSelection::wine(runner.clone()).unwrap(), &bridge).unwrap(),
             Vec::new(),
             storage,
             context,
@@ -337,12 +322,15 @@ mod unix {
                 .all(|program| program.id != failed_program_id)
         );
         fs::remove_dir(temporary).unwrap();
-        let runner_id = bottle.state().unwrap().runner().id();
+        let runner_id = bottle.state().unwrap().runner().runner().id();
         drop(bottle);
 
         let reopened = manager.open(bottle_id).await.unwrap();
-        assert_eq!(reopened.state().unwrap().runner().id(), runner_id);
-        assert_eq!(reopened.state().unwrap().runner().path(), runner_root);
+        assert_eq!(reopened.state().unwrap().runner().runner().id(), runner_id);
+        assert_eq!(
+            reopened.state().unwrap().runner().runner().path(),
+            runner_root
+        );
         assert_eq!(reopened.state().unwrap().kind(), BottleType::Standard);
         assert_eq!(
             reopened.state().unwrap().program(program_id).unwrap().name,
@@ -441,7 +429,8 @@ fn virgo_layers_round_trip_through_bottle_toml() {
     let config = BottleState {
         id,
         name: "virgo".into(),
-        components: BottleComponents::new(&runner, &bridge, None).unwrap(),
+        components: BottleComponents::new(RunnerSelection::wine(runner.clone()).unwrap(), &bridge)
+            .unwrap(),
         dependencies: Vec::new(),
         storage: super::PrefixStorage::Virgo {
             layers: vec![expected.clone()],
