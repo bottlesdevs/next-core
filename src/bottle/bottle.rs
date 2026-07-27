@@ -163,7 +163,7 @@ impl Bottle {
     }
 
     pub fn edit(&self) -> BottleEdit {
-        BottleEdit::new(self.0.clone())
+        BottleEdit::new(self.clone())
     }
 
     pub async fn dll_overrides(&self) -> Result<Vec<DllOverride>> {

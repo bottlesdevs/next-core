@@ -1,8 +1,7 @@
-use std::sync::Arc;
 use uuid::Uuid;
 
 use super::{
-    bottle::{Bottle, BottleInner, Program},
+    bottle::{Bottle, Program},
     error::BottleError,
 };
 use crate::{
@@ -12,7 +11,7 @@ use crate::{
 
 #[must_use = "edits do nothing unless committed"]
 pub struct BottleEdit {
-    inner: Arc<BottleInner>,
+    bottle: Bottle,
     changes: Vec<Change>,
 }
 
@@ -27,9 +26,9 @@ enum Change {
 }
 
 impl BottleEdit {
-    pub(super) fn new(inner: Arc<BottleInner>) -> Self {
+    pub(super) fn new(bottle: Bottle) -> Self {
         Self {
-            inner,
+            bottle,
             changes: Vec::new(),
         }
     }
@@ -71,8 +70,7 @@ impl BottleEdit {
     }
 
     pub async fn commit(self) -> Result<()> {
-        let BottleEdit { inner, changes } = self;
-        let bottle = Bottle::from_inner(inner);
+        let BottleEdit { bottle, changes } = self;
         bottle
             .update(async move |state, _| {
                 for change in changes {
