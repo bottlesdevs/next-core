@@ -1,4 +1,13 @@
-use std::{future::Future, ops::AsyncFnOnce, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    future::Future,
+    ops::AsyncFnOnce,
+    path::PathBuf,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use futures_util::FutureExt;
 use next_config::Config;
@@ -89,11 +98,17 @@ impl BottleState {
     }
 }
 
-pub struct Bottle {
+pub(crate) type BottleCache = Mutex<HashMap<Uuid, Weak<BottleInner>>>;
+
+pub(crate) struct BottleInner {
     pub(crate) state: Arc<Mutex<BottleState>>,
     pub(crate) id: Uuid,
     pub(crate) cx: Context,
+    deleted: AtomicBool,
 }
+
+#[derive(Clone)]
+pub struct Bottle(pub(crate) Arc<BottleInner>);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeleteProgress {
@@ -133,34 +148,24 @@ impl Bottle {
     }
 
     pub(crate) fn from_shared_state(id: Uuid, state: Arc<Mutex<BottleState>>, cx: Context) -> Self {
-        Self { id, state, cx }
+        Self::from_inner(Arc::new(BottleInner {
+            id,
+            state,
+            cx,
+            deleted: AtomicBool::new(false),
+        }))
+    }
+
+    pub(crate) fn from_inner(inner: Arc<BottleInner>) -> Self {
+        Self(inner)
     }
 
     pub async fn state(&self) -> BottleState {
-        self.state.lock().await.clone()
+        self.0.state.lock().await.clone()
     }
 
     pub fn edit(&self) -> BottleEdit {
-        BottleEdit::new(self.state.clone(), self.cx.clone())
-    }
-
-    pub fn delete(self) -> crate::Operation<(), DeleteProgress> {
-        let runtime = self.cx.clone();
-        let cx = self.cx.clone();
-        runtime.spawn(move |progress, cancellation| async move {
-            progress.send_replace(Some(DeleteProgress::Stopping));
-            self.stop().await?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            progress.send_replace(Some(DeleteProgress::Removing));
-            let path = cx.directories().bottle(self.id);
-            cx.spawn_blocking(move || {
-                std::fs::remove_dir_all(path)?;
-                Ok(())
-            })
-            .await
-        })
+        BottleEdit::new(self.0.clone())
     }
 
     pub async fn dll_overrides(&self) -> Result<Vec<DllOverride>> {
@@ -202,6 +207,7 @@ impl Bottle {
 
     /// Launch a tracked program, starting WineBridge if it is not already running.
     pub async fn run(&self, id: Uuid) -> Result<u32> {
+        self.ensure_exists()?;
         let program = self
             .state()
             .map(|state| {
@@ -233,7 +239,8 @@ impl Bottle {
 
     /// Kill a tracked program by UUID, starting WineBridge if necessary.
     pub async fn kill(&self, id: Uuid) -> Result<()> {
-        if self.state.lock().await.program(id).is_none() {
+        self.ensure_exists()?;
+        if self.0.state.lock().await.program(id).is_none() {
             return Err(BottleError::ProgramNotFound(id).into());
         }
         self.with_bridge(move |bridge| async move { bridge.kill_process(id).await })
@@ -242,35 +249,34 @@ impl Bottle {
 
     /// Stop WineBridge, wineserver, and prefix storage.
     pub fn stop(&self) -> Operation<(), ()> {
-        let state = self.state.clone();
-        let cx = self.cx.clone();
-        let runtime = self.cx.clone();
-        runtime.spawn(move |_, _| async move {
-            let state = state.lock().await;
-            Self::stop_state(&state, &cx).await
+        let bottle = self.clone();
+        self.0.cx.spawn(move |_, _| async move {
+            bottle.ensure_exists()?;
+            let state = bottle.0.state.lock().await;
+            Self::stop_state(&state, &bottle.0.cx).await
         })
     }
 
     /// Prefix effects completed before a metadata save error are not rolled back.
     pub fn install_component(&self, component: &Component) -> Operation<(), InstallProgress> {
         let component = component.clone();
-        let state = self.state.clone();
-        let cx = self.cx.clone();
-        let runtime = self.cx.clone();
-        runtime.spawn(move |progress, cancellation| async move {
+        let bottle = self.clone();
+        self.0.cx.spawn(move |progress, cancellation| async move {
+            bottle.ensure_exists()?;
+            let cx = &bottle.0.cx;
             let kind = component.kind();
             if matches!(kind, ComponentKind::Runner { .. }) {
                 return Err(BottleError::RunnerRequiresExplicitInstall.into());
             }
-            let mut state = state.lock().await;
+            let mut state = bottle.0.state.lock().await;
             match kind {
                 ComponentKind::Runner { .. } => unreachable!(),
                 ComponentKind::Winebridge => {
                     if state.components.winebridge.id() == component.id() {
                         return Ok(());
                     }
-                    Self::update(&mut state, &cx, async |state| {
-                        Self::stop_state(state, &cx).await?;
+                    Self::update(&mut state, cx, async |state| {
+                        Self::stop_state(state, cx).await?;
                         if cancellation.is_cancelled() {
                             return Err(Error::Cancelled);
                         }
@@ -286,8 +292,8 @@ impl Bottle {
                     if state.components.umu.as_ref().map(Component::id) == Some(component.id()) {
                         return Ok(());
                     }
-                    Self::update(&mut state, &cx, async |state| {
-                        Self::stop_state(state, &cx).await?;
+                    Self::update(&mut state, cx, async |state| {
+                        Self::stop_state(state, cx).await?;
                         if cancellation.is_cancelled() {
                             return Err(Error::Cancelled);
                         }
@@ -299,7 +305,7 @@ impl Bottle {
                 kind => {
                     Self::install_prefix_component(
                         &mut state,
-                        &cx,
+                        cx,
                         &component,
                         kind,
                         progress,
@@ -313,11 +319,11 @@ impl Bottle {
 
     /// Prefix effects completed before a metadata save error are not rolled back.
     pub fn uninstall_component(&self, id: Uuid) -> Operation<Component, UninstallProgress> {
-        let state = self.state.clone();
-        let cx = self.cx.clone();
-        let runtime = self.cx.clone();
-        runtime.spawn(move |progress, cancellation| async move {
-            let mut state = state.lock().await;
+        let bottle = self.clone();
+        self.0.cx.spawn(move |progress, cancellation| async move {
+            bottle.ensure_exists()?;
+            let cx = &bottle.0.cx;
+            let mut state = bottle.0.state.lock().await;
             if state.components.runner().id() == id
                 || state.components.winebridge().id() == id
                 || state
@@ -338,8 +344,8 @@ impl Bottle {
             let resources = component.prepare(cx.directories())?;
             let winebridge = state.components.winebridge.path().to_path_buf();
             let prefix_progress = progress.clone();
-            Self::update(&mut state, &cx, async |state| {
-                Self::stop_state(state, &cx).await?;
+            Self::update(&mut state, cx, async |state| {
+                Self::stop_state(state, cx).await?;
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
@@ -491,11 +497,11 @@ impl Bottle {
     /// Prefix effects completed before a metadata save error are not rolled back.
     pub fn install_dependency(&self, dependency: &Dependency) -> Operation<(), InstallProgress> {
         let dependency = dependency.clone();
-        let state = self.state.clone();
-        let cx = self.cx.clone();
-        let runtime = self.cx.clone();
-        runtime.spawn(move |progress, cancellation| async move {
-            let mut state = state.lock().await;
+        let bottle = self.clone();
+        self.0.cx.spawn(move |progress, cancellation| async move {
+            bottle.ensure_exists()?;
+            let cx = &bottle.0.cx;
+            let mut state = bottle.0.state.lock().await;
             if state
                 .dependencies
                 .iter()
@@ -506,7 +512,7 @@ impl Bottle {
             let resources = dependency.prepare(cx.directories())?;
             Self::install_item(
                 &mut state,
-                &cx,
+                cx,
                 dependency.id(),
                 None,
                 resources,
@@ -526,7 +532,8 @@ impl Bottle {
         component: &Component,
         umu: Option<&Component>,
     ) -> Result<()> {
-        let mut state = self.state.lock().await;
+        self.ensure_exists()?;
+        let mut state = self.0.state.lock().await;
         BottleComponents::new(component, state.components.winebridge(), umu)?;
         if state.components.runner().id() == component.id()
             && state.components.umu().map(Component::id) == umu.map(Component::id)
@@ -538,8 +545,8 @@ impl Bottle {
             .map(Component::id)
             .chain(state.dependencies.iter().map(Dependency::id))
             .collect::<Vec<_>>();
-        Self::update(&mut state, &self.cx, async |state| {
-            Self::stop_state(state, &self.cx).await?;
+        Self::update(&mut state, &self.0.cx, async |state| {
+            Self::stop_state(state, &self.0.cx).await?;
             state.components.runner = component.clone();
             state.components.umu = umu.cloned();
 
@@ -550,7 +557,7 @@ impl Bottle {
                     runner.as_ref(),
                     &component.id().to_string(),
                     &installed,
-                    &self.cx,
+                    &self.0.cx,
                 )
                 .await
         })
@@ -569,6 +576,22 @@ impl Bottle {
             kind,
             state.components.umu().map(Component::path),
         )
+    }
+
+    pub(crate) fn ensure_exists(&self) -> Result<()> {
+        if self.is_deleted() {
+            Err(BottleError::Deleted(self.0.id).into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn is_deleted(&self) -> bool {
+        self.0.deleted.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_deleted(&self) {
+        self.0.deleted.store(true, Ordering::Release);
     }
 
     pub(super) async fn update<F, R>(
@@ -595,7 +618,7 @@ impl Bottle {
     }
 
     pub(crate) fn bottle_path(&self) -> PathBuf {
-        self.cx.directories().bottle(self.id)
+        self.0.cx.directories().bottle(self.0.id)
     }
 
     pub(crate) fn prefix_path(&self) -> PathBuf {
@@ -603,8 +626,8 @@ impl Bottle {
     }
 
     async fn save(&self) -> Result<()> {
-        let state = self.state.lock().await;
-        Self::save_state(&state, &self.cx).await
+        let state = self.0.state.lock().await;
+        Self::save_state(&state, &self.0.cx).await
     }
 
     async fn save_state(state: &BottleState, cx: &Context) -> Result<()> {
@@ -659,12 +682,13 @@ impl Bottle {
         F: FnOnce(WineBridgeClient) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
-        let state = self.state.lock().await;
+        self.ensure_exists()?;
+        let state = self.0.state.lock().await;
         let runner = Self::load_runner(&state)?;
         let bottle_path = self.bottle_path();
         let prefix = self.prefix_path();
         let storage = state.storage.clone();
-        let cx = self.cx.clone();
+        let cx = self.0.cx.clone();
         let command = state.wrappers.apply(
             WineBridgeClient::command(
                 runner.as_ref(),
@@ -674,7 +698,7 @@ impl Bottle {
             .envs(state.environment.iter()),
         );
         drop(state);
-        let operation: Operation<_, ()> = self.cx.spawn(move |_, _| async move {
+        let operation: Operation<_, ()> = self.0.cx.spawn(move |_, _| async move {
             storage.prepare(&bottle_path, &cx).await?;
             work(WineBridgeClient::connect_or_spawn(&prefix, command).await?).await
         });
@@ -884,8 +908,8 @@ mod tests {
         );
         bottle.save().await.unwrap();
 
-        let mut state = bottle.state.lock().await;
-        let result = Bottle::update(&mut state, &bottle.cx, async |state| {
+        let mut state = bottle.0.state.lock().await;
+        let result = Bottle::update(&mut state, &bottle.0.cx, async |state| {
             state.storage = PrefixStorage::Virgo { layers: Vec::new() };
             state.environment.insert("CHANGED".into(), "yes".into());
             Err::<(), _>(BottleError::InvalidProgram.into())
@@ -897,8 +921,8 @@ mod tests {
         assert!(state.environment.is_empty());
         drop(state);
 
-        let first_state = bottle.state.clone();
-        let first_cx = bottle.cx.clone();
+        let first_state = bottle.0.state.clone();
+        let first_cx = bottle.0.cx.clone();
         let first = async move {
             let mut state = first_state.lock().await;
             Bottle::update(&mut state, &first_cx, async |state| {
@@ -908,8 +932,8 @@ mod tests {
             })
             .await
         };
-        let second_state = bottle.state.clone();
-        let second_cx = bottle.cx.clone();
+        let second_state = bottle.0.state.clone();
+        let second_cx = bottle.0.cx.clone();
         let second = async move {
             let mut state = second_state.lock().await;
             Bottle::update(&mut state, &second_cx, async |state| {
@@ -922,7 +946,7 @@ mod tests {
         first.unwrap();
         second.unwrap();
 
-        let state = bottle.state.lock().await;
+        let state = bottle.0.state.lock().await;
         assert_eq!(state.environment.get("FIRST"), Some("yes"));
         assert_eq!(state.environment.get("SECOND"), Some("yes"));
         drop(state);

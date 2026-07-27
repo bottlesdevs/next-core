@@ -1,21 +1,18 @@
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::{
-    bottle::{Bottle, BottleState, Program},
+    bottle::{Bottle, BottleInner, Program},
     error::BottleError,
 };
 use crate::{
-    Context,
     error::Result,
     wrapper::{gamescope::GamescopeConfig, mangohud::MangoHudConfig},
 };
 
 #[must_use = "edits do nothing unless committed"]
 pub struct BottleEdit {
-    state: Arc<Mutex<BottleState>>,
-    cx: Context,
+    inner: Arc<BottleInner>,
     changes: Vec<Change>,
 }
 
@@ -30,10 +27,9 @@ enum Change {
 }
 
 impl BottleEdit {
-    pub(super) fn new(state: Arc<Mutex<BottleState>>, cx: Context) -> Self {
+    pub(super) fn new(inner: Arc<BottleInner>) -> Self {
         Self {
-            state,
-            cx,
+            inner,
             changes: Vec::new(),
         }
     }
@@ -75,9 +71,11 @@ impl BottleEdit {
     }
 
     pub async fn commit(self) -> Result<()> {
-        let BottleEdit { state, cx, changes } = self;
-        let mut state = state.lock().await;
-        Bottle::update(&mut state, &cx, async move |state| {
+        let BottleEdit { inner, changes } = self;
+        let bottle = Bottle::from_inner(inner);
+        bottle.ensure_exists()?;
+        let mut state = bottle.0.state.lock().await;
+        Bottle::update(&mut state, &bottle.0.cx, async move |state| {
             for change in changes {
                 match change {
                     Change::Rename(name) => state.name = name,

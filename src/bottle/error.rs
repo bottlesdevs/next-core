@@ -9,6 +9,8 @@ pub enum BottleError {
     ProjectDirectoriesUnavailable,
     #[error("bottle {0} was not found")]
     NotFound(Uuid),
+    #[error("bottle {0} was deleted")]
+    Deleted(Uuid),
     #[error("bottle ID {actual} does not match directory ID {expected}")]
     IdMismatch { expected: Uuid, actual: Uuid },
     #[error("program name and executable must not be empty")]
