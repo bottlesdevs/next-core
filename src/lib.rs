@@ -9,11 +9,10 @@ mod winebridge;
 mod wrapper;
 
 pub use bottle::{
-    Bottle, BottleComponents, BottleEdit, BottleManager, BottleState, BottleType, CreateProgress,
-    DeleteProgress, DllOverride, DllOverrideMode, GamescopeConfig, GamescopeFilter,
-    GamescopeScaler, MangoHudConfig, Process, Program, RegistryHive, RollbackProgress,
-    RunnerSelection, Snapshot, SnapshotProgress, SnapshotSummary, TransactionPhase,
-    TransactionProgress, Transfer, Wrappers,
+    Bottle, BottleEdit, BottleManager, BottleState, BottleType, CreateProgress, DeleteProgress,
+    DllOverride, DllOverrideMode, GamescopeConfig, GamescopeFilter, GamescopeScaler,
+    MangoHudConfig, Process, Program, RegistryHive, RollbackProgress, RunnerSelection, Snapshot,
+    SnapshotProgress, SnapshotSummary, TransactionPhase, TransactionProgress, Transfer, Wrappers,
 };
 pub use compatibility::{
     components::{Component, ComponentManager, catalog::ComponentKind},

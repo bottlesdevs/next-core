@@ -102,59 +102,83 @@ impl Bottle {
         Self::stop_state(&state, &self.0.cx).await
     }
 
-    /// Prefix effects completed before a metadata save error are not rolled back.
     pub fn install_component(&self, component: &Component) -> Operation<(), InstallProgress> {
         let component = component.clone();
         let bottle = self.clone();
         self.0.cx.spawn(move |progress, cancellation| async move {
             let kind = component.kind();
-            if matches!(kind, ComponentKind::Runner { .. }) {
-                return Err(BottleError::RunnerRequiresExplicitInstall.into());
+            if !matches!(
+                kind,
+                ComponentKind::Dxvk
+                    | ComponentKind::Vkd3d
+                    | ComponentKind::Nvapi
+                    | ComponentKind::LatencyFlex
+            ) {
+                return Err(BottleError::InvalidPrefixComponent.into());
             }
             bottle
-                .update(async |state, cx| match kind {
-                    ComponentKind::Runner { .. } => unreachable!(),
-                    ComponentKind::Winebridge => {
-                        if state.components.winebridge.id() == component.id() {
-                            return Ok(());
-                        }
-                        Self::stop_state(state, &cx).await?;
-                        if cancellation.is_cancelled() {
-                            return Err(Error::Cancelled);
-                        }
-                        state.components.winebridge = component.clone();
-                        Ok(())
+                .update(async |state, cx| {
+                    let replaced_id = match kind {
+                        ComponentKind::Dxvk => state.dxvk.as_ref(),
+                        ComponentKind::Vkd3d => state.vkd3d.as_ref(),
+                        ComponentKind::Nvapi => state.nvapi.as_ref(),
+                        ComponentKind::LatencyFlex => state.latency_flex.as_ref(),
+                        _ => unreachable!(),
                     }
-                    ComponentKind::Umu => {
-                        let RunnerSelection::Proton { umu, .. } = &mut state.components.runner
-                        else {
-                            return Err(BottleError::WineRunnerWithUmu.into());
-                        };
-                        if umu.id() == component.id() {
-                            return Ok(());
-                        }
-                        Self::stop_state(state, &cx).await?;
-                        if cancellation.is_cancelled() {
-                            return Err(Error::Cancelled);
-                        }
-                        let RunnerSelection::Proton { umu, .. } = &mut state.components.runner
-                        else {
-                            unreachable!()
-                        };
-                        *umu = component.clone();
-                        Ok(())
+                    .map(Component::id);
+                    if replaced_id == Some(component.id()) {
+                        return Ok(());
                     }
-                    kind => {
-                        Self::install_prefix_component(
-                            state,
-                            &cx,
-                            &component,
-                            kind,
-                            progress,
-                            &cancellation,
-                        )
-                        .await
+                    let resources = component.prepare(cx.directories())?;
+                    Self::install_item(
+                        state,
+                        &cx,
+                        component.id(),
+                        replaced_id,
+                        resources,
+                        |state| {
+                            *match kind {
+                                ComponentKind::Dxvk => &mut state.dxvk,
+                                ComponentKind::Vkd3d => &mut state.vkd3d,
+                                ComponentKind::Nvapi => &mut state.nvapi,
+                                ComponentKind::LatencyFlex => &mut state.latency_flex,
+                                _ => unreachable!(),
+                            } = Some(component.clone());
+                        },
+                        progress,
+                        &cancellation,
+                    )
+                    .await
+                })
+                .await
+        })
+    }
+
+    pub fn install_dependency(&self, dependency: &Dependency) -> Operation<(), InstallProgress> {
+        let dependency = dependency.clone();
+        let bottle = self.clone();
+        self.0.cx.spawn(move |progress, cancellation| async move {
+            bottle
+                .update(async |state, cx| {
+                    if state
+                        .dependencies
+                        .iter()
+                        .any(|installed| installed.id() == dependency.id())
+                    {
+                        return Ok(());
                     }
+                    let resources = dependency.prepare(cx.directories())?;
+                    Self::install_item(
+                        state,
+                        &cx,
+                        dependency.id(),
+                        None,
+                        resources,
+                        |state| state.dependencies.push(dependency.clone()),
+                        progress,
+                        &cancellation,
+                    )
+                    .await
                 })
                 .await
         })
@@ -166,35 +190,31 @@ impl Bottle {
         self.0.cx.spawn(move |progress, cancellation| async move {
             bottle
                 .update(async |state, cx| {
-                    if state.components.runner().runner().id() == id
-                        || state.components.winebridge().id() == id
-                        || state
-                            .components
-                            .umu()
-                            .is_some_and(|component| component.id() == id)
-                    {
-                        return Err(BottleError::ComponentNotUninstallable(id).into());
-                    }
-
-                    let component = state
-                        .components
-                        .into_iter()
-                        .find(|component| component.id() == id)
-                        .cloned()
-                        .ok_or(BottleError::ComponentNotInstalled(id))?;
-
+                    let component = [
+                        state.dxvk.as_ref(),
+                        state.vkd3d.as_ref(),
+                        state.nvapi.as_ref(),
+                        state.latency_flex.as_ref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .find(|component| component.id() == id)
+                    .cloned()
+                    .ok_or(BottleError::ComponentNotInstalled(id))?;
                     let resources = component.prepare(cx.directories())?;
-                    let winebridge = state.components.winebridge.path().to_path_buf();
+                    let winebridge = state.winebridge.path().to_path_buf();
                     let prefix_progress = progress.clone();
                     Self::stop_state(state, &cx).await?;
                     if cancellation.is_cancelled() {
                         return Err(Error::Cancelled);
                     }
-                    state
-                        .components
-                        .slot_mut(component.kind())?
-                        .take()
-                        .ok_or(BottleError::ComponentNotInstalled(id))?;
+                    match component.kind() {
+                        ComponentKind::Dxvk => state.dxvk = None,
+                        ComponentKind::Vkd3d => state.vkd3d = None,
+                        ComponentKind::Nvapi => state.nvapi = None,
+                        ComponentKind::LatencyFlex => state.latency_flex = None,
+                        _ => unreachable!(),
+                    }
 
                     let runner = Self::load_runner(state)?;
                     let bottle_path = cx.directories().bottle(state.id);
@@ -239,36 +259,6 @@ impl Bottle {
         })
     }
 
-    async fn install_prefix_component(
-        state: &mut BottleState,
-        cx: &Context,
-        component: &Component,
-        kind: ComponentKind,
-        progress: tokio::sync::watch::Sender<Option<InstallProgress>>,
-        cancellation: &CancellationToken,
-    ) -> Result<()> {
-        let installed = state.components.slot(kind)?;
-        if installed.map(Component::id) == Some(component.id()) {
-            return Ok(());
-        }
-        let replaced_id = installed.map(Component::id);
-        let resources = component.prepare(cx.directories())?;
-        Self::install_item(
-            state,
-            cx,
-            component.id(),
-            replaced_id,
-            resources,
-            |config| {
-                config.components.slot_mut(kind)?.replace(component.clone());
-                Ok(())
-            },
-            progress,
-            cancellation,
-        )
-        .await
-    }
-
     #[allow(clippy::too_many_arguments)]
     async fn install_item<F>(
         state: &mut BottleState,
@@ -281,16 +271,16 @@ impl Bottle {
         cancellation: &CancellationToken,
     ) -> Result<()>
     where
-        F: FnOnce(&mut BottleState) -> Result<()>,
+        F: FnOnce(&mut BottleState),
     {
         Self::stop_state(state, cx).await?;
-        update_config(state)?;
+        update_config(state);
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
 
         let runner = Self::load_runner(state)?;
-        let winebridge = state.components.winebridge.path().to_path_buf();
+        let winebridge = state.winebridge.path().to_path_buf();
         let bottle_path = cx.directories().bottle(state.id);
         let context = cx.clone();
         let BottleState {
@@ -332,40 +322,6 @@ impl Bottle {
         Ok(())
     }
 
-    /// Prefix effects completed before a metadata save error are not rolled back.
-    pub fn install_dependency(&self, dependency: &Dependency) -> Operation<(), InstallProgress> {
-        let dependency = dependency.clone();
-        let bottle = self.clone();
-        self.0.cx.spawn(move |progress, cancellation| async move {
-            bottle
-                .update(async |state, cx| {
-                    if state
-                        .dependencies
-                        .iter()
-                        .any(|installed| installed.id() == dependency.id())
-                    {
-                        return Ok(());
-                    }
-                    let resources = dependency.prepare(cx.directories())?;
-                    Self::install_item(
-                        state,
-                        &cx,
-                        dependency.id(),
-                        None,
-                        resources,
-                        |config| {
-                            config.dependencies.push(dependency.clone());
-                            Ok(())
-                        },
-                        progress,
-                        &cancellation,
-                    )
-                    .await
-                })
-                .await
-        })
-    }
-
     pub async fn install_runner(
         &self,
         component: &Component,
@@ -381,23 +337,29 @@ impl Bottle {
             None => return Err(BottleError::RunnerComponentRequired.into()),
         };
         self.update(async |state, cx| {
-            if state.components.runner == selection {
+            if state.runner == selection {
                 return Ok(());
             }
-            let installed = (&state.components)
-                .into_iter()
-                .map(Component::id)
-                .chain(state.dependencies.iter().map(Dependency::id))
-                .collect::<Vec<_>>();
+            let installed = [
+                state.dxvk.as_ref(),
+                state.vkd3d.as_ref(),
+                state.nvapi.as_ref(),
+                state.latency_flex.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .map(Component::id)
+            .chain(state.dependencies.iter().map(|dependency| dependency.id()))
+            .collect::<Vec<_>>();
             Self::stop_state(state, &cx).await?;
-            state.components.runner = selection;
+            state.runner = selection;
 
             let runner = Self::load_runner(state)?;
             state
                 .storage
                 .rebuild(
                     runner.as_ref(),
-                    &state.components.runner().runner().id().to_string(),
+                    &state.runner.runner().id().to_string(),
                     &installed,
                     &cx,
                 )
@@ -407,11 +369,11 @@ impl Bottle {
     }
 
     fn load_runner(state: &BottleState) -> Result<Box<dyn Runner>> {
-        state.components.runner().validate()?;
+        state.runner.validate()?;
         crate::runner::load_runner(
-            state.components.runner().runner().path(),
-            state.components.runner().kind(),
-            state.components.runner().umu().map(Component::path),
+            state.runner.runner().path(),
+            state.runner.kind(),
+            state.runner.umu().map(Component::path),
         )
     }
 
@@ -464,12 +426,8 @@ impl Bottle {
         let storage = state.storage.clone();
         let cx = self.0.cx.clone();
         let command = state.wrappers.apply(
-            WineBridgeClient::command(
-                runner.as_ref(),
-                &prefix,
-                state.components.winebridge().path(),
-            )
-            .envs(state.environment.iter()),
+            WineBridgeClient::command(runner.as_ref(), &prefix, state.winebridge.path())
+                .envs(state.environment.iter()),
         );
         let operation: Operation<_, ()> = self.0.cx.spawn(move |_, _| async move {
             storage.prepare(&bottle_path, &cx).await?;

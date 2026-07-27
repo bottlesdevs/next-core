@@ -22,7 +22,7 @@ pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 pub use history::{RollbackProgress, SnapshotProgress};
 pub use manager::{BottleManager, CreateProgress};
 pub use prefix::{TransactionPhase, TransactionProgress, Transfer};
-pub use state::{Bottle, BottleComponents, BottleState, BottleType, Program, RunnerSelection};
+pub use state::{Bottle, BottleState, BottleType, Program, RunnerSelection};
 
 pub(crate) use prefix::{PrefixProgress, PrefixStorage};
 

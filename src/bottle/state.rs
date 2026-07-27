@@ -34,8 +34,20 @@ pub struct BottleState {
     #[serde(default)]
     pub(crate) programs: Vec<Program>,
 
-    #[serde(flatten)]
-    pub(crate) components: BottleComponents,
+    pub(crate) runner: RunnerSelection,
+    pub(crate) winebridge: Component,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) dxvk: Option<Component>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) vkd3d: Option<Component>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) nvapi: Option<Component>,
+    #[serde(
+        default,
+        rename = "latency-flex",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) latency_flex: Option<Component>,
     #[serde(default)]
     pub(crate) dependencies: Vec<Dependency>,
     #[serde(default, skip_serializing_if = "Environment::is_empty")]
@@ -54,12 +66,28 @@ impl BottleState {
         &self.name
     }
 
-    pub fn components(&self) -> &BottleComponents {
-        &self.components
+    pub fn runner(&self) -> &RunnerSelection {
+        &self.runner
     }
 
-    pub fn runner(&self) -> &RunnerSelection {
-        self.components.runner()
+    pub fn winebridge(&self) -> &Component {
+        &self.winebridge
+    }
+
+    pub fn dxvk(&self) -> Option<&Component> {
+        self.dxvk.as_ref()
+    }
+
+    pub fn vkd3d(&self) -> Option<&Component> {
+        self.vkd3d.as_ref()
+    }
+
+    pub fn nvapi(&self) -> Option<&Component> {
+        self.nvapi.as_ref()
+    }
+
+    pub fn latency_flex(&self) -> Option<&Component> {
+        self.latency_flex.as_ref()
     }
 
     pub fn dependencies(&self) -> &[Dependency] {
@@ -103,8 +131,8 @@ impl Bottle {
     pub(crate) async fn new(
         id: Uuid,
         name: String,
-        components: BottleComponents,
-        dependencies: Vec<Dependency>,
+        runner: RunnerSelection,
+        winebridge: Component,
         storage: PrefixStorage,
         context: Context,
     ) -> Result<Self> {
@@ -112,8 +140,13 @@ impl Bottle {
             BottleState {
                 id,
                 name,
-                components,
-                dependencies,
+                runner,
+                winebridge,
+                dxvk: None,
+                vkd3d: None,
+                nvapi: None,
+                latency_flex: None,
+                dependencies: Vec::new(),
                 storage,
                 programs: Vec::new(),
                 wrappers: Wrappers::default(),
@@ -271,106 +304,6 @@ impl RunnerSelection {
 }
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
-pub struct BottleComponents {
-    pub(crate) runner: RunnerSelection,
-    pub(crate) winebridge: Component,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) dxvk: Option<Component>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) vkd3d: Option<Component>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) nvapi: Option<Component>,
-    #[serde(
-        default,
-        rename = "latency-flex",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub(crate) latency_flex: Option<Component>,
-}
-
-impl BottleComponents {
-    pub fn new(runner: RunnerSelection, winebridge: &Component) -> Result<Self> {
-        runner.validate()?;
-        if winebridge.kind() != ComponentKind::Winebridge {
-            return Err(BottleError::WinebridgeComponentRequired.into());
-        }
-
-        Ok(Self {
-            runner,
-            winebridge: winebridge.clone(),
-            dxvk: None,
-            vkd3d: None,
-            nvapi: None,
-            latency_flex: None,
-        })
-    }
-
-    pub fn runner(&self) -> &RunnerSelection {
-        &self.runner
-    }
-
-    pub fn winebridge(&self) -> &Component {
-        &self.winebridge
-    }
-
-    pub fn umu(&self) -> Option<&Component> {
-        self.runner.umu()
-    }
-
-    pub fn dxvk(&self) -> Option<&Component> {
-        self.dxvk.as_ref()
-    }
-
-    pub fn vkd3d(&self) -> Option<&Component> {
-        self.vkd3d.as_ref()
-    }
-
-    pub fn nvapi(&self) -> Option<&Component> {
-        self.nvapi.as_ref()
-    }
-
-    pub fn latency_flex(&self) -> Option<&Component> {
-        self.latency_flex.as_ref()
-    }
-
-    pub(super) fn slot(&self, kind: ComponentKind) -> Result<Option<&Component>> {
-        match kind {
-            ComponentKind::Dxvk => Ok(self.dxvk.as_ref()),
-            ComponentKind::Vkd3d => Ok(self.vkd3d.as_ref()),
-            ComponentKind::Nvapi => Ok(self.nvapi.as_ref()),
-            ComponentKind::LatencyFlex => Ok(self.latency_flex.as_ref()),
-            _ => Err(BottleError::InvalidPrefixComponent.into()),
-        }
-    }
-
-    pub(super) fn slot_mut(&mut self, kind: ComponentKind) -> Result<&mut Option<Component>> {
-        match kind {
-            ComponentKind::Dxvk => Ok(&mut self.dxvk),
-            ComponentKind::Vkd3d => Ok(&mut self.vkd3d),
-            ComponentKind::Nvapi => Ok(&mut self.nvapi),
-            ComponentKind::LatencyFlex => Ok(&mut self.latency_flex),
-            _ => Err(BottleError::InvalidPrefixComponent.into()),
-        }
-    }
-}
-
-impl<'a> IntoIterator for &'a BottleComponents {
-    type Item = &'a Component;
-    type IntoIter = std::iter::Flatten<std::array::IntoIter<Option<&'a Component>, 4>>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        [
-            self.dxvk.as_ref(),
-            self.vkd3d.as_ref(),
-            self.nvapi.as_ref(),
-            self.latency_flex.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Program {
     pub id: Uuid,
     pub name: String,
@@ -442,11 +375,12 @@ mod tests {
                 storage: PrefixStorage::Standard,
                 programs: Vec::new(),
                 wrappers: Wrappers::default(),
-                components: BottleComponents::new(
-                    RunnerSelection::wine(runner.clone()).unwrap(),
-                    &winebridge,
-                )
-                .unwrap(),
+                runner: RunnerSelection::wine(runner.clone()).unwrap(),
+                winebridge,
+                dxvk: None,
+                vkd3d: None,
+                nvapi: None,
+                latency_flex: None,
                 dependencies: Vec::new(),
                 environment: Environment::default(),
             },
@@ -528,11 +462,12 @@ mod tests {
                 storage: PrefixStorage::Standard,
                 programs: Vec::new(),
                 wrappers: Wrappers::default(),
-                components: BottleComponents::new(
-                    RunnerSelection::wine(wine.clone()).unwrap(),
-                    &winebridge,
-                )
-                .unwrap(),
+                runner: RunnerSelection::wine(wine.clone()).unwrap(),
+                winebridge,
+                dxvk: None,
+                vkd3d: None,
+                nvapi: None,
+                latency_flex: None,
                 dependencies: Vec::new(),
                 environment: Environment::default(),
             },
@@ -542,7 +477,7 @@ mod tests {
         assert!(matches!(
             bottle.install_component(&proton).await,
             Err(crate::error::Error::Bottle(
-                BottleError::RunnerRequiresExplicitInstall
+                BottleError::InvalidPrefixComponent
             ))
         ));
         assert!(matches!(
@@ -551,55 +486,5 @@ mod tests {
                 BottleError::ProtonRunnerWithoutUmu
             ))
         ));
-    }
-
-    #[test]
-    fn component_slots_have_explicit_failure_semantics() {
-        let runner = Component::new(
-            ComponentKind::Runner {
-                kind: RunnerKind::Wine,
-            },
-            "wine",
-            "/runner",
-        )
-        .unwrap();
-        let winebridge = Component::new(ComponentKind::Winebridge, "bridge", "/bridge").unwrap();
-        let mut components =
-            BottleComponents::new(RunnerSelection::wine(runner.clone()).unwrap(), &winebridge)
-                .unwrap();
-
-        for kind in [
-            ComponentKind::Dxvk,
-            ComponentKind::Vkd3d,
-            ComponentKind::Nvapi,
-            ComponentKind::LatencyFlex,
-        ] {
-            assert!(components.slot(kind).unwrap().is_none());
-            let component = Component::new(kind, "test", "/component").unwrap();
-            let id = component.id();
-            components.slot_mut(kind).unwrap().replace(component);
-            assert_eq!(components.slot(kind).unwrap().map(Component::id), Some(id));
-        }
-
-        for kind in [
-            ComponentKind::Runner {
-                kind: RunnerKind::Wine,
-            },
-            ComponentKind::Winebridge,
-            ComponentKind::Umu,
-        ] {
-            assert!(matches!(
-                components.slot(kind),
-                Err(crate::error::Error::Bottle(
-                    BottleError::InvalidPrefixComponent
-                ))
-            ));
-            assert!(matches!(
-                components.slot_mut(kind),
-                Err(crate::error::Error::Bottle(
-                    BottleError::InvalidPrefixComponent
-                ))
-            ));
-        }
     }
 }
