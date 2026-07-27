@@ -21,9 +21,9 @@ impl Bottle {
     ) -> Operation<Snapshot, SnapshotProgress> {
         let stop = self.stop();
         let repository = self.snapshot_repository();
-        let cx = self.cx.clone();
+        let cx = self.0.cx.clone();
         let message = message.into();
-        self.cx.spawn(move |progress, cancellation| async move {
+        self.0.cx.spawn(move |progress, cancellation| async move {
             progress.send_replace(Some(SnapshotProgress::Stopping));
             stop.await?;
             if cancellation.is_cancelled() {
@@ -38,8 +38,10 @@ impl Bottle {
     }
 
     pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
+        self.ensure_exists()?;
         let repository = self.snapshot_repository();
         Ok(self
+            .0
             .cx
             .fvs()
             .await?
@@ -52,12 +54,12 @@ impl Bottle {
 
     pub fn rollback(&self, state_id_or_prefix: &str) -> Operation<String, RollbackProgress> {
         let stop = self.stop();
-        let id = self.id;
+        let id = self.0.id;
         let repository = self.snapshot_repository();
         let bottle_path = self.bottle_path();
-        let current_state = self.state.clone();
-        let cx = self.cx.clone();
-        let runtime = self.cx.clone();
+        let current_state = self.0.state.clone();
+        let cx = self.0.cx.clone();
+        let runtime = self.0.cx.clone();
         let state_id_or_prefix = state_id_or_prefix.to_owned();
         runtime.spawn(move |progress, cancellation| async move {
             progress.send_replace(Some(RollbackProgress::Stopping));

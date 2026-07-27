@@ -353,8 +353,16 @@ mod unix {
             "-k\n-k\n"
         );
 
-        drop(reopened);
-        fs::remove_dir_all(directories.bottle(bottle_id)).unwrap();
+        manager.delete(bottle_id).await.unwrap();
+        let edit = same.edit();
+        assert!(matches!(
+            edit.commit().await,
+            Err(crate::error::Error::Bottle(BottleError::Deleted(id))) if id == bottle_id
+        ));
+        assert!(matches!(
+            manager.open(bottle_id).await,
+            Err(crate::error::Error::Bottle(BottleError::NotFound(id))) if id == bottle_id
+        ));
         fs::remove_dir_all(assets).unwrap();
         fs::remove_dir_all(directories.data_dir()).unwrap();
     }

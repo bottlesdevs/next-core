@@ -1,10 +1,5 @@
-use std::{
-    collections::HashMap,
-    fs, io,
-    sync::{Arc, Weak},
-};
+use std::{fs, io, sync::Arc};
 
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
@@ -17,7 +12,7 @@ use crate::{
 
 use super::{
     FVS_BLOCK_SIZE, PrefixStorage,
-    bottle::{Bottle, BottleState, BottleType},
+    bottle::{Bottle, BottleCache, BottleState, BottleType, DeleteProgress},
     error::BottleError,
 };
 
@@ -31,14 +26,14 @@ pub enum CreateProgress {
 #[derive(Clone)]
 pub struct BottleManager {
     context: Context,
-    cache: Arc<Mutex<HashMap<Uuid, Weak<Mutex<BottleState>>>>>,
+    cache: Arc<BottleCache>,
 }
 
 impl BottleManager {
     pub(crate) fn new(context: Context) -> Self {
         Self {
             context,
-            cache: Arc::new(Mutex::new(HashMap::new())),
+            cache: Arc::new(Default::default()),
         }
     }
 
@@ -143,6 +138,31 @@ impl BottleManager {
         Ok(Self::intern(&self.cache, Bottle::from_state(state, self.context.clone())).await)
     }
 
+    pub fn delete(&self, id: Uuid) -> Operation<(), DeleteProgress> {
+        let manager = self.clone();
+        self.context
+            .spawn(move |progress, cancellation| async move {
+                let bottle = manager.open(id).await?;
+                progress.send_replace(Some(DeleteProgress::Stopping));
+                bottle.stop().await?;
+                if cancellation.is_cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                progress.send_replace(Some(DeleteProgress::Removing));
+                let path = manager.context.directories().bottle(id);
+                manager
+                    .context
+                    .spawn_blocking(move || {
+                        fs::remove_dir_all(path)?;
+                        Ok(())
+                    })
+                    .await?;
+                bottle.mark_deleted();
+                manager.cache.lock().await.remove(&id);
+                Ok(())
+            })
+    }
+
     pub async fn list(&self) -> Result<Vec<Bottle>> {
         let bottles_path = self.context.directories().bottles();
         let configs = self
@@ -181,23 +201,26 @@ impl BottleManager {
     }
 
     async fn cached(&self, id: Uuid) -> Option<Bottle> {
-        self.cache
-            .lock()
-            .await
-            .get(&id)
-            .and_then(Weak::upgrade)
-            .map(|state| Bottle::from_shared_state(id, state, self.context.clone()))
+        let mut cache = self.cache.lock().await;
+        if let Some(inner) = cache.get(&id).and_then(std::sync::Weak::upgrade) {
+            let bottle = Bottle::from_inner(inner);
+            if !bottle.is_deleted() {
+                return Some(bottle);
+            }
+        }
+        cache.remove(&id);
+        None
     }
 
-    async fn intern(
-        cache: &Mutex<HashMap<Uuid, Weak<Mutex<BottleState>>>>,
-        bottle: Bottle,
-    ) -> Bottle {
-        let mut cache = cache.lock().await;
-        if let Some(state) = cache.get(&bottle.id).and_then(Weak::upgrade) {
-            return Bottle::from_shared_state(bottle.id, state, bottle.cx.clone());
+    async fn intern(cache: &Arc<BottleCache>, bottle: Bottle) -> Bottle {
+        let mut entries = cache.lock().await;
+        if let Some(inner) = entries.get(&bottle.0.id).and_then(std::sync::Weak::upgrade) {
+            let existing = Bottle::from_inner(inner);
+            if !existing.is_deleted() {
+                return existing;
+            }
         }
-        cache.insert(bottle.id, Arc::downgrade(&bottle.state));
+        entries.insert(bottle.0.id, Arc::downgrade(&bottle.0));
         bottle
     }
 }
