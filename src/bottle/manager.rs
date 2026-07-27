@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     Context, Operation,
-    bottle::bottle::BottleComponents,
+    bottle::BottleComponents,
     compatibility::components::Component,
     error::{Error, Result},
     runner::load_runner,
@@ -12,8 +12,8 @@ use crate::{
 
 use super::{
     FVS_BLOCK_SIZE, PrefixStorage,
-    bottle::{Bottle, BottleCache, BottleState, BottleType, DeleteProgress, RunnerSelection},
     error::BottleError,
+    state::{Bottle, BottleCache, BottleState, BottleType, RunnerSelection},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,8 +25,8 @@ pub enum CreateProgress {
 
 #[derive(Clone)]
 pub struct BottleManager {
-    context: Context,
-    cache: Arc<BottleCache>,
+    pub(super) context: Context,
+    pub(super) cache: Arc<BottleCache>,
 }
 
 impl BottleManager {
@@ -129,31 +129,6 @@ impl BottleManager {
             })
             .await?;
         Ok(Self::intern(&self.cache, Bottle::from_state(state, self.context.clone())).await)
-    }
-
-    pub fn delete(&self, id: Uuid) -> Operation<(), DeleteProgress> {
-        let manager = self.clone();
-        self.context
-            .spawn(move |progress, cancellation| async move {
-                let bottle = manager.open(id).await?;
-                progress.send_replace(Some(DeleteProgress::Stopping));
-                bottle.stop().await?;
-                if cancellation.is_cancelled() {
-                    return Err(Error::Cancelled);
-                }
-                progress.send_replace(Some(DeleteProgress::Removing));
-                let path = manager.context.directories().bottle(id);
-                manager
-                    .context
-                    .spawn_blocking(move || {
-                        fs::remove_dir_all(path)?;
-                        Ok(())
-                    })
-                    .await?;
-                bottle.mark_deleted();
-                manager.cache.lock().await.remove(&id);
-                Ok(())
-            })
     }
 
     pub async fn list(&self) -> Result<Vec<Result<Bottle>>> {

@@ -1,10 +1,11 @@
-#[allow(clippy::module_inception)]
-mod bottle;
+mod delete;
 mod edit;
 pub(crate) mod error;
+mod history;
 mod manager;
 pub(crate) mod prefix;
-mod snapshot;
+mod software;
+mod state;
 
 #[cfg(test)]
 mod tests;
@@ -15,14 +16,13 @@ pub use crate::wrapper::{
     gamescope::{Filter as GamescopeFilter, GamescopeConfig, Scaler as GamescopeScaler},
     mangohud::MangoHudConfig,
 };
-pub use bottle::{
-    Bottle, BottleComponents, BottleState, BottleType, DeleteProgress, Program, RunnerSelection,
-};
+pub use delete::DeleteProgress;
 pub use edit::BottleEdit;
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
+pub use history::{RollbackProgress, SnapshotProgress};
 pub use manager::{BottleManager, CreateProgress};
 pub use prefix::{TransactionPhase, TransactionProgress, Transfer};
-pub use snapshot::{RollbackProgress, SnapshotProgress};
+pub use state::{Bottle, BottleComponents, BottleState, BottleType, Program, RunnerSelection};
 
 pub(crate) use prefix::{PrefixProgress, PrefixStorage};
 
