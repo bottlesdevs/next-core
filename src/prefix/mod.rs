@@ -19,7 +19,7 @@ use crate::{
     runner::Runner,
 };
 
-pub(super) const CHECKPOINT_MESSAGE: &str = "bottles-next:auto-checkpoint";
+pub(crate) const AUTO_CHECKPOINT_MESSAGE: &str = "bottles-next:auto-checkpoint";
 pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
@@ -76,7 +76,7 @@ impl From<&Progress> for TransactionProgress {
 }
 
 pub(crate) enum PrefixProgress {
-    Checkpoint(TransactionProgress),
+    AutoCheckpoint(TransactionProgress),
     Restore(TransactionProgress),
 }
 
@@ -202,10 +202,10 @@ where
     let stream = context
         .fvs()
         .await?
-        .commit_stream(&repository, CHECKPOINT_MESSAGE.into())
+        .commit_stream(&repository, AUTO_CHECKPOINT_MESSAGE.into())
         .await?;
     let checkpoint = finish_commit(stream, |progress| {
-        on_progress(PrefixProgress::Checkpoint(progress.into()));
+        on_progress(PrefixProgress::AutoCheckpoint(progress.into()));
     })
     .await?;
 

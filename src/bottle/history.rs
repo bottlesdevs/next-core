@@ -8,7 +8,7 @@ use crate::{
     Operation,
     error::{Error, Result},
     prefix::{
-        CHECKPOINT_MESSAGE, FVS_BLOCK_SIZE, TransactionProgress, finish_commit, finish_restore,
+        AUTO_CHECKPOINT_MESSAGE, FVS_BLOCK_SIZE, TransactionProgress, finish_commit, finish_restore,
     },
 };
 
@@ -48,7 +48,7 @@ impl Bottle {
             .list_commits(&repository)
             .await?
             .into_iter()
-            .filter(|snapshot| snapshot.message != CHECKPOINT_MESSAGE)
+            .filter(|snapshot| snapshot.message != AUTO_CHECKPOINT_MESSAGE)
             .collect())
     }
 

@@ -70,7 +70,7 @@ pub enum InstallStep {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InstallProgress {
-    Checkpoint(TransactionProgress),
+    AutoCheckpoint(TransactionProgress),
     Restore(TransactionProgress),
     Copy,
     Execute,
@@ -84,7 +84,7 @@ pub enum InstallProgress {
 impl From<PrefixProgress> for InstallProgress {
     fn from(progress: PrefixProgress) -> Self {
         match progress {
-            PrefixProgress::Checkpoint(progress) => Self::Checkpoint(progress),
+            PrefixProgress::AutoCheckpoint(progress) => Self::AutoCheckpoint(progress),
             PrefixProgress::Restore(progress) => Self::Restore(progress),
         }
     }
@@ -106,7 +106,7 @@ impl From<&InstallStep> for InstallProgress {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UninstallProgress {
-    Checkpoint(TransactionProgress),
+    AutoCheckpoint(TransactionProgress),
     Restore(TransactionProgress),
     RevertFile,
     RemoveDllOverrides,
@@ -117,7 +117,7 @@ pub enum UninstallProgress {
 impl From<PrefixProgress> for UninstallProgress {
     fn from(progress: PrefixProgress) -> Self {
         match progress {
-            PrefixProgress::Checkpoint(progress) => Self::Checkpoint(progress),
+            PrefixProgress::AutoCheckpoint(progress) => Self::AutoCheckpoint(progress),
             PrefixProgress::Restore(progress) => Self::Restore(progress),
         }
     }
