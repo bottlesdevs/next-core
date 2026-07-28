@@ -1,7 +1,7 @@
 mod edit;
 pub(crate) mod error;
-mod history;
 mod manager;
+mod snapshot;
 mod software;
 mod state;
 
@@ -16,7 +16,7 @@ pub use crate::wrapper::{
 };
 pub use edit::BottleEdit;
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
-pub use history::{RollbackProgress, SnapshotProgress};
 pub use manager::{BottleManager, CreateProgress, DeleteProgress};
+pub use snapshot::{RollbackProgress, SnapshotProgress};
 pub use software::{SetRunnerProgress, SetWinebridgeProgress};
 pub use state::{Bottle, BottleState, BottleType, Program, RunnerSelection};
