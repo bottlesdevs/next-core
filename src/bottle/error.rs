@@ -29,20 +29,12 @@ pub enum BottleError {
     ProgramNotFound(Uuid),
     #[error("component {0} is not installed")]
     ComponentNotInstalled(Uuid),
-    #[error("component {0} is required and cannot be uninstalled")]
-    ComponentNotUninstallable(Uuid),
     #[error("runner component is required")]
     RunnerComponentRequired,
-    #[error("runner components must be installed with Bottle::install_runner")]
-    RunnerRequiresExplicitInstall,
     #[error("WineBridge component is required")]
     WinebridgeComponentRequired,
     #[error("UMU component has the wrong kind")]
     InvalidUmuComponent,
-    #[error("Wine runner must not use UMU")]
-    WineRunnerWithUmu,
-    #[error("Proton runner requires UMU")]
-    ProtonRunnerWithoutUmu,
     #[error("component cannot be installed into a prefix")]
     InvalidPrefixComponent,
 }
