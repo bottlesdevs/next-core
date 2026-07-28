@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
 use uuid::Uuid;
 
-use super::{PrefixStorage, edit::BottleEdit, error::BottleError};
+use super::{edit::BottleEdit, error::BottleError};
 use crate::{
     Context,
     compatibility::{
@@ -20,6 +20,7 @@ use crate::{
         dependencies::Dependency,
     },
     error::Result,
+    prefix::PrefixStorage,
     runner::RunnerKind,
     utils::environment::Environment,
     wrapper::Wrappers,

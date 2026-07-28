@@ -3,6 +3,7 @@ mod compatibility;
 mod core;
 pub mod error;
 mod operation;
+mod prefix;
 mod runner;
 mod utils;
 mod winebridge;
@@ -13,7 +14,7 @@ pub use bottle::{
     DllOverride, DllOverrideMode, GamescopeConfig, GamescopeFilter, GamescopeScaler,
     MangoHudConfig, Process, Program, RegistryHive, RollbackProgress, RunnerSelection,
     SetRunnerProgress, SetWinebridgeProgress, Snapshot, SnapshotProgress, SnapshotSummary,
-    TransactionPhase, TransactionProgress, Transfer, Wrappers,
+    Wrappers,
 };
 pub use compatibility::{
     components::{Component, ComponentManager, catalog::ComponentKind},
@@ -22,6 +23,7 @@ pub use compatibility::{
 };
 pub use core::Core;
 pub use operation::Operation;
+pub use prefix::{TransactionPhase, TransactionProgress, Transfer};
 pub use runner::RunnerKind;
 pub use utils::{directories::Directories as Paths, environment::Environment};
 

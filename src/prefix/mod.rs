@@ -1,3 +1,5 @@
+//! Prefix persistence and transactional mutation.
+
 mod standard;
 mod virgo;
 
@@ -12,13 +14,13 @@ use uuid::Uuid;
 
 use crate::{
     Context,
+    bottle::BottleType,
     error::{Error, Result},
     runner::Runner,
 };
 
-use super::{FVS_BLOCK_SIZE, state::BottleType};
-
 pub(super) const CHECKPOINT_MESSAGE: &str = "bottles-next:auto-checkpoint";
+pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind")]

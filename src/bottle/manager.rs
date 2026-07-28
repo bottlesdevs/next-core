@@ -6,11 +6,11 @@ use crate::{
     Context, Operation,
     compatibility::components::{Component, catalog::ComponentKind},
     error::{Error, Result},
+    prefix::{FVS_BLOCK_SIZE, PrefixStorage},
     runner::load_runner,
 };
 
 use super::{
-    FVS_BLOCK_SIZE, PrefixStorage,
     error::BottleError,
     state::{Bottle, BottleCache, BottleState, BottleType, RunnerSelection},
 };

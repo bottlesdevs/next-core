@@ -7,14 +7,12 @@ use fvs_rs::{Repository, RestoreResponse};
 use crate::{
     Operation,
     error::{Error, Result},
+    prefix::{
+        CHECKPOINT_MESSAGE, FVS_BLOCK_SIZE, TransactionProgress, finish_commit, finish_restore,
+    },
 };
 
-use super::{
-    Bottle, FVS_BLOCK_SIZE, Snapshot, SnapshotSummary,
-    error::BottleError,
-    prefix::{CHECKPOINT_MESSAGE, TransactionProgress, finish_commit, finish_restore},
-    state::BottleState,
-};
+use super::{Bottle, Snapshot, SnapshotSummary, error::BottleError, state::BottleState};
 
 impl Bottle {
     pub fn create_snapshot(
