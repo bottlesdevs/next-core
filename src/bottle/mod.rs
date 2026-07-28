@@ -1,4 +1,3 @@
-mod delete;
 mod edit;
 pub(crate) mod error;
 mod history;
@@ -15,10 +14,9 @@ pub use crate::wrapper::{
     gamescope::{Filter as GamescopeFilter, GamescopeConfig, Scaler as GamescopeScaler},
     mangohud::MangoHudConfig,
 };
-pub use delete::DeleteProgress;
 pub use edit::BottleEdit;
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 pub use history::{RollbackProgress, SnapshotProgress};
-pub use manager::{BottleManager, CreateProgress};
+pub use manager::{BottleManager, CreateProgress, DeleteProgress};
 pub use software::{SetRunnerProgress, SetWinebridgeProgress};
 pub use state::{Bottle, BottleState, BottleType, Program, RunnerSelection};
