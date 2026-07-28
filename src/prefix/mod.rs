@@ -24,7 +24,7 @@ pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind")]
-pub(crate) enum PrefixStorage {
+pub(crate) enum Prefix {
     Standard,
     Virgo {
         #[serde(default)]
@@ -80,7 +80,7 @@ pub(crate) enum PrefixProgress {
     Restore(TransactionProgress),
 }
 
-impl PrefixStorage {
+impl Prefix {
     pub(crate) async fn create(
         kind: BottleType,
         bottle_path: &Path,
