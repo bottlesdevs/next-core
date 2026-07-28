@@ -289,7 +289,11 @@ async fn finish_stream<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
     use futures_util::stream;
+    use tokio_util::sync::CancellationToken;
+    use uuid::Uuid;
 
     use super::*;
 
@@ -353,5 +357,50 @@ mod tests {
             ]
         );
         assert_eq!(commit.state_id, "checkpoint");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires BOTTLES_TEST_FVS2D"]
+    async fn failed_transaction_restores_its_checkpoint() {
+        let executable =
+            std::env::var_os("BOTTLES_TEST_FVS2D").expect("BOTTLES_TEST_FVS2D is required");
+        let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
+        let directories = crate::Directories::from_path(root.join("data")).unwrap();
+        let socket = directories.runtime_dir().join("fvs2d.sock");
+        let context = crate::Context::new(directories.clone(), executable).unwrap();
+        let bottle_path = directories.bottle(Uuid::new_v4());
+        std::fs::create_dir_all(&bottle_path).unwrap();
+        context
+            .fvs()
+            .await
+            .unwrap()
+            .new_repository(&bottle_path, FVS_BLOCK_SIZE)
+            .await
+            .unwrap();
+        let file = bottle_path.join("value");
+        tokio::fs::write(&file, "before").await.unwrap();
+
+        let changed = file.clone();
+        let result = transact(
+            &bottle_path,
+            &context,
+            async move {
+                tokio::fs::write(changed, "after").await?;
+                Err::<(), _>(io::Error::other("expected failure").into())
+            },
+            &CancellationToken::new(),
+            |_| {},
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(tokio::fs::read_to_string(file).await.unwrap(), "before");
+        fvs_rs::Fvs2dClient::connect(socket)
+            .await
+            .unwrap()
+            .shutdown(fvs_rs::UnmountMode::Lazy)
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
