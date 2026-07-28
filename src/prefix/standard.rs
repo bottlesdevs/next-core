@@ -1,3 +1,5 @@
+//! Standard prefix storage.
+
 use std::{ops::AsyncFnOnce, path::Path};
 
 use crate::{

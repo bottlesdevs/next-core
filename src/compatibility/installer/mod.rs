@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 use crate::{
     Context,
-    bottle::{PrefixProgress, TransactionProgress},
     error::{Error, Result, ResultExt},
+    prefix::{PrefixProgress, TransactionProgress},
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
     runner::{Command, Runner, Spawnable, shutdown_prefix},
     utils::{archive, environment::Environment},

@@ -1,3 +1,5 @@
+//! Shared immutable Virgo layer cache helpers.
+
 use std::{
     fs, io,
     ops::AsyncFnOnce,
@@ -10,8 +12,9 @@ use uuid::Uuid;
 
 use crate::{
     Context,
-    bottle::{FVS_BLOCK_SIZE, error::VirgoError},
+    bottle::error::VirgoError,
     error::{Error, Result},
+    prefix::FVS_BLOCK_SIZE,
 };
 
 use super::with_mount;

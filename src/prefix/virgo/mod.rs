@@ -1,3 +1,5 @@
+//! Layered Virgo prefix storage.
+
 mod cache;
 
 use std::{
@@ -15,7 +17,7 @@ use crate::{
     runner::{Runner, initialize_and_shutdown_prefix},
 };
 
-use super::super::FVS_BLOCK_SIZE;
+use super::FVS_BLOCK_SIZE;
 use crate::bottle::error::VirgoError;
 
 pub(super) async fn create(
