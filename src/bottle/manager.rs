@@ -6,7 +6,7 @@ use crate::{
     Context, Operation,
     compatibility::components::{Component, catalog::ComponentKind},
     error::{Error, Result},
-    prefix::{FVS_BLOCK_SIZE, PrefixStorage},
+    prefix::{FVS_BLOCK_SIZE, Prefix},
     runner::load_runner,
 };
 
@@ -71,7 +71,7 @@ impl BottleManager {
 
                 let result = async {
                     progress.send_replace(Some(CreateProgress::CreatingPrefix));
-                    let storage = PrefixStorage::create(
+                    let storage = Prefix::create(
                         kind,
                         &bottle_path,
                         runner.as_ref(),

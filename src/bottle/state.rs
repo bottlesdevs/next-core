@@ -20,7 +20,7 @@ use crate::{
         dependencies::Dependency,
     },
     error::Result,
-    prefix::PrefixStorage,
+    prefix::Prefix,
     runner::RunnerKind,
     utils::environment::Environment,
     wrapper::Wrappers,
@@ -31,7 +31,7 @@ use crate::{
 pub struct BottleState {
     pub(crate) id: Uuid,
     pub(crate) name: String,
-    pub(crate) storage: PrefixStorage,
+    pub(crate) storage: Prefix,
     #[serde(default)]
     pub(crate) programs: Vec<Program>,
 
@@ -134,7 +134,7 @@ impl Bottle {
         name: String,
         runner: RunnerSelection,
         winebridge: Component,
-        storage: PrefixStorage,
+        storage: Prefix,
         context: Context,
     ) -> Result<Self> {
         let bottle = Self::from_state(
@@ -373,7 +373,7 @@ mod tests {
             BottleState {
                 id,
                 name: "test".into(),
-                storage: PrefixStorage::Standard,
+                storage: Prefix::Standard,
                 programs: Vec::new(),
                 wrappers: Wrappers::default(),
                 runner: RunnerSelection::wine(runner.clone()).unwrap(),
@@ -391,7 +391,7 @@ mod tests {
 
         let result = bottle
             .update(async |state, _| {
-                state.storage = PrefixStorage::Virgo { layers: Vec::new() };
+                state.storage = Prefix::Virgo { layers: Vec::new() };
                 state.environment.insert("CHANGED".into(), "yes".into());
                 Err::<(), _>(BottleError::InvalidProgram.into())
             })
@@ -399,7 +399,7 @@ mod tests {
 
         assert!(result.is_err());
         let state = bottle.state().unwrap();
-        assert!(matches!(state.storage, PrefixStorage::Standard));
+        assert!(matches!(state.storage, Prefix::Standard));
         assert!(state.environment.is_empty());
 
         let first_bottle = bottle.clone();
@@ -460,7 +460,7 @@ mod tests {
             BottleState {
                 id: Uuid::new_v4(),
                 name: "test".into(),
-                storage: PrefixStorage::Standard,
+                storage: Prefix::Standard,
                 programs: Vec::new(),
                 wrappers: Wrappers::default(),
                 runner: RunnerSelection::wine(wine.clone()).unwrap(),
