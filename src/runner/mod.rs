@@ -98,30 +98,42 @@ pub(crate) async fn shutdown_prefix(runner: &dyn Runner, prefix: &Path) -> Resul
     runner.wineserver(prefix, "-k").await
 }
 
-pub(crate) fn detect_runner_kind(path: &Path) -> Result<RunnerKind> {
-    if path.join("proton").is_file() {
+pub(crate) async fn detect_runner_kind(path: &Path) -> Result<RunnerKind> {
+    if tokio::fs::metadata(path.join("proton"))
+        .await
+        .is_ok_and(|entry| entry.is_file())
+    {
         Ok(RunnerKind::Proton)
-    } else if path.join("bin/wine").is_file() {
+    } else if tokio::fs::metadata(path.join("bin/wine"))
+        .await
+        .is_ok_and(|entry| entry.is_file())
+    {
         Ok(RunnerKind::Wine)
     } else {
         Err(RunnerError::RunnerNotFound(path.to_path_buf()).into())
     }
 }
 
-pub(crate) fn load_runner(
+pub(crate) async fn load_runner(
     path: &Path,
     kind: RunnerKind,
     umu_executable: Option<&Path>,
 ) -> Result<Box<dyn Runner>> {
-    if detect_runner_kind(path)? != kind {
+    if detect_runner_kind(path).await? != kind {
         return Err(RunnerError::RunnerNotFound(path.to_path_buf()).into());
     }
     match kind {
-        RunnerKind::Wine => Ok(Box::new(Wine::new(path.join("bin/wine"))?)),
-        RunnerKind::Proton => Ok(Box::new(Proton::new(
-            path,
-            umu_executable.ok_or(RunnerError::UmuExecutableMissing)?,
-        )?)),
+        RunnerKind::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
+        RunnerKind::Proton => {
+            let umu = umu_executable.ok_or(RunnerError::UmuExecutableMissing)?;
+            if !tokio::fs::metadata(umu)
+                .await
+                .is_ok_and(|entry| entry.is_file())
+            {
+                return Err(RunnerError::RunnerExecutableNotFound(umu.to_path_buf()).into());
+            }
+            Ok(Box::new(Proton::new(path, umu)))
+        }
     }
 }
 

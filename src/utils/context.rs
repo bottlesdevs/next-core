@@ -28,14 +28,6 @@ impl Context {
         &self.0.directories
     }
 
-    pub(crate) async fn spawn_blocking<T, F>(&self, work: F) -> Result<T>
-    where
-        T: Send + 'static,
-        F: FnOnce() -> Result<T> + Send + 'static,
-    {
-        tokio::task::spawn_blocking(work).await?
-    }
-
     pub(crate) async fn fvs(&self) -> Result<&Fvs2dClient> {
         self.0
             .fvs

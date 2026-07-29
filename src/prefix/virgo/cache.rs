@@ -1,7 +1,7 @@
 //! Shared immutable Virgo layer cache helpers.
 
 use std::{
-    fs, io,
+    fs,
     ops::AsyncFnOnce,
     path::{Path, PathBuf},
 };
@@ -26,7 +26,9 @@ pub(super) fn remove(layers: &mut Vec<Layer>, id: Uuid, context: &Context) {
 
 pub(super) async fn exists(id: Uuid, context: &Context) -> Result<bool> {
     let path = layer_path(id, context).join(".fvs2");
-    context.spawn_blocking(move || Ok(path.is_dir())).await
+    Ok(tokio::fs::metadata(path)
+        .await
+        .is_ok_and(|entry| entry.is_dir()))
 }
 
 pub(super) async fn install<F>(
@@ -52,92 +54,63 @@ where
     let before = stage.join("before");
     let patches = stage.join("registry");
 
-    let setup_destination = destination.clone();
-    let setup_registry = registry_destination.clone();
-    let setup_paths = [
-        upper.clone(),
-        prefix.clone(),
-        before.clone(),
-        patches.clone(),
-    ];
-    let setup = context
-        .spawn_blocking(move || {
-            remove_dir_if_exists(&setup_destination)?;
-            remove_dir_if_exists(&setup_registry)?;
-            for path in setup_paths {
-                fs::create_dir_all(path)?;
-            }
-            Ok(())
-        })
-        .await;
+    let setup = async {
+        remove_dir_if_exists(&destination).await?;
+        remove_dir_if_exists(&registry_destination).await?;
+        for path in [&upper, &prefix, &before, &patches] {
+            tokio::fs::create_dir_all(path).await?;
+        }
+        Ok::<_, Error>(())
+    }
+    .await;
     if let Err(error) = setup {
-        remove_stage(stage, context).await;
+        remove_stage(stage).await;
         return Err(error);
     }
 
     let result = async {
         with_mount(&prefix, layers, Some(&upper), context, async |mount| {
-            let copy_prefix = prefix.clone();
-            let copy_before = before.clone();
-            context
-                .spawn_blocking(move || {
-                    for (file, _) in registry_files() {
-                        fs::copy(copy_prefix.join(file), copy_before.join(file))?;
-                    }
-                    Ok(())
-                })
-                .await?;
+            for (file, _) in registry_files() {
+                tokio::fs::copy(prefix.join(file), before.join(file)).await?;
+            }
 
             execute(&prefix).await?;
 
             let diff_before = before.clone();
             let diff_prefix = prefix.clone();
             let diff_patches = patches.clone();
-            context
-                .spawn_blocking(move || {
-                    for (file, hive) in registry_files() {
-                        write_forward(
-                            &diff_before.join(file),
-                            &diff_prefix.join(file),
-                            &diff_patches.join(file),
-                            hive,
-                        )?;
-                    }
-                    Ok(())
-                })
-                .await?;
+            tokio::task::spawn_blocking(move || {
+                for (file, hive) in registry_files() {
+                    write_forward(
+                        &diff_before.join(file),
+                        &diff_prefix.join(file),
+                        &diff_patches.join(file),
+                        hive,
+                    )?;
+                }
+                Ok::<_, Error>(())
+            })
+            .await??;
             context.fvs().await?.diff_mount(mount, true).await?;
             Ok(())
         })
         .await?;
 
-        let clean_upper = upper.clone();
-        context
-            .spawn_blocking(move || {
-                for (file, _) in registry_files() {
-                    remove_file(&clean_upper.join(file))?;
-                }
-                Ok(())
-            })
-            .await?;
+        for (file, _) in registry_files() {
+            remove_file(&upper.join(file)).await?;
+        }
         let client = context.fvs().await?;
         let repository = client.new_repository(&upper, FVS_BLOCK_SIZE).await?;
         client.commit(&repository, item_id.to_string()).await?;
 
-        let move_upper = upper.clone();
-        let move_patches = patches.clone();
-        context
-            .spawn_blocking(move || {
-                fs::create_dir_all(layer_root)?;
-                fs::create_dir_all(registry_root)?;
-                fs::rename(move_patches, registry_destination)?;
-                fs::rename(move_upper, destination)?;
-                Ok(())
-            })
-            .await
+        tokio::fs::create_dir_all(layer_root).await?;
+        tokio::fs::create_dir_all(registry_root).await?;
+        tokio::fs::rename(patches, registry_destination).await?;
+        tokio::fs::rename(upper, destination).await?;
+        Ok(())
     }
     .await;
-    remove_stage(stage, context).await;
+    remove_stage(stage).await;
     result
 }
 
@@ -148,8 +121,10 @@ pub(super) async fn apply_registry(
     context: &Context,
 ) -> Result<()> {
     let patches = registry_path(id, context);
-    let inspect = patches.clone();
-    if !context.spawn_blocking(move || Ok(inspect.is_dir())).await? {
+    if !tokio::fs::metadata(&patches)
+        .await
+        .is_ok_and(|entry| entry.is_dir())
+    {
         return Ok(());
     }
 
@@ -163,28 +138,27 @@ pub(super) async fn apply_registry(
         async |_| {
             let apply_prefix = prefix.clone();
             let stage = prefix.join(format!(".bottles-next-registry-{}", Uuid::new_v4()));
-            context
-                .spawn_blocking(move || {
-                    fs::create_dir_all(&stage)?;
-                    let result = (|| {
-                        for (file, hive) in registry_files() {
-                            apply_files(
-                                apply_prefix.join(file),
-                                patches.join(file),
-                                stage.join(file),
-                                hive,
-                            )
-                            .map_err(|error| VirgoError::Registry(error.to_string()))?;
-                        }
-                        for (file, _) in registry_files() {
-                            fs::rename(stage.join(file), apply_prefix.join(file))?;
-                        }
-                        Ok::<_, Error>(())
-                    })();
-                    let _ = fs::remove_dir_all(stage);
-                    result
-                })
-                .await
+            tokio::task::spawn_blocking(move || {
+                fs::create_dir_all(&stage)?;
+                let result = (|| {
+                    for (file, hive) in registry_files() {
+                        apply_files(
+                            apply_prefix.join(file),
+                            patches.join(file),
+                            stage.join(file),
+                            hive,
+                        )
+                        .map_err(|error| VirgoError::Registry(error.to_string()))?;
+                    }
+                    for (file, _) in registry_files() {
+                        fs::rename(stage.join(file), apply_prefix.join(file))?;
+                    }
+                    Ok::<_, Error>(())
+                })();
+                let _ = fs::remove_dir_all(stage);
+                result
+            })
+            .await?
         },
     )
     .await
@@ -192,10 +166,9 @@ pub(super) async fn apply_registry(
 
 pub(super) async fn layer(id: Uuid, context: &Context) -> Result<Layer> {
     let destination = layer_path(id, context);
-    let inspect = destination.clone();
-    if !context
-        .spawn_blocking(move || Ok(inspect.join(".fvs2").is_dir()))
-        .await?
+    if !tokio::fs::metadata(destination.join(".fvs2"))
+        .await
+        .is_ok_and(|entry| entry.is_dir())
     {
         return Err(VirgoError::CachedLayerNotFound(destination).into());
     }
@@ -247,27 +220,22 @@ fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -> Result<()
     Ok(())
 }
 
-fn remove_file(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
+async fn remove_file(path: &Path) -> std::io::Result<()> {
+    match tokio::fs::remove_file(path).await {
         Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
 }
 
-fn remove_dir_if_exists(path: &Path) -> io::Result<()> {
-    match fs::remove_dir_all(path) {
+async fn remove_dir_if_exists(path: &Path) -> std::io::Result<()> {
+    match tokio::fs::remove_dir_all(path).await {
         Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
 }
 
-async fn remove_stage(stage: PathBuf, context: &Context) {
-    let _ = context
-        .spawn_blocking(move || {
-            remove_dir_if_exists(&stage)?;
-            Ok(())
-        })
-        .await;
+async fn remove_stage(stage: PathBuf) {
+    let _ = remove_dir_if_exists(&stage).await;
 }

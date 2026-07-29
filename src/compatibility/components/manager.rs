@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, io, path::Path};
+use std::{collections::HashMap, path::Path};
 
 use next_config::Config;
 use serde::{Deserialize, Serialize};
@@ -15,26 +15,21 @@ impl ComponentManager {
     pub(crate) async fn load(context: Context) -> Result<Self> {
         let directories = context.directories().clone();
         let component_dir = directories.components();
-        let components_path = context
-            .spawn_blocking(move || Ok(fs::canonicalize(component_dir)?))
-            .await?;
+        let components_path = tokio::fs::canonicalize(component_dir).await?;
         let index_path = components_path.join("index.toml");
-        let index = if index_path.is_file() {
+        let has_index = tokio::fs::metadata(&index_path)
+            .await
+            .is_ok_and(|entry| entry.is_file());
+        let index = if has_index {
             next_config::load(&index_path).await?
         } else {
             ComponentIndex::default()
         };
-        let discovery_path = components_path;
-        let (components, index) = context
-            .spawn_blocking(move || {
-                let components = discover_components(&discovery_path, &index)?;
-                Ok((components, index))
-            })
-            .await?;
+        let components = discover_components(&components_path, &index).await?;
         let component_index = ComponentIndex {
             components: components.clone(),
         };
-        if component_index != index || !index_path.is_file() {
+        if component_index != index || !has_index {
             next_config::save(index_path, &component_index).await?;
         }
         Ok(Self { components })
@@ -58,7 +53,10 @@ struct ComponentIndex {
     components: Vec<Component>,
 }
 
-fn discover_components(components_path: &Path, index: &ComponentIndex) -> Result<Vec<Component>> {
+async fn discover_components(
+    components_path: &Path,
+    index: &ComponentIndex,
+) -> Result<Vec<Component>> {
     let mut indexed: HashMap<_, _> = index
         .components
         .iter()
@@ -66,21 +64,29 @@ fn discover_components(components_path: &Path, index: &ComponentIndex) -> Result
         .collect();
 
     let mut components = Vec::new();
-    let mut categories = fs::read_dir(components_path)?.collect::<io::Result<Vec<_>>>()?;
-    categories.sort_by_key(fs::DirEntry::file_name);
+    let mut entries = tokio::fs::read_dir(components_path).await?;
+    let mut categories = Vec::new();
+    while let Some(entry) = entries.next_entry().await? {
+        categories.push(entry);
+    }
+    categories.sort_by_key(tokio::fs::DirEntry::file_name);
     for category_entry in categories {
-        let file_type = category_entry.file_type()?;
+        let file_type = category_entry.file_type().await?;
         if !file_type.is_dir() {
             continue;
         }
         let category_name = category_entry.file_name().to_string_lossy().into_owned();
-        let mut versions = fs::read_dir(category_entry.path())?.collect::<io::Result<Vec<_>>>()?;
-        versions.sort_by_key(fs::DirEntry::file_name);
+        let mut entries = tokio::fs::read_dir(category_entry.path()).await?;
+        let mut versions = Vec::new();
+        while let Some(entry) = entries.next_entry().await? {
+            versions.push(entry);
+        }
+        versions.sort_by_key(tokio::fs::DirEntry::file_name);
         for version in versions {
-            if !version.file_type()?.is_dir() {
+            if !version.file_type().await?.is_dir() {
                 continue;
             }
-            let Some((kind, path)) = component(&category_name, &version.path())? else {
+            let Some((kind, path)) = component(&category_name, &version.path()).await? else {
                 continue;
             };
             let relative = path.to_path_buf();
@@ -94,7 +100,7 @@ fn discover_components(components_path: &Path, index: &ComponentIndex) -> Result
             components.push(Component {
                 id,
                 version,
-                path: fs::canonicalize(path)?,
+                path: tokio::fs::canonicalize(path).await?,
                 kind,
             });
         }
@@ -103,19 +109,34 @@ fn discover_components(components_path: &Path, index: &ComponentIndex) -> Result
     Ok(components)
 }
 
-fn component(directory: &str, path: &Path) -> Result<Option<(ComponentKind, std::path::PathBuf)>> {
+async fn component(
+    directory: &str,
+    path: &Path,
+) -> Result<Option<(ComponentKind, std::path::PathBuf)>> {
     Ok(Some(match directory {
         "runners" => (
             ComponentKind::Runner {
-                kind: detect_runner_kind(path)?,
+                kind: detect_runner_kind(path).await?,
             },
             path.to_path_buf(),
         ),
-        "winebridge" if path.join("bottles-winebridge.exe").is_file() => (
-            ComponentKind::Winebridge,
-            path.join("bottles-winebridge.exe"),
-        ),
-        "umu" if path.join("umu-run").is_file() => (ComponentKind::Umu, path.join("umu-run")),
+        "winebridge"
+            if tokio::fs::metadata(path.join("bottles-winebridge.exe"))
+                .await
+                .is_ok_and(|entry| entry.is_file()) =>
+        {
+            (
+                ComponentKind::Winebridge,
+                path.join("bottles-winebridge.exe"),
+            )
+        }
+        "umu"
+            if tokio::fs::metadata(path.join("umu-run"))
+                .await
+                .is_ok_and(|entry| entry.is_file()) =>
+        {
+            (ComponentKind::Umu, path.join("umu-run"))
+        }
         "dxvk" => (ComponentKind::Dxvk, path.to_path_buf()),
         "vkd3d" => (ComponentKind::Vkd3d, path.to_path_buf()),
         "nvapi" => (ComponentKind::Nvapi, path.to_path_buf()),
@@ -126,11 +147,13 @@ fn component(directory: &str, path: &Path) -> Result<Option<(ComponentKind, std:
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::{Context, Directories};
 
-    #[test]
-    fn discovers_extracted_components_and_executable_paths() {
+    #[tokio::test]
+    async fn discovers_extracted_components_and_executable_paths() {
         let components_path =
             std::env::temp_dir().join(format!("bottles-next-components-{}", Uuid::new_v4()));
         let winebridge = components_path.join("winebridge/bridge-1");
@@ -141,7 +164,9 @@ mod tests {
         fs::write(winebridge.join("bottles-winebridge.exe"), []).unwrap();
         fs::write(umu.join("umu-run"), []).unwrap();
 
-        let components = discover_components(&components_path, &ComponentIndex::default()).unwrap();
+        let components = discover_components(&components_path, &ComponentIndex::default())
+            .await
+            .unwrap();
 
         assert_eq!(components.len(), 3);
         assert!(

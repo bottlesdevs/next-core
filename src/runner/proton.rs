@@ -17,24 +17,11 @@ pub(super) struct Proton {
 }
 
 impl Proton {
-    pub fn new(proton_path: impl AsRef<Path>, umu_executable: impl AsRef<Path>) -> Result<Self> {
-        if !proton_path.as_ref().join("proton").is_file() {
-            return Err(
-                RunnerError::RunnerExecutableNotFound(proton_path.as_ref().join("proton")).into(),
-            );
-        }
-
-        if !umu_executable.as_ref().is_file() {
-            return Err(RunnerError::RunnerExecutableNotFound(
-                umu_executable.as_ref().to_path_buf(),
-            )
-            .into());
-        }
-
-        Ok(Self {
+    pub fn new(proton_path: impl AsRef<Path>, umu_executable: impl AsRef<Path>) -> Self {
+        Self {
             proton_path: proton_path.as_ref().to_path_buf(),
             umu_executable: umu_executable.as_ref().to_path_buf(),
-        })
+        }
     }
 }
 
@@ -91,7 +78,7 @@ mod tests {
         .unwrap();
         fs::set_permissions(&umu, fs::Permissions::from_mode(0o755)).unwrap();
 
-        let runner = Proton::new(&proton_path, &umu).unwrap();
+        let runner = Proton::new(&proton_path, &umu);
         let prefix = root.join("prefix");
         runner.wineboot(&prefix, "--init").await.unwrap();
         runner

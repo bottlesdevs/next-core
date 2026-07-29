@@ -11,7 +11,6 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
-    Context,
     error::{Error, Result, ResultExt},
     prefix::{PrefixProgress, TransactionProgress},
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
@@ -152,7 +151,6 @@ pub(crate) struct InstallInputs<'a> {
 }
 
 pub(crate) async fn execute(
-    context: &Context,
     inputs: InstallInputs<'_>,
     resources: &[InstallResource],
     cancellation: &CancellationToken,
@@ -170,7 +168,6 @@ pub(crate) async fn execute(
             for step in &resource.steps {
                 on_step(step);
                 execute_step(
-                    context,
                     InstallInputs {
                         prefix,
                         runner,
@@ -250,7 +247,6 @@ pub(crate) fn replay_environment(environment: &mut Environment, resources: &[Ins
 }
 
 async fn execute_step(
-    context: &Context,
     inputs: InstallInputs<'_>,
     resource: &InstallResource,
     step: &InstallStep,
@@ -272,15 +268,14 @@ async fn execute_step(
             } else {
                 resource.source.join(source)
             };
-            install_file(&source, prefix, destination)?;
+            install_file(&source, prefix, destination).await?;
         }
         InstallStep::Extract { destination } => {
             let archive = resource.source.clone();
             let prefix = prefix.to_path_buf();
             let destination = destination.clone();
-            context
-                .spawn_blocking(move || extract_into(&archive, &prefix, &destination))
-                .await?;
+            tokio::task::spawn_blocking(move || extract_into(&archive, &prefix, &destination))
+                .await??;
         }
         InstallStep::Execute { arguments } => {
             let mut command = Command::new(&resource.source);
@@ -356,7 +351,9 @@ async fn uninstall_step(
     } = inputs;
     match step {
         InstallStep::Copy { destination, .. } if restore_files => {
-            uninstall_file(prefix, destination).log_warn();
+            if let Err(error) = uninstall_file(prefix, destination).await {
+                tracing::warn!(%error);
+            }
         }
         InstallStep::Copy { .. } => {}
         InstallStep::SetEnvironment { name, .. } => {
@@ -427,26 +424,33 @@ async fn shutdown_bridge(prefix: &Path) -> Result<()> {
     Ok(())
 }
 
-fn install_file(source: &Path, prefix: &Path, relative: &Path) -> Result<()> {
+async fn install_file(source: &Path, prefix: &Path, relative: &Path) -> Result<()> {
     let destination = prefix.join(relative);
-    fs::create_dir_all(destination.parent().expect("destination has a parent"))?;
+    tokio::fs::create_dir_all(destination.parent().expect("destination has a parent")).await?;
     let relative_backup = backup_path(relative);
     let backup = prefix.join(&relative_backup);
-    if destination.is_file() && !backup.exists() {
-        fs::copy(&destination, &backup)?;
+    if tokio::fs::metadata(&destination)
+        .await
+        .is_ok_and(|entry| entry.is_file())
+        && !tokio::fs::try_exists(&backup).await?
+    {
+        tokio::fs::copy(&destination, &backup).await?;
     }
-    fs::copy(source, destination)?;
+    tokio::fs::copy(source, destination).await?;
     Ok(())
 }
 
-fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
+async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
     let destination = prefix.join(relative);
     let backup = prefix.join(backup_path(relative));
-    if backup.is_file() {
-        fs::copy(&backup, &destination)?;
-        fs::remove_file(backup)
+    if tokio::fs::metadata(&backup)
+        .await
+        .is_ok_and(|entry| entry.is_file())
+    {
+        tokio::fs::copy(&backup, &destination).await?;
+        tokio::fs::remove_file(backup).await
     } else {
-        match fs::remove_file(destination) {
+        match tokio::fs::remove_file(destination).await {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
@@ -470,12 +474,23 @@ fn extract_into(archive: &Path, prefix: &Path, destination: &Path) -> Result<()>
                     stage: stage.clone(),
                 }
             })?);
-            install_file(&source, prefix, &relative)?;
+            install_file_blocking(&source, prefix, &relative)?;
         }
         Ok(())
     })();
     let _ = fs::remove_dir_all(stage);
     result
+}
+
+fn install_file_blocking(source: &Path, prefix: &Path, relative: &Path) -> Result<()> {
+    let destination = prefix.join(relative);
+    fs::create_dir_all(destination.parent().expect("destination has a parent"))?;
+    let backup = prefix.join(backup_path(relative));
+    if destination.is_file() && !backup.exists() {
+        fs::copy(&destination, &backup)?;
+    }
+    fs::copy(source, destination)?;
+    Ok(())
 }
 
 fn backup_path(path: &Path) -> PathBuf {
