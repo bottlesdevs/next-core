@@ -28,7 +28,7 @@ pub use compatibility::{
     },
     installer::{InstallProgress, UninstallProgress},
 };
-pub use core::Core;
+pub use core::{Core, CoreBuilder};
 pub use operation::Operation;
 pub use prefix::{TransactionPhase, TransactionProgress, Transfer};
 pub use runner::RunnerKind;

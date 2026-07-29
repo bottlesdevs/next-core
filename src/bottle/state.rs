@@ -352,7 +352,7 @@ mod tests {
             }
             let context = Context::new(
                 crate::Directories::from_path(root.join("data")).unwrap(),
-                root.join("fvs2d"),
+                Some(root.join("fvs2d")),
             )
             .unwrap();
             let id = Uuid::new_v4();
@@ -436,7 +436,7 @@ mod tests {
             let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
             let context = Context::new(
                 crate::Directories::from_path(root.join("data")).unwrap(),
-                root.join("fvs2d"),
+                Some(root.join("fvs2d")),
             )
             .unwrap();
             let wine = Component::new(

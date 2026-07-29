@@ -42,8 +42,8 @@ pub struct Library(Arc<LibraryInner>);
 
 struct LibraryInner {
     directories: Directories,
-    component_catalog_url: Url,
-    dependency_catalog_url: Url,
+    component_catalog_url: Option<Url>,
+    dependency_catalog_url: Option<Url>,
     downloads: Arc<DownloadManager>,
     published: watch::Sender<Arc<LibraryState>>,
     write: Mutex<()>,
@@ -52,8 +52,8 @@ struct LibraryInner {
 impl Library {
     pub(crate) async fn load(
         directories: Directories,
-        component_catalog_url: Url,
-        dependency_catalog_url: Url,
+        component_catalog_url: Option<Url>,
+        dependency_catalog_url: Option<Url>,
         downloads: Arc<DownloadManager>,
     ) -> Result<Self> {
         let component_catalog: Option<Arc<ComponentCatalog>> =
@@ -446,10 +446,11 @@ impl Library {
     async fn download_catalog(
         &self,
         catalog: CatalogKind,
-        url: Url,
+        url: Option<Url>,
         progress: watch::Sender<Option<LibraryProgress>>,
         cancellation: &CancellationToken,
     ) -> Result<PathBuf> {
+        let url = url.ok_or(LibraryError::CatalogUrlNotConfigured(catalog))?;
         let staging = self.0.directories.data_dir().join(".staging");
         async_fs::create_dir_all(&staging).await?;
         let destination = staging.join(format!("catalog-{}.json", Uuid::new_v4()));
@@ -517,6 +518,8 @@ pub enum LibraryError {
         components: Option<String>,
         dependencies: Option<String>,
     },
+    #[error("{0:?} catalog URL is not configured")]
+    CatalogUrlNotConfigured(CatalogKind),
     #[error("component {0} was not found")]
     ComponentNotFound(Uuid),
     #[error("dependency {0} was not found")]
@@ -971,8 +974,8 @@ mod tests {
             let directories = Directories::from_path(&root).unwrap();
             let library = Library::load(
                 directories,
-                Url::parse("https://example.test/components.json").unwrap(),
-                Url::parse("https://example.test/dependencies.json").unwrap(),
+                Some(Url::parse("https://example.test/components.json").unwrap()),
+                Some(Url::parse("https://example.test/dependencies.json").unwrap()),
                 Arc::new(downloads),
             )
             .await
@@ -1062,14 +1065,9 @@ mod tests {
             let (downloads, scheduler) =
                 DownloadManager::new(client, DownloadManagerConfig::default());
             let scheduler = executor.spawn(scheduler);
-            let library = Library::load(
-                directories,
-                Url::parse("https://example.test/components.json").unwrap(),
-                Url::parse("https://example.test/dependencies.json").unwrap(),
-                Arc::new(downloads),
-            )
-            .await
-            .unwrap();
+            let library = Library::load(directories, None, None, Arc::new(downloads))
+                .await
+                .unwrap();
 
             let component = library.download_component(component_id).await.unwrap();
             assert_eq!(component.id(), component_id);

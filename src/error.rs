@@ -41,6 +41,8 @@ pub enum Error {
     Library(#[from] LibraryError),
     #[error("download error: {0}")]
     Download(#[from] download_manager::error::Error),
+    #[error("fvs2d executable is not configured")]
+    Fvs2dNotConfigured,
     #[error("operation cancelled")]
     Cancelled,
 }
