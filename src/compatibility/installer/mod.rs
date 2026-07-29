@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use futures_lite::future;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -274,8 +275,7 @@ async fn execute_step(
             let archive = resource.source.clone();
             let prefix = prefix.to_path_buf();
             let destination = destination.clone();
-            tokio::task::spawn_blocking(move || extract_into(&archive, &prefix, &destination))
-                .await??;
+            blocking::unblock(move || extract_into(&archive, &prefix, &destination)).await?;
         }
         InstallStep::Execute { arguments } => {
             let mut command = Command::new(&resource.source);
@@ -400,17 +400,24 @@ fn check_cancellation(cancellation: &CancellationToken) -> Result<()> {
 }
 
 async fn wait_for_child(
-    mut child: tokio::process::Child,
+    mut child: async_process::Child,
     cancellation: &CancellationToken,
 ) -> Result<std::process::ExitStatus> {
-    tokio::select! {
-        biased;
-        status = child.wait() => Ok(status?),
-        _ = cancellation.cancelled() => {
-            child.kill().await?;
-            Err(Error::Cancelled)
-        }
+    let status = future::or(async { child.status().await.map(Some) }, async {
+        cancellation.cancelled().await;
+        Ok::<_, io::Error>(None)
+    })
+    .await?;
+    if let Some(status) = status {
+        return Ok(status);
     }
+    if let Err(error) = child.kill()
+        && error.kind() != io::ErrorKind::InvalidInput
+    {
+        return Err(error.into());
+    }
+    child.status().await?;
+    Err(Error::Cancelled)
 }
 
 fn is_not_found(error: &Error) -> bool {
@@ -497,4 +504,24 @@ fn backup_path(path: &Path) -> PathBuf {
     let mut path = path.as_os_str().to_os_string();
     path.push(".bak");
     PathBuf::from(path)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancellation_kills_and_reaps_child() {
+        let child = async_process::Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .spawn()
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        assert!(matches!(
+            wait_for_child(child, &cancellation).await,
+            Err(Error::Cancelled)
+        ));
+    }
 }

@@ -1,9 +1,9 @@
 pub(crate) mod gamescope;
 pub(crate) mod mangohud;
 
+use async_process::{Child, Command as AsyncCommand};
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
-use tokio::process::{Child, Command as TokioCommand};
 
 use crate::{runner::RunnerCommand, utils::environment::Environment};
 
@@ -56,7 +56,7 @@ impl<O: Wrapper, I: Into<Command>> From<Wrapped<O, I>> for Command {
 pub(crate) trait Spawnable: Into<Command> + Sized {
     fn spawn(self) -> std::io::Result<Child> {
         let command = self.into();
-        TokioCommand::new(command.executable)
+        AsyncCommand::new(command.executable)
             .args(command.args)
             .envs(command.envs)
             .spawn()

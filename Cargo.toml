@@ -5,7 +5,10 @@ edition.workspace = true
 
 [dependencies]
 async-fs.workspace = true
+async-io.workspace = true
+async-process.workspace = true
 async-trait.workspace = true
+blocking.workspace = true
 next-config.workspace = true
 next-proto.workspace = true
 fvs-rs.workspace = true

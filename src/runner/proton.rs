@@ -44,7 +44,7 @@ impl Runner for Proton {
             .arg(arg)
             .env("PROTONPATH", "umu-sniper");
 
-        let status = self.command(prefix, command).spawn()?.wait().await?;
+        let status = self.command(prefix, command).spawn()?.status().await?;
 
         if status.success() || (arg == "-k" && status.code() == Some(1)) {
             return Ok(());
@@ -86,7 +86,7 @@ mod tests {
             .wrapped_by(Command::new("env"))
             .spawn()
             .unwrap()
-            .wait()
+            .status()
             .await
             .unwrap();
         runner.wineserver(&prefix, "-k").await.unwrap();

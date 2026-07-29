@@ -39,8 +39,6 @@ pub enum Error {
     Installer(#[from] InstallerError),
     #[error("operation cancelled")]
     Cancelled,
-    #[error("operation task failed: {0}")]
-    OperationTask(#[from] tokio::task::JoinError),
 }
 
 #[allow(dead_code)]

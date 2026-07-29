@@ -79,7 +79,7 @@ where
             let diff_before = before.clone();
             let diff_prefix = prefix.clone();
             let diff_patches = patches.clone();
-            tokio::task::spawn_blocking(move || {
+            blocking::unblock(move || {
                 for (file, hive) in registry_files() {
                     write_forward(
                         &diff_before.join(file),
@@ -90,7 +90,7 @@ where
                 }
                 Ok::<_, Error>(())
             })
-            .await??;
+            .await?;
             context.fvs().await?.diff_mount(mount, true).await?;
             Ok(())
         })
@@ -138,7 +138,7 @@ pub(super) async fn apply_registry(
         async |_| {
             let apply_prefix = prefix.clone();
             let stage = prefix.join(format!(".bottles-next-registry-{}", Uuid::new_v4()));
-            tokio::task::spawn_blocking(move || {
+            blocking::unblock(move || {
                 fs::create_dir_all(&stage)?;
                 let result = (|| {
                     for (file, hive) in registry_files() {
@@ -158,7 +158,7 @@ pub(super) async fn apply_registry(
                 let _ = fs::remove_dir_all(stage);
                 result
             })
-            .await?
+            .await
         },
     )
     .await
