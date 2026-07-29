@@ -6,6 +6,7 @@ use crate::compatibility::{
     Checksum, Target,
     catalog::{Artifact, Catalog, CatalogItem},
     deserialize_non_empty_string, deserialize_non_empty_vec,
+    installer::InstallStep,
 };
 use crate::runner::RunnerKind;
 
@@ -27,6 +28,8 @@ pub struct CatalogComponentEntry {
     kind: ComponentKind,
     #[serde(deserialize_with = "deserialize_non_empty_vec")]
     artifacts: Vec<ComponentArtifact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    steps: Vec<InstallStep>,
 }
 
 impl CatalogComponentEntry {
@@ -44,6 +47,10 @@ impl CatalogComponentEntry {
 
     pub fn artifacts(&self) -> &[ComponentArtifact] {
         &self.artifacts
+    }
+
+    pub fn steps(&self) -> &[InstallStep] {
+        &self.steps
     }
 
     pub fn artifact_for(&self, target: Target) -> Option<&ComponentArtifact> {
@@ -131,6 +138,8 @@ impl ComponentKind {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use uuid::uuid;
 
     use super::*;
@@ -217,6 +226,7 @@ mod tests {
             version: String::from("2.4"),
             kind: ComponentKind::Dxvk,
             artifacts: vec![generic, linux],
+            steps: Vec::new(),
         };
 
         assert_eq!(
@@ -225,5 +235,36 @@ mod tests {
                 .map(ComponentArtifact::file_name),
             Some("linux.tar.gz")
         );
+    }
+
+    #[test]
+    fn deserializes_bottle_install_steps() {
+        let component: CatalogComponentEntry = serde_json::from_str(
+            r#"{
+                "id": "00000000-0000-0000-0000-000000000002",
+                "version": "1",
+                "kind": { "type": "dxvk" },
+                "artifacts": [{
+                    "url": "https://example.test/dxvk.tar.gz",
+                    "file_name": "dxvk.tar.gz",
+                    "checksum": { "algorithm": "sha256", "value": "abc" }
+                }],
+                "steps": [{
+                    "action": "copy",
+                    "source": "x64/d3d11.dll",
+                    "destination": "drive_c/windows/system32/d3d11.dll"
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            component.steps(),
+            [InstallStep::Copy {
+                source,
+                destination
+            }] if source == Path::new("x64/d3d11.dll")
+                && destination == Path::new("drive_c/windows/system32/d3d11.dll")
+        ));
     }
 }
