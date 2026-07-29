@@ -299,110 +299,118 @@ mod tests {
 
     use super::*;
 
-    #[tokio::test]
-    async fn finish_commit_forwards_progress_and_returns_terminal_result() {
-        let frames = [
-            Progress {
-                phase: "hashing".into(),
-                current: 1,
-                total: 2,
-                ..Default::default()
-            },
-            Progress {
-                phase: "indexing".into(),
-                current: -1,
-                total: -1,
-                ..Default::default()
-            },
-            Progress {
-                phase: "done".into(),
-                done: true,
-                result_commit: Some(Commit {
-                    state_id: "checkpoint".into(),
+    #[test]
+    fn finish_commit_forwards_progress_and_returns_terminal_result() {
+        futures_lite::future::block_on(async {
+            let frames = [
+                Progress {
+                    phase: "hashing".into(),
+                    current: 1,
+                    total: 2,
                     ..Default::default()
-                }),
-                ..Default::default()
-            },
-        ];
-        let mut updates = Vec::new();
+                },
+                Progress {
+                    phase: "indexing".into(),
+                    current: -1,
+                    total: -1,
+                    ..Default::default()
+                },
+                Progress {
+                    phase: "done".into(),
+                    done: true,
+                    result_commit: Some(Commit {
+                        state_id: "checkpoint".into(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ];
+            let mut updates = Vec::new();
 
-        let commit = finish_commit(stream::iter(frames.map(Ok::<_, FvsError>)), |progress| {
-            updates.push(TransactionProgress::from(progress))
-        })
-        .await
-        .unwrap();
+            let commit = finish_commit(stream::iter(frames.map(Ok::<_, FvsError>)), |progress| {
+                updates.push(TransactionProgress::from(progress))
+            })
+            .await
+            .unwrap();
 
-        assert_eq!(
-            updates,
-            [
-                TransactionProgress {
-                    phase: TransactionPhase::Hashing,
-                    transfer: Transfer {
-                        current: 1,
-                        total: Some(2),
+            assert_eq!(
+                updates,
+                [
+                    TransactionProgress {
+                        phase: TransactionPhase::Hashing,
+                        transfer: Transfer {
+                            current: 1,
+                            total: Some(2),
+                        },
                     },
-                },
-                TransactionProgress {
-                    phase: TransactionPhase::Other("indexing".into()),
-                    transfer: Transfer {
-                        current: 0,
-                        total: None,
+                    TransactionProgress {
+                        phase: TransactionPhase::Other("indexing".into()),
+                        transfer: Transfer {
+                            current: 0,
+                            total: None,
+                        },
                     },
-                },
-                TransactionProgress {
-                    phase: TransactionPhase::Done,
-                    transfer: Transfer {
-                        current: 0,
-                        total: None,
+                    TransactionProgress {
+                        phase: TransactionPhase::Done,
+                        transfer: Transfer {
+                            current: 0,
+                            total: None,
+                        },
                     },
-                },
-            ]
-        );
-        assert_eq!(commit.state_id, "checkpoint");
+                ]
+            );
+            assert_eq!(commit.state_id, "checkpoint");
+        });
     }
 
-    #[tokio::test]
+    #[test]
     #[ignore = "requires BOTTLES_TEST_FVS2D"]
-    async fn failed_transaction_restores_its_checkpoint() {
-        let executable =
-            std::env::var_os("BOTTLES_TEST_FVS2D").expect("BOTTLES_TEST_FVS2D is required");
-        let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
-        let directories = crate::Directories::from_path(root.join("data")).unwrap();
-        let socket = directories.runtime_dir().join("fvs2d.sock");
-        let context = crate::Context::new(directories.clone(), executable).unwrap();
-        let bottle_path = directories.bottle(Uuid::new_v4());
-        std::fs::create_dir_all(&bottle_path).unwrap();
-        context
-            .fvs()
-            .await
+    fn failed_transaction_restores_its_checkpoint() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
             .unwrap()
-            .new_repository(&bottle_path, FVS_BLOCK_SIZE)
-            .await
-            .unwrap();
-        let file = bottle_path.join("value");
-        async_fs::write(&file, "before").await.unwrap();
+            .block_on(async {
+                let executable =
+                    std::env::var_os("BOTTLES_TEST_FVS2D").expect("BOTTLES_TEST_FVS2D is required");
+                let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
+                let directories = crate::Directories::from_path(root.join("data")).unwrap();
+                let socket = directories.runtime_dir().join("fvs2d.sock");
+                let context = crate::Context::new(directories.clone(), executable).unwrap();
+                let bottle_path = directories.bottle(Uuid::new_v4());
+                std::fs::create_dir_all(&bottle_path).unwrap();
+                context
+                    .fvs()
+                    .await
+                    .unwrap()
+                    .new_repository(&bottle_path, FVS_BLOCK_SIZE)
+                    .await
+                    .unwrap();
+                let file = bottle_path.join("value");
+                async_fs::write(&file, "before").await.unwrap();
 
-        let changed = file.clone();
-        let result = transact(
-            &bottle_path,
-            &context,
-            async move {
-                async_fs::write(changed, "after").await?;
-                Err::<(), _>(io::Error::other("expected failure").into())
-            },
-            &CancellationToken::new(),
-            |_| {},
-        )
-        .await;
+                let changed = file.clone();
+                let result = transact(
+                    &bottle_path,
+                    &context,
+                    async move {
+                        async_fs::write(changed, "after").await?;
+                        Err::<(), _>(io::Error::other("expected failure").into())
+                    },
+                    &CancellationToken::new(),
+                    |_| {},
+                )
+                .await;
 
-        assert!(result.is_err());
-        assert_eq!(async_fs::read_to_string(file).await.unwrap(), "before");
-        fvs_rs::Fvs2dClient::connect(socket)
-            .await
-            .unwrap()
-            .shutdown(fvs_rs::UnmountMode::Lazy)
-            .await
-            .unwrap();
-        std::fs::remove_dir_all(root).unwrap();
+                assert!(result.is_err());
+                assert_eq!(async_fs::read_to_string(file).await.unwrap(), "before");
+                fvs_rs::Fvs2dClient::connect(socket)
+                    .await
+                    .unwrap()
+                    .shutdown(fvs_rs::UnmountMode::Lazy)
+                    .await
+                    .unwrap();
+                std::fs::remove_dir_all(root).unwrap();
+            });
     }
 }

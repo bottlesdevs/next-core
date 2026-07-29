@@ -19,183 +19,191 @@ fn test_directories() -> Directories {
     Directories::from_path(root).unwrap()
 }
 
-#[tokio::test]
-async fn bottle_managers_are_scoped_to_their_context_roots() {
-    let id = uuid::Uuid::new_v4();
-    let left = test_directories();
-    let right = test_directories();
+#[test]
+fn bottle_managers_are_scoped_to_their_context_roots() {
+    futures_lite::future::block_on(async {
+        let id = uuid::Uuid::new_v4();
+        let left = test_directories();
+        let right = test_directories();
 
-    for (directories, name) in [(&left, "left"), (&right, "right")] {
+        for (directories, name) in [(&left, "left"), (&right, "right")] {
+            std::fs::create_dir_all(directories.bottle(id)).unwrap();
+            let runner = Component::new(
+                ComponentKind::Runner {
+                    kind: RunnerKind::Wine,
+                },
+                "wine",
+                directories.data_dir().join("runner"),
+            )
+            .unwrap();
+            let bridge = Component::new(
+                ComponentKind::Winebridge,
+                "bridge",
+                directories.data_dir().join("winebridge.exe"),
+            )
+            .unwrap();
+            let config = BottleState {
+                id,
+                name: name.into(),
+                storage: crate::prefix::Prefix::Standard,
+                programs: Vec::new(),
+                runner: RunnerSelection::wine(runner.clone()).unwrap(),
+                winebridge: bridge,
+                dxvk: None,
+                vkd3d: None,
+                nvapi: None,
+                latency_flex: None,
+                dependencies: Vec::new(),
+                environment: Default::default(),
+                wrappers: Wrappers::default(),
+            };
+            next_config::save(directories.bottle(id).join("bottle.toml"), &config)
+                .await
+                .unwrap();
+        }
+
+        let left_manager =
+            BottleManager::new(Context::new(left.clone(), left.data_dir().join("fvs2d")).unwrap());
+        let right_manager = BottleManager::new(
+            Context::new(right.clone(), right.data_dir().join("fvs2d")).unwrap(),
+        );
+
+        assert_eq!(
+            left_manager.open(id).await.unwrap().state().unwrap().name(),
+            "left"
+        );
+        assert_eq!(
+            right_manager
+                .open(id)
+                .await
+                .unwrap()
+                .state()
+                .unwrap()
+                .name(),
+            "right"
+        );
+        assert_eq!(
+            left_manager.list().await.unwrap()[0]
+                .as_ref()
+                .unwrap()
+                .state()
+                .unwrap()
+                .name(),
+            "left"
+        );
+        assert_eq!(
+            right_manager.list().await.unwrap()[0]
+                .as_ref()
+                .unwrap()
+                .state()
+                .unwrap()
+                .name(),
+            "right"
+        );
+
+        std::fs::remove_dir_all(left.data_dir()).unwrap();
+        std::fs::remove_dir_all(right.data_dir()).unwrap();
+    });
+}
+
+#[test]
+fn list_reports_corrupt_bottles() {
+    futures_lite::future::block_on(async {
+        let directories = test_directories();
+        let id = uuid::Uuid::new_v4();
         std::fs::create_dir_all(directories.bottle(id)).unwrap();
-        let runner = Component::new(
+        std::fs::write(
+            directories.bottle(id).join("bottle.toml"),
+            "not valid toml =",
+        )
+        .unwrap();
+        let manager = BottleManager::new(
+            Context::new(directories.clone(), directories.data_dir().join("fvs2d")).unwrap(),
+        );
+
+        let bottles = manager.list().await.unwrap();
+
+        assert_eq!(bottles.len(), 1);
+        assert!(bottles[0].is_err());
+        std::fs::remove_dir_all(directories.data_dir()).unwrap();
+    });
+}
+
+#[test]
+fn proton_umu_components_and_dependencies_round_trip() {
+    futures_lite::future::block_on(async {
+        let directories = test_directories();
+        let id = uuid::Uuid::new_v4();
+        let bottle_path = directories.bottle(id);
+        std::fs::create_dir_all(&bottle_path).unwrap();
+        let proton = Component::new(
             ComponentKind::Runner {
-                kind: RunnerKind::Wine,
+                kind: RunnerKind::Proton,
             },
-            "wine",
-            directories.data_dir().join("runner"),
+            "proton-1",
+            bottle_path.join("proton"),
         )
         .unwrap();
         let bridge = Component::new(
             ComponentKind::Winebridge,
-            "bridge",
-            directories.data_dir().join("winebridge.exe"),
+            "bridge-1",
+            bottle_path.join("winebridge/bottles-winebridge.exe"),
         )
         .unwrap();
+        let umu =
+            Component::new(ComponentKind::Umu, "umu-1", bottle_path.join("umu/umu-run")).unwrap();
+        let dxvk = Component::new(ComponentKind::Dxvk, "dxvk-1", bottle_path.join("dxvk")).unwrap();
+        let dependency: Dependency = serde_json::from_value(serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "vcrun2022",
+            "version": "14.38"
+        }))
+        .unwrap();
+        let mut environment = Environment::default();
+        environment.insert("EXAMPLE".into(), "enabled".into());
         let config = BottleState {
             id,
-            name: name.into(),
-            storage: crate::prefix::Prefix::Standard,
-            programs: Vec::new(),
-            runner: RunnerSelection::wine(runner.clone()).unwrap(),
+            name: "proton".into(),
+            runner: RunnerSelection::proton(proton.clone(), umu.clone()).unwrap(),
             winebridge: bridge,
-            dxvk: None,
+            dxvk: Some(dxvk),
             vkd3d: None,
             nvapi: None,
             latency_flex: None,
-            dependencies: Vec::new(),
-            environment: Default::default(),
-            wrappers: Wrappers::default(),
-        };
-        next_config::save(directories.bottle(id).join("bottle.toml"), &config)
-            .await
-            .unwrap();
-    }
-
-    let left_manager =
-        BottleManager::new(Context::new(left.clone(), left.data_dir().join("fvs2d")).unwrap());
-    let right_manager =
-        BottleManager::new(Context::new(right.clone(), right.data_dir().join("fvs2d")).unwrap());
-
-    assert_eq!(
-        left_manager.open(id).await.unwrap().state().unwrap().name(),
-        "left"
-    );
-    assert_eq!(
-        right_manager
-            .open(id)
-            .await
-            .unwrap()
-            .state()
-            .unwrap()
-            .name(),
-        "right"
-    );
-    assert_eq!(
-        left_manager.list().await.unwrap()[0]
-            .as_ref()
-            .unwrap()
-            .state()
-            .unwrap()
-            .name(),
-        "left"
-    );
-    assert_eq!(
-        right_manager.list().await.unwrap()[0]
-            .as_ref()
-            .unwrap()
-            .state()
-            .unwrap()
-            .name(),
-        "right"
-    );
-
-    std::fs::remove_dir_all(left.data_dir()).unwrap();
-    std::fs::remove_dir_all(right.data_dir()).unwrap();
-}
-
-#[tokio::test]
-async fn list_reports_corrupt_bottles() {
-    let directories = test_directories();
-    let id = uuid::Uuid::new_v4();
-    std::fs::create_dir_all(directories.bottle(id)).unwrap();
-    std::fs::write(
-        directories.bottle(id).join("bottle.toml"),
-        "not valid toml =",
-    )
-    .unwrap();
-    let manager = BottleManager::new(
-        Context::new(directories.clone(), directories.data_dir().join("fvs2d")).unwrap(),
-    );
-
-    let bottles = manager.list().await.unwrap();
-
-    assert_eq!(bottles.len(), 1);
-    assert!(bottles[0].is_err());
-    std::fs::remove_dir_all(directories.data_dir()).unwrap();
-}
-
-#[tokio::test]
-async fn proton_umu_components_and_dependencies_round_trip() {
-    let directories = test_directories();
-    let id = uuid::Uuid::new_v4();
-    let bottle_path = directories.bottle(id);
-    std::fs::create_dir_all(&bottle_path).unwrap();
-    let proton = Component::new(
-        ComponentKind::Runner {
-            kind: RunnerKind::Proton,
-        },
-        "proton-1",
-        bottle_path.join("proton"),
-    )
-    .unwrap();
-    let bridge = Component::new(
-        ComponentKind::Winebridge,
-        "bridge-1",
-        bottle_path.join("winebridge/bottles-winebridge.exe"),
-    )
-    .unwrap();
-    let umu = Component::new(ComponentKind::Umu, "umu-1", bottle_path.join("umu/umu-run")).unwrap();
-    let dxvk = Component::new(ComponentKind::Dxvk, "dxvk-1", bottle_path.join("dxvk")).unwrap();
-    let dependency: Dependency = serde_json::from_value(serde_json::json!({
-        "id": "00000000-0000-0000-0000-000000000001",
-        "name": "vcrun2022",
-        "version": "14.38"
-    }))
-    .unwrap();
-    let mut environment = Environment::default();
-    environment.insert("EXAMPLE".into(), "enabled".into());
-    let config = BottleState {
-        id,
-        name: "proton".into(),
-        runner: RunnerSelection::proton(proton.clone(), umu.clone()).unwrap(),
-        winebridge: bridge,
-        dxvk: Some(dxvk),
-        vkd3d: None,
-        nvapi: None,
-        latency_flex: None,
-        dependencies: vec![dependency],
-        storage: crate::prefix::Prefix::Standard,
-        programs: Vec::new(),
-        wrappers: Wrappers {
-            gamescope: GamescopeConfig {
-                enabled: true,
-                game_width: Some(1280),
-                scaler: Some(Scaler::Fit),
-                fullscreen: true,
-                ..Default::default()
+            dependencies: vec![dependency],
+            storage: crate::prefix::Prefix::Standard,
+            programs: Vec::new(),
+            wrappers: Wrappers {
+                gamescope: GamescopeConfig {
+                    enabled: true,
+                    game_width: Some(1280),
+                    scaler: Some(Scaler::Fit),
+                    fullscreen: true,
+                    ..Default::default()
+                },
+                mangohud: MangoHudConfig { enabled: true },
             },
-            mangohud: MangoHudConfig { enabled: true },
-        },
-        environment,
-    };
-    let path = bottle_path.join("bottle.toml");
+            environment,
+        };
+        let path = bottle_path.join("bottle.toml");
 
-    next_config::save(&path, &config).await.unwrap();
-    let loaded: BottleState = next_config::load(&path).await.unwrap();
-    let stored = std::fs::read_to_string(&path).unwrap();
-    assert!(stored.contains("[runner.umu]"));
-    assert!(stored.contains("[dxvk]"));
-    assert!(stored.contains("[gamescope]"));
-    assert!(stored.contains("[mangohud]"));
-    assert!(stored.contains("enabled = true"));
-    assert_eq!(loaded.runner().kind(), RunnerKind::Proton);
-    assert_eq!(loaded.runner().umu().unwrap().version(), "umu-1");
-    assert!(stored.contains("[[dependencies]]"));
-    assert_eq!(loaded.dependencies()[0].name(), "vcrun2022");
-    assert_eq!(loaded.wrappers, config.wrappers);
-    assert_eq!(loaded.environment, config.environment);
+        next_config::save(&path, &config).await.unwrap();
+        let loaded: BottleState = next_config::load(&path).await.unwrap();
+        let stored = std::fs::read_to_string(&path).unwrap();
+        assert!(stored.contains("[runner.umu]"));
+        assert!(stored.contains("[dxvk]"));
+        assert!(stored.contains("[gamescope]"));
+        assert!(stored.contains("[mangohud]"));
+        assert!(stored.contains("enabled = true"));
+        assert_eq!(loaded.runner().kind(), RunnerKind::Proton);
+        assert_eq!(loaded.runner().umu().unwrap().version(), "umu-1");
+        assert!(stored.contains("[[dependencies]]"));
+        assert_eq!(loaded.dependencies()[0].name(), "vcrun2022");
+        assert_eq!(loaded.wrappers, config.wrappers);
+        assert_eq!(loaded.environment, config.environment);
 
-    std::fs::remove_dir_all(directories.data_dir()).unwrap();
+        std::fs::remove_dir_all(directories.data_dir()).unwrap();
+    });
 }
 
 #[cfg(unix)]
@@ -227,238 +235,243 @@ mod unix {
         }
     }
 
-    #[tokio::test]
-    async fn components_and_programs_round_trip_through_bottle_toml() {
-        let directories = test_directories();
-        let context =
-            Context::new(directories.clone(), directories.data_dir().join("fvs2d")).unwrap();
-        let assets = directories
-            .data_dir()
-            .join(format!("test-assets-{}", Uuid::new_v4()));
-        let runner_root = assets.join("wine");
-        let bridge_root = assets.join("winebridge");
-        install_wine(&runner_root);
-        fs::create_dir_all(&bridge_root).unwrap();
-        fs::write(bridge_root.join("bottles-winebridge.exe"), []).unwrap();
+    #[test]
+    fn components_and_programs_round_trip_through_bottle_toml() {
+        futures_lite::future::block_on(async {
+            let directories = test_directories();
+            let context =
+                Context::new(directories.clone(), directories.data_dir().join("fvs2d")).unwrap();
+            let assets = directories
+                .data_dir()
+                .join(format!("test-assets-{}", Uuid::new_v4()));
+            let runner_root = assets.join("wine");
+            let bridge_root = assets.join("winebridge");
+            install_wine(&runner_root);
+            fs::create_dir_all(&bridge_root).unwrap();
+            fs::write(bridge_root.join("bottles-winebridge.exe"), []).unwrap();
 
+            let runner = Component::new(
+                ComponentKind::Runner {
+                    kind: RunnerKind::Wine,
+                },
+                "manual-wine",
+                &runner_root,
+            )
+            .unwrap();
+            let bridge = Component::new(
+                ComponentKind::Winebridge,
+                "manual-winebridge",
+                bridge_root.join("bottles-winebridge.exe"),
+            )
+            .unwrap();
+            let manager = BottleManager::new(context.clone());
+            let id = Uuid::new_v4();
+            let bottle_path = directories.bottle(id);
+            fs::create_dir_all(&bottle_path).unwrap();
+            let loaded_runner = crate::runner::load_runner(&runner_root, RunnerKind::Wine, None)
+                .await
+                .unwrap();
+            let storage = Prefix::create(
+                BottleType::Standard,
+                &bottle_path,
+                loaded_runner.as_ref(),
+                &runner.id().to_string(),
+                &context,
+            )
+            .await
+            .unwrap();
+            let bottle = Bottle::new(
+                id,
+                Uuid::new_v4().to_string(),
+                RunnerSelection::wine(runner.clone()).unwrap(),
+                bridge,
+                storage,
+                context,
+            )
+            .await
+            .unwrap();
+            let program = Program::new("Game", "C:\\game.exe");
+            let program_id = program.id;
+            let wrappers = Wrappers {
+                gamescope: GamescopeConfig {
+                    enabled: true,
+                    fullscreen: true,
+                    ..Default::default()
+                },
+                mangohud: MangoHudConfig { enabled: true },
+            };
+            let mut edit = bottle.edit();
+            assert_eq!(bottle.state().unwrap().id(), id);
+            edit.add_program(program)
+                .set_gamescope(GamescopeConfig {
+                    enabled: true,
+                    fullscreen: true,
+                    ..Default::default()
+                })
+                .set_mangohud(MangoHudConfig { enabled: true });
+            edit.commit().await.unwrap();
+            assert_eq!(bottle.state().unwrap().wrappers(), &wrappers);
+            let bottle_id = bottle.state().unwrap().id();
+            let failed_program = Program::new("Unsaved", "C:\\unsaved.exe");
+            let failed_program_id = failed_program.id;
+            let temporary = directories.bottle(bottle_id).join("bottle.tmp");
+            fs::create_dir(&temporary).unwrap();
+            let mut edit = bottle.edit();
+            edit.add_program(failed_program);
+            assert!(edit.commit().await.is_err());
+            let bottle = manager.open(bottle_id).await.unwrap();
+            assert!(bottle.state().unwrap().program(failed_program_id).is_none());
+            let persisted: BottleState =
+                next_config::load(directories.bottle(bottle_id).join("bottle.toml"))
+                    .await
+                    .unwrap();
+            assert!(
+                persisted
+                    .programs
+                    .iter()
+                    .all(|program| program.id != failed_program_id)
+            );
+            fs::remove_dir(temporary).unwrap();
+            let runner_id = bottle.state().unwrap().runner().runner().id();
+            drop(bottle);
+
+            let reopened = manager.open(bottle_id).await.unwrap();
+            assert_eq!(reopened.state().unwrap().runner().runner().id(), runner_id);
+            assert_eq!(
+                reopened.state().unwrap().runner().runner().path(),
+                runner_root
+            );
+            assert_eq!(reopened.state().unwrap().kind(), BottleType::Standard);
+            assert_eq!(
+                reopened.state().unwrap().program(program_id).unwrap().name,
+                "Game"
+            );
+            assert_eq!(reopened.state().unwrap().wrappers(), &wrappers);
+            let same = manager.open(bottle_id).await.unwrap();
+            let mut edit = reopened.edit();
+            edit.rename("Shared");
+            edit.commit().await.unwrap();
+            assert_eq!(same.state().unwrap().name(), "Shared");
+            let stored =
+                fs::read_to_string(directories.bottle(bottle_id).join("bottle.toml")).unwrap();
+            assert!(stored.contains("[runner]"));
+            assert!(stored.contains("type = \"runner\""));
+            assert!(stored.contains("runner = \"wine\""));
+            assert!(stored.contains("[winebridge]"));
+            assert!(!stored.contains("[[runner]]"));
+            assert!(!stored.contains("[umu]"));
+            assert!(stored.contains("[storage]"));
+            assert!(!stored.contains("[prefix]"));
+            assert!(!stored.contains("environment"));
+            assert!(stored.contains("[[programs]]"));
+            assert!(
+                directories
+                    .bottle(bottle_id)
+                    .join("prefix/initialized")
+                    .is_file()
+            );
+            assert_eq!(
+                fs::read_to_string(directories.bottle(bottle_id).join("prefix/wineserver.log"))
+                    .unwrap(),
+                "-k\n"
+            );
+
+            reopened.stop().await.unwrap();
+            assert_eq!(
+                fs::read_to_string(directories.bottle(bottle_id).join("prefix/wineserver.log"))
+                    .unwrap(),
+                "-k\n-k\n"
+            );
+
+            manager.delete(bottle_id).await.unwrap();
+            assert!(matches!(
+                same.state(),
+                Err(crate::error::Error::Bottle(BottleError::Deleted(id))) if id == bottle_id
+            ));
+            let edit = same.edit();
+            assert!(matches!(
+                edit.commit().await,
+                Err(crate::error::Error::Bottle(BottleError::Deleted(id))) if id == bottle_id
+            ));
+            assert!(matches!(
+                manager.open(bottle_id).await,
+                Err(crate::error::Error::Bottle(BottleError::NotFound(id))) if id == bottle_id
+            ));
+            fs::remove_dir_all(assets).unwrap();
+            fs::remove_dir_all(directories.data_dir()).unwrap();
+        });
+    }
+}
+
+#[test]
+fn virgo_layers_round_trip_through_bottle_toml() {
+    futures_lite::future::block_on(async {
+        use fvs_rs::{Commit, Layer, Repository};
+
+        let directories = test_directories();
+        let id = uuid::Uuid::new_v4();
+        let bottle_path = directories.bottle(id);
+        std::fs::create_dir_all(&bottle_path).unwrap();
+        let repository = Repository {
+            repository_path: bottle_path.join("repo").display().to_string(),
+            block_size: 4096,
+        };
+        let commit = Commit {
+            repository_path: repository.repository_path.clone(),
+            state_id: "state".into(),
+            created_at: None,
+            file_count: 1,
+            message: "test".into(),
+            created: true,
+        };
+        let expected = Layer::new(&repository, Some(&commit));
         let runner = Component::new(
             ComponentKind::Runner {
                 kind: RunnerKind::Wine,
             },
-            "manual-wine",
-            &runner_root,
+            "wine",
+            bottle_path.join("runner"),
         )
         .unwrap();
         let bridge = Component::new(
             ComponentKind::Winebridge,
-            "manual-winebridge",
-            bridge_root.join("bottles-winebridge.exe"),
+            "winebridge",
+            bottle_path.join("winebridge/bottles-winebridge.exe"),
         )
         .unwrap();
-        let manager = BottleManager::new(context.clone());
-        let id = Uuid::new_v4();
-        let bottle_path = directories.bottle(id);
-        fs::create_dir_all(&bottle_path).unwrap();
-        let loaded_runner = crate::runner::load_runner(&runner_root, RunnerKind::Wine, None)
-            .await
-            .unwrap();
-        let storage = Prefix::create(
-            BottleType::Standard,
-            &bottle_path,
-            loaded_runner.as_ref(),
-            &runner.id().to_string(),
-            &context,
-        )
-        .await
-        .unwrap();
-        let bottle = Bottle::new(
+        let config = BottleState {
             id,
-            Uuid::new_v4().to_string(),
-            RunnerSelection::wine(runner.clone()).unwrap(),
-            bridge,
-            storage,
-            context,
-        )
-        .await
-        .unwrap();
-        let program = Program::new("Game", "C:\\game.exe");
-        let program_id = program.id;
-        let wrappers = Wrappers {
-            gamescope: GamescopeConfig {
-                enabled: true,
-                fullscreen: true,
-                ..Default::default()
+            name: "virgo".into(),
+            runner: RunnerSelection::wine(runner.clone()).unwrap(),
+            winebridge: bridge,
+            dxvk: None,
+            vkd3d: None,
+            nvapi: None,
+            latency_flex: None,
+            dependencies: Vec::new(),
+            storage: crate::prefix::Prefix::Virgo {
+                layers: vec![expected.clone()],
             },
-            mangohud: MangoHudConfig { enabled: true },
+            programs: Vec::new(),
+            wrappers: Wrappers::default(),
+            environment: Default::default(),
         };
-        let mut edit = bottle.edit();
-        assert_eq!(bottle.state().unwrap().id(), id);
-        edit.add_program(program)
-            .set_gamescope(GamescopeConfig {
-                enabled: true,
-                fullscreen: true,
-                ..Default::default()
-            })
-            .set_mangohud(MangoHudConfig { enabled: true });
-        edit.commit().await.unwrap();
-        assert_eq!(bottle.state().unwrap().wrappers(), &wrappers);
-        let bottle_id = bottle.state().unwrap().id();
-        let failed_program = Program::new("Unsaved", "C:\\unsaved.exe");
-        let failed_program_id = failed_program.id;
-        let temporary = directories.bottle(bottle_id).join("bottle.tmp");
-        fs::create_dir(&temporary).unwrap();
-        let mut edit = bottle.edit();
-        edit.add_program(failed_program);
-        assert!(edit.commit().await.is_err());
-        let bottle = manager.open(bottle_id).await.unwrap();
-        assert!(bottle.state().unwrap().program(failed_program_id).is_none());
-        let persisted: BottleState =
-            next_config::load(directories.bottle(bottle_id).join("bottle.toml"))
-                .await
-                .unwrap();
-        assert!(
-            persisted
-                .programs
-                .iter()
-                .all(|program| program.id != failed_program_id)
-        );
-        fs::remove_dir(temporary).unwrap();
-        let runner_id = bottle.state().unwrap().runner().runner().id();
-        drop(bottle);
+        let path = bottle_path.join("bottle.toml");
 
-        let reopened = manager.open(bottle_id).await.unwrap();
-        assert_eq!(reopened.state().unwrap().runner().runner().id(), runner_id);
-        assert_eq!(
-            reopened.state().unwrap().runner().runner().path(),
-            runner_root
-        );
-        assert_eq!(reopened.state().unwrap().kind(), BottleType::Standard);
-        assert_eq!(
-            reopened.state().unwrap().program(program_id).unwrap().name,
-            "Game"
-        );
-        assert_eq!(reopened.state().unwrap().wrappers(), &wrappers);
-        let same = manager.open(bottle_id).await.unwrap();
-        let mut edit = reopened.edit();
-        edit.rename("Shared");
-        edit.commit().await.unwrap();
-        assert_eq!(same.state().unwrap().name(), "Shared");
-        let stored = fs::read_to_string(directories.bottle(bottle_id).join("bottle.toml")).unwrap();
+        next_config::save(&path, &config).await.unwrap();
+        let loaded: BottleState = next_config::load(&path).await.unwrap();
+        let stored = std::fs::read_to_string(&path).unwrap();
         assert!(stored.contains("[runner]"));
-        assert!(stored.contains("type = \"runner\""));
-        assert!(stored.contains("runner = \"wine\""));
         assert!(stored.contains("[winebridge]"));
-        assert!(!stored.contains("[[runner]]"));
-        assert!(!stored.contains("[umu]"));
         assert!(stored.contains("[storage]"));
         assert!(!stored.contains("[prefix]"));
-        assert!(!stored.contains("environment"));
-        assert!(stored.contains("[[programs]]"));
-        assert!(
-            directories
-                .bottle(bottle_id)
-                .join("prefix/initialized")
-                .is_file()
-        );
-        assert_eq!(
-            fs::read_to_string(directories.bottle(bottle_id).join("prefix/wineserver.log"))
-                .unwrap(),
-            "-k\n"
-        );
+        assert!(!stored.contains(&format!(
+            "path = \"{}\"",
+            bottle_path.join("prefix").display()
+        )));
+        assert_eq!(loaded.kind(), BottleType::Virgo);
+        assert!(stored.contains("state"));
 
-        reopened.stop().await.unwrap();
-        assert_eq!(
-            fs::read_to_string(directories.bottle(bottle_id).join("prefix/wineserver.log"))
-                .unwrap(),
-            "-k\n-k\n"
-        );
-
-        manager.delete(bottle_id).await.unwrap();
-        assert!(matches!(
-            same.state(),
-            Err(crate::error::Error::Bottle(BottleError::Deleted(id))) if id == bottle_id
-        ));
-        let edit = same.edit();
-        assert!(matches!(
-            edit.commit().await,
-            Err(crate::error::Error::Bottle(BottleError::Deleted(id))) if id == bottle_id
-        ));
-        assert!(matches!(
-            manager.open(bottle_id).await,
-            Err(crate::error::Error::Bottle(BottleError::NotFound(id))) if id == bottle_id
-        ));
-        fs::remove_dir_all(assets).unwrap();
-        fs::remove_dir_all(directories.data_dir()).unwrap();
-    }
-}
-
-#[tokio::test]
-async fn virgo_layers_round_trip_through_bottle_toml() {
-    use fvs_rs::{Commit, Layer, Repository};
-
-    let directories = test_directories();
-    let id = uuid::Uuid::new_v4();
-    let bottle_path = directories.bottle(id);
-    std::fs::create_dir_all(&bottle_path).unwrap();
-    let repository = Repository {
-        repository_path: bottle_path.join("repo").display().to_string(),
-        block_size: 4096,
-    };
-    let commit = Commit {
-        repository_path: repository.repository_path.clone(),
-        state_id: "state".into(),
-        created_at: None,
-        file_count: 1,
-        message: "test".into(),
-        created: true,
-    };
-    let expected = Layer::new(&repository, Some(&commit));
-    let runner = Component::new(
-        ComponentKind::Runner {
-            kind: RunnerKind::Wine,
-        },
-        "wine",
-        bottle_path.join("runner"),
-    )
-    .unwrap();
-    let bridge = Component::new(
-        ComponentKind::Winebridge,
-        "winebridge",
-        bottle_path.join("winebridge/bottles-winebridge.exe"),
-    )
-    .unwrap();
-    let config = BottleState {
-        id,
-        name: "virgo".into(),
-        runner: RunnerSelection::wine(runner.clone()).unwrap(),
-        winebridge: bridge,
-        dxvk: None,
-        vkd3d: None,
-        nvapi: None,
-        latency_flex: None,
-        dependencies: Vec::new(),
-        storage: crate::prefix::Prefix::Virgo {
-            layers: vec![expected.clone()],
-        },
-        programs: Vec::new(),
-        wrappers: Wrappers::default(),
-        environment: Default::default(),
-    };
-    let path = bottle_path.join("bottle.toml");
-
-    next_config::save(&path, &config).await.unwrap();
-    let loaded: BottleState = next_config::load(&path).await.unwrap();
-    let stored = std::fs::read_to_string(&path).unwrap();
-    assert!(stored.contains("[runner]"));
-    assert!(stored.contains("[winebridge]"));
-    assert!(stored.contains("[storage]"));
-    assert!(!stored.contains("[prefix]"));
-    assert!(!stored.contains(&format!(
-        "path = \"{}\"",
-        bottle_path.join("prefix").display()
-    )));
-    assert_eq!(loaded.kind(), BottleType::Virgo);
-    assert!(stored.contains("state"));
-
-    std::fs::remove_dir_all(directories.data_dir()).unwrap();
+        std::fs::remove_dir_all(directories.data_dir()).unwrap();
+    });
 }

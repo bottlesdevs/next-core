@@ -153,67 +153,73 @@ mod tests {
     use super::*;
     use crate::{Context, Directories};
 
-    #[tokio::test]
-    async fn discovers_extracted_components_and_executable_paths() {
-        let components_path =
-            std::env::temp_dir().join(format!("bottles-next-components-{}", Uuid::new_v4()));
-        let winebridge = components_path.join("winebridge/bridge-1");
-        let umu = components_path.join("umu/umu-1");
-        fs::create_dir_all(&winebridge).unwrap();
-        fs::create_dir_all(&umu).unwrap();
-        fs::create_dir_all(components_path.join("dxvk/dxvk-1")).unwrap();
-        fs::write(winebridge.join("bottles-winebridge.exe"), []).unwrap();
-        fs::write(umu.join("umu-run"), []).unwrap();
+    #[test]
+    fn discovers_extracted_components_and_executable_paths() {
+        futures_lite::future::block_on(async {
+            let components_path =
+                std::env::temp_dir().join(format!("bottles-next-components-{}", Uuid::new_v4()));
+            let winebridge = components_path.join("winebridge/bridge-1");
+            let umu = components_path.join("umu/umu-1");
+            fs::create_dir_all(&winebridge).unwrap();
+            fs::create_dir_all(&umu).unwrap();
+            fs::create_dir_all(components_path.join("dxvk/dxvk-1")).unwrap();
+            fs::write(winebridge.join("bottles-winebridge.exe"), []).unwrap();
+            fs::write(umu.join("umu-run"), []).unwrap();
 
-        let components = discover_components(&components_path, &ComponentIndex::default())
-            .await
-            .unwrap();
+            let components = discover_components(&components_path, &ComponentIndex::default())
+                .await
+                .unwrap();
 
-        assert_eq!(components.len(), 3);
-        assert!(
-            components
-                .iter()
-                .any(|component| component.kind() == ComponentKind::Winebridge)
-        );
-        assert!(
-            components
-                .iter()
-                .any(|component| component.kind() == ComponentKind::Umu)
-        );
-        assert!(
-            components
-                .iter()
-                .any(|component| component.kind() == ComponentKind::Dxvk)
-        );
-        assert_eq!(
-            components
-                .iter()
-                .find(|component| component.kind() == ComponentKind::Umu)
-                .unwrap()
-                .path(),
-            umu.join("umu-run")
-        );
+            assert_eq!(components.len(), 3);
+            assert!(
+                components
+                    .iter()
+                    .any(|component| component.kind() == ComponentKind::Winebridge)
+            );
+            assert!(
+                components
+                    .iter()
+                    .any(|component| component.kind() == ComponentKind::Umu)
+            );
+            assert!(
+                components
+                    .iter()
+                    .any(|component| component.kind() == ComponentKind::Dxvk)
+            );
+            assert_eq!(
+                components
+                    .iter()
+                    .find(|component| component.kind() == ComponentKind::Umu)
+                    .unwrap()
+                    .path(),
+                umu.join("umu-run")
+            );
 
-        fs::remove_dir_all(components_path).unwrap();
+            fs::remove_dir_all(components_path).unwrap();
+        });
     }
 
-    #[tokio::test]
-    async fn discovery_is_scoped_to_the_supplied_root_and_preserves_indexed_ids() {
-        let root = std::env::temp_dir().join(format!("bottles-next-components-{}", Uuid::new_v4()));
-        let left = Directories::from_path(root.join("left")).unwrap();
-        let right = Directories::from_path(root.join("right")).unwrap();
-        fs::create_dir_all(left.components().join("dxvk/1")).unwrap();
-        fs::create_dir_all(right.components().join("dxvk/1")).unwrap();
+    #[test]
+    fn discovery_is_scoped_to_the_supplied_root_and_preserves_indexed_ids() {
+        futures_lite::future::block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("bottles-next-components-{}", Uuid::new_v4()));
+            let left = Directories::from_path(root.join("left")).unwrap();
+            let right = Directories::from_path(root.join("right")).unwrap();
+            fs::create_dir_all(left.components().join("dxvk/1")).unwrap();
+            fs::create_dir_all(right.components().join("dxvk/1")).unwrap();
 
-        let left_context = Context::new(left.clone(), left.data_dir().join("fvs2d")).unwrap();
-        let right_context = Context::new(right.clone(), right.data_dir().join("fvs2d")).unwrap();
-        let first = ComponentManager::load(left_context.clone()).await.unwrap();
-        let left_id = first.components()[0].id();
-        let second = ComponentManager::load(left_context).await.unwrap();
-        let right = ComponentManager::load(right_context).await.unwrap();
+            let left_context = Context::new(left.clone(), left.data_dir().join("fvs2d")).unwrap();
+            let right_context =
+                Context::new(right.clone(), right.data_dir().join("fvs2d")).unwrap();
+            let first = ComponentManager::load(left_context.clone()).await.unwrap();
+            let left_id = first.components()[0].id();
+            let second = ComponentManager::load(left_context).await.unwrap();
+            let right = ComponentManager::load(right_context).await.unwrap();
 
-        assert_eq!(second.components()[0].id(), left_id);
-        assert_ne!(right.components()[0].id(), left_id);
-        fs::remove_dir_all(root).unwrap();
+            assert_eq!(second.components()[0].id(), left_id);
+            assert_ne!(right.components()[0].id(), left_id);
+            fs::remove_dir_all(root).unwrap();
+        });
     }
 }
