@@ -29,6 +29,46 @@ pub(crate) async fn load(directories: &Directories) -> Result<Vec<Component>> {
     Ok(components)
 }
 
+pub(crate) async fn record(directories: &Directories, component: Component) -> Result<()> {
+    let path = directories.components().join("index.toml");
+    let mut index = if async_fs::metadata(&path)
+        .await
+        .is_ok_and(|entry| entry.is_file())
+    {
+        next_config::load(&path).await?
+    } else {
+        ComponentIndex::default()
+    };
+    index
+        .components
+        .retain(|entry| entry.id() != component.id() && entry.path() != component.path());
+    index.components.push(component);
+    next_config::save(path, &index).await?;
+    Ok(())
+}
+
+pub(crate) fn category(kind: ComponentKind) -> &'static str {
+    match kind {
+        ComponentKind::Runner { .. } => "runners",
+        ComponentKind::Winebridge => "winebridge",
+        ComponentKind::Umu => "umu",
+        ComponentKind::Dxvk => "dxvk",
+        ComponentKind::Vkd3d => "vkd3d",
+        ComponentKind::Nvapi => "nvapi",
+        ComponentKind::LatencyFlex => "latency-flex",
+    }
+}
+
+pub(crate) fn root(component: &Component) -> &Path {
+    match component.kind() {
+        ComponentKind::Winebridge | ComponentKind::Umu => component
+            .path()
+            .parent()
+            .expect("component executable has a parent"),
+        _ => component.path(),
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Eq, PartialEq, Serialize, Config)]
 #[config(version = 1)]
 struct ComponentIndex {
@@ -69,7 +109,7 @@ async fn discover_components(
             if !version.file_type().await?.is_dir() {
                 continue;
             }
-            let Some((kind, path)) = component(&category_name, &version.path()).await? else {
+            let Some((kind, path)) = inspect(&category_name, &version.path()).await? else {
                 continue;
             };
             let relative = path.to_path_buf();
@@ -92,7 +132,7 @@ async fn discover_components(
     Ok(components)
 }
 
-async fn component(
+pub(crate) async fn inspect(
     directory: &str,
     path: &Path,
 ) -> Result<Option<(ComponentKind, std::path::PathBuf)>> {

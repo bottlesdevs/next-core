@@ -19,6 +19,20 @@ pub struct Component {
 }
 
 impl Component {
+    pub(crate) fn from_catalog(
+        id: Uuid,
+        version: impl Into<String>,
+        path: impl Into<PathBuf>,
+        kind: ComponentKind,
+    ) -> Self {
+        Self {
+            id: NonNilUuid::new(id).expect("catalog UUID is non-nil"),
+            version: version.into(),
+            path: path.into(),
+            kind,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
         kind: ComponentKind,

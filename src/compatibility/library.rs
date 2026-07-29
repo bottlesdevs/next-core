@@ -1,7 +1,9 @@
 use std::{
     collections::HashSet,
+    fmt::Write as _,
+    future::Future,
     io,
-    path::{Path, PathBuf},
+    path::{Component as PathComponent, Path, PathBuf},
     sync::Arc,
 };
 
@@ -9,8 +11,10 @@ use download_manager::{
     download::DownloadResult, events::Progress as DownloadProgress, manager::DownloadManager,
 };
 use futures_core::Stream;
+use futures_lite::io::AsyncReadExt;
 use futures_util::{FutureExt, StreamExt};
 use serde::{Serialize, de::DeserializeOwned};
+use sha2::{Digest, Sha256, Sha512};
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 use tokio_stream::wrappers::WatchStream;
@@ -19,6 +23,7 @@ use url::Url;
 use uuid::Uuid;
 
 use super::{
+    Architecture, Checksum, Target,
     components::{
         Component,
         catalog::{CatalogComponentEntry, ComponentCatalog, ComponentKind},
@@ -34,6 +39,7 @@ use super::{
 use crate::{
     Directories, Operation, Transfer,
     error::{Error, Result},
+    utils::{archive, exists},
 };
 
 #[derive(Clone)]
@@ -176,8 +182,303 @@ impl Library {
         })
     }
 
+    pub fn download_component(&self, id: Uuid) -> Operation<Component, LibraryProgress> {
+        let library = self.clone();
+        Operation::new(move |progress, cancellation| async move {
+            let state = library.state();
+            let status = state
+                .component(id)
+                .ok_or(LibraryError::ComponentNotFound(id))?;
+            if let Some(component) = status.downloaded() {
+                return Ok(component.clone());
+            }
+            let entry = status
+                .catalog()
+                .cloned()
+                .ok_or(LibraryError::ComponentNotFound(id))?;
+            let target = Target::current().ok_or(LibraryError::UnsupportedComponent(id))?;
+            let artifact = entry
+                .artifact_for(target)
+                .cloned()
+                .ok_or(LibraryError::UnsupportedComponent(id))?;
+            let stage = library
+                .0
+                .directories
+                .components()
+                .join(".staging")
+                .join(Uuid::new_v4().to_string());
+            async_fs::create_dir_all(&stage).await?;
+
+            let result = library
+                .download_component_entry(entry, artifact, &stage, progress, &cancellation)
+                .await;
+            let _ = async_fs::remove_dir_all(stage).await;
+            result
+        })
+    }
+
+    pub async fn delete_component(&self, id: Uuid) -> Result<()> {
+        let _write = self.0.write.lock().await;
+        let state = self.state();
+        let component = state
+            .component(id)
+            .and_then(ComponentStatus::downloaded)
+            .cloned()
+            .ok_or(LibraryError::ComponentNotFound(id))?;
+        async_fs::remove_dir_all(component_storage::root(&component)).await?;
+        let components = component_storage::load(&self.0.directories).await?;
+        self.publish(
+            state.component_catalog.clone(),
+            state.dependency_catalog.clone(),
+            components,
+            state.downloaded_dependencies(),
+        );
+        Ok(())
+    }
+
+    pub fn download_dependency(&self, id: Uuid) -> Operation<Dependency, LibraryProgress> {
+        let library = self.clone();
+        Operation::new(move |progress, cancellation| async move {
+            let state = library.state();
+            let status = state
+                .dependency(id)
+                .ok_or(LibraryError::DependencyNotFound(id))?;
+            if let Some(dependency) = status.downloaded() {
+                return Ok(dependency.clone());
+            }
+            let entry = status
+                .catalog()
+                .cloned()
+                .ok_or(LibraryError::DependencyNotFound(id))?;
+            let resources = entry
+                .resources()
+                .iter()
+                .filter(|resource| {
+                    matches!(
+                        resource.target_arch(),
+                        Architecture::X86 | Architecture::X86_64
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if resources.is_empty() {
+                return Err(LibraryError::UnsupportedDependency(id).into());
+            }
+            let stage = library
+                .0
+                .directories
+                .dependencies()
+                .join(".staging")
+                .join(Uuid::new_v4().to_string());
+            async_fs::create_dir_all(&stage).await?;
+
+            let result = library
+                .download_dependency_entry(entry, resources, &stage, progress, &cancellation)
+                .await;
+            let _ = async_fs::remove_dir_all(&stage).await;
+            result
+        })
+    }
+
+    pub async fn delete_dependency(&self, id: Uuid) -> Result<()> {
+        let _write = self.0.write.lock().await;
+        let state = self.state();
+        state
+            .dependency(id)
+            .and_then(DependencyStatus::downloaded)
+            .ok_or(LibraryError::DependencyNotFound(id))?;
+        let path = self.0.directories.dependencies().join(id.to_string());
+        async_fs::remove_dir_all(path).await?;
+        let dependencies = dependency_storage::load(&self.0.directories).await?;
+        self.publish(
+            state.component_catalog.clone(),
+            state.dependency_catalog.clone(),
+            state.downloaded_components(),
+            dependencies,
+        );
+        Ok(())
+    }
+
     pub(crate) fn component_steps(&self, component: &Component) -> Vec<InstallStep> {
         self.state().component_steps(component)
+    }
+
+    async fn download_component_entry(
+        &self,
+        entry: CatalogComponentEntry,
+        artifact: super::components::catalog::ComponentArtifact,
+        stage: &Path,
+        progress: watch::Sender<Option<LibraryProgress>>,
+        cancellation: &CancellationToken,
+    ) -> Result<Component> {
+        let file_name = safe_file_name(artifact.file_name())?;
+        let archive_path = stage.join(file_name);
+        download(
+            &self.0.downloads,
+            artifact.url().clone(),
+            &archive_path,
+            cancellation,
+            |transfer| {
+                progress.send_replace(Some(LibraryProgress::Downloading {
+                    file: file_name.to_owned(),
+                    resource: 1,
+                    resources: 1,
+                    transfer,
+                }));
+            },
+        )
+        .await?;
+        progress.send_replace(Some(LibraryProgress::Verifying {
+            file: file_name.to_owned(),
+            resource: 1,
+            resources: 1,
+        }));
+        verify_checksum(&archive_path, artifact.checksum(), cancellation).await?;
+
+        progress.send_replace(Some(LibraryProgress::Extracting));
+        let extracted = stage.join("extracted");
+        async_fs::create_dir_all(&extracted).await?;
+        cancellable(
+            async { Ok(archive::extract(&archive_path, &extracted).await?) },
+            cancellation,
+        )
+        .await?;
+        let release = top_level_directory(&extracted).await?;
+        let category = component_storage::category(entry.kind());
+        let (found, _) = component_storage::inspect(category, &release)
+            .await?
+            .ok_or(LibraryError::InvalidComponentArchive)?;
+        if found != entry.kind() {
+            return Err(LibraryError::ComponentKindMismatch {
+                expected: entry.kind(),
+                found,
+            }
+            .into());
+        }
+
+        let release_name = release
+            .file_name()
+            .ok_or(LibraryError::InvalidComponentArchive)?;
+        let category_root = self.0.directories.components().join(category);
+        let target = category_root.join(release_name);
+        let _write = self.0.write.lock().await;
+        if let Some(component) = self
+            .state()
+            .component(entry.uuid())
+            .and_then(ComponentStatus::downloaded)
+        {
+            return Ok(component.clone());
+        }
+        if exists(&target).await? {
+            return Err(LibraryError::TargetExists(target).into());
+        }
+        async_fs::create_dir_all(category_root).await?;
+        async_fs::rename(&release, &target).await?;
+
+        let result = async {
+            let (kind, path) = component_storage::inspect(category, &target)
+                .await?
+                .ok_or(LibraryError::InvalidComponentArchive)?;
+            let component = Component::from_catalog(
+                entry.uuid(),
+                entry.version(),
+                async_fs::canonicalize(path).await?,
+                kind,
+            );
+            component_storage::record(&self.0.directories, component.clone()).await?;
+            let components = component_storage::load(&self.0.directories).await?;
+            let state = self.state();
+            self.publish(
+                state.component_catalog.clone(),
+                state.dependency_catalog.clone(),
+                components,
+                state.downloaded_dependencies(),
+            );
+            Ok(component)
+        }
+        .await;
+        if result.is_err() {
+            let _ = async_fs::remove_dir_all(target).await;
+        }
+        result
+    }
+
+    async fn download_dependency_entry(
+        &self,
+        entry: CatalogDependencyEntry,
+        resources: Vec<super::dependencies::catalog::DependencyResource>,
+        stage: &Path,
+        progress: watch::Sender<Option<LibraryProgress>>,
+        cancellation: &CancellationToken,
+    ) -> Result<Dependency> {
+        let total = resources.len();
+        for (index, resource) in resources.iter().enumerate() {
+            let file_name = safe_file_name(resource.file_name())?;
+            let destination = stage.join(file_name);
+            download(
+                &self.0.downloads,
+                resource.url().clone(),
+                &destination,
+                cancellation,
+                |transfer| {
+                    progress.send_replace(Some(LibraryProgress::Downloading {
+                        file: file_name.to_owned(),
+                        resource: index + 1,
+                        resources: total,
+                        transfer,
+                    }));
+                },
+            )
+            .await?;
+            progress.send_replace(Some(LibraryProgress::Verifying {
+                file: file_name.to_owned(),
+                resource: index + 1,
+                resources: total,
+            }));
+            verify_checksum(&destination, resource.checksum(), cancellation).await?;
+        }
+
+        let target = self
+            .0
+            .directories
+            .dependencies()
+            .join(entry.uuid().to_string());
+        let _write = self.0.write.lock().await;
+        if let Some(dependency) = self
+            .state()
+            .dependency(entry.uuid())
+            .and_then(DependencyStatus::downloaded)
+        {
+            return Ok(dependency.clone());
+        }
+        if exists(&target).await? {
+            return Err(LibraryError::TargetExists(target).into());
+        }
+        async_fs::rename(stage, &target).await?;
+
+        let result = async {
+            dependency_storage::record(&self.0.directories, entry.clone()).await?;
+            let dependencies = dependency_storage::load(&self.0.directories).await?;
+            let dependency = dependencies
+                .iter()
+                .find(|dependency| dependency.id() == entry.uuid())
+                .cloned()
+                .ok_or(LibraryError::DependencyNotFound(entry.uuid()))?;
+            let state = self.state();
+            self.publish(
+                state.component_catalog.clone(),
+                state.dependency_catalog.clone(),
+                state.downloaded_components(),
+                dependencies,
+            );
+            Ok(dependency)
+        }
+        .await;
+        if result.is_err() {
+            let _ = async_fs::remove_dir_all(&target).await;
+            let _ = dependency_storage::remove(&self.0.directories, entry.uuid()).await;
+        }
+        result
     }
 
     async fn download_catalog(
@@ -228,7 +529,7 @@ pub enum CatalogKind {
     Dependencies,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LibraryProgress {
     CatalogDownload {
         catalog: CatalogKind,
@@ -262,6 +563,10 @@ pub enum LibraryError {
     DependencyNotFound(Uuid),
     #[error("no artifact supports this system for component {0}")]
     UnsupportedComponent(Uuid),
+    #[error("dependency {0} has no supported resources")]
+    UnsupportedDependency(Uuid),
+    #[error("artifact file name is invalid: {0}")]
+    InvalidFileName(String),
     #[error("checksum mismatch for {0}")]
     ChecksumMismatch(PathBuf),
     #[error("component archive must contain exactly one top-level directory")]
@@ -532,6 +837,79 @@ async fn download(
     }
 }
 
+fn safe_file_name(name: &str) -> Result<&str> {
+    let mut components = Path::new(name).components();
+    if matches!(components.next(), Some(PathComponent::Normal(_))) && components.next().is_none() {
+        Ok(name)
+    } else {
+        Err(LibraryError::InvalidFileName(name.to_owned()).into())
+    }
+}
+
+async fn verify_checksum(
+    path: &Path,
+    checksum: &Checksum,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let actual = match checksum {
+        Checksum::Sha256(_) => digest::<Sha256>(path, cancellation).await?,
+        Checksum::Sha512(_) => digest::<Sha512>(path, cancellation).await?,
+    };
+    if actual.eq_ignore_ascii_case(checksum.value()) {
+        Ok(())
+    } else {
+        Err(LibraryError::ChecksumMismatch(path.to_path_buf()).into())
+    }
+}
+
+async fn digest<D>(path: &Path, cancellation: &CancellationToken) -> Result<String>
+where
+    D: Digest + Default,
+{
+    let mut file = async_fs::File::open(path).await?;
+    let mut digest = D::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let read = file.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    let mut encoded = String::with_capacity(<D as Digest>::output_size() * 2);
+    for byte in digest.finalize() {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    Ok(encoded)
+}
+
+async fn top_level_directory(root: &Path) -> Result<PathBuf> {
+    let mut entries = async_fs::read_dir(root).await?;
+    let Some(entry) = entries.next().await.transpose()? else {
+        return Err(LibraryError::InvalidComponentArchive.into());
+    };
+    if entries.next().await.transpose()?.is_some() || !entry.file_type().await?.is_dir() {
+        return Err(LibraryError::InvalidComponentArchive.into());
+    }
+    Ok(entry.path())
+}
+
+async fn cancellable<T>(
+    future: impl Future<Output = Result<T>>,
+    cancellation: &CancellationToken,
+) -> Result<T> {
+    let future = future.fuse();
+    let cancelled = cancellation.cancelled().fuse();
+    futures_util::pin_mut!(future, cancelled);
+    futures_util::select_biased! {
+        result = future => result,
+        _ = cancelled => Err(Error::Cancelled),
+    }
+}
+
 async fn load_cached_catalog<T>(path: &Path) -> Option<Arc<T>>
 where
     T: DeserializeOwned,
@@ -582,8 +960,34 @@ mod tests {
     use download_manager::manager::DownloadManagerConfig;
     use http::Response;
     use http_client::{MockClient, body};
+    use smol_tar::{TarRegularFile, TarWriter};
 
     use super::*;
+
+    async fn tar(path: &str, contents: &'static [u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut archive = TarWriter::new(&mut bytes);
+            archive
+                .write(
+                    TarRegularFile::new(path, contents.len() as u64, contents)
+                        .with_mode(0o755)
+                        .into(),
+                )
+                .await
+                .unwrap();
+            archive.finish().await.unwrap();
+        }
+        bytes
+    }
+
+    fn sha256(bytes: &[u8]) -> String {
+        let mut encoded = String::new();
+        for byte in Sha256::digest(bytes) {
+            write!(&mut encoded, "{byte:02x}").unwrap();
+        }
+        encoded
+    }
 
     #[test]
     fn state_joins_catalog_downloads_and_resolves_recipes() {
@@ -694,6 +1098,124 @@ mod tests {
             assert!(library.refresh_catalogs().await.is_err());
             assert!(library.state().has_component_catalog());
             assert!(!library.state().has_dependency_catalog());
+
+            drop(library);
+            scheduler.await;
+            async_fs::remove_dir_all(root).await.unwrap();
+        }));
+    }
+
+    #[test]
+    fn downloads_and_deletes_components_and_dependencies() {
+        let executor = async_executor::Executor::new();
+        futures_lite::future::block_on(executor.run(async {
+            let component_id = Uuid::new_v4();
+            let dependency_id = Uuid::new_v4();
+            let component_archive = tar("dxvk-1/x64/d3d11.dll", b"dll").await;
+            let dependency_file = b"installer".to_vec();
+            let root =
+                std::env::temp_dir().join(format!("bottles-next-library-{}", Uuid::new_v4()));
+            let directories = Directories::from_path(&root).unwrap();
+            async_fs::write(
+                component_catalog_path(&directories),
+                format!(
+                    r#"{{
+                        "schema_version": 1,
+                        "items": [{{
+                            "id": "{component_id}",
+                            "version": "1",
+                            "kind": {{ "type": "dxvk" }},
+                            "artifacts": [{{
+                                "url": "https://example.test/dxvk.tar",
+                                "file_name": "dxvk.tar",
+                                "checksum": {{
+                                    "algorithm": "sha256",
+                                    "value": "{}"
+                                }}
+                            }}]
+                        }}]
+                    }}"#,
+                    sha256(&component_archive)
+                ),
+            )
+            .await
+            .unwrap();
+            async_fs::write(
+                dependency_catalog_path(&directories),
+                format!(
+                    r#"{{
+                        "schema_version": 1,
+                        "items": [{{
+                            "id": "{dependency_id}",
+                            "name": "runtime",
+                            "version": "1",
+                            "resources": [{{
+                                "url": "https://example.test/runtime.exe",
+                                "file_name": "runtime.exe",
+                                "checksum": {{
+                                    "algorithm": "sha256",
+                                    "value": "{}"
+                                }},
+                                "target_arch": "x86_64",
+                                "steps": []
+                            }}]
+                        }}]
+                    }}"#,
+                    sha256(&dependency_file)
+                ),
+            )
+            .await
+            .unwrap();
+            let component_body = component_archive.clone();
+            let dependency_body = dependency_file.clone();
+            let client = Arc::new(MockClient::new(move |request| {
+                let bytes = if request.uri().path().ends_with("dxvk.tar") {
+                    component_body.clone()
+                } else {
+                    dependency_body.clone()
+                };
+                Ok(Response::builder().status(200).body(body(bytes))?)
+            }));
+            let (downloads, scheduler) =
+                DownloadManager::new(client, DownloadManagerConfig::default());
+            let scheduler = executor.spawn(scheduler);
+            let library = Library::load(
+                directories,
+                Url::parse("https://example.test/components.json").unwrap(),
+                Url::parse("https://example.test/dependencies.json").unwrap(),
+                Arc::new(downloads),
+            )
+            .await
+            .unwrap();
+
+            let component = library.download_component(component_id).await.unwrap();
+            assert_eq!(component.id(), component_id);
+            assert!(component.path().ends_with("dxvk/dxvk-1"));
+            let dependency = library.download_dependency(dependency_id).await.unwrap();
+            assert_eq!(dependency.id(), dependency_id);
+            assert!(
+                root.join(format!("dependencies/{dependency_id}/runtime.exe"))
+                    .is_file()
+            );
+
+            library.delete_component(component_id).await.unwrap();
+            library.delete_dependency(dependency_id).await.unwrap();
+            assert!(
+                library
+                    .state()
+                    .component(component_id)
+                    .unwrap()
+                    .downloaded()
+                    .is_none()
+            );
+            assert!(
+                library
+                    .state()
+                    .dependency(dependency_id)
+                    .unwrap()
+                    .downloaded()
+                    .is_none()
+            );
 
             drop(library);
             scheduler.await;

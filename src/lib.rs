@@ -16,8 +16,8 @@ pub use bottle::{
     SetRunnerProgress, Snapshot, SnapshotProgress, SnapshotSummary, Wrappers,
 };
 pub use compatibility::{
-    CatalogKind, ComponentStatus, DependencyStatus, Library, LibraryError, LibraryProgress,
-    LibraryState,
+    Architecture, CatalogKind, Checksum, ComponentStatus, DependencyStatus, Library,
+    LibraryError, LibraryProgress, LibraryState, OperatingSystem, Target,
     components::{
         Component,
         catalog::{CatalogComponentEntry, ComponentArtifact, ComponentCatalog, ComponentKind},

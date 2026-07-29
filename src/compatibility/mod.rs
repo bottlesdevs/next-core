@@ -51,6 +51,28 @@ impl Target {
         Self::new(OperatingSystem::Linux, Architecture::X86_64)
     }
 
+    pub fn current() -> Option<Self> {
+        let os = if cfg!(target_os = "linux") {
+            OperatingSystem::Linux
+        } else if cfg!(target_os = "macos") {
+            OperatingSystem::MacOs
+        } else if cfg!(target_os = "windows") {
+            OperatingSystem::Windows
+        } else {
+            return None;
+        };
+        let arch = if cfg!(target_arch = "x86") {
+            Architecture::X86
+        } else if cfg!(target_arch = "x86_64") {
+            Architecture::X86_64
+        } else if cfg!(target_arch = "aarch64") {
+            Architecture::Aarch64
+        } else {
+            return None;
+        };
+        Some(Self::new(os, arch))
+    }
+
     pub fn os(self) -> OperatingSystem {
         self.os
     }
