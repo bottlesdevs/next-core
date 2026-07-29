@@ -56,7 +56,9 @@ async fn bottle_managers_are_scoped_to_their_context_roots() {
             environment: Default::default(),
             wrappers: Wrappers::default(),
         };
-        next_config::save(directories.bottle(id).join("bottle.toml"), &config).unwrap();
+        next_config::save(directories.bottle(id).join("bottle.toml"), &config)
+            .await
+            .unwrap();
     }
 
     let left_manager =
@@ -122,8 +124,8 @@ async fn list_reports_corrupt_bottles() {
     std::fs::remove_dir_all(directories.data_dir()).unwrap();
 }
 
-#[test]
-fn proton_umu_components_and_dependencies_round_trip() {
+#[tokio::test]
+async fn proton_umu_components_and_dependencies_round_trip() {
     let directories = test_directories();
     let id = uuid::Uuid::new_v4();
     let bottle_path = directories.bottle(id);
@@ -178,8 +180,8 @@ fn proton_umu_components_and_dependencies_round_trip() {
     };
     let path = bottle_path.join("bottle.toml");
 
-    next_config::save(&path, &config).unwrap();
-    let loaded: BottleState = next_config::load(&path).unwrap();
+    next_config::save(&path, &config).await.unwrap();
+    let loaded: BottleState = next_config::load(&path).await.unwrap();
     let stored = std::fs::read_to_string(&path).unwrap();
     assert!(stored.contains("[runner.umu]"));
     assert!(stored.contains("[dxvk]"));
@@ -310,7 +312,9 @@ mod unix {
         let bottle = manager.open(bottle_id).await.unwrap();
         assert!(bottle.state().unwrap().program(failed_program_id).is_none());
         let persisted: BottleState =
-            next_config::load(directories.bottle(bottle_id).join("bottle.toml")).unwrap();
+            next_config::load(directories.bottle(bottle_id).join("bottle.toml"))
+                .await
+                .unwrap();
         assert!(
             persisted
                 .programs
@@ -387,8 +391,8 @@ mod unix {
     }
 }
 
-#[test]
-fn virgo_layers_round_trip_through_bottle_toml() {
+#[tokio::test]
+async fn virgo_layers_round_trip_through_bottle_toml() {
     use fvs_rs::{Commit, Layer, Repository};
 
     let directories = test_directories();
@@ -441,8 +445,8 @@ fn virgo_layers_round_trip_through_bottle_toml() {
     };
     let path = bottle_path.join("bottle.toml");
 
-    next_config::save(&path, &config).unwrap();
-    let loaded: BottleState = next_config::load(&path).unwrap();
+    next_config::save(&path, &config).await.unwrap();
+    let loaded: BottleState = next_config::load(&path).await.unwrap();
     let stored = std::fs::read_to_string(&path).unwrap();
     assert!(stored.contains("[runner]"));
     assert!(stored.contains("[winebridge]"));

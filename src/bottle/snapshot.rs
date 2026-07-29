@@ -77,9 +77,7 @@ impl Bottle {
             })
             .await?;
             let path = bottle_path.join("bottle.toml");
-            let state: BottleState = cx
-                .spawn_blocking(move || Ok(next_config::load(path)?))
-                .await?;
+            let state: BottleState = next_config::load(path).await?;
             if state.id != bottle.0.id {
                 return Err(BottleError::IdMismatch {
                     expected: bottle.0.id,

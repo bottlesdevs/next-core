@@ -143,29 +143,23 @@ impl BottleManager {
             return Ok(bottle);
         }
         let path = self.context.directories().bottle(id).join("bottle.toml");
-        let state = self
-            .context
-            .spawn_blocking(move || {
-                if !path.is_file() {
-                    return Err(BottleError::NotFound(id).into());
-                }
-                let state: BottleState = next_config::load(path)?;
-                if state.id != id {
-                    return Err(BottleError::IdMismatch {
-                        expected: id,
-                        actual: state.id,
-                    }
-                    .into());
-                }
-                Ok(state)
-            })
-            .await?;
+        if !path.is_file() {
+            return Err(BottleError::NotFound(id).into());
+        }
+        let state: BottleState = next_config::load(path).await?;
+        if state.id != id {
+            return Err(BottleError::IdMismatch {
+                expected: id,
+                actual: state.id,
+            }
+            .into());
+        }
         Ok(Self::intern(&self.cache, Bottle::from_state(state, self.context.clone())).await)
     }
 
     pub async fn list(&self) -> Result<Vec<Result<Bottle>>> {
         let bottles_path = self.context.directories().bottles();
-        let configs = self
+        let paths = self
             .context
             .spawn_blocking(move || {
                 let entries = match fs::read_dir(bottles_path) {
@@ -173,16 +167,24 @@ impl BottleManager {
                     Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
                     Err(error) => return Err(error.into()),
                 };
-                let mut configs = Vec::new();
+                let mut paths = Vec::new();
                 for entry in entries {
                     let path = entry?.path().join("bottle.toml");
                     if path.is_file() {
-                        configs.push(next_config::load::<BottleState>(path).map_err(Error::from));
+                        paths.push(path);
                     }
                 }
-                Ok(configs)
+                Ok(paths)
             })
             .await?;
+        let mut configs = Vec::with_capacity(paths.len());
+        for path in paths {
+            configs.push(
+                next_config::load::<BottleState>(path)
+                    .await
+                    .map_err(Error::from),
+            );
+        }
         let mut bottles = Vec::with_capacity(configs.len());
         for config in configs {
             bottles.push(match config {
