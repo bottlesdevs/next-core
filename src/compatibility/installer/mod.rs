@@ -1,7 +1,7 @@
 mod recipes;
 
 use std::{
-    fs, io,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -272,10 +272,7 @@ async fn execute_step(
             install_file(&source, prefix, destination).await?;
         }
         InstallStep::Extract { destination } => {
-            let archive = resource.source.clone();
-            let prefix = prefix.to_path_buf();
-            let destination = destination.clone();
-            blocking::unblock(move || extract_into(&archive, &prefix, &destination)).await?;
+            extract_into(&resource.source, prefix, destination, cancellation).await?;
         }
         InstallStep::Execute { arguments } => {
             let mut command = Command::new(&resource.source);
@@ -465,39 +462,39 @@ async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
     }
 }
 
-fn extract_into(archive: &Path, prefix: &Path, destination: &Path) -> Result<()> {
+async fn extract_into(
+    archive: &Path,
+    prefix: &Path,
+    destination: &Path,
+    cancellation: &CancellationToken,
+) -> Result<()> {
     let stage = prefix
         .parent()
         .expect("prefix has a parent")
         .join(".staging")
         .join(Uuid::new_v4().to_string());
-    fs::create_dir_all(&stage)?;
-    let result = (|| -> Result<()> {
-        archive::extract(archive, &stage)?;
-        for source in archive::files(&stage)? {
+    async_fs::create_dir_all(&stage).await?;
+    let work = async {
+        archive::extract(archive, &stage).await?;
+        for source in archive::files(&stage).await? {
+            check_cancellation(cancellation)?;
             let relative = destination.join(source.strip_prefix(&stage).map_err(|_| {
                 InstallerError::FileOutsideStage {
                     path: source.clone(),
                     stage: stage.clone(),
                 }
             })?);
-            install_file_blocking(&source, prefix, &relative)?;
+            install_file(&source, prefix, &relative).await?;
         }
-        Ok(())
-    })();
-    let _ = fs::remove_dir_all(stage);
+        Ok::<_, Error>(())
+    };
+    let result = future::or(work, async {
+        cancellation.cancelled().await;
+        Err(Error::Cancelled)
+    })
+    .await;
+    let _ = async_fs::remove_dir_all(stage).await;
     result
-}
-
-fn install_file_blocking(source: &Path, prefix: &Path, relative: &Path) -> Result<()> {
-    let destination = prefix.join(relative);
-    fs::create_dir_all(destination.parent().expect("destination has a parent"))?;
-    let backup = prefix.join(backup_path(relative));
-    if destination.is_file() && !backup.exists() {
-        fs::copy(&destination, &backup)?;
-    }
-    fs::copy(source, destination)?;
-    Ok(())
 }
 
 fn backup_path(path: &Path) -> PathBuf {
