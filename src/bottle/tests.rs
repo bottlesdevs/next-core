@@ -259,12 +259,13 @@ mod unix {
         let id = Uuid::new_v4();
         let bottle_path = directories.bottle(id);
         fs::create_dir_all(&bottle_path).unwrap();
+        let loaded_runner = crate::runner::load_runner(&runner_root, RunnerKind::Wine, None)
+            .await
+            .unwrap();
         let storage = Prefix::create(
             BottleType::Standard,
             &bottle_path,
-            crate::runner::load_runner(&runner_root, RunnerKind::Wine, None)
-                .unwrap()
-                .as_ref(),
+            loaded_runner.as_ref(),
             &runner.id().to_string(),
             &context,
         )

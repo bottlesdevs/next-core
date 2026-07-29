@@ -216,7 +216,7 @@ impl Bottle {
                         _ => unreachable!(),
                     }
 
-                    let runner = Self::load_runner(state)?;
+                    let runner = Self::load_runner(state).await?;
                     let bottle_path = cx.directories().bottle(state.id);
                     let context = cx.clone();
                     let BottleState {
@@ -279,7 +279,7 @@ impl Bottle {
             return Err(Error::Cancelled);
         }
 
-        let runner = Self::load_runner(state)?;
+        let runner = Self::load_runner(state).await?;
         let winebridge = state.winebridge.path().to_path_buf();
         let bottle_path = cx.directories().bottle(state.id);
         let context = cx.clone();
@@ -296,7 +296,6 @@ impl Bottle {
                 replaced_id,
                 async |prefix| {
                     crate::compatibility::installer::execute(
-                        &context,
                         crate::compatibility::installer::InstallInputs {
                             prefix,
                             runner: runner.as_ref(),
@@ -353,7 +352,7 @@ impl Bottle {
                     state.runner = selection;
 
                     progress.send_replace(Some(SetRunnerProgress::Rebuilding));
-                    let runner = Self::load_runner(state)?;
+                    let runner = Self::load_runner(state).await?;
                     state
                         .storage
                         .rebuild(
@@ -399,19 +398,20 @@ impl Bottle {
         })
     }
 
-    fn load_runner(state: &BottleState) -> Result<Box<dyn Runner>> {
+    async fn load_runner(state: &BottleState) -> Result<Box<dyn Runner>> {
         state.runner.validate()?;
         crate::runner::load_runner(
             state.runner.runner().path(),
             state.runner.kind(),
             state.runner.umu().map(Component::path),
         )
+        .await
     }
 
     async fn stop_state(state: &BottleState, cx: &Context) -> Result<()> {
         let bottle_path = cx.directories().bottle(state.id);
         let prefix_path = bottle_path.join("prefix");
-        let runner = Self::load_runner(state);
+        let runner = Self::load_runner(state).await;
         let storage = state.storage.clone();
         let mut first_error = None;
         match WineBridgeClient::try_connect(&prefix_path).await {
@@ -450,7 +450,7 @@ impl Bottle {
         Fut: Future<Output = Result<T>>,
     {
         let state = self.state()?;
-        let runner = Self::load_runner(&state)?;
+        let runner = Self::load_runner(&state).await?;
         let bottle_path = self.bottle_path();
         let prefix = self.prefix_path();
         let storage = state.storage.clone();

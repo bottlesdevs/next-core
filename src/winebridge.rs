@@ -1,5 +1,5 @@
 use std::{
-    fs, io,
+    io,
     path::{Path, PathBuf},
     process::ExitStatus,
     time::Duration,
@@ -42,8 +42,8 @@ pub enum BridgeError {
 
 const PORT_FILE_NAME: &str = "bottles-winebridge.port";
 
-fn endpoint_from_port_file(path: &Path) -> Result<Option<Endpoint>> {
-    let port = match fs::read_to_string(path) {
+async fn endpoint_from_port_file(path: &Path) -> Result<Option<Endpoint>> {
+    let port = match tokio::fs::read_to_string(path).await {
         Ok(port) => port,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
@@ -123,7 +123,7 @@ impl WineBridgeClient {
     pub(crate) async fn try_connect(prefix: &Path) -> Result<Option<Self>> {
         let port_file = Self::port_file(prefix);
 
-        let Some(endpoint) = endpoint_from_port_file(&port_file)? else {
+        let Some(endpoint) = endpoint_from_port_file(&port_file).await? else {
             return Ok(None);
         };
 

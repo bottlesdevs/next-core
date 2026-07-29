@@ -15,16 +15,10 @@ pub(super) struct Wine {
 
 impl Wine {
     /// Creates a new Wine runner with the specified executable path
-    pub fn new(executable: impl AsRef<Path>) -> Result<Self> {
-        if !executable.as_ref().is_file() {
-            return Err(
-                RunnerError::RunnerExecutableNotFound(executable.as_ref().to_path_buf()).into(),
-            );
-        }
-
-        Ok(Self {
+    pub fn new(executable: impl AsRef<Path>) -> Self {
+        Self {
             executable: executable.as_ref().to_path_buf(),
-        })
+        }
     }
 }
 
