@@ -8,7 +8,10 @@ pub mod dependencies;
 pub mod installer;
 mod library;
 
-pub use library::{ComponentStatus, DependencyStatus, Library, LibraryState};
+pub use library::{
+    CatalogKind, ComponentStatus, DependencyStatus, Library, LibraryError, LibraryProgress,
+    LibraryState,
+};
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "algorithm", content = "value", rename_all = "kebab-case")]

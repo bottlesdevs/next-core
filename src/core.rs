@@ -8,7 +8,7 @@ use crate::{BottleManager, Context, Library, Paths, error::Result};
 #[derive(Clone)]
 pub struct Core {
     bottles: BottleManager,
-    library: Arc<Library>,
+    library: Library,
 }
 
 impl Core {

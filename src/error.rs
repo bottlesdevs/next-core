@@ -2,7 +2,7 @@ use thiserror::Error;
 
 pub use crate::{
     bottle::error::{BottleError, VirgoError},
-    compatibility::installer::InstallerError,
+    compatibility::{LibraryError, installer::InstallerError},
     runner::RunnerError,
     utils::archive::ArchiveError,
     winebridge::BridgeError,
@@ -37,6 +37,10 @@ pub enum Error {
     Archive(#[from] ArchiveError),
     #[error("installer error: {0}")]
     Installer(#[from] InstallerError),
+    #[error("library error: {0}")]
+    Library(#[from] LibraryError),
+    #[error("download error: {0}")]
+    Download(#[from] download_manager::error::Error),
     #[error("operation cancelled")]
     Cancelled,
 }

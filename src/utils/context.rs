@@ -19,7 +19,7 @@ struct ContextInner {
     directories: Directories,
     fvs2d_executable: PathBuf,
     fvs: OnceCell<Fvs2dClient>,
-    library: OnceLock<Arc<Library>>,
+    library: OnceLock<Library>,
 }
 
 #[derive(Clone)]
@@ -42,7 +42,7 @@ impl Context {
         &self.0.directories
     }
 
-    pub(crate) fn set_library(&self, library: Arc<Library>) {
+    pub(crate) fn set_library(&self, library: Library) {
         self.0
             .library
             .set(library)
@@ -50,7 +50,7 @@ impl Context {
     }
 
     pub(crate) fn library(&self) -> Option<&Library> {
-        self.0.library.get().map(Arc::as_ref)
+        self.0.library.get()
     }
 
     pub(crate) fn component_steps(&self, component: &Component) -> Vec<InstallStep> {
