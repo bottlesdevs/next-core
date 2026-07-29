@@ -42,7 +42,7 @@ impl Runner for Wine {
                 .env("WINEARCH", "win64"),
         )
         .spawn()?
-        .wait()
+        .status()
         .await?;
         if !status.success() {
             return Err(RunnerError::WineserverFailed(status).into());

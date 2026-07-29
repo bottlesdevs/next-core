@@ -71,7 +71,7 @@ pub(crate) trait Runner: Send + Sync {
         let status = self
             .command(prefix, Command::new("wineboot").arg(arg))
             .spawn()?
-            .wait()
+            .status()
             .await?;
 
         if !status.success() {

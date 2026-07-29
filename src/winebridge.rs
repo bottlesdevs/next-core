@@ -5,8 +5,10 @@ use std::{
     time::Duration,
 };
 
+use async_io::Timer;
+use async_process::Child;
+use futures_lite::future;
 use thiserror::Error;
-use tokio::process::Child;
 use tonic::transport::{Channel, Endpoint};
 use tonic_health::pb::{
     HealthCheckRequest, health_check_response::ServingStatus, health_client::HealthClient,
@@ -100,7 +102,7 @@ impl WineBridgeClient {
     async fn connect(prefix: &Path, mut process: Child) -> Result<Self> {
         let ready = async {
             loop {
-                if let Some(status) = process.try_wait()? {
+                if let Some(status) = process.try_status()? {
                     if let Some(client) = Self::try_connect(prefix).await? {
                         return Ok(client);
                     }
@@ -111,14 +113,15 @@ impl WineBridgeClient {
                     return Ok(client);
                 }
 
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                Timer::after(Duration::from_millis(100)).await;
             }
         };
 
-        tokio::select! {
-            result = ready => result,
-            _ = tokio::time::sleep(Duration::from_secs(30)) => Err(BridgeError::Timeout.into()),
-        }
+        future::race(ready, async {
+            Timer::after(Duration::from_secs(30)).await;
+            Err(BridgeError::Timeout.into())
+        })
+        .await
     }
 
     pub(crate) async fn try_connect(prefix: &Path) -> Result<Option<Self>> {
@@ -662,7 +665,7 @@ impl WineBridgeClient {
             if !exists(&port_file).await? {
                 return Ok(());
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            Timer::after(Duration::from_millis(100)).await;
         }
         Err(BridgeError::ShutdownTimeout.into())
     }
