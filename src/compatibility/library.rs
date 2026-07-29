@@ -1,7 +1,5 @@
 use std::{
     collections::HashSet,
-    fmt::Write as _,
-    future::Future,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -13,7 +11,7 @@ use download_manager::{
 use futures_core::Stream;
 use futures_lite::io::AsyncReadExt;
 use futures_util::{FutureExt, StreamExt};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256, Sha512};
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
@@ -330,11 +328,13 @@ impl Library {
         progress.send_replace(Some(LibraryProgress::Extracting));
         let extracted = stage.join("extracted");
         async_fs::create_dir_all(&extracted).await?;
-        cancellable(
-            async { Ok(archive::extract(&archive_path, &extracted).await?) },
-            cancellation,
-        )
-        .await?;
+        let extraction = archive::extract(&archive_path, &extracted).fuse();
+        let cancelled = cancellation.cancelled().fuse();
+        futures_util::pin_mut!(extraction, cancelled);
+        futures_util::select_biased! {
+            result = extraction => result?,
+            _ = cancelled => return Err(Error::Cancelled),
+        }
         let release = top_level_directory(&extracted).await?;
         let category = entry.kind().directory_name();
         let found = component_index::detect_kind(category, &release)
@@ -367,8 +367,9 @@ impl Library {
         let result = async {
             let component = Component::from_catalog_entry(&entry, &self.0.directories).await?;
             component_index::ComponentIndex::record(&self.0.directories, component.clone()).await?;
-            let components = component_index::scan(&self.0.directories).await?;
             let state = self.state();
+            let mut components = state.downloaded_components();
+            components.push(component.clone());
             self.publish(
                 state.component_catalog.clone(),
                 state.dependency_catalog.clone(),
@@ -433,29 +434,16 @@ impl Library {
         }
         async_fs::rename(stage, &target).await?;
 
-        let result = async {
-            let state = self.state();
-            let dependencies =
-                dependency_storage::scan(&self.0.directories, state.dependency_catalog.as_deref())
-                    .await?;
-            let dependency = dependencies
-                .iter()
-                .find(|dependency| dependency.id() == id)
-                .cloned()
-                .ok_or(LibraryError::DependencyNotFound(id))?;
-            self.publish(
-                state.component_catalog.clone(),
-                state.dependency_catalog.clone(),
-                state.downloaded_components(),
-                dependencies,
-            );
-            Ok(dependency)
-        }
-        .await;
-        if result.is_err() {
-            let _ = async_fs::remove_dir_all(&target).await;
-        }
-        result
+        let state = self.state();
+        let mut dependencies = state.downloaded_dependencies();
+        dependencies.push(dependency.clone());
+        self.publish(
+            state.component_catalog.clone(),
+            state.dependency_catalog.clone(),
+            state.downloaded_components(),
+            dependencies,
+        );
+        Ok(dependency)
     }
 
     async fn download_catalog(
@@ -665,13 +653,8 @@ impl LibraryState {
 
     fn component_steps(&self, component: &Component) -> Vec<InstallStep> {
         if let Some(steps) = self
-            .component_catalog
-            .as_deref()
-            .and_then(|catalog| {
-                catalog
-                    .into_iter()
-                    .find(|entry| entry.uuid() == component.id())
-            })
+            .component(component.id())
+            .and_then(ComponentStatus::catalog)
             .map(CatalogComponentEntry::steps)
             .filter(|steps| !steps.is_empty())
         {
@@ -806,6 +789,7 @@ async fn verify_checksum(
 async fn digest<D>(path: &Path, cancellation: &CancellationToken) -> Result<String>
 where
     D: Digest + Default,
+    sha2::digest::Output<D>: std::fmt::LowerHex,
 {
     let mut file = async_fs::File::open(path).await?;
     let mut digest = D::new();
@@ -820,11 +804,7 @@ where
         }
         digest.update(&buffer[..read]);
     }
-    let mut encoded = String::with_capacity(<D as Digest>::output_size() * 2);
-    for byte in digest.finalize() {
-        write!(&mut encoded, "{byte:02x}").expect("writing to a string cannot fail");
-    }
-    Ok(encoded)
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 async fn top_level_directory(root: &Path) -> Result<PathBuf> {
@@ -836,19 +816,6 @@ async fn top_level_directory(root: &Path) -> Result<PathBuf> {
         return Err(LibraryError::InvalidComponentArchive.into());
     }
     Ok(entry.path())
-}
-
-async fn cancellable<T>(
-    future: impl Future<Output = Result<T>>,
-    cancellation: &CancellationToken,
-) -> Result<T> {
-    let future = future.fuse();
-    let cancelled = cancellation.cancelled().fuse();
-    futures_util::pin_mut!(future, cancelled);
-    futures_util::select_biased! {
-        result = future => result,
-        _ = cancelled => Err(Error::Cancelled),
-    }
 }
 
 async fn load_cached_catalog<T>(path: &Path) -> Option<Arc<T>>
@@ -873,18 +840,18 @@ where
 
 async fn save_downloaded_catalog<T>(download: &Path, cache: &Path) -> Result<T>
 where
-    T: DeserializeOwned + Serialize,
+    T: DeserializeOwned,
 {
     let result = async {
         let bytes = async_fs::read(download).await?;
         let catalog = serde_json::from_slice(&bytes)?;
-        let temporary = cache.with_extension("tmp");
-        async_fs::write(&temporary, serde_json::to_vec_pretty(&catalog)?).await?;
-        async_fs::rename(temporary, cache).await?;
+        async_fs::rename(download, cache).await?;
         Ok(catalog)
     }
     .await;
-    let _ = async_fs::remove_file(download).await;
+    if result.is_err() {
+        let _ = async_fs::remove_file(download).await;
+    }
     result
 }
 
@@ -923,11 +890,7 @@ mod tests {
     }
 
     fn sha256(bytes: &[u8]) -> String {
-        let mut encoded = String::new();
-        for byte in Sha256::digest(bytes) {
-            write!(&mut encoded, "{byte:02x}").unwrap();
-        }
-        encoded
+        format!("{:x}", Sha256::digest(bytes))
     }
 
     #[test]
