@@ -6,45 +6,27 @@ use serde::{Deserialize, Serialize};
 use uuid::{NonNilUuid, Uuid};
 
 use super::{Component, catalog::ComponentKind};
-use crate::{Context, error::Result, runner::detect_runner_kind};
+use crate::{Directories, error::Result, runner::detect_runner_kind};
 
-pub struct ComponentManager {
-    components: Vec<Component>,
-}
-
-impl ComponentManager {
-    pub(crate) async fn load(context: Context) -> Result<Self> {
-        let directories = context.directories().clone();
-        let component_dir = directories.components();
-        let components_path = async_fs::canonicalize(component_dir).await?;
-        let index_path = components_path.join("index.toml");
-        let has_index = async_fs::metadata(&index_path)
-            .await
-            .is_ok_and(|entry| entry.is_file());
-        let index = if has_index {
-            next_config::load(&index_path).await?
-        } else {
-            ComponentIndex::default()
-        };
-        let components = discover_components(&components_path, &index).await?;
-        let component_index = ComponentIndex {
-            components: components.clone(),
-        };
-        if component_index != index || !has_index {
-            next_config::save(index_path, &component_index).await?;
-        }
-        Ok(Self { components })
+pub(crate) async fn load(directories: &Directories) -> Result<Vec<Component>> {
+    let components_path = async_fs::canonicalize(directories.components()).await?;
+    let index_path = components_path.join("index.toml");
+    let has_index = async_fs::metadata(&index_path)
+        .await
+        .is_ok_and(|entry| entry.is_file());
+    let index = if has_index {
+        next_config::load(&index_path).await?
+    } else {
+        ComponentIndex::default()
+    };
+    let components = discover_components(&components_path, &index).await?;
+    let component_index = ComponentIndex {
+        components: components.clone(),
+    };
+    if component_index != index || !has_index {
+        next_config::save(index_path, &component_index).await?;
     }
-
-    pub fn components(&self) -> &[Component] {
-        &self.components
-    }
-
-    pub fn component(&self, id: Uuid) -> Option<&Component> {
-        self.components
-            .iter()
-            .find(|component| component.id() == id)
-    }
+    Ok(components)
 }
 
 #[derive(Debug, Default, Deserialize, Eq, PartialEq, Serialize, Config)]
@@ -151,7 +133,7 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::{Context, Directories};
+    use crate::Directories;
 
     #[test]
     fn discovers_extracted_components_and_executable_paths() {
@@ -209,16 +191,13 @@ mod tests {
             fs::create_dir_all(left.components().join("dxvk/1")).unwrap();
             fs::create_dir_all(right.components().join("dxvk/1")).unwrap();
 
-            let left_context = Context::new(left.clone(), left.data_dir().join("fvs2d")).unwrap();
-            let right_context =
-                Context::new(right.clone(), right.data_dir().join("fvs2d")).unwrap();
-            let first = ComponentManager::load(left_context.clone()).await.unwrap();
-            let left_id = first.components()[0].id();
-            let second = ComponentManager::load(left_context).await.unwrap();
-            let right = ComponentManager::load(right_context).await.unwrap();
+            let first = load(&left).await.unwrap();
+            let left_id = first[0].id();
+            let second = load(&left).await.unwrap();
+            let right = load(&right).await.unwrap();
 
-            assert_eq!(second.components()[0].id(), left_id);
-            assert_ne!(right.components()[0].id(), left_id);
+            assert_eq!(second[0].id(), left_id);
+            assert_ne!(right[0].id(), left_id);
             fs::remove_dir_all(root).unwrap();
         });
     }

@@ -129,7 +129,7 @@ impl Bottle {
                     if replaced_id == Some(component.id()) {
                         return Ok(());
                     }
-                    let resources = component.prepare(cx.directories())?;
+                    let resources = component.prepare(&cx)?;
                     Self::install_item(
                         state,
                         &cx,
@@ -167,7 +167,7 @@ impl Bottle {
                     {
                         return Ok(());
                     }
-                    let resources = dependency.prepare(cx.directories())?;
+                    let resources = dependency.prepare(&cx)?;
                     Self::install_item(
                         state,
                         &cx,
@@ -201,7 +201,7 @@ impl Bottle {
                     .find(|component| component.id() == id)
                     .cloned()
                     .ok_or(BottleError::ComponentNotInstalled(id))?;
-                    let resources = component.prepare(cx.directories())?;
+                    let resources = component.prepare(&cx)?;
                     let winebridge = state.winebridge.path().to_path_buf();
                     let prefix_progress = progress.clone();
                     Self::stop_state(state, &cx).await?;

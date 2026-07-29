@@ -5,7 +5,7 @@ use uuid::{NonNilUuid, Uuid};
 
 use super::catalog::ComponentKind;
 use crate::{
-    compatibility::installer::{InstallResource, Installable, component_steps},
+    compatibility::installer::{InstallResource, Installable},
     error::Result,
 };
 
@@ -51,13 +51,14 @@ impl Component {
 }
 
 impl Installable for Component {
-    fn prepare(&self, _directories: &crate::Directories) -> Result<Vec<InstallResource>> {
-        let Some(steps) = component_steps(self.kind()) else {
+    fn prepare(&self, context: &crate::Context) -> Result<Vec<InstallResource>> {
+        let steps = context.component_steps(self);
+        if steps.is_empty() {
             return Ok(Vec::new());
-        };
+        }
         Ok(vec![InstallResource {
             source: self.path().to_path_buf(),
-            steps: steps.to_vec(),
+            steps,
         }])
     }
 }

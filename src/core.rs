@@ -1,23 +1,36 @@
 use std::{path::PathBuf, sync::Arc};
 
-use crate::{BottleManager, ComponentManager, Context, DependencyManager, Paths, error::Result};
+use download_manager::manager::DownloadManager;
+use url::Url;
+
+use crate::{BottleManager, Context, Library, Paths, error::Result};
 
 #[derive(Clone)]
 pub struct Core {
-    _context: Context,
     bottles: BottleManager,
-    components: Arc<ComponentManager>,
-    dependencies: Arc<DependencyManager>,
+    library: Arc<Library>,
 }
 
 impl Core {
-    pub async fn open(paths: Paths, fvs2d: impl Into<PathBuf>) -> Result<Self> {
-        let context = Context::new(paths, fvs2d)?;
+    pub async fn open(
+        paths: Paths,
+        fvs2d: impl Into<PathBuf>,
+        component_catalog_url: Url,
+        dependency_catalog_url: Url,
+        downloads: Arc<DownloadManager>,
+    ) -> Result<Self> {
+        let context = Context::new(paths.clone(), fvs2d)?;
+        let library = Library::load(
+            paths,
+            component_catalog_url,
+            dependency_catalog_url,
+            downloads,
+        )
+        .await?;
+        context.set_library(library.clone());
         Ok(Self {
             bottles: BottleManager::new(context.clone()),
-            components: Arc::new(ComponentManager::load(context.clone()).await?),
-            dependencies: Arc::new(DependencyManager::load(context.clone()).await?),
-            _context: context,
+            library,
         })
     }
 
@@ -25,11 +38,7 @@ impl Core {
         &self.bottles
     }
 
-    pub fn components(&self) -> &ComponentManager {
-        &self.components
-    }
-
-    pub fn dependencies(&self) -> &DependencyManager {
-        &self.dependencies
+    pub fn library(&self) -> &Library {
+        &self.library
     }
 }

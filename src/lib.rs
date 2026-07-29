@@ -16,8 +16,15 @@ pub use bottle::{
     SetRunnerProgress, Snapshot, SnapshotProgress, SnapshotSummary, Wrappers,
 };
 pub use compatibility::{
-    components::{Component, ComponentManager, catalog::ComponentKind},
-    dependencies::{Dependency, DependencyManager},
+    ComponentStatus, DependencyStatus, Library, LibraryState,
+    components::{
+        Component,
+        catalog::{CatalogComponentEntry, ComponentArtifact, ComponentCatalog, ComponentKind},
+    },
+    dependencies::{
+        Dependency,
+        catalog::{CatalogDependencyEntry, DependencyCatalog, DependencyResource},
+    },
     installer::{InstallProgress, UninstallProgress},
 };
 pub use core::Core;

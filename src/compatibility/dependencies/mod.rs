@@ -1,6 +1,5 @@
 pub mod catalog;
 mod dependency;
-mod manager;
+pub(crate) mod storage;
 
 pub use dependency::Dependency;
-pub use manager::DependencyManager;

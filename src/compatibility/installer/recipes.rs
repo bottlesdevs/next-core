@@ -147,9 +147,7 @@ static LATENCY_FLEX_STEPS: LazyLock<Vec<InstallStep>> = LazyLock::new(|| {
     ]
 });
 
-pub(in crate::compatibility) fn component_steps(
-    kind: ComponentKind,
-) -> Option<&'static [InstallStep]> {
+pub(crate) fn component_steps(kind: ComponentKind) -> Option<&'static [InstallStep]> {
     match kind {
         ComponentKind::Dxvk => Some(&DXVK_STEPS),
         ComponentKind::Vkd3d => Some(&VKD3D_STEPS),

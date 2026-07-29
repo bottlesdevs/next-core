@@ -21,7 +21,7 @@ use crate::{
 };
 
 use self::super::deserialize_non_empty_string;
-pub(super) use recipes::component_steps;
+pub(crate) use recipes::component_steps;
 
 #[derive(Debug, Error)]
 pub enum InstallerError {
@@ -141,7 +141,7 @@ pub(crate) struct InstallResource {
 }
 
 pub(crate) trait Installable {
-    fn prepare(&self, directories: &crate::Directories) -> Result<Vec<InstallResource>>;
+    fn prepare(&self, context: &crate::Context) -> Result<Vec<InstallResource>>;
 }
 
 pub(crate) struct InstallInputs<'a> {

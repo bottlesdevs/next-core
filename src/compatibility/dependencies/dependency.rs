@@ -34,8 +34,11 @@ impl Dependency {
 }
 
 impl Installable for Dependency {
-    fn prepare(&self, directories: &crate::Directories) -> Result<Vec<InstallResource>> {
-        let root = directories.dependencies().join(self.id().to_string());
+    fn prepare(&self, context: &crate::Context) -> Result<Vec<InstallResource>> {
+        let root = context
+            .directories()
+            .dependencies()
+            .join(self.id().to_string());
         self.resources
             .iter()
             .filter(|resource| {
