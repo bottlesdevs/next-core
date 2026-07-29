@@ -13,8 +13,7 @@ pub use bottle::{
     Bottle, BottleEdit, BottleManager, BottleState, BottleType, CreateProgress, DeleteProgress,
     DllOverride, DllOverrideMode, GamescopeConfig, GamescopeFilter, GamescopeScaler,
     MangoHudConfig, Process, Program, RegistryHive, RollbackProgress, RunnerSelection,
-    SetRunnerProgress, SetWinebridgeProgress, Snapshot, SnapshotProgress, SnapshotSummary,
-    Wrappers,
+    SetRunnerProgress, Snapshot, SnapshotProgress, SnapshotSummary, Wrappers,
 };
 pub use compatibility::{
     components::{Component, ComponentManager, catalog::ComponentKind},

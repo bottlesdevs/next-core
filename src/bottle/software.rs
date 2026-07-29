@@ -371,10 +371,10 @@ impl Bottle {
         })
     }
 
-    pub fn set_winebridge(&self, winebridge: &Component) -> Operation<(), SetWinebridgeProgress> {
+    pub fn set_winebridge(&self, winebridge: &Component) -> Operation<()> {
         let winebridge = winebridge.clone();
         let bottle = self.clone();
-        Operation::new(move |progress, cancellation| async move {
+        Operation::new(move |_, cancellation| async move {
             if winebridge.kind() != ComponentKind::Winebridge {
                 return Err(BottleError::WinebridgeComponentRequired.into());
             }
@@ -386,7 +386,6 @@ impl Bottle {
                     if cancellation.is_cancelled() {
                         return Err(Error::Cancelled);
                     }
-                    progress.send_replace(Some(SetWinebridgeProgress::Stopping));
                     Self::stop_state(state, &cx).await?;
                     if cancellation.is_cancelled() {
                         return Err(Error::Cancelled);
@@ -468,9 +467,4 @@ impl Bottle {
 pub enum SetRunnerProgress {
     Stopping,
     Rebuilding,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SetWinebridgeProgress {
-    Stopping,
 }

@@ -16,7 +16,7 @@ use crate::error::Result;
 /// The operation starts only when polled. Tokio clients can await it directly;
 /// GPUI clients should poll it through `gpui_tokio::Tokio::spawn`.
 #[must_use = "operations must be awaited or cancelled"]
-pub struct Operation<T, P> {
+pub struct Operation<T, P = ()> {
     future: Pin<Box<dyn Future<Output = Result<T>> + Send + 'static>>,
     progress: watch::Receiver<Option<P>>,
     cancellation: CancellationToken,
