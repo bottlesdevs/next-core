@@ -107,47 +107,52 @@ mod tests {
         assert!(started.load(Ordering::Relaxed));
     }
 
-    #[tokio::test]
-    async fn progress_starts_with_the_latest_value_and_is_independent() {
-        let (start_tx, start_rx) = oneshot::channel();
-        let (updated_tx, updated_rx) = oneshot::channel();
-        let (later_tx, later_rx) = oneshot::channel();
-        let (finish_tx, finish_rx) = oneshot::channel();
-        let operation = Operation::new(|progress, _cancellation| async move {
-            start_rx.await.unwrap();
-            progress.send_replace(Some(Progress::First));
-            progress.send_replace(Some(Progress::Second));
-            updated_tx.send(()).unwrap();
-            later_rx.await.unwrap();
-            progress.send_replace(Some(Progress::Third));
-            finish_rx.await.unwrap();
-            Ok(())
+    #[test]
+    fn progress_starts_with_the_latest_value_and_is_independent() {
+        futures_lite::future::block_on(async {
+            let (start_tx, start_rx) = oneshot::channel();
+            let (updated_tx, updated_rx) = oneshot::channel();
+            let (later_tx, later_rx) = oneshot::channel();
+            let (finish_tx, finish_rx) = oneshot::channel();
+            let operation = Operation::new(|progress, _cancellation| async move {
+                start_rx.await.unwrap();
+                progress.send_replace(Some(Progress::First));
+                progress.send_replace(Some(Progress::Second));
+                updated_tx.send(()).unwrap();
+                later_rx.await.unwrap();
+                progress.send_replace(Some(Progress::Third));
+                finish_rx.await.unwrap();
+                Ok(())
+            });
+
+            let mut first = Box::pin(operation.progress());
+            let late_progress = operation.progress.clone();
+            assert!(
+                futures_lite::future::poll_once(first.next())
+                    .await
+                    .is_none()
+            );
+
+            let observe = async move {
+                start_tx.send(()).unwrap();
+                updated_rx.await.unwrap();
+                let mut second =
+                    Box::pin(WatchStream::new(late_progress).filter_map(|progress| progress));
+
+                assert_eq!(first.next().await, Some(Progress::Second));
+                assert_eq!(second.next().await, Some(Progress::Second));
+
+                later_tx.send(()).unwrap();
+                assert_eq!(first.next().await, Some(Progress::Third));
+                assert_eq!(second.next().await, Some(Progress::Third));
+
+                finish_tx.send(()).unwrap();
+                assert_eq!(first.next().await, None);
+                assert_eq!(second.next().await, None);
+            };
+            let (result, ()) = futures_util::future::join(operation, observe).await;
+            assert!(result.is_ok());
         });
-
-        let mut first = Box::pin(operation.progress());
-        let late_progress = operation.progress.clone();
-        tokio::select! {
-            biased;
-            progress = first.next() => panic!("unexpected initial progress: {progress:?}"),
-            _ = tokio::task::yield_now() => {}
-        }
-
-        let task = tokio::spawn(operation);
-        start_tx.send(()).unwrap();
-        updated_rx.await.unwrap();
-        let mut second = Box::pin(WatchStream::new(late_progress).filter_map(|progress| progress));
-
-        assert_eq!(first.next().await, Some(Progress::Second));
-        assert_eq!(second.next().await, Some(Progress::Second));
-
-        later_tx.send(()).unwrap();
-        assert_eq!(first.next().await, Some(Progress::Third));
-        assert_eq!(second.next().await, Some(Progress::Third));
-
-        finish_tx.send(()).unwrap();
-        assert!(task.await.unwrap().is_ok());
-        assert_eq!(first.next().await, None);
-        assert_eq!(second.next().await, None);
     }
 
     #[test]
@@ -165,22 +170,25 @@ mod tests {
         });
     }
 
-    #[tokio::test]
-    async fn cancellation_after_commit_returns_the_result() {
-        let (committed_tx, mut committed_rx) = oneshot::channel();
-        let mut operation: Operation<_, Progress> =
-            Operation::new(|_progress, _cancellation| async move {
-                committed_tx.send(()).unwrap();
-                tokio::task::yield_now().await;
-                Ok(42)
-            });
+    #[test]
+    fn cancellation_after_commit_returns_the_result() {
+        futures_lite::future::block_on(async {
+            let (committed_tx, committed_rx) = oneshot::channel();
+            let mut operation: Operation<_, Progress> =
+                Operation::new(|_progress, _cancellation| async move {
+                    committed_tx.send(()).unwrap();
+                    futures_lite::future::yield_now().await;
+                    Ok(42)
+                });
 
-        tokio::select! {
-            biased;
-            result = &mut committed_rx => result.unwrap(),
-            result = &mut operation => panic!("operation completed before commit was observed: {result:?}"),
-        }
-        assert_eq!(operation.cancel().await.unwrap(), 42);
+            assert!(
+                futures_lite::future::poll_once(&mut operation)
+                    .await
+                    .is_none()
+            );
+            committed_rx.await.unwrap();
+            assert_eq!(operation.cancel().await.unwrap(), 42);
+        });
     }
 
     #[test]

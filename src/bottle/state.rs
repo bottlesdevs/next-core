@@ -336,146 +336,152 @@ pub enum BottleType {
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[test]
     #[cfg(unix)]
-    async fn updates_are_serialized_and_failed_updates_are_rolled_back() {
-        use std::{fs, os::unix::fs::PermissionsExt};
+    fn updates_are_serialized_and_failed_updates_are_rolled_back() {
+        futures_lite::future::block_on(async {
+            use std::{fs, os::unix::fs::PermissionsExt};
 
-        let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
-        let runner_root = root.join("runner");
-        fs::create_dir_all(runner_root.join("bin")).unwrap();
-        for executable in ["wine", "wineserver"] {
-            let path = runner_root.join("bin").join(executable);
-            fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        let context = Context::new(
-            crate::Directories::from_path(root.join("data")).unwrap(),
-            root.join("fvs2d"),
-        )
-        .unwrap();
-        let id = Uuid::new_v4();
-        fs::create_dir_all(context.directories().bottle(id)).unwrap();
-        let runner = Component::new(
-            ComponentKind::Runner {
-                kind: RunnerKind::Wine,
-            },
-            "wine",
-            &runner_root,
-        )
-        .unwrap();
-        let winebridge = Component::new(ComponentKind::Winebridge, "bridge", "/bridge").unwrap();
-        let bottle = Bottle::from_state(
-            BottleState {
-                id,
-                name: "test".into(),
-                storage: Prefix::Standard,
-                programs: Vec::new(),
-                wrappers: Wrappers::default(),
-                runner: RunnerSelection::wine(runner.clone()).unwrap(),
-                winebridge,
-                dxvk: None,
-                vkd3d: None,
-                nvapi: None,
-                latency_flex: None,
-                dependencies: Vec::new(),
-                environment: Environment::default(),
-            },
-            context,
-        );
-        bottle.save().await.unwrap();
+            let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
+            let runner_root = root.join("runner");
+            fs::create_dir_all(runner_root.join("bin")).unwrap();
+            for executable in ["wine", "wineserver"] {
+                let path = runner_root.join("bin").join(executable);
+                fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+                fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let context = Context::new(
+                crate::Directories::from_path(root.join("data")).unwrap(),
+                root.join("fvs2d"),
+            )
+            .unwrap();
+            let id = Uuid::new_v4();
+            fs::create_dir_all(context.directories().bottle(id)).unwrap();
+            let runner = Component::new(
+                ComponentKind::Runner {
+                    kind: RunnerKind::Wine,
+                },
+                "wine",
+                &runner_root,
+            )
+            .unwrap();
+            let winebridge =
+                Component::new(ComponentKind::Winebridge, "bridge", "/bridge").unwrap();
+            let bottle = Bottle::from_state(
+                BottleState {
+                    id,
+                    name: "test".into(),
+                    storage: Prefix::Standard,
+                    programs: Vec::new(),
+                    wrappers: Wrappers::default(),
+                    runner: RunnerSelection::wine(runner.clone()).unwrap(),
+                    winebridge,
+                    dxvk: None,
+                    vkd3d: None,
+                    nvapi: None,
+                    latency_flex: None,
+                    dependencies: Vec::new(),
+                    environment: Environment::default(),
+                },
+                context,
+            );
+            bottle.save().await.unwrap();
 
-        let result = bottle
-            .update(async |state, _| {
-                state.storage = Prefix::Virgo { layers: Vec::new() };
-                state.environment.insert("CHANGED".into(), "yes".into());
-                Err::<(), _>(BottleError::InvalidProgram.into())
-            })
-            .await;
-
-        assert!(result.is_err());
-        let state = bottle.state().unwrap();
-        assert!(matches!(state.storage, Prefix::Standard));
-        assert!(state.environment.is_empty());
-
-        let first_bottle = bottle.clone();
-        let first = async move {
-            first_bottle
+            let result = bottle
                 .update(async |state, _| {
-                    state.environment.insert("FIRST".into(), "yes".into());
-                    tokio::task::yield_now().await;
-                    Ok(())
+                    state.storage = Prefix::Virgo { layers: Vec::new() };
+                    state.environment.insert("CHANGED".into(), "yes".into());
+                    Err::<(), _>(BottleError::InvalidProgram.into())
                 })
-                .await
-        };
-        let second_bottle = bottle.clone();
-        let second = async move {
-            second_bottle
-                .update(async |state, _| {
-                    state.environment.insert("SECOND".into(), "yes".into());
-                    Ok(())
-                })
-                .await
-        };
-        let (first, second) = tokio::join!(first, second);
-        first.unwrap();
-        second.unwrap();
+                .await;
 
-        let state = bottle.state().unwrap();
-        assert_eq!(state.environment.get("FIRST"), Some("yes"));
-        assert_eq!(state.environment.get("SECOND"), Some("yes"));
-        fs::remove_dir_all(root).unwrap();
+            assert!(result.is_err());
+            let state = bottle.state().unwrap();
+            assert!(matches!(state.storage, Prefix::Standard));
+            assert!(state.environment.is_empty());
+
+            let first_bottle = bottle.clone();
+            let first = async move {
+                first_bottle
+                    .update(async |state, _| {
+                        state.environment.insert("FIRST".into(), "yes".into());
+                        futures_lite::future::yield_now().await;
+                        Ok(())
+                    })
+                    .await
+            };
+            let second_bottle = bottle.clone();
+            let second = async move {
+                second_bottle
+                    .update(async |state, _| {
+                        state.environment.insert("SECOND".into(), "yes".into());
+                        Ok(())
+                    })
+                    .await
+            };
+            let (first, second) = futures_util::future::join(first, second).await;
+            first.unwrap();
+            second.unwrap();
+
+            let state = bottle.state().unwrap();
+            assert_eq!(state.environment.get("FIRST"), Some("yes"));
+            assert_eq!(state.environment.get("SECOND"), Some("yes"));
+            fs::remove_dir_all(root).unwrap();
+        });
     }
 
-    #[tokio::test]
-    async fn runner_components_require_set_runner() {
-        let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
-        let context = Context::new(
-            crate::Directories::from_path(root.join("data")).unwrap(),
-            root.join("fvs2d"),
-        )
-        .unwrap();
-        let wine = Component::new(
-            ComponentKind::Runner {
-                kind: RunnerKind::Wine,
-            },
-            "wine",
-            root.join("wine"),
-        )
-        .unwrap();
-        let proton = Component::new(
-            ComponentKind::Runner {
-                kind: RunnerKind::Proton,
-            },
-            "proton",
-            root.join("proton"),
-        )
-        .unwrap();
-        let winebridge = Component::new(ComponentKind::Winebridge, "bridge", "/bridge").unwrap();
-        let bottle = Bottle::from_state(
-            BottleState {
-                id: Uuid::new_v4(),
-                name: "test".into(),
-                storage: Prefix::Standard,
-                programs: Vec::new(),
-                wrappers: Wrappers::default(),
-                runner: RunnerSelection::wine(wine.clone()).unwrap(),
-                winebridge,
-                dxvk: None,
-                vkd3d: None,
-                nvapi: None,
-                latency_flex: None,
-                dependencies: Vec::new(),
-                environment: Environment::default(),
-            },
-            context,
-        );
+    #[test]
+    fn runner_components_require_set_runner() {
+        futures_lite::future::block_on(async {
+            let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
+            let context = Context::new(
+                crate::Directories::from_path(root.join("data")).unwrap(),
+                root.join("fvs2d"),
+            )
+            .unwrap();
+            let wine = Component::new(
+                ComponentKind::Runner {
+                    kind: RunnerKind::Wine,
+                },
+                "wine",
+                root.join("wine"),
+            )
+            .unwrap();
+            let proton = Component::new(
+                ComponentKind::Runner {
+                    kind: RunnerKind::Proton,
+                },
+                "proton",
+                root.join("proton"),
+            )
+            .unwrap();
+            let winebridge =
+                Component::new(ComponentKind::Winebridge, "bridge", "/bridge").unwrap();
+            let bottle = Bottle::from_state(
+                BottleState {
+                    id: Uuid::new_v4(),
+                    name: "test".into(),
+                    storage: Prefix::Standard,
+                    programs: Vec::new(),
+                    wrappers: Wrappers::default(),
+                    runner: RunnerSelection::wine(wine.clone()).unwrap(),
+                    winebridge,
+                    dxvk: None,
+                    vkd3d: None,
+                    nvapi: None,
+                    latency_flex: None,
+                    dependencies: Vec::new(),
+                    environment: Environment::default(),
+                },
+                context,
+            );
 
-        assert!(matches!(
-            bottle.install_component(&proton).await,
-            Err(crate::error::Error::Bottle(
-                BottleError::InvalidPrefixComponent
-            ))
-        ));
+            assert!(matches!(
+                bottle.install_component(&proton).await,
+                Err(crate::error::Error::Bottle(
+                    BottleError::InvalidPrefixComponent
+                ))
+            ));
+        });
     }
 }

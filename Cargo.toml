@@ -32,4 +32,4 @@ url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["net", "rt", "time"] }
