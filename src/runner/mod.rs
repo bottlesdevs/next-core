@@ -117,7 +117,7 @@ pub(crate) async fn detect_runner_kind(path: &Path) -> Result<RunnerKind> {
 pub(crate) async fn load_runner(
     path: &Path,
     kind: RunnerKind,
-    umu_executable: Option<&Path>,
+    umu_root: Option<&Path>,
 ) -> Result<Box<dyn Runner>> {
     if detect_runner_kind(path).await? != kind {
         return Err(RunnerError::RunnerNotFound(path.to_path_buf()).into());
@@ -125,12 +125,14 @@ pub(crate) async fn load_runner(
     match kind {
         RunnerKind::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
         RunnerKind::Proton => {
-            let umu = umu_executable.ok_or(RunnerError::UmuExecutableMissing)?;
-            if !async_fs::metadata(umu)
+            let umu = umu_root
+                .ok_or(RunnerError::UmuExecutableMissing)?
+                .join("umu-run");
+            if !async_fs::metadata(&umu)
                 .await
                 .is_ok_and(|entry| entry.is_file())
             {
-                return Err(RunnerError::RunnerExecutableNotFound(umu.to_path_buf()).into());
+                return Err(RunnerError::RunnerExecutableNotFound(umu).into());
             }
             Ok(Box::new(Proton::new(path, umu)))
         }

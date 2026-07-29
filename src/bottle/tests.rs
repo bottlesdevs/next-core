@@ -39,7 +39,7 @@ fn bottle_managers_are_scoped_to_their_context_roots() {
             let bridge = Component::new(
                 ComponentKind::Winebridge,
                 "bridge",
-                directories.data_dir().join("winebridge.exe"),
+                directories.data_dir().join("winebridge"),
             )
             .unwrap();
             let config = BottleState {
@@ -147,11 +147,10 @@ fn proton_umu_components_and_dependencies_round_trip() {
         let bridge = Component::new(
             ComponentKind::Winebridge,
             "bridge-1",
-            bottle_path.join("winebridge/bottles-winebridge.exe"),
+            bottle_path.join("winebridge"),
         )
         .unwrap();
-        let umu =
-            Component::new(ComponentKind::Umu, "umu-1", bottle_path.join("umu/umu-run")).unwrap();
+        let umu = Component::new(ComponentKind::Umu, "umu-1", bottle_path.join("umu")).unwrap();
         let dxvk = Component::new(ComponentKind::Dxvk, "dxvk-1", bottle_path.join("dxvk")).unwrap();
         let dependency: Dependency = serde_json::from_value(serde_json::json!({
             "id": "00000000-0000-0000-0000-000000000001",
@@ -258,12 +257,9 @@ mod unix {
                 &runner_root,
             )
             .unwrap();
-            let bridge = Component::new(
-                ComponentKind::Winebridge,
-                "manual-winebridge",
-                bridge_root.join("bottles-winebridge.exe"),
-            )
-            .unwrap();
+            let bridge =
+                Component::new(ComponentKind::Winebridge, "manual-winebridge", &bridge_root)
+                    .unwrap();
             let manager = BottleManager::new(context.clone());
             let id = Uuid::new_v4();
             let bottle_path = directories.bottle(id);
@@ -436,7 +432,7 @@ fn virgo_layers_round_trip_through_bottle_toml() {
         let bridge = Component::new(
             ComponentKind::Winebridge,
             "winebridge",
-            bottle_path.join("winebridge/bottles-winebridge.exe"),
+            bottle_path.join("winebridge"),
         )
         .unwrap();
         let config = BottleState {

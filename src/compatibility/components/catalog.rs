@@ -124,6 +124,18 @@ pub enum ComponentKind {
 }
 
 impl ComponentKind {
+    pub(crate) fn directory_name(self) -> &'static str {
+        match self {
+            Self::Runner { .. } => "runners",
+            Self::Winebridge => "winebridge",
+            Self::Umu => "umu",
+            Self::Dxvk => "dxvk",
+            Self::Vkd3d => "vkd3d",
+            Self::Nvapi => "nvapi",
+            Self::LatencyFlex => "latency-flex",
+        }
+    }
+
     pub fn is_runner(self) -> bool {
         matches!(self, Self::Runner { .. })
     }

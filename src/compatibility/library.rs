@@ -3,7 +3,7 @@ use std::{
     fmt::Write as _,
     future::Future,
     io,
-    path::{Component as PathComponent, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -23,11 +23,11 @@ use url::Url;
 use uuid::Uuid;
 
 use super::{
-    Architecture, Checksum, Target,
+    Checksum, Target,
     components::{
         Component,
         catalog::{CatalogComponentEntry, ComponentCatalog, ComponentKind},
-        storage as component_storage,
+        index as component_index,
     },
     dependencies::{
         Dependency,
@@ -65,8 +65,9 @@ impl Library {
             load_cached_catalog(&component_catalog_path(&directories)).await;
         let dependency_catalog: Option<Arc<DependencyCatalog>> =
             load_cached_catalog(&dependency_catalog_path(&directories)).await;
-        let components = component_storage::load(&directories).await?;
-        let dependencies = dependency_storage::load(&directories).await?;
+        let components = component_index::scan(&directories).await?;
+        let dependencies =
+            dependency_storage::scan(&directories, dependency_catalog.as_deref()).await?;
         let (published, _) = watch::channel(Arc::new(LibraryState::new(
             component_catalog,
             dependency_catalog,
@@ -94,8 +95,10 @@ impl Library {
     pub async fn refresh(&self) -> Result<()> {
         let _write = self.0.write.lock().await;
         let current = self.state();
-        let components = component_storage::load(&self.0.directories).await?;
-        let dependencies = dependency_storage::load(&self.0.directories).await?;
+        let components = component_index::scan(&self.0.directories).await?;
+        let dependencies =
+            dependency_storage::scan(&self.0.directories, current.dependency_catalog.as_deref())
+                .await?;
         self.publish(
             current.component_catalog.clone(),
             current.dependency_catalog.clone(),
@@ -156,19 +159,24 @@ impl Library {
 
             let _write = library.0.write.lock().await;
             let current = library.state();
+            let component_catalog = component
+                .as_ref()
+                .ok()
+                .cloned()
+                .or_else(|| current.component_catalog.clone());
+            let dependency_catalog = dependency
+                .as_ref()
+                .ok()
+                .cloned()
+                .or_else(|| current.dependency_catalog.clone());
+            let dependencies =
+                dependency_storage::scan(&library.0.directories, dependency_catalog.as_deref())
+                    .await?;
             library.publish(
-                component
-                    .as_ref()
-                    .ok()
-                    .cloned()
-                    .or_else(|| current.component_catalog.clone()),
-                dependency
-                    .as_ref()
-                    .ok()
-                    .cloned()
-                    .or_else(|| current.dependency_catalog.clone()),
+                component_catalog,
+                dependency_catalog,
                 current.downloaded_components(),
-                current.downloaded_dependencies(),
+                dependencies,
             );
 
             match (component, dependency) {
@@ -225,8 +233,8 @@ impl Library {
             .and_then(ComponentStatus::downloaded)
             .cloned()
             .ok_or(LibraryError::ComponentNotFound(id))?;
-        async_fs::remove_dir_all(component_storage::root(&component)).await?;
-        let components = component_storage::load(&self.0.directories).await?;
+        async_fs::remove_dir_all(component.path()).await?;
+        let components = component_index::scan(&self.0.directories).await?;
         self.publish(
             state.component_catalog.clone(),
             state.dependency_catalog.clone(),
@@ -246,24 +254,7 @@ impl Library {
             if let Some(dependency) = status.downloaded() {
                 return Ok(dependency.clone());
             }
-            let entry = status
-                .catalog()
-                .cloned()
-                .ok_or(LibraryError::DependencyNotFound(id))?;
-            let resources = entry
-                .resources()
-                .iter()
-                .filter(|resource| {
-                    matches!(
-                        resource.target_arch(),
-                        Architecture::X86 | Architecture::X86_64
-                    )
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            if resources.is_empty() {
-                return Err(LibraryError::UnsupportedDependency(id).into());
-            }
+            let dependency = Dependency::try_from(status.catalog())?;
             let stage = library
                 .0
                 .directories
@@ -273,7 +264,7 @@ impl Library {
             async_fs::create_dir_all(&stage).await?;
 
             let result = library
-                .download_dependency_entry(entry, resources, &stage, progress, &cancellation)
+                .download_dependency_entry(dependency, &stage, progress, &cancellation)
                 .await;
             let _ = async_fs::remove_dir_all(&stage).await;
             result
@@ -287,9 +278,10 @@ impl Library {
             .dependency(id)
             .and_then(DependencyStatus::downloaded)
             .ok_or(LibraryError::DependencyNotFound(id))?;
-        let path = self.0.directories.dependencies().join(id.to_string());
-        async_fs::remove_dir_all(path).await?;
-        let dependencies = dependency_storage::load(&self.0.directories).await?;
+        async_fs::remove_dir_all(self.0.directories.dependency(id)).await?;
+        let dependencies =
+            dependency_storage::scan(&self.0.directories, state.dependency_catalog.as_deref())
+                .await?;
         self.publish(
             state.component_catalog.clone(),
             state.dependency_catalog.clone(),
@@ -311,7 +303,7 @@ impl Library {
         progress: watch::Sender<Option<LibraryProgress>>,
         cancellation: &CancellationToken,
     ) -> Result<Component> {
-        let file_name = safe_file_name(artifact.file_name())?;
+        let file_name = artifact.file_name();
         let archive_path = stage.join(file_name);
         download(
             &self.0.downloads,
@@ -344,8 +336,8 @@ impl Library {
         )
         .await?;
         let release = top_level_directory(&extracted).await?;
-        let category = component_storage::category(entry.kind());
-        let (found, _) = component_storage::inspect(category, &release)
+        let category = entry.kind().directory_name();
+        let found = component_index::detect_kind(category, &release)
             .await?
             .ok_or(LibraryError::InvalidComponentArchive)?;
         if found != entry.kind() {
@@ -356,11 +348,8 @@ impl Library {
             .into());
         }
 
-        let release_name = release
-            .file_name()
-            .ok_or(LibraryError::InvalidComponentArchive)?;
-        let category_root = self.0.directories.components().join(category);
-        let target = category_root.join(release_name);
+        let category_root = self.0.directories.component_category(entry.kind());
+        let target = category_root.join(artifact.file_name());
         let _write = self.0.write.lock().await;
         if let Some(component) = self
             .state()
@@ -376,17 +365,9 @@ impl Library {
         async_fs::rename(&release, &target).await?;
 
         let result = async {
-            let (kind, path) = component_storage::inspect(category, &target)
-                .await?
-                .ok_or(LibraryError::InvalidComponentArchive)?;
-            let component = Component::from_catalog(
-                entry.uuid(),
-                entry.version(),
-                async_fs::canonicalize(path).await?,
-                kind,
-            );
-            component_storage::record(&self.0.directories, component.clone()).await?;
-            let components = component_storage::load(&self.0.directories).await?;
+            let component = Component::from_catalog_entry(&entry, &self.0.directories).await?;
+            component_index::ComponentIndex::record(&self.0.directories, component.clone()).await?;
+            let components = component_index::scan(&self.0.directories).await?;
             let state = self.state();
             self.publish(
                 state.component_catalog.clone(),
@@ -405,15 +386,15 @@ impl Library {
 
     async fn download_dependency_entry(
         &self,
-        entry: CatalogDependencyEntry,
-        resources: Vec<super::dependencies::catalog::DependencyResource>,
+        dependency: Dependency,
         stage: &Path,
         progress: watch::Sender<Option<LibraryProgress>>,
         cancellation: &CancellationToken,
     ) -> Result<Dependency> {
-        let total = resources.len();
-        for (index, resource) in resources.iter().enumerate() {
-            let file_name = safe_file_name(resource.file_name())?;
+        let id = dependency.id();
+        let total = dependency.resources.len();
+        for (index, resource) in dependency.resources.iter().enumerate() {
+            let file_name = resource.file_name();
             let destination = stage.join(file_name);
             download(
                 &self.0.downloads,
@@ -438,15 +419,11 @@ impl Library {
             verify_checksum(&destination, resource.checksum(), cancellation).await?;
         }
 
-        let target = self
-            .0
-            .directories
-            .dependencies()
-            .join(entry.uuid().to_string());
+        let target = self.0.directories.dependency(id);
         let _write = self.0.write.lock().await;
         if let Some(dependency) = self
             .state()
-            .dependency(entry.uuid())
+            .dependency(id)
             .and_then(DependencyStatus::downloaded)
         {
             return Ok(dependency.clone());
@@ -457,14 +434,15 @@ impl Library {
         async_fs::rename(stage, &target).await?;
 
         let result = async {
-            dependency_storage::record(&self.0.directories, entry.clone()).await?;
-            let dependencies = dependency_storage::load(&self.0.directories).await?;
+            let state = self.state();
+            let dependencies =
+                dependency_storage::scan(&self.0.directories, state.dependency_catalog.as_deref())
+                    .await?;
             let dependency = dependencies
                 .iter()
-                .find(|dependency| dependency.id() == entry.uuid())
+                .find(|dependency| dependency.id() == id)
                 .cloned()
-                .ok_or(LibraryError::DependencyNotFound(entry.uuid()))?;
-            let state = self.state();
+                .ok_or(LibraryError::DependencyNotFound(id))?;
             self.publish(
                 state.component_catalog.clone(),
                 state.dependency_catalog.clone(),
@@ -476,7 +454,6 @@ impl Library {
         .await;
         if result.is_err() {
             let _ = async_fs::remove_dir_all(&target).await;
-            let _ = dependency_storage::remove(&self.0.directories, entry.uuid()).await;
         }
         result
     }
@@ -565,8 +542,6 @@ pub enum LibraryError {
     UnsupportedComponent(Uuid),
     #[error("dependency {0} has no supported resources")]
     UnsupportedDependency(Uuid),
-    #[error("artifact file name is invalid: {0}")]
-    InvalidFileName(String),
     #[error("checksum mismatch for {0}")]
     ChecksumMismatch(PathBuf),
     #[error("component archive must contain exactly one top-level directory")]
@@ -623,8 +598,7 @@ impl LibraryState {
                 }),
         );
 
-        let mut matched_dependencies = HashSet::new();
-        let mut dependency_statuses = dependency_catalog
+        let dependency_statuses = dependency_catalog
             .iter()
             .flat_map(|catalog| catalog.as_ref())
             .map(|entry| {
@@ -632,24 +606,12 @@ impl LibraryState {
                     .iter()
                     .find(|dependency| dependency.id() == entry.uuid())
                     .cloned();
-                if downloaded.is_some() {
-                    matched_dependencies.insert(entry.uuid());
-                }
                 DependencyStatus {
-                    catalog: Some(entry.clone()),
+                    catalog: entry.clone(),
                     downloaded,
                 }
             })
             .collect::<Vec<_>>();
-        dependency_statuses.extend(
-            dependencies
-                .into_iter()
-                .filter(|dependency| !matched_dependencies.contains(&dependency.id()))
-                .map(|downloaded| DependencyStatus {
-                    catalog: None,
-                    downloaded: Some(downloaded),
-                }),
-        );
 
         Self {
             components: component_statuses,
@@ -764,37 +726,25 @@ impl ComponentStatus {
 
 #[derive(Clone, Debug)]
 pub struct DependencyStatus {
-    catalog: Option<CatalogDependencyEntry>,
+    catalog: CatalogDependencyEntry,
     downloaded: Option<Dependency>,
 }
 
 impl DependencyStatus {
     pub fn id(&self) -> Uuid {
-        self.catalog
-            .as_ref()
-            .map(CatalogDependencyEntry::uuid)
-            .or_else(|| self.downloaded.as_ref().map(Dependency::id))
-            .expect("dependency status has catalog metadata or a download")
+        self.catalog.uuid()
     }
 
     pub fn name(&self) -> &str {
-        self.catalog
-            .as_ref()
-            .map(CatalogDependencyEntry::name)
-            .or_else(|| self.downloaded.as_ref().map(Dependency::name))
-            .expect("dependency status has catalog metadata or a download")
+        self.catalog.name()
     }
 
     pub fn version(&self) -> &str {
-        self.catalog
-            .as_ref()
-            .map(CatalogDependencyEntry::version)
-            .or_else(|| self.downloaded.as_ref().map(Dependency::version))
-            .expect("dependency status has catalog metadata or a download")
+        self.catalog.version()
     }
 
-    pub fn catalog(&self) -> Option<&CatalogDependencyEntry> {
-        self.catalog.as_ref()
+    pub fn catalog(&self) -> &CatalogDependencyEntry {
+        &self.catalog
     }
 
     pub fn downloaded(&self) -> Option<&Dependency> {
@@ -834,15 +784,6 @@ async fn download(
                 });
             }
         }
-    }
-}
-
-fn safe_file_name(name: &str) -> Result<&str> {
-    let mut components = Path::new(name).components();
-    if matches!(components.next(), Some(PathComponent::Normal(_))) && components.next().is_none() {
-        Ok(name)
-    } else {
-        Err(LibraryError::InvalidFileName(name.to_owned()).into())
     }
 }
 
@@ -1190,7 +1131,7 @@ mod tests {
 
             let component = library.download_component(component_id).await.unwrap();
             assert_eq!(component.id(), component_id);
-            assert!(component.path().ends_with("dxvk/dxvk-1"));
+            assert!(component.path().ends_with("dxvk/dxvk.tar"));
             let dependency = library.download_dependency(dependency_id).await.unwrap();
             assert_eq!(dependency.id(), dependency_id);
             assert!(

@@ -3,9 +3,13 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use uuid::{NonNilUuid, Uuid};
 
-use super::catalog::ComponentKind;
+use super::catalog::{CatalogComponentEntry, ComponentKind};
 use crate::{
-    compatibility::installer::{InstallResource, Installable},
+    Directories,
+    compatibility::{
+        LibraryError, Target,
+        installer::{InstallResource, Installable},
+    },
     error::Result,
 };
 
@@ -19,18 +23,25 @@ pub struct Component {
 }
 
 impl Component {
-    pub(crate) fn from_catalog(
-        id: Uuid,
-        version: impl Into<String>,
-        path: impl Into<PathBuf>,
-        kind: ComponentKind,
-    ) -> Self {
-        Self {
-            id: NonNilUuid::new(id).expect("catalog UUID is non-nil"),
-            version: version.into(),
-            path: path.into(),
-            kind,
-        }
+    pub(crate) async fn from_catalog_entry(
+        entry: &CatalogComponentEntry,
+        directories: &Directories,
+    ) -> Result<Self> {
+        let target = Target::current().ok_or(LibraryError::UnsupportedComponent(entry.uuid()))?;
+        let artifact = entry
+            .artifact_for(target)
+            .ok_or(LibraryError::UnsupportedComponent(entry.uuid()))?;
+        Ok(Self {
+            id: NonNilUuid::new(entry.uuid()).expect("catalog UUID is non-nil"),
+            version: entry.version().to_string(),
+            path: async_fs::canonicalize(
+                directories
+                    .component_category(entry.kind())
+                    .join(artifact.file_name()),
+            )
+            .await?,
+            kind: entry.kind(),
+        })
     }
 
     #[cfg(test)]

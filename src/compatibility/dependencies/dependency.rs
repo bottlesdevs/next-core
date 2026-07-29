@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use uuid::{NonNilUuid, Uuid};
 
-use super::catalog::DependencyResource;
+use super::catalog::{CatalogDependencyEntry, DependencyResource};
 use crate::{
     compatibility::{
-        Architecture,
+        LibraryError,
         installer::{InstallResource, Installable},
     },
     error::Result,
@@ -17,6 +17,22 @@ pub struct Dependency {
     pub(super) version: String,
     #[serde(skip)]
     pub(crate) resources: Vec<DependencyResource>,
+}
+
+impl TryFrom<&CatalogDependencyEntry> for Dependency {
+    type Error = LibraryError;
+
+    fn try_from(entry: &CatalogDependencyEntry) -> std::result::Result<Self, Self::Error> {
+        if entry.resources().is_empty() {
+            return Err(LibraryError::UnsupportedDependency(entry.uuid()));
+        }
+        Ok(Self {
+            id: NonNilUuid::new(entry.uuid()).expect("catalog UUID is non-nil"),
+            name: entry.name().to_string(),
+            version: entry.version().to_string(),
+            resources: entry.resources().to_vec(),
+        })
+    }
 }
 
 impl Dependency {
@@ -35,18 +51,9 @@ impl Dependency {
 
 impl Installable for Dependency {
     fn prepare(&self, context: &crate::Context) -> Result<Vec<InstallResource>> {
-        let root = context
-            .directories()
-            .dependencies()
-            .join(self.id().to_string());
+        let root = context.directories().dependency(self.id());
         self.resources
             .iter()
-            .filter(|resource| {
-                matches!(
-                    resource.target_arch(),
-                    Architecture::X86 | Architecture::X86_64
-                )
-            })
             .map(|resource| {
                 let source = root.join(resource.file_name());
                 Ok(InstallResource {

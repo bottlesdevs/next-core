@@ -80,11 +80,11 @@ impl WineBridgeClient {
     pub(crate) fn command(
         runner: &dyn Runner,
         prefix: &Path,
-        winebridge_executable: impl AsRef<Path>,
+        winebridge_root: impl AsRef<Path>,
     ) -> RunnerCommand {
         runner.command(
             prefix,
-            Command::new(winebridge_executable.as_ref()).env(
+            Command::new(winebridge_root.as_ref().join("bottles-winebridge.exe")).env(
                 "WINEBRIDGE_PORT_FILE",
                 format!(r"C:\windows\temp\{PORT_FILE_NAME}"),
             ),

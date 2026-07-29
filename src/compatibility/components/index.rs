@@ -8,72 +8,54 @@ use uuid::{NonNilUuid, Uuid};
 use super::{Component, catalog::ComponentKind};
 use crate::{Directories, error::Result, runner::detect_runner_kind};
 
-pub(crate) async fn load(directories: &Directories) -> Result<Vec<Component>> {
+#[derive(Debug, Default, Deserialize, Eq, PartialEq, Serialize, Config)]
+#[config(version = 1)]
+pub(crate) struct ComponentIndex {
+    #[serde(default, rename = "component")]
+    components: Vec<Component>,
+}
+
+impl ComponentIndex {
+    async fn load(directories: &Directories) -> Result<Option<Self>> {
+        let path = directories.component_index();
+        if async_fs::metadata(&path)
+            .await
+            .is_ok_and(|entry| entry.is_file())
+        {
+            Ok(Some(next_config::load(path).await?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn save(&self, directories: &Directories) -> Result<()> {
+        next_config::save(directories.component_index(), self).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record(directories: &Directories, component: Component) -> Result<()> {
+        let mut index = Self::load(directories).await?.unwrap_or_default();
+        index
+            .components
+            .retain(|entry| entry.id() != component.id() && entry.path() != component.path());
+        index.components.push(component);
+        index.save(directories).await
+    }
+}
+
+pub(crate) async fn scan(directories: &Directories) -> Result<Vec<Component>> {
     let components_path = async_fs::canonicalize(directories.components()).await?;
-    let index_path = components_path.join("index.toml");
-    let has_index = async_fs::metadata(&index_path)
-        .await
-        .is_ok_and(|entry| entry.is_file());
-    let index = if has_index {
-        next_config::load(&index_path).await?
-    } else {
-        ComponentIndex::default()
-    };
+    let index = ComponentIndex::load(directories).await?;
+    let has_index = index.is_some();
+    let index = index.unwrap_or_default();
     let components = discover_components(&components_path, &index).await?;
     let component_index = ComponentIndex {
         components: components.clone(),
     };
     if component_index != index || !has_index {
-        next_config::save(index_path, &component_index).await?;
+        component_index.save(directories).await?;
     }
     Ok(components)
-}
-
-pub(crate) async fn record(directories: &Directories, component: Component) -> Result<()> {
-    let path = directories.components().join("index.toml");
-    let mut index = if async_fs::metadata(&path)
-        .await
-        .is_ok_and(|entry| entry.is_file())
-    {
-        next_config::load(&path).await?
-    } else {
-        ComponentIndex::default()
-    };
-    index
-        .components
-        .retain(|entry| entry.id() != component.id() && entry.path() != component.path());
-    index.components.push(component);
-    next_config::save(path, &index).await?;
-    Ok(())
-}
-
-pub(crate) fn category(kind: ComponentKind) -> &'static str {
-    match kind {
-        ComponentKind::Runner { .. } => "runners",
-        ComponentKind::Winebridge => "winebridge",
-        ComponentKind::Umu => "umu",
-        ComponentKind::Dxvk => "dxvk",
-        ComponentKind::Vkd3d => "vkd3d",
-        ComponentKind::Nvapi => "nvapi",
-        ComponentKind::LatencyFlex => "latency-flex",
-    }
-}
-
-pub(crate) fn root(component: &Component) -> &Path {
-    match component.kind() {
-        ComponentKind::Winebridge | ComponentKind::Umu => component
-            .path()
-            .parent()
-            .expect("component executable has a parent"),
-        _ => component.path(),
-    }
-}
-
-#[derive(Debug, Default, Deserialize, Eq, PartialEq, Serialize, Config)]
-#[config(version = 1)]
-struct ComponentIndex {
-    #[serde(default, rename = "component")]
-    components: Vec<Component>,
 }
 
 async fn discover_components(
@@ -87,33 +69,23 @@ async fn discover_components(
         .collect();
 
     let mut components = Vec::new();
-    let mut entries = async_fs::read_dir(components_path).await?;
-    let mut categories = Vec::new();
-    while let Some(entry) = entries.try_next().await? {
-        categories.push(entry);
-    }
-    categories.sort_by_key(async_fs::DirEntry::file_name);
-    for category_entry in categories {
+    let mut categories = async_fs::read_dir(components_path).await?;
+    while let Some(category_entry) = categories.try_next().await? {
         let file_type = category_entry.file_type().await?;
         if !file_type.is_dir() {
             continue;
         }
         let category_name = category_entry.file_name().to_string_lossy().into_owned();
-        let mut entries = async_fs::read_dir(category_entry.path()).await?;
-        let mut versions = Vec::new();
-        while let Some(entry) = entries.try_next().await? {
-            versions.push(entry);
-        }
-        versions.sort_by_key(async_fs::DirEntry::file_name);
-        for version in versions {
+        let mut versions = async_fs::read_dir(category_entry.path()).await?;
+        while let Some(version) = versions.try_next().await? {
             if !version.file_type().await?.is_dir() {
                 continue;
             }
-            let Some((kind, path)) = inspect(&category_name, &version.path()).await? else {
+            let path = version.path();
+            let Some(kind) = detect_kind(&category_name, &path).await? else {
                 continue;
             };
-            let relative = path.to_path_buf();
-            let (id, version) = match indexed.remove(&relative) {
+            let (id, version) = match indexed.remove(&path) {
                 Some(entry) => (entry.id, entry.version.clone()),
                 None => (
                     NonNilUuid::new(Uuid::new_v4()).expect("v4 UUID is non-nil"),
@@ -128,42 +100,32 @@ async fn discover_components(
             });
         }
     }
-    components.sort_by(|a, b| a.path().cmp(b.path()));
     Ok(components)
 }
 
-pub(crate) async fn inspect(
-    directory: &str,
-    path: &Path,
-) -> Result<Option<(ComponentKind, std::path::PathBuf)>> {
+pub(crate) async fn detect_kind(directory: &str, path: &Path) -> Result<Option<ComponentKind>> {
     Ok(Some(match directory {
-        "runners" => (
-            ComponentKind::Runner {
-                kind: detect_runner_kind(path).await?,
-            },
-            path.to_path_buf(),
-        ),
+        "runners" => ComponentKind::Runner {
+            kind: detect_runner_kind(path).await?,
+        },
         "winebridge"
             if async_fs::metadata(path.join("bottles-winebridge.exe"))
                 .await
                 .is_ok_and(|entry| entry.is_file()) =>
         {
-            (
-                ComponentKind::Winebridge,
-                path.join("bottles-winebridge.exe"),
-            )
+            ComponentKind::Winebridge
         }
         "umu"
             if async_fs::metadata(path.join("umu-run"))
                 .await
                 .is_ok_and(|entry| entry.is_file()) =>
         {
-            (ComponentKind::Umu, path.join("umu-run"))
+            ComponentKind::Umu
         }
-        "dxvk" => (ComponentKind::Dxvk, path.to_path_buf()),
-        "vkd3d" => (ComponentKind::Vkd3d, path.to_path_buf()),
-        "nvapi" => (ComponentKind::Nvapi, path.to_path_buf()),
-        "latency-flex" => (ComponentKind::LatencyFlex, path.to_path_buf()),
+        "dxvk" => ComponentKind::Dxvk,
+        "vkd3d" => ComponentKind::Vkd3d,
+        "nvapi" => ComponentKind::Nvapi,
+        "latency-flex" => ComponentKind::LatencyFlex,
         _ => return Ok(None),
     }))
 }
@@ -176,7 +138,7 @@ mod tests {
     use crate::Directories;
 
     #[test]
-    fn discovers_extracted_components_and_executable_paths() {
+    fn discovers_component_roots() {
         futures_lite::future::block_on(async {
             let components_path =
                 std::env::temp_dir().join(format!("bottles-next-components-{}", Uuid::new_v4()));
@@ -214,9 +176,8 @@ mod tests {
                     .find(|component| component.kind() == ComponentKind::Umu)
                     .unwrap()
                     .path(),
-                umu.join("umu-run")
+                umu
             );
-
             fs::remove_dir_all(components_path).unwrap();
         });
     }
@@ -231,10 +192,10 @@ mod tests {
             fs::create_dir_all(left.components().join("dxvk/1")).unwrap();
             fs::create_dir_all(right.components().join("dxvk/1")).unwrap();
 
-            let first = load(&left).await.unwrap();
+            let first = scan(&left).await.unwrap();
             let left_id = first[0].id();
-            let second = load(&left).await.unwrap();
-            let right = load(&right).await.unwrap();
+            let second = scan(&left).await.unwrap();
+            let right = scan(&right).await.unwrap();
 
             assert_eq!(second[0].id(), left_id);
             assert_ne!(right[0].id(), left_id);

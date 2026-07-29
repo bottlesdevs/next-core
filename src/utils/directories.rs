@@ -4,7 +4,9 @@ use ::directories::ProjectDirs;
 
 use uuid::Uuid;
 
-use crate::{bottle::error::BottleError, error::Result};
+use crate::{
+    bottle::error::BottleError, compatibility::components::catalog::ComponentKind, error::Result,
+};
 
 #[derive(Clone, Debug)]
 pub struct Directories(ProjectDirs);
@@ -56,8 +58,20 @@ impl Directories {
         self.data_dir().join("components")
     }
 
+    pub(crate) fn component_category(&self, kind: ComponentKind) -> PathBuf {
+        self.components().join(kind.directory_name())
+    }
+
+    pub(crate) fn component_index(&self) -> PathBuf {
+        self.components().join("index.toml")
+    }
+
     pub fn dependencies(&self) -> PathBuf {
         self.data_dir().join("dependencies")
+    }
+
+    pub(crate) fn dependency(&self, id: Uuid) -> PathBuf {
+        self.dependencies().join(id.to_string())
     }
 
     fn paths(&self) -> [PathBuf; 5] {

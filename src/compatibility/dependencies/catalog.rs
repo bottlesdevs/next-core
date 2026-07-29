@@ -332,6 +332,10 @@ mod tests {
         let invalid = [
             MANIFEST.replace(r#""name": "vcrun2022""#, r#""name": """#),
             MANIFEST.replace(r#""size": 123456"#, r#""size": 0"#),
+            MANIFEST.replace(
+                r#""file_name": "vc_redist.x86.exe""#,
+                r#""file_name": "../vc_redist.x86.exe""#,
+            ),
             MANIFEST.replace(r#""value": "abc""#, r#""value": """#),
             MANIFEST.replace(r#""key": "Software\\Example""#, r#""key": " ""#),
         ];
