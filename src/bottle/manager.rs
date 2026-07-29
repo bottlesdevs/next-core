@@ -1,6 +1,7 @@
 use std::{io, sync::Arc};
 
-use tokio::fs;
+use async_fs as fs;
+use futures_lite::StreamExt;
 use uuid::Uuid;
 
 use crate::{
@@ -151,7 +152,7 @@ impl BottleManager {
             Err(error) => return Err(error.into()),
         };
         let mut paths = Vec::new();
-        while let Some(entry) = entries.next_entry().await? {
+        while let Some(entry) = entries.try_next().await? {
             let path = entry.path().join("bottle.toml");
             if fs::metadata(&path).await.is_ok_and(|entry| entry.is_file()) {
                 paths.push(path);

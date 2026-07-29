@@ -15,7 +15,7 @@ use crate::{
     prefix::{PrefixProgress, TransactionProgress},
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
     runner::{Command, Runner, Spawnable, shutdown_prefix},
-    utils::{archive, environment::Environment},
+    utils::{archive, environment::Environment, exists},
     winebridge::WineBridgeClient,
 };
 
@@ -426,31 +426,31 @@ async fn shutdown_bridge(prefix: &Path) -> Result<()> {
 
 async fn install_file(source: &Path, prefix: &Path, relative: &Path) -> Result<()> {
     let destination = prefix.join(relative);
-    tokio::fs::create_dir_all(destination.parent().expect("destination has a parent")).await?;
+    async_fs::create_dir_all(destination.parent().expect("destination has a parent")).await?;
     let relative_backup = backup_path(relative);
     let backup = prefix.join(&relative_backup);
-    if tokio::fs::metadata(&destination)
+    if async_fs::metadata(&destination)
         .await
         .is_ok_and(|entry| entry.is_file())
-        && !tokio::fs::try_exists(&backup).await?
+        && !exists(&backup).await?
     {
-        tokio::fs::copy(&destination, &backup).await?;
+        async_fs::copy(&destination, &backup).await?;
     }
-    tokio::fs::copy(source, destination).await?;
+    async_fs::copy(source, destination).await?;
     Ok(())
 }
 
 async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
     let destination = prefix.join(relative);
     let backup = prefix.join(backup_path(relative));
-    if tokio::fs::metadata(&backup)
+    if async_fs::metadata(&backup)
         .await
         .is_ok_and(|entry| entry.is_file())
     {
-        tokio::fs::copy(&backup, &destination).await?;
-        tokio::fs::remove_file(backup).await
+        async_fs::copy(&backup, &destination).await?;
+        async_fs::remove_file(backup).await
     } else {
-        match tokio::fs::remove_file(destination).await {
+        match async_fs::remove_file(destination).await {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),

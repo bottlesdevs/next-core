@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use futures_lite::StreamExt;
 use fvs_rs::{Layer, Mount, Repository, UnmountMode};
 use uuid::Uuid;
 
@@ -26,7 +27,7 @@ pub(super) async fn create(
     context: &Context,
 ) -> Result<Vec<Layer>> {
     let upper = bottle_path.join("upper");
-    tokio::fs::create_dir_all(upper).await?;
+    async_fs::create_dir_all(upper).await?;
     base_layers(runner, runner_key, context).await
 }
 
@@ -172,22 +173,22 @@ async fn base_layers(
 async fn ensure_base(runner: &dyn Runner, context: &Context) -> Result<Layer> {
     let base_path = context.directories().data_dir().join("virgo/base");
     let repository_path = base_path.join("prefix");
-    let cached = if tokio::fs::metadata(repository_path.join(".fvs2"))
+    let cached = if async_fs::metadata(repository_path.join(".fvs2"))
         .await
         .is_ok_and(|entry| entry.is_dir())
     {
         true
     } else {
-        if tokio::fs::try_exists(&repository_path).await?
-            && tokio::fs::read_dir(&repository_path)
+        if crate::utils::exists(&repository_path).await?
+            && async_fs::read_dir(&repository_path)
                 .await?
-                .next_entry()
+                .try_next()
                 .await?
                 .is_some()
         {
             return Err(VirgoError::DirtyBase(repository_path).into());
         }
-        tokio::fs::create_dir_all(&repository_path).await?;
+        async_fs::create_dir_all(&repository_path).await?;
         false
     };
 
@@ -229,7 +230,7 @@ async fn ensure_adapter(
 ) -> Result<Layer> {
     let root = adapter_root(context);
     let destination = root.join(runner_key);
-    if tokio::fs::metadata(destination.join(".fvs2"))
+    if async_fs::metadata(destination.join(".fvs2"))
         .await
         .is_ok_and(|entry| entry.is_dir())
     {
@@ -254,8 +255,8 @@ async fn ensure_adapter(
         .join(Uuid::new_v4().to_string());
     let upper = stage.join("upper");
     let mountpoint = stage.join("prefix");
-    tokio::fs::create_dir_all(&upper).await?;
-    tokio::fs::create_dir_all(&mountpoint).await?;
+    async_fs::create_dir_all(&upper).await?;
+    async_fs::create_dir_all(&mountpoint).await?;
 
     let build = async {
         with_mount(
@@ -272,8 +273,8 @@ async fn ensure_adapter(
         let commit = client
             .commit(&repository, format!("Runner adapter {runner_key}"))
             .await?;
-        tokio::fs::create_dir_all(root).await?;
-        tokio::fs::rename(&upper, &destination).await?;
+        async_fs::create_dir_all(root).await?;
+        async_fs::rename(&upper, &destination).await?;
         Ok::<_, Error>(commit)
     }
     .await;
@@ -292,18 +293,13 @@ fn adapter_root(context: &Context) -> PathBuf {
 }
 
 async fn ensure_empty_dir(path: &Path) -> Result<()> {
-    tokio::fs::create_dir_all(path).await?;
-    if tokio::fs::read_dir(path)
-        .await?
-        .next_entry()
-        .await?
-        .is_some()
-    {
+    async_fs::create_dir_all(path).await?;
+    if async_fs::read_dir(path).await?.try_next().await?.is_some() {
         return Err(VirgoError::DirtyMountpoint(path.to_path_buf()).into());
     }
     Ok(())
 }
 
 async fn remove_dir(path: PathBuf) {
-    let _ = tokio::fs::remove_dir_all(path).await;
+    let _ = async_fs::remove_dir_all(path).await;
 }

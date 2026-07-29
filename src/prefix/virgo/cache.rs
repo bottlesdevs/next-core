@@ -26,7 +26,7 @@ pub(super) fn remove(layers: &mut Vec<Layer>, id: Uuid, context: &Context) {
 
 pub(super) async fn exists(id: Uuid, context: &Context) -> Result<bool> {
     let path = layer_path(id, context).join(".fvs2");
-    Ok(tokio::fs::metadata(path)
+    Ok(async_fs::metadata(path)
         .await
         .is_ok_and(|entry| entry.is_dir()))
 }
@@ -58,7 +58,7 @@ where
         remove_dir_if_exists(&destination).await?;
         remove_dir_if_exists(&registry_destination).await?;
         for path in [&upper, &prefix, &before, &patches] {
-            tokio::fs::create_dir_all(path).await?;
+            async_fs::create_dir_all(path).await?;
         }
         Ok::<_, Error>(())
     }
@@ -71,7 +71,7 @@ where
     let result = async {
         with_mount(&prefix, layers, Some(&upper), context, async |mount| {
             for (file, _) in registry_files() {
-                tokio::fs::copy(prefix.join(file), before.join(file)).await?;
+                async_fs::copy(prefix.join(file), before.join(file)).await?;
             }
 
             execute(&prefix).await?;
@@ -103,10 +103,10 @@ where
         let repository = client.new_repository(&upper, FVS_BLOCK_SIZE).await?;
         client.commit(&repository, item_id.to_string()).await?;
 
-        tokio::fs::create_dir_all(layer_root).await?;
-        tokio::fs::create_dir_all(registry_root).await?;
-        tokio::fs::rename(patches, registry_destination).await?;
-        tokio::fs::rename(upper, destination).await?;
+        async_fs::create_dir_all(layer_root).await?;
+        async_fs::create_dir_all(registry_root).await?;
+        async_fs::rename(patches, registry_destination).await?;
+        async_fs::rename(upper, destination).await?;
         Ok(())
     }
     .await;
@@ -121,7 +121,7 @@ pub(super) async fn apply_registry(
     context: &Context,
 ) -> Result<()> {
     let patches = registry_path(id, context);
-    if !tokio::fs::metadata(&patches)
+    if !async_fs::metadata(&patches)
         .await
         .is_ok_and(|entry| entry.is_dir())
     {
@@ -166,7 +166,7 @@ pub(super) async fn apply_registry(
 
 pub(super) async fn layer(id: Uuid, context: &Context) -> Result<Layer> {
     let destination = layer_path(id, context);
-    if !tokio::fs::metadata(destination.join(".fvs2"))
+    if !async_fs::metadata(destination.join(".fvs2"))
         .await
         .is_ok_and(|entry| entry.is_dir())
     {
@@ -221,7 +221,7 @@ fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -> Result<()
 }
 
 async fn remove_file(path: &Path) -> std::io::Result<()> {
-    match tokio::fs::remove_file(path).await {
+    match async_fs::remove_file(path).await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -229,7 +229,7 @@ async fn remove_file(path: &Path) -> std::io::Result<()> {
 }
 
 async fn remove_dir_if_exists(path: &Path) -> std::io::Result<()> {
-    match tokio::fs::remove_dir_all(path).await {
+    match async_fs::remove_dir_all(path).await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),

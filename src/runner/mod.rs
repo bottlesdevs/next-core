@@ -99,12 +99,12 @@ pub(crate) async fn shutdown_prefix(runner: &dyn Runner, prefix: &Path) -> Resul
 }
 
 pub(crate) async fn detect_runner_kind(path: &Path) -> Result<RunnerKind> {
-    if tokio::fs::metadata(path.join("proton"))
+    if async_fs::metadata(path.join("proton"))
         .await
         .is_ok_and(|entry| entry.is_file())
     {
         Ok(RunnerKind::Proton)
-    } else if tokio::fs::metadata(path.join("bin/wine"))
+    } else if async_fs::metadata(path.join("bin/wine"))
         .await
         .is_ok_and(|entry| entry.is_file())
     {
@@ -126,7 +126,7 @@ pub(crate) async fn load_runner(
         RunnerKind::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
         RunnerKind::Proton => {
             let umu = umu_executable.ok_or(RunnerError::UmuExecutableMissing)?;
-            if !tokio::fs::metadata(umu)
+            if !async_fs::metadata(umu)
                 .await
                 .is_ok_and(|entry| entry.is_file())
             {

@@ -20,9 +20,9 @@ impl DependencyManager {
     pub(crate) async fn load(context: Context) -> Result<Self> {
         let directories = context.directories().clone();
         let root = directories.dependencies();
-        let root = tokio::fs::canonicalize(root).await?;
+        let root = async_fs::canonicalize(root).await?;
         let index_path = root.join("index.toml");
-        let index = if tokio::fs::metadata(&index_path)
+        let index = if async_fs::metadata(&index_path)
             .await
             .is_ok_and(|entry| entry.is_file())
         {
@@ -49,7 +49,7 @@ impl DependencyManager {
             let mut available = !resources.is_empty();
             for resource in &resources {
                 available &=
-                    tokio::fs::metadata(root.join(id.to_string()).join(resource.file_name()))
+                    async_fs::metadata(root.join(id.to_string()).join(resource.file_name()))
                         .await
                         .is_ok_and(|entry| entry.is_file());
             }
