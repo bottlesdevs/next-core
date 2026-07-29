@@ -380,14 +380,14 @@ mod tests {
             .await
             .unwrap();
         let file = bottle_path.join("value");
-        tokio::fs::write(&file, "before").await.unwrap();
+        async_fs::write(&file, "before").await.unwrap();
 
         let changed = file.clone();
         let result = transact(
             &bottle_path,
             &context,
             async move {
-                tokio::fs::write(changed, "after").await?;
+                async_fs::write(changed, "after").await?;
                 Err::<(), _>(io::Error::other("expected failure").into())
             },
             &CancellationToken::new(),
@@ -396,7 +396,7 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        assert_eq!(tokio::fs::read_to_string(file).await.unwrap(), "before");
+        assert_eq!(async_fs::read_to_string(file).await.unwrap(), "before");
         fvs_rs::Fvs2dClient::connect(socket)
             .await
             .unwrap()

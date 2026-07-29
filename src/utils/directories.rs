@@ -16,7 +16,7 @@ impl Directories {
                 .ok_or(BottleError::ProjectDirectoriesUnavailable)?,
         );
         for directory in directories.paths() {
-            tokio::fs::create_dir_all(directory).await?;
+            async_fs::create_dir_all(directory).await?;
         }
         Ok(directories)
     }

@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::Path};
 
+use futures_lite::StreamExt;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
 use uuid::{NonNilUuid, Uuid};
@@ -15,9 +16,9 @@ impl ComponentManager {
     pub(crate) async fn load(context: Context) -> Result<Self> {
         let directories = context.directories().clone();
         let component_dir = directories.components();
-        let components_path = tokio::fs::canonicalize(component_dir).await?;
+        let components_path = async_fs::canonicalize(component_dir).await?;
         let index_path = components_path.join("index.toml");
-        let has_index = tokio::fs::metadata(&index_path)
+        let has_index = async_fs::metadata(&index_path)
             .await
             .is_ok_and(|entry| entry.is_file());
         let index = if has_index {
@@ -64,24 +65,24 @@ async fn discover_components(
         .collect();
 
     let mut components = Vec::new();
-    let mut entries = tokio::fs::read_dir(components_path).await?;
+    let mut entries = async_fs::read_dir(components_path).await?;
     let mut categories = Vec::new();
-    while let Some(entry) = entries.next_entry().await? {
+    while let Some(entry) = entries.try_next().await? {
         categories.push(entry);
     }
-    categories.sort_by_key(tokio::fs::DirEntry::file_name);
+    categories.sort_by_key(async_fs::DirEntry::file_name);
     for category_entry in categories {
         let file_type = category_entry.file_type().await?;
         if !file_type.is_dir() {
             continue;
         }
         let category_name = category_entry.file_name().to_string_lossy().into_owned();
-        let mut entries = tokio::fs::read_dir(category_entry.path()).await?;
+        let mut entries = async_fs::read_dir(category_entry.path()).await?;
         let mut versions = Vec::new();
-        while let Some(entry) = entries.next_entry().await? {
+        while let Some(entry) = entries.try_next().await? {
             versions.push(entry);
         }
-        versions.sort_by_key(tokio::fs::DirEntry::file_name);
+        versions.sort_by_key(async_fs::DirEntry::file_name);
         for version in versions {
             if !version.file_type().await?.is_dir() {
                 continue;
@@ -100,7 +101,7 @@ async fn discover_components(
             components.push(Component {
                 id,
                 version,
-                path: tokio::fs::canonicalize(path).await?,
+                path: async_fs::canonicalize(path).await?,
                 kind,
             });
         }
@@ -121,7 +122,7 @@ async fn component(
             path.to_path_buf(),
         ),
         "winebridge"
-            if tokio::fs::metadata(path.join("bottles-winebridge.exe"))
+            if async_fs::metadata(path.join("bottles-winebridge.exe"))
                 .await
                 .is_ok_and(|entry| entry.is_file()) =>
         {
@@ -131,7 +132,7 @@ async fn component(
             )
         }
         "umu"
-            if tokio::fs::metadata(path.join("umu-run"))
+            if async_fs::metadata(path.join("umu-run"))
                 .await
                 .is_ok_and(|entry| entry.is_file()) =>
         {

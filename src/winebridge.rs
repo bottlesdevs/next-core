@@ -15,6 +15,7 @@ use tonic_health::pb::{
 use crate::{
     error::Result,
     runner::{Command, Runner, Spawnable},
+    utils::exists,
 };
 use crate::{
     proto::{self, wine_bridge_client::WineBridgeClient as GrpcClient},
@@ -43,7 +44,7 @@ pub enum BridgeError {
 const PORT_FILE_NAME: &str = "bottles-winebridge.port";
 
 async fn endpoint_from_port_file(path: &Path) -> Result<Option<Endpoint>> {
-    let port = match tokio::fs::read_to_string(path).await {
+    let port = match async_fs::read_to_string(path).await {
         Ok(port) => port,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
@@ -658,7 +659,7 @@ impl WineBridgeClient {
         let port_file = self.port_file.clone();
         drop(self);
         for _ in 0..50 {
-            if !port_file.try_exists()? {
+            if !exists(&port_file).await? {
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
