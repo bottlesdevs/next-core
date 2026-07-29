@@ -510,18 +510,20 @@ fn backup_path(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn cancellation_kills_and_reaps_child() {
-        let child = async_process::Command::new("sh")
-            .args(["-c", "sleep 30"])
-            .spawn()
-            .unwrap();
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
+    #[test]
+    fn cancellation_kills_and_reaps_child() {
+        futures_lite::future::block_on(async {
+            let child = async_process::Command::new("sh")
+                .args(["-c", "sleep 30"])
+                .spawn()
+                .unwrap();
+            let cancellation = CancellationToken::new();
+            cancellation.cancel();
 
-        assert!(matches!(
-            wait_for_child(child, &cancellation).await,
-            Err(Error::Cancelled)
-        ));
+            assert!(matches!(
+                wait_for_child(child, &cancellation).await,
+                Err(Error::Cancelled)
+            ));
+        });
     }
 }

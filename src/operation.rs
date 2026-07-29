@@ -11,9 +11,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::Result;
 
-/// Lazy Tokio-native work with operation-specific progress and cancellation.
+/// Lazy runtime-independent work with operation-specific progress and cancellation.
 ///
-/// The operation starts only when polled. Tokio clients can await it directly;
+/// The operation starts only when polled. Async clients can await it directly;
 /// GPUI clients should poll it through `gpui_tokio::Tokio::spawn`.
 #[must_use = "operations must be awaited or cancelled"]
 pub struct Operation<T, P = ()> {
@@ -93,8 +93,8 @@ mod tests {
         Third,
     }
 
-    #[tokio::test]
-    async fn operation_is_lazy() {
+    #[test]
+    fn operation_is_lazy() {
         let started = Arc::new(AtomicBool::new(false));
         let work_started = started.clone();
         let operation: Operation<(), Progress> = Operation::new(move |_, _| {
@@ -102,9 +102,8 @@ mod tests {
             async { Ok(()) }
         });
 
-        tokio::task::yield_now().await;
         assert!(!started.load(Ordering::Relaxed));
-        operation.await.unwrap();
+        futures_lite::future::block_on(operation).unwrap();
         assert!(started.load(Ordering::Relaxed));
     }
 
@@ -151,17 +150,19 @@ mod tests {
         assert_eq!(second.next().await, None);
     }
 
-    #[tokio::test]
-    async fn explicit_cancellation_waits_for_the_terminal_result() {
-        let operation: Operation<(), Progress> =
-            Operation::new(|_progress, cancellation| async move {
-                cancellation.cancelled().await;
-                Err(Error::Cancelled)
-            });
-        let mut progress = Box::pin(operation.progress());
+    #[test]
+    fn explicit_cancellation_waits_for_the_terminal_result() {
+        futures_lite::future::block_on(async {
+            let operation: Operation<(), Progress> =
+                Operation::new(|_progress, cancellation| async move {
+                    cancellation.cancelled().await;
+                    Err(Error::Cancelled)
+                });
+            let mut progress = Box::pin(operation.progress());
 
-        assert!(matches!(operation.cancel().await, Err(Error::Cancelled)));
-        assert_eq!(progress.next().await, None);
+            assert!(matches!(operation.cancel().await, Err(Error::Cancelled)));
+            assert_eq!(progress.next().await, None);
+        });
     }
 
     #[tokio::test]
