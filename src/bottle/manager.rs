@@ -53,91 +53,89 @@ impl BottleManager {
         let winebridge = winebridge.clone();
         let cx = self.context.clone();
         let cache = self.cache.clone();
-        self.context
-            .spawn(move |progress, cancellation| async move {
-                progress.send_replace(Some(CreateProgress::Preparing));
-                let selection = runner;
-                selection.validate()?;
-                if winebridge.kind() != ComponentKind::Winebridge {
-                    return Err(BottleError::WinebridgeComponentRequired.into());
-                }
-                let runner = load_runner(
-                    selection.runner().path(),
-                    selection.kind(),
-                    selection.umu().map(Component::path),
-                )?;
-                let id = Uuid::new_v4();
-                let bottle_path = cx.directories().bottle(id);
-                let path = bottle_path.clone();
-                cx.spawn_blocking(move || {
-                    fs::create_dir_all(path)?;
-                    Ok(())
-                })
-                .await?;
-
-                let result = async {
-                    progress.send_replace(Some(CreateProgress::CreatingPrefix));
-                    let storage = Prefix::create(
-                        kind,
-                        &bottle_path,
-                        runner.as_ref(),
-                        &selection.runner().id().to_string(),
-                        &cx,
-                    )
-                    .await?;
-                    if cancellation.is_cancelled() {
-                        return Err(Error::Cancelled);
-                    }
-
-                    let bottle =
-                        Bottle::new(id, name, selection, winebridge, storage, cx.clone()).await?;
-                    progress.send_replace(Some(CreateProgress::InitializingRepository));
-                    cx.fvs()
-                        .await?
-                        .new_repository(&bottle_path, FVS_BLOCK_SIZE)
-                        .await?;
-                    if cancellation.is_cancelled() {
-                        return Err(Error::Cancelled);
-                    }
-                    Ok(Self::intern(&cache, bottle).await)
-                }
-                .await;
-
-                if result.is_err() {
-                    let _ = cx
-                        .spawn_blocking(move || {
-                            fs::remove_dir_all(bottle_path)?;
-                            Ok(())
-                        })
-                        .await;
-                }
-                result
+        Operation::new(move |progress, cancellation| async move {
+            progress.send_replace(Some(CreateProgress::Preparing));
+            let selection = runner;
+            selection.validate()?;
+            if winebridge.kind() != ComponentKind::Winebridge {
+                return Err(BottleError::WinebridgeComponentRequired.into());
+            }
+            let runner = load_runner(
+                selection.runner().path(),
+                selection.kind(),
+                selection.umu().map(Component::path),
+            )?;
+            let id = Uuid::new_v4();
+            let bottle_path = cx.directories().bottle(id);
+            let path = bottle_path.clone();
+            cx.spawn_blocking(move || {
+                fs::create_dir_all(path)?;
+                Ok(())
             })
+            .await?;
+
+            let result = async {
+                progress.send_replace(Some(CreateProgress::CreatingPrefix));
+                let storage = Prefix::create(
+                    kind,
+                    &bottle_path,
+                    runner.as_ref(),
+                    &selection.runner().id().to_string(),
+                    &cx,
+                )
+                .await?;
+                if cancellation.is_cancelled() {
+                    return Err(Error::Cancelled);
+                }
+
+                let bottle =
+                    Bottle::new(id, name, selection, winebridge, storage, cx.clone()).await?;
+                progress.send_replace(Some(CreateProgress::InitializingRepository));
+                cx.fvs()
+                    .await?
+                    .new_repository(&bottle_path, FVS_BLOCK_SIZE)
+                    .await?;
+                if cancellation.is_cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                Ok(Self::intern(&cache, bottle).await)
+            }
+            .await;
+
+            if result.is_err() {
+                let _ = cx
+                    .spawn_blocking(move || {
+                        fs::remove_dir_all(bottle_path)?;
+                        Ok(())
+                    })
+                    .await;
+            }
+            result
+        })
     }
 
     pub fn delete(&self, id: Uuid) -> Operation<(), DeleteProgress> {
         let manager = self.clone();
-        self.context
-            .spawn(move |progress, cancellation| async move {
-                let bottle = manager.open(id).await?;
-                progress.send_replace(Some(DeleteProgress::Stopping));
-                bottle.stop().await?;
-                if cancellation.is_cancelled() {
-                    return Err(Error::Cancelled);
-                }
-                progress.send_replace(Some(DeleteProgress::Removing));
-                let path = manager.context.directories().bottle(id);
-                manager
-                    .context
-                    .spawn_blocking(move || {
-                        fs::remove_dir_all(path)?;
-                        Ok(())
-                    })
-                    .await?;
-                bottle.mark_deleted();
-                manager.cache.lock().await.remove(&id);
-                Ok(())
-            })
+        Operation::new(move |progress, cancellation| async move {
+            let bottle = manager.open(id).await?;
+            progress.send_replace(Some(DeleteProgress::Stopping));
+            bottle.stop().await?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            progress.send_replace(Some(DeleteProgress::Removing));
+            let path = manager.context.directories().bottle(id);
+            manager
+                .context
+                .spawn_blocking(move || {
+                    fs::remove_dir_all(path)?;
+                    Ok(())
+                })
+                .await?;
+            bottle.mark_deleted();
+            manager.cache.lock().await.remove(&id);
+            Ok(())
+        })
     }
 
     pub async fn open(&self, id: Uuid) -> Result<Bottle> {

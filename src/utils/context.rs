@@ -1,17 +1,12 @@
-use crate::{Directories, Operation, error::Result, utils::absolute_path};
+use crate::{Directories, error::Result, utils::absolute_path};
 use fvs_rs::Fvs2dClient;
-use std::{future::Future, path::PathBuf, sync::Arc};
-use tokio::{
-    runtime::Handle,
-    sync::{OnceCell, watch},
-};
-use tokio_util::sync::CancellationToken;
+use std::{path::PathBuf, sync::Arc};
+use tokio::sync::OnceCell;
 
 struct ContextInner {
     directories: Directories,
     fvs2d_executable: PathBuf,
     fvs: OnceCell<Fvs2dClient>,
-    runtime: Handle,
 }
 
 #[derive(Clone)]
@@ -26,7 +21,6 @@ impl Context {
             directories,
             fvs2d_executable: absolute_path(fvs2d_executable.into())?,
             fvs: OnceCell::new(),
-            runtime: Handle::try_current().map_err(std::io::Error::other)?,
         })))
     }
 
@@ -34,22 +28,12 @@ impl Context {
         &self.0.directories
     }
 
-    pub(crate) fn spawn<T, P, F, Fut>(&self, work: F) -> Operation<T, P>
-    where
-        T: Send + 'static,
-        P: Clone + Send + Sync + 'static,
-        F: FnOnce(watch::Sender<Option<P>>, CancellationToken) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<T>> + Send + 'static,
-    {
-        Operation::spawn(&self.0.runtime, work)
-    }
-
     pub(crate) async fn spawn_blocking<T, F>(&self, work: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce() -> Result<T> + Send + 'static,
     {
-        self.0.runtime.spawn_blocking(work).await?
+        tokio::task::spawn_blocking(work).await?
     }
 
     pub(crate) async fn fvs(&self) -> Result<&Fvs2dClient> {

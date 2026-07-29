@@ -105,7 +105,7 @@ impl Bottle {
     pub fn install_component(&self, component: &Component) -> Operation<(), InstallProgress> {
         let component = component.clone();
         let bottle = self.clone();
-        self.0.cx.spawn(move |progress, cancellation| async move {
+        Operation::new(move |progress, cancellation| async move {
             let kind = component.kind();
             if !matches!(
                 kind,
@@ -157,7 +157,7 @@ impl Bottle {
     pub fn install_dependency(&self, dependency: &Dependency) -> Operation<(), InstallProgress> {
         let dependency = dependency.clone();
         let bottle = self.clone();
-        self.0.cx.spawn(move |progress, cancellation| async move {
+        Operation::new(move |progress, cancellation| async move {
             bottle
                 .update(async |state, cx| {
                     if state
@@ -187,7 +187,7 @@ impl Bottle {
     /// Prefix effects completed before a metadata save error are not rolled back.
     pub fn uninstall_component(&self, id: Uuid) -> Operation<Component, UninstallProgress> {
         let bottle = self.clone();
-        self.0.cx.spawn(move |progress, cancellation| async move {
+        Operation::new(move |progress, cancellation| async move {
             bottle
                 .update(async |state, cx| {
                     let component = [
@@ -324,7 +324,7 @@ impl Bottle {
 
     pub fn set_runner(&self, selection: RunnerSelection) -> Operation<(), SetRunnerProgress> {
         let bottle = self.clone();
-        self.0.cx.spawn(move |progress, cancellation| async move {
+        Operation::new(move |progress, cancellation| async move {
             selection.validate()?;
             bottle
                 .update(async |state, cx| {
@@ -375,7 +375,7 @@ impl Bottle {
     pub fn set_winebridge(&self, winebridge: &Component) -> Operation<(), SetWinebridgeProgress> {
         let winebridge = winebridge.clone();
         let bottle = self.clone();
-        self.0.cx.spawn(move |progress, cancellation| async move {
+        Operation::new(move |progress, cancellation| async move {
             if winebridge.kind() != ComponentKind::Winebridge {
                 return Err(BottleError::WinebridgeComponentRequired.into());
             }
@@ -446,9 +446,8 @@ impl Bottle {
 
     async fn with_bridge<T, F, Fut>(&self, work: F) -> Result<T>
     where
-        T: Send + 'static,
-        F: FnOnce(WineBridgeClient) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<T>> + Send + 'static,
+        F: FnOnce(WineBridgeClient) -> Fut,
+        Fut: Future<Output = Result<T>>,
     {
         let state = self.state()?;
         let runner = Self::load_runner(&state)?;
@@ -460,11 +459,8 @@ impl Bottle {
             WineBridgeClient::command(runner.as_ref(), &prefix, state.winebridge.path())
                 .envs(state.environment.iter()),
         );
-        let operation: Operation<_, ()> = self.0.cx.spawn(move |_, _| async move {
-            storage.prepare(&bottle_path, &cx).await?;
-            work(WineBridgeClient::connect_or_spawn(&prefix, command).await?).await
-        });
-        operation.await
+        storage.prepare(&bottle_path, &cx).await?;
+        work(WineBridgeClient::connect_or_spawn(&prefix, command).await?).await
     }
 }
 

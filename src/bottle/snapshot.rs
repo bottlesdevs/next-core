@@ -23,7 +23,7 @@ impl Bottle {
         let repository = self.snapshot_repository();
         let cx = self.0.cx.clone();
         let message = message.into();
-        self.0.cx.spawn(move |progress, cancellation| async move {
+        Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(SnapshotProgress::Stopping));
             bottle.stop().await?;
             if cancellation.is_cancelled() {
@@ -57,9 +57,8 @@ impl Bottle {
         let repository = self.snapshot_repository();
         let bottle_path = self.bottle_path();
         let cx = self.0.cx.clone();
-        let runtime = self.0.cx.clone();
         let state_id_or_prefix = state_id_or_prefix.to_owned();
-        runtime.spawn(move |progress, cancellation| async move {
+        Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(RollbackProgress::Stopping));
             bottle.stop().await?;
             if cancellation.is_cancelled() {
