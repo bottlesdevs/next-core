@@ -18,15 +18,18 @@ thiserror.workspace = true
 tracing.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 directories.workspace = true
 flate2.workspace = true
 futures-core.workspace = true
 futures-lite.workspace = true
 futures-util.workspace = true
 tar.workspace = true
-tokio-stream.workspace = true
-tokio-util.workspace = true
+tokio-stream = { workspace = true, features = ["sync"] }
+tokio-util = { workspace = true, features = ["rt"] }
 regdiff-rs.workspace = true
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
