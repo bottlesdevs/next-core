@@ -21,19 +21,20 @@ pub struct DependencyManager {
 impl DependencyManager {
     pub(crate) async fn load(context: Context) -> Result<Self> {
         let directories = context.directories().clone();
+        let root = directories.dependencies();
+        let root = context
+            .spawn_blocking(move || Ok(fs::canonicalize(root)?))
+            .await?;
+        let index_path = root.join("index.toml");
+        let index = if index_path.is_file() {
+            next_config::load(&index_path).await?
+        } else {
+            let index = DependencyIndex::default();
+            next_config::save(&index_path, &index).await?;
+            index
+        };
         let dependencies = context
             .spawn_blocking(move || {
-                let root = directories.dependencies();
-                let root = fs::canonicalize(root)?;
-                let index_path = root.join("index.toml");
-                let index = if index_path.is_file() {
-                    next_config::load(&index_path)?
-                } else {
-                    let index = DependencyIndex::default();
-                    next_config::save(&index_path, &index)?;
-                    index
-                };
-
                 let mut dependencies = Vec::with_capacity(index.dependencies.len());
                 for entry in index.dependencies {
                     let id = entry.uuid();

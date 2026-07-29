@@ -241,12 +241,8 @@ impl Bottle {
 
     async fn save_state(state: &BottleState, cx: &Context) -> Result<()> {
         let path = cx.directories().bottle(state.id).join("bottle.toml");
-        let state = state.clone();
-        cx.spawn_blocking(move || {
-            next_config::save(path, &state)?;
-            Ok(())
-        })
-        .await
+        next_config::save(path, state).await?;
+        Ok(())
     }
 }
 

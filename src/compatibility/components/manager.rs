@@ -14,27 +14,29 @@ pub struct ComponentManager {
 impl ComponentManager {
     pub(crate) async fn load(context: Context) -> Result<Self> {
         let directories = context.directories().clone();
-        let components = context
+        let component_dir = directories.components();
+        let components_path = context
+            .spawn_blocking(move || Ok(fs::canonicalize(component_dir)?))
+            .await?;
+        let index_path = components_path.join("index.toml");
+        let index = if index_path.is_file() {
+            next_config::load(&index_path).await?
+        } else {
+            ComponentIndex::default()
+        };
+        let discovery_path = components_path;
+        let (components, index) = context
             .spawn_blocking(move || {
-                let component_dir = directories.components();
-                let components_path = fs::canonicalize(component_dir)?;
-                let index_path = components_path.join("index.toml");
-                let index = if index_path.is_file() {
-                    next_config::load(&index_path)?
-                } else {
-                    ComponentIndex::default()
-                };
-
-                let components = discover_components(&components_path, &index)?;
-                let component_index = ComponentIndex {
-                    components: components.clone(),
-                };
-                if component_index != index || !index_path.is_file() {
-                    next_config::save(index_path, &component_index)?;
-                }
-                Ok(components)
+                let components = discover_components(&discovery_path, &index)?;
+                Ok((components, index))
             })
             .await?;
+        let component_index = ComponentIndex {
+            components: components.clone(),
+        };
+        if component_index != index || !index_path.is_file() {
+            next_config::save(index_path, &component_index).await?;
+        }
         Ok(Self { components })
     }
 
