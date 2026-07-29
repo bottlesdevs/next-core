@@ -1,13 +1,10 @@
 use std::{
-    collections::HashSet,
     io,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use download_manager::{
-    download::DownloadResult, events::Progress as DownloadProgress, manager::DownloadManager,
-};
+use download_manager::{events::Progress as DownloadProgress, manager::DownloadManager};
 use futures_core::Stream;
 use futures_lite::io::AsyncReadExt;
 use futures_util::{FutureExt, StreamExt};
@@ -199,8 +196,8 @@ impl Library {
                 return Ok(component.clone());
             }
             let entry = status
-                .catalog()
-                .cloned()
+                .catalog
+                .clone()
                 .ok_or(LibraryError::ComponentNotFound(id))?;
             let target = Target::current().ok_or(LibraryError::UnsupportedComponent(id))?;
             let artifact = entry
@@ -252,7 +249,7 @@ impl Library {
             if let Some(dependency) = status.downloaded() {
                 return Ok(dependency.clone());
             }
-            let dependency = Dependency::try_from(status.catalog())?;
+            let dependency = Dependency::from(&status.catalog);
             let stage = library
                 .0
                 .directories
@@ -466,10 +463,8 @@ impl Library {
             },
         )
         .await;
-        if result.is_err() {
-            let _ = async_fs::remove_file(&destination).await;
-        }
-        result.map(|result| result.path)
+        result?;
+        Ok(destination)
     }
 
     fn publish(
@@ -528,8 +523,6 @@ pub enum LibraryError {
     DependencyNotFound(Uuid),
     #[error("no artifact supports this system for component {0}")]
     UnsupportedComponent(Uuid),
-    #[error("dependency {0} has no supported resources")]
-    UnsupportedDependency(Uuid),
     #[error("checksum mismatch for {0}")]
     ChecksumMismatch(PathBuf),
     #[error("component archive must contain exactly one top-level directory")]
@@ -555,36 +548,27 @@ impl LibraryState {
     fn new(
         component_catalog: Option<Arc<ComponentCatalog>>,
         dependency_catalog: Option<Arc<DependencyCatalog>>,
-        components: Vec<Component>,
+        mut components: Vec<Component>,
         dependencies: Vec<Dependency>,
     ) -> Self {
-        let mut matched_components = HashSet::new();
         let mut component_statuses = component_catalog
             .iter()
             .flat_map(|catalog| catalog.as_ref())
             .map(|entry| {
                 let downloaded = components
                     .iter()
-                    .find(|component| component.id() == entry.uuid())
-                    .cloned();
-                if downloaded.is_some() {
-                    matched_components.insert(entry.uuid());
-                }
+                    .position(|component| component.id() == entry.uuid())
+                    .map(|index| components.remove(index));
                 ComponentStatus {
                     catalog: Some(entry.clone()),
                     downloaded,
                 }
             })
             .collect::<Vec<_>>();
-        component_statuses.extend(
-            components
-                .into_iter()
-                .filter(|component| !matched_components.contains(&component.id()))
-                .map(|downloaded| ComponentStatus {
-                    catalog: None,
-                    downloaded: Some(downloaded),
-                }),
-        );
+        component_statuses.extend(components.into_iter().map(|downloaded| ComponentStatus {
+            catalog: None,
+            downloaded: Some(downloaded),
+        }));
 
         let dependency_statuses = dependency_catalog
             .iter()
@@ -654,7 +638,7 @@ impl LibraryState {
     fn component_steps(&self, component: &Component) -> Vec<InstallStep> {
         if let Some(steps) = self
             .component(component.id())
-            .and_then(ComponentStatus::catalog)
+            .and_then(|status| status.catalog.as_ref())
             .map(CatalogComponentEntry::steps)
             .filter(|steps| !steps.is_empty())
         {
@@ -698,10 +682,6 @@ impl ComponentStatus {
             .expect("component status has catalog metadata or a download")
     }
 
-    pub fn catalog(&self) -> Option<&CatalogComponentEntry> {
-        self.catalog.as_ref()
-    }
-
     pub fn downloaded(&self) -> Option<&Component> {
         self.downloaded.as_ref()
     }
@@ -726,10 +706,6 @@ impl DependencyStatus {
         self.catalog.version()
     }
 
-    pub fn catalog(&self) -> &CatalogDependencyEntry {
-        &self.catalog
-    }
-
     pub fn downloaded(&self) -> Option<&Dependency> {
         self.downloaded.as_ref()
     }
@@ -741,7 +717,7 @@ async fn download(
     destination: &Path,
     cancellation: &CancellationToken,
     mut on_progress: impl FnMut(Transfer),
-) -> Result<DownloadResult> {
+) -> Result<()> {
     let download = downloads.download(url, destination)?;
     let mut updates = Box::pin(
         download
@@ -754,7 +730,10 @@ async fn download(
 
     loop {
         futures_util::select_biased! {
-            result = result => return Ok(result?),
+            result = result => {
+                result?;
+                return Ok(());
+            },
             _ = cancelled => {
                 download.cancel().await?;
                 return Err(Error::Cancelled);
@@ -941,14 +920,14 @@ mod tests {
             state
                 .component(catalog_component.id())
                 .unwrap()
-                .catalog()
+                .catalog
                 .is_some()
         );
         assert!(
             state
                 .component(local_component.id())
                 .unwrap()
-                .catalog()
+                .catalog
                 .is_none()
         );
         assert!(matches!(

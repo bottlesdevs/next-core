@@ -3,10 +3,7 @@ use uuid::{NonNilUuid, Uuid};
 
 use super::catalog::{CatalogDependencyEntry, DependencyResource};
 use crate::{
-    compatibility::{
-        LibraryError,
-        installer::{InstallResource, Installable},
-    },
+    compatibility::installer::{InstallResource, Installable},
     error::Result,
 };
 
@@ -19,19 +16,14 @@ pub struct Dependency {
     pub(crate) resources: Vec<DependencyResource>,
 }
 
-impl TryFrom<&CatalogDependencyEntry> for Dependency {
-    type Error = LibraryError;
-
-    fn try_from(entry: &CatalogDependencyEntry) -> std::result::Result<Self, Self::Error> {
-        if entry.resources().is_empty() {
-            return Err(LibraryError::UnsupportedDependency(entry.uuid()));
-        }
-        Ok(Self {
+impl From<&CatalogDependencyEntry> for Dependency {
+    fn from(entry: &CatalogDependencyEntry) -> Self {
+        Self {
             id: NonNilUuid::new(entry.uuid()).expect("catalog UUID is non-nil"),
             name: entry.name().to_string(),
             version: entry.version().to_string(),
             resources: entry.resources().to_vec(),
-        })
+        }
     }
 }
 

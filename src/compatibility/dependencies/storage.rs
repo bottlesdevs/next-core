@@ -10,9 +10,7 @@ pub(crate) async fn scan(
     };
     let mut dependencies = Vec::new();
     for entry in catalog {
-        let Ok(dependency) = Dependency::try_from(entry) else {
-            continue;
-        };
+        let dependency = Dependency::from(entry);
         let root = directories.dependency(dependency.id());
         let mut available = true;
         for resource in &dependency.resources {

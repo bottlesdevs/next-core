@@ -1,7 +1,7 @@
 use crate::compatibility::{
     Architecture, Checksum,
     catalog::{Artifact, Catalog, CatalogItem},
-    deserialize_non_empty_string,
+    deserialize_non_empty_string, deserialize_non_empty_vec,
     installer::InstallStep,
 };
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,7 @@ pub struct CatalogDependencyEntry {
     name: String,
     #[serde(deserialize_with = "deserialize_non_empty_string")]
     version: String,
+    #[serde(deserialize_with = "deserialize_non_empty_vec")]
     resources: Vec<DependencyResource>,
 }
 
@@ -339,6 +340,10 @@ mod tests {
         for manifest in invalid {
             assert!(serde_json::from_str::<CatalogDependencyEntry>(&manifest).is_err());
         }
+
+        let mut empty_resources = serde_json::from_str::<serde_json::Value>(MANIFEST).unwrap();
+        empty_resources["resources"] = serde_json::json!([]);
+        assert!(serde_json::from_value::<CatalogDependencyEntry>(empty_resources).is_err());
 
         let mut unknown_dependency = serde_json::from_str::<serde_json::Value>(MANIFEST).unwrap();
         unknown_dependency["unexpected"] = true.into();
