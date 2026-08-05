@@ -41,6 +41,10 @@ impl<T, P> Operation<T, P> {
             cancellation,
         }
     }
+
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
 }
 
 impl<T, P> Operation<T, P>
