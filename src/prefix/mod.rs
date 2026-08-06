@@ -7,13 +7,15 @@ use std::{future::Future, path::Path};
 
 use futures_core::Stream;
 use futures_util::TryStreamExt;
-use fvs_rs::{Commit, Layer, Progress, Repository, RestoreResponse, error::Error as FvsError};
+use fvs_rs::{
+    Commit, Layer, Progress as FvsProgress, Repository, RestoreResponse, error::Error as FvsError,
+};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
-    Context,
+    Context, Progress, Stage, Transfer,
     bottle::BottleType,
     error::{Error, Result},
     runner::Runner,
@@ -32,52 +34,13 @@ pub(crate) enum Prefix {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TransactionProgress {
-    pub phase: TransactionPhase,
-    pub transfer: Transfer,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TransactionPhase {
-    Hashing,
-    Restoring,
-    Done,
-    Other(String),
-}
-
-impl From<&str> for TransactionPhase {
-    fn from(phase: &str) -> Self {
-        match phase {
-            "hashing" => Self::Hashing,
-            "restoring" => Self::Restoring,
-            "done" => Self::Done,
-            other => Self::Other(other.to_owned()),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Transfer {
-    pub current: u64,
-    pub total: Option<u64>,
-}
-
-impl From<&Progress> for TransactionProgress {
-    fn from(progress: &Progress) -> Self {
+impl From<&FvsProgress> for Transfer {
+    fn from(progress: &FvsProgress) -> Self {
         Self {
-            phase: progress.phase.as_str().into(),
-            transfer: Transfer {
-                current: progress.current.try_into().unwrap_or_default(),
-                total: progress.total.try_into().ok().filter(|total| *total > 0),
-            },
+            current: progress.current.try_into().unwrap_or_default(),
+            total: progress.total.try_into().ok().filter(|total| *total > 0),
         }
     }
-}
-
-pub(crate) enum PrefixProgress {
-    AutoCheckpoint(TransactionProgress),
-    Restore(TransactionProgress),
 }
 
 impl Prefix {
@@ -145,7 +108,7 @@ impl Prefix {
     ) -> Result<()>
     where
         F: for<'a> std::ops::AsyncFnOnce(&'a Path) -> Result<()>,
-        P: FnMut(PrefixProgress),
+        P: FnMut(Progress),
     {
         let work = async {
             match self {
@@ -170,7 +133,7 @@ impl Prefix {
     ) -> Result<()>
     where
         F: for<'a> std::ops::AsyncFnOnce(&'a Path, bool) -> Result<()>,
-        P: FnMut(PrefixProgress),
+        P: FnMut(Progress),
     {
         let work = async {
             match self {
@@ -193,7 +156,7 @@ async fn transact<F, T, P>(
 ) -> Result<T>
 where
     F: Future<Output = Result<T>>,
-    P: FnMut(PrefixProgress),
+    P: FnMut(Progress),
 {
     let repository = Repository {
         repository_path: bottle_path.display().to_string(),
@@ -205,7 +168,10 @@ where
         .commit_stream(&repository, AUTO_CHECKPOINT_MESSAGE.into())
         .await?;
     let checkpoint = finish_commit(stream, |progress| {
-        on_progress(PrefixProgress::AutoCheckpoint(progress.into()));
+        on_progress(Progress::transferring(
+            Stage::Checkpointing,
+            progress.into(),
+        ));
     })
     .await?;
 
@@ -234,7 +200,7 @@ where
                     )
                     .await?;
                 finish_restore(stream, |progress| {
-                    on_progress(PrefixProgress::Restore(progress.into()));
+                    on_progress(Progress::transferring(Stage::Restoring, progress.into()));
                 })
                 .await
             }
@@ -248,8 +214,8 @@ where
 }
 
 pub(crate) async fn finish_commit(
-    stream: impl Stream<Item = std::result::Result<Progress, FvsError>>,
-    on_progress: impl FnMut(&Progress),
+    stream: impl Stream<Item = std::result::Result<FvsProgress, FvsError>>,
+    on_progress: impl FnMut(&FvsProgress),
 ) -> Result<Commit> {
     finish_stream(
         stream,
@@ -261,8 +227,8 @@ pub(crate) async fn finish_commit(
 }
 
 pub(crate) async fn finish_restore(
-    stream: impl Stream<Item = std::result::Result<Progress, FvsError>>,
-    on_progress: impl FnMut(&Progress),
+    stream: impl Stream<Item = std::result::Result<FvsProgress, FvsError>>,
+    on_progress: impl FnMut(&FvsProgress),
 ) -> Result<RestoreResponse> {
     finish_stream(
         stream,
@@ -274,9 +240,9 @@ pub(crate) async fn finish_restore(
 }
 
 async fn finish_stream<T>(
-    stream: impl Stream<Item = std::result::Result<Progress, FvsError>>,
-    mut on_progress: impl FnMut(&Progress),
-    mut result: impl FnMut(Progress) -> Option<T>,
+    stream: impl Stream<Item = std::result::Result<FvsProgress, FvsError>>,
+    mut on_progress: impl FnMut(&FvsProgress),
+    mut result: impl FnMut(FvsProgress) -> Option<T>,
     operation: &'static str,
 ) -> Result<T> {
     futures_util::pin_mut!(stream);
@@ -303,19 +269,19 @@ mod tests {
     fn finish_commit_forwards_progress_and_returns_terminal_result() {
         futures_lite::future::block_on(async {
             let frames = [
-                Progress {
+                FvsProgress {
                     phase: "hashing".into(),
                     current: 1,
                     total: 2,
                     ..Default::default()
                 },
-                Progress {
+                FvsProgress {
                     phase: "indexing".into(),
                     current: -1,
                     total: -1,
                     ..Default::default()
                 },
-                Progress {
+                FvsProgress {
                     phase: "done".into(),
                     done: true,
                     result_commit: Some(Commit {
@@ -328,7 +294,7 @@ mod tests {
             let mut updates = Vec::new();
 
             let commit = finish_commit(stream::iter(frames.map(Ok::<_, FvsError>)), |progress| {
-                updates.push(TransactionProgress::from(progress))
+                updates.push(Transfer::from(progress))
             })
             .await
             .unwrap();
@@ -336,26 +302,17 @@ mod tests {
             assert_eq!(
                 updates,
                 [
-                    TransactionProgress {
-                        phase: TransactionPhase::Hashing,
-                        transfer: Transfer {
-                            current: 1,
-                            total: Some(2),
-                        },
+                    Transfer {
+                        current: 1,
+                        total: Some(2),
                     },
-                    TransactionProgress {
-                        phase: TransactionPhase::Other("indexing".into()),
-                        transfer: Transfer {
-                            current: 0,
-                            total: None,
-                        },
+                    Transfer {
+                        current: 0,
+                        total: None,
                     },
-                    TransactionProgress {
-                        phase: TransactionPhase::Done,
-                        transfer: Transfer {
-                            current: 0,
-                            total: None,
-                        },
+                    Transfer {
+                        current: 0,
+                        total: None,
                     },
                 ]
             );

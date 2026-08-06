@@ -5,7 +5,7 @@ use futures_lite::StreamExt;
 use uuid::Uuid;
 
 use crate::{
-    Context, Operation,
+    Context, Operation, Progress, Stage,
     compatibility::RunnerComponent,
     error::{Error, Result},
     prefix::{FVS_BLOCK_SIZE, Prefix},
@@ -15,19 +15,6 @@ use super::{
     error::BottleError,
     state::{Bottle, BottleCache, BottleState, BottleType},
 };
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CreateProgress {
-    Preparing,
-    CreatingPrefix,
-    InitializingRepository,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DeleteProgress {
-    Stopping,
-    Removing,
-}
 
 #[derive(Clone)]
 pub struct BottleManager {
@@ -48,13 +35,13 @@ impl BottleManager {
         name: impl Into<String>,
         kind: BottleType,
         runner: &RunnerComponent,
-    ) -> Operation<Bottle, CreateProgress> {
+    ) -> Operation<Bottle> {
         let name = name.into();
         let runner = runner.clone();
         let cx = self.context.clone();
         let cache = self.cache.clone();
         Operation::new(move |progress, cancellation| async move {
-            progress.send_replace(Some(CreateProgress::Preparing));
+            progress.send_replace(Some(Progress::new(Stage::Preparing)));
             let winebridge = cx.library().winebridge()?;
             let loaded_runner = runner.load().await?;
             let id = Uuid::new_v4();
@@ -62,7 +49,7 @@ impl BottleManager {
             fs::create_dir_all(&bottle_path).await?;
 
             let result = async {
-                progress.send_replace(Some(CreateProgress::CreatingPrefix));
+                progress.send_replace(Some(Progress::new(Stage::CreatingPrefix)));
                 let storage = Prefix::create(
                     kind,
                     &bottle_path,
@@ -76,7 +63,7 @@ impl BottleManager {
                 }
 
                 let bottle = Bottle::new(id, name, runner, winebridge, storage, cx.clone()).await?;
-                progress.send_replace(Some(CreateProgress::InitializingRepository));
+                progress.send_replace(Some(Progress::new(Stage::Configuring)));
                 cx.fvs()
                     .await?
                     .new_repository(&bottle_path, FVS_BLOCK_SIZE)
@@ -95,16 +82,16 @@ impl BottleManager {
         })
     }
 
-    pub fn delete(&self, id: Uuid) -> Operation<(), DeleteProgress> {
+    pub fn delete(&self, id: Uuid) -> Operation<()> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let bottle = manager.open(id).await?;
-            progress.send_replace(Some(DeleteProgress::Stopping));
+            progress.send_replace(Some(Progress::new(Stage::Stopping)));
             bottle.stop().await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            progress.send_replace(Some(DeleteProgress::Removing));
+            progress.send_replace(Some(Progress::new(Stage::Removing)));
             let path = manager.context.directories().bottle(id);
             fs::remove_dir_all(path).await?;
             bottle.mark_deleted();

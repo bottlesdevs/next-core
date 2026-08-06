@@ -9,7 +9,7 @@ pub(crate) mod item;
 mod library;
 
 pub use item::{Addon, Availability, RunnerComponent, Slot};
-pub use library::{CatalogKind, Library, LibraryError, LibraryProgress};
+pub use library::{CatalogKind, Library, LibraryError};
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "algorithm", content = "value", rename_all = "kebab-case")]

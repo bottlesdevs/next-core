@@ -4,11 +4,8 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
-    Context, Operation,
-    compatibility::{
-        Addon, RunnerComponent,
-        installer::{InstallProgress, InstallResource, UninstallProgress},
-    },
+    Context, Operation, Progress, Stage,
+    compatibility::{Addon, RunnerComponent, installer::InstallResource},
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
     runner::shutdown_prefix,
@@ -101,7 +98,7 @@ impl Bottle {
         Self::stop_state(&state, &self.0.cx).await
     }
 
-    pub fn install(&self, addon: &Addon) -> Operation<(), InstallProgress> {
+    pub fn install(&self, addon: &Addon) -> Operation<()> {
         let addon = addon.clone();
         let bottle = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -133,7 +130,7 @@ impl Bottle {
     }
 
     /// Prefix effects completed before a metadata save error are not rolled back.
-    pub fn uninstall(&self, id: Uuid) -> Operation<(), UninstallProgress> {
+    pub fn uninstall(&self, id: Uuid) -> Operation<()> {
         let bottle = self.clone();
         Operation::new(move |progress, cancellation| async move {
             bottle
@@ -177,8 +174,8 @@ impl Bottle {
                                     restore_files,
                                     addon.id(),
                                     &cancellation,
-                                    move |step| {
-                                        progress.send_replace(Some(step.into()));
+                                    move |_| {
+                                        progress.send_replace(Some(Progress::new(Stage::Removing)));
                                     },
                                 )
                                 .await
@@ -186,7 +183,7 @@ impl Bottle {
                             &context,
                             &cancellation,
                             move |event| {
-                                prefix_progress.send_replace(Some(event.into()));
+                                prefix_progress.send_replace(Some(event));
                             },
                         )
                         .await?;
@@ -204,7 +201,7 @@ impl Bottle {
         replaced_id: Option<Uuid>,
         resources: Vec<InstallResource>,
         update_config: F,
-        progress: tokio::sync::watch::Sender<Option<InstallProgress>>,
+        progress: tokio::sync::watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<()>
     where
@@ -241,8 +238,8 @@ impl Bottle {
                         },
                         &resources,
                         cancellation,
-                        move |step| {
-                            step_progress.send_replace(Some(step.into()));
+                        move |_| {
+                            step_progress.send_replace(Some(Progress::new(Stage::Configuring)));
                         },
                     )
                     .await
@@ -250,7 +247,7 @@ impl Bottle {
                 &context,
                 cancellation,
                 move |event| {
-                    progress.send_replace(Some(event.into()));
+                    progress.send_replace(Some(event));
                 },
             )
             .await?;
@@ -258,7 +255,7 @@ impl Bottle {
         Ok(())
     }
 
-    pub fn set_runner(&self, runner: &RunnerComponent) -> Operation<(), SetRunnerProgress> {
+    pub fn set_runner(&self, runner: &RunnerComponent) -> Operation<()> {
         let runner = runner.clone();
         let bottle = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -272,14 +269,14 @@ impl Bottle {
                         return Err(Error::Cancelled);
                     }
                     let installed = state.addons.iter().map(Addon::id).collect::<Vec<_>>();
-                    progress.send_replace(Some(SetRunnerProgress::Stopping));
+                    progress.send_replace(Some(Progress::new(Stage::Stopping)));
                     Self::stop_state(state, &cx).await?;
                     if cancellation.is_cancelled() {
                         return Err(Error::Cancelled);
                     }
                     state.runner = runner;
 
-                    progress.send_replace(Some(SetRunnerProgress::Rebuilding));
+                    progress.send_replace(Some(Progress::new(Stage::Rebuilding)));
                     let runner = state.runner.load().await?;
                     state
                         .storage
@@ -353,10 +350,4 @@ impl Bottle {
         storage.prepare(&bottle_path, &cx).await?;
         work(WineBridgeClient::connect_or_spawn(&prefix, command).await?).await
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SetRunnerProgress {
-    Stopping,
-    Rebuilding,
 }

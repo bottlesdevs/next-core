@@ -22,7 +22,7 @@ use super::{
     item::{Addon, InternalComponent, Resource, RunnerComponent},
 };
 use crate::{
-    Directories, Operation, Transfer,
+    Directories, Operation, Progress, Stage, Transfer,
     error::{Error, Result},
     utils::{archive, exists},
 };
@@ -80,7 +80,7 @@ impl Library {
         addons
     }
 
-    pub fn refresh(&self) -> Operation<(), LibraryProgress> {
+    pub fn refresh(&self) -> Operation<()> {
         let library = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let component = library
@@ -142,7 +142,7 @@ impl Library {
         })
     }
 
-    pub fn fetch(&self, id: Uuid) -> Operation<(), LibraryProgress> {
+    pub fn fetch(&self, id: Uuid) -> Operation<()> {
         let library = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let state = library.state();
@@ -209,7 +209,7 @@ impl Library {
         &self,
         kind: CatalogKind,
         url: Option<Url>,
-        progress: watch::Sender<Option<LibraryProgress>>,
+        progress: watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<(Arc<Catalog>, Vec<u8>)> {
         let url = url.ok_or(LibraryError::CatalogUrlNotConfigured(kind))?;
@@ -223,14 +223,22 @@ impl Library {
                 &downloaded,
                 cancellation,
                 |transfer| {
-                    progress.send_replace(Some(LibraryProgress::CatalogDownload {
-                        catalog: kind,
+                    let (index, file) = match kind {
+                        CatalogKind::Components => (1, "components catalog"),
+                        CatalogKind::Dependencies => (2, "dependencies catalog"),
+                    };
+                    progress.send_replace(Some(Progress::transferring(
+                        Stage::Downloading {
+                            file: file.into(),
+                            index,
+                            total: 2,
+                        },
                         transfer,
-                    }));
+                    )));
                 },
             )
             .await?;
-            progress.send_replace(Some(LibraryProgress::LoadingCatalog(kind)));
+            progress.send_replace(Some(Progress::new(Stage::Preparing)));
             let bytes = async_fs::read(&downloaded).await?;
             let catalog = Arc::new(serde_json::from_slice::<Catalog>(&bytes)?);
             validate_catalog(&catalog, kind)?;
@@ -246,7 +254,7 @@ impl Library {
         entry: &CatalogEntry,
         artifacts: Vec<(usize, &CatalogArtifact)>,
         stage: &Path,
-        progress: watch::Sender<Option<LibraryProgress>>,
+        progress: watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<()> {
         if entry.kind().is_single_artifact() {
@@ -263,7 +271,7 @@ impl Library {
         entry: &CatalogEntry,
         artifacts: &[(usize, &CatalogArtifact)],
         stage: &Path,
-        progress: watch::Sender<Option<LibraryProgress>>,
+        progress: watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<()> {
         let (_, artifact) = artifacts
@@ -276,22 +284,22 @@ impl Library {
             &file,
             cancellation,
             |transfer| {
-                progress.send_replace(Some(LibraryProgress::Downloading {
-                    file: artifact.file_name().to_owned(),
-                    resource: 1,
-                    resources: 1,
+                progress.send_replace(Some(Progress::transferring(
+                    Stage::Downloading {
+                        file: artifact.file_name().to_owned(),
+                        index: 1,
+                        total: 1,
+                    },
                     transfer,
-                }));
+                )));
             },
         )
         .await?;
-        progress.send_replace(Some(LibraryProgress::Verifying {
+        progress.send_replace(Some(Progress::new(Stage::Verifying {
             file: artifact.file_name().to_owned(),
-            resource: 1,
-            resources: 1,
-        }));
+        })));
         verify_checksum(&file, artifact.checksum(), cancellation).await?;
-        progress.send_replace(Some(LibraryProgress::Extracting));
+        progress.send_replace(Some(Progress::new(Stage::Extracting)));
         let extracted = stage.join("extracted");
         async_fs::create_dir_all(&extracted).await?;
         {
@@ -359,7 +367,7 @@ impl Library {
         entry: &CatalogEntry,
         artifacts: &[(usize, &CatalogArtifact)],
         stage: &Path,
-        progress: watch::Sender<Option<LibraryProgress>>,
+        progress: watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<()> {
         let total = artifacts.len();
@@ -371,20 +379,20 @@ impl Library {
                 &file,
                 cancellation,
                 |transfer| {
-                    progress.send_replace(Some(LibraryProgress::Downloading {
-                        file: artifact.file_name().to_owned(),
-                        resource: resource + 1,
-                        resources: total,
+                    progress.send_replace(Some(Progress::transferring(
+                        Stage::Downloading {
+                            file: artifact.file_name().to_owned(),
+                            index: resource + 1,
+                            total,
+                        },
                         transfer,
-                    }));
+                    )));
                 },
             )
             .await?;
-            progress.send_replace(Some(LibraryProgress::Verifying {
+            progress.send_replace(Some(Progress::new(Stage::Verifying {
                 file: artifact.file_name().to_owned(),
-                resource: resource + 1,
-                resources: total,
-            }));
+            })));
             verify_checksum(&file, artifact.checksum(), cancellation).await?;
         }
 
@@ -422,27 +430,6 @@ impl Library {
 pub enum CatalogKind {
     Components,
     Dependencies,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LibraryProgress {
-    CatalogDownload {
-        catalog: CatalogKind,
-        transfer: Transfer,
-    },
-    LoadingCatalog(CatalogKind),
-    Downloading {
-        file: String,
-        resource: usize,
-        resources: usize,
-        transfer: Transfer,
-    },
-    Verifying {
-        file: String,
-        resource: usize,
-        resources: usize,
-    },
-    Extracting,
 }
 
 #[derive(Debug, Error)]

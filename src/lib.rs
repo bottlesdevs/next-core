@@ -10,19 +10,16 @@ mod winebridge;
 mod wrapper;
 
 pub use bottle::{
-    Bottle, BottleEdit, BottleManager, BottleState, BottleType, CreateProgress, DeleteProgress,
-    DllOverride, DllOverrideMode, GamescopeConfig, GamescopeFilter, GamescopeScaler,
-    MangoHudConfig, Process, Program, RegistryHive, RollbackProgress, SetRunnerProgress, Snapshot,
-    SnapshotProgress, SnapshotSummary, Wrappers,
+    Bottle, BottleEdit, BottleManager, BottleState, BottleType, DllOverride, DllOverrideMode,
+    GamescopeConfig, GamescopeFilter, GamescopeScaler, MangoHudConfig, Process, Program,
+    RegistryHive, Snapshot, SnapshotSummary, Wrappers,
 };
 pub use compatibility::{
     Addon, Architecture, Availability, CatalogKind, Checksum, Library, LibraryError,
-    LibraryProgress, OperatingSystem, RunnerComponent, Slot, Target,
-    installer::{InstallProgress, UninstallProgress},
+    OperatingSystem, RunnerComponent, Slot, Target,
 };
 pub use core::{Bottles, Config};
-pub use operation::Operation;
-pub use prefix::{TransactionPhase, TransactionProgress, Transfer};
+pub use operation::{Operation, Progress, Stage, Transfer};
 pub use runner::RunnerKind;
 pub use utils::environment::Environment;
 

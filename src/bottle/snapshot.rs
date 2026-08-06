@@ -5,33 +5,31 @@ use std::path::Path;
 use fvs_rs::{Repository, RestoreResponse};
 
 use crate::{
-    Operation,
+    Operation, Progress, Stage, Transfer,
     error::{Error, Result},
-    prefix::{
-        AUTO_CHECKPOINT_MESSAGE, FVS_BLOCK_SIZE, TransactionProgress, finish_commit, finish_restore,
-    },
+    prefix::{AUTO_CHECKPOINT_MESSAGE, FVS_BLOCK_SIZE, finish_commit, finish_restore},
 };
 
 use super::{Bottle, Snapshot, SnapshotSummary, error::BottleError, state::BottleState};
 
 impl Bottle {
-    pub fn create_snapshot(
-        &self,
-        message: impl Into<String>,
-    ) -> Operation<Snapshot, SnapshotProgress> {
+    pub fn create_snapshot(&self, message: impl Into<String>) -> Operation<Snapshot> {
         let bottle = self.clone();
         let repository = self.snapshot_repository();
         let cx = self.0.cx.clone();
         let message = message.into();
         Operation::new(move |progress, cancellation| async move {
-            progress.send_replace(Some(SnapshotProgress::Stopping));
+            progress.send_replace(Some(Progress::new(Stage::Stopping)));
             bottle.stop().await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
             let stream = cx.fvs().await?.commit_stream(&repository, message).await?;
             finish_commit(stream, |update| {
-                progress.send_replace(Some(SnapshotProgress::Committing(update.into())));
+                progress.send_replace(Some(Progress::transferring(
+                    Stage::Committing,
+                    Transfer::from(update),
+                )));
             })
             .await
         })
@@ -52,14 +50,14 @@ impl Bottle {
             .collect())
     }
 
-    pub fn rollback(&self, state_id_or_prefix: &str) -> Operation<String, RollbackProgress> {
+    pub fn rollback(&self, state_id_or_prefix: &str) -> Operation<String> {
         let bottle = self.clone();
         let repository = self.snapshot_repository();
         let bottle_path = self.bottle_path();
         let cx = self.0.cx.clone();
         let state_id_or_prefix = state_id_or_prefix.to_owned();
         Operation::new(move |progress, cancellation| async move {
-            progress.send_replace(Some(RollbackProgress::Stopping));
+            progress.send_replace(Some(Progress::new(Stage::Stopping)));
             bottle.stop().await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
@@ -73,7 +71,10 @@ impl Bottle {
                 .restore_stream(&repository, &state_id_or_prefix, None::<&Path>, true, false)
                 .await?;
             let response: RestoreResponse = finish_restore(stream, |update| {
-                progress.send_replace(Some(RollbackProgress::Restoring(update.into())));
+                progress.send_replace(Some(Progress::transferring(
+                    Stage::Restoring,
+                    Transfer::from(update),
+                )));
             })
             .await?;
             let path = bottle_path.join("bottle.toml");
@@ -96,16 +97,4 @@ impl Bottle {
             block_size: FVS_BLOCK_SIZE,
         }
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RollbackProgress {
-    Stopping,
-    Restoring(TransactionProgress),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SnapshotProgress {
-    Stopping,
-    Committing(TransactionProgress),
 }

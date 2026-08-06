@@ -13,7 +13,6 @@ use uuid::Uuid;
 
 use crate::{
     error::{Error, Result, ResultExt},
-    prefix::{PrefixProgress, TransactionProgress},
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
     runner::{Command, Runner, Spawnable, shutdown_prefix},
     utils::{archive, environment::Environment, exists},
@@ -66,72 +65,6 @@ pub enum InstallStep {
         name: String,
         value: String,
     },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum InstallProgress {
-    AutoCheckpoint(TransactionProgress),
-    Restore(TransactionProgress),
-    Copy,
-    Execute,
-    Extract,
-    RegisterDlls,
-    SetRegistryValue,
-    SetDllOverrides,
-    SetEnvironment,
-}
-
-impl From<PrefixProgress> for InstallProgress {
-    fn from(progress: PrefixProgress) -> Self {
-        match progress {
-            PrefixProgress::AutoCheckpoint(progress) => Self::AutoCheckpoint(progress),
-            PrefixProgress::Restore(progress) => Self::Restore(progress),
-        }
-    }
-}
-
-impl From<&InstallStep> for InstallProgress {
-    fn from(step: &InstallStep) -> Self {
-        match step {
-            InstallStep::Copy { .. } => Self::Copy,
-            InstallStep::Execute { .. } => Self::Execute,
-            InstallStep::Extract { .. } => Self::Extract,
-            InstallStep::RegisterDlls { .. } => Self::RegisterDlls,
-            InstallStep::SetRegistryValue { .. } => Self::SetRegistryValue,
-            InstallStep::SetDllOverrides { .. } => Self::SetDllOverrides,
-            InstallStep::SetEnvironment { .. } => Self::SetEnvironment,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum UninstallProgress {
-    AutoCheckpoint(TransactionProgress),
-    Restore(TransactionProgress),
-    RevertFile,
-    RemoveDllOverrides,
-    RemoveEnvironmentVariable,
-    SkipUnsupported,
-}
-
-impl From<PrefixProgress> for UninstallProgress {
-    fn from(progress: PrefixProgress) -> Self {
-        match progress {
-            PrefixProgress::AutoCheckpoint(progress) => Self::AutoCheckpoint(progress),
-            PrefixProgress::Restore(progress) => Self::Restore(progress),
-        }
-    }
-}
-
-impl From<&InstallStep> for UninstallProgress {
-    fn from(step: &InstallStep) -> Self {
-        match step {
-            InstallStep::Copy { .. } => Self::RevertFile,
-            InstallStep::SetDllOverrides { .. } => Self::RemoveDllOverrides,
-            InstallStep::SetEnvironment { .. } => Self::RemoveEnvironmentVariable,
-            _ => Self::SkipUnsupported,
-        }
-    }
 }
 
 #[derive(Clone)]
