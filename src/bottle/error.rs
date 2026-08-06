@@ -27,16 +27,8 @@ pub enum BottleError {
     DllOverrideModeRequired,
     #[error("program {0} was not found")]
     ProgramNotFound(Uuid),
-    #[error("component {0} is not installed")]
-    ComponentNotInstalled(Uuid),
-    #[error("runner component is required")]
-    RunnerComponentRequired,
-    #[error("WineBridge component is required")]
-    WinebridgeComponentRequired,
-    #[error("UMU component has the wrong kind")]
-    InvalidUmuComponent,
-    #[error("component cannot be installed into a prefix")]
-    InvalidPrefixComponent,
+    #[error("addon {0} is not installed")]
+    AddonNotInstalled(Uuid),
 }
 
 #[derive(Debug, Error)]

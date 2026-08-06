@@ -6,15 +6,14 @@ use uuid::Uuid;
 
 use crate::{
     Context, Operation,
-    compatibility::components::{Component, catalog::ComponentKind},
+    compatibility::RunnerComponent,
     error::{Error, Result},
     prefix::{FVS_BLOCK_SIZE, Prefix},
-    runner::load_runner,
 };
 
 use super::{
     error::BottleError,
-    state::{Bottle, BottleCache, BottleState, BottleType, RunnerSelection},
+    state::{Bottle, BottleCache, BottleState, BottleType},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,26 +47,16 @@ impl BottleManager {
         &self,
         name: impl Into<String>,
         kind: BottleType,
-        runner: RunnerSelection,
-        winebridge: &Component,
+        runner: &RunnerComponent,
     ) -> Operation<Bottle, CreateProgress> {
         let name = name.into();
-        let winebridge = winebridge.clone();
+        let runner = runner.clone();
         let cx = self.context.clone();
         let cache = self.cache.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(CreateProgress::Preparing));
-            let selection = runner;
-            selection.validate()?;
-            if winebridge.kind() != ComponentKind::Winebridge {
-                return Err(BottleError::WinebridgeComponentRequired.into());
-            }
-            let runner = load_runner(
-                selection.runner().path(),
-                selection.kind(),
-                selection.umu().map(Component::path),
-            )
-            .await?;
+            let winebridge = cx.library().winebridge()?;
+            let loaded_runner = runner.load().await?;
             let id = Uuid::new_v4();
             let bottle_path = cx.directories().bottle(id);
             fs::create_dir_all(&bottle_path).await?;
@@ -77,8 +66,8 @@ impl BottleManager {
                 let storage = Prefix::create(
                     kind,
                     &bottle_path,
-                    runner.as_ref(),
-                    &selection.runner().id().to_string(),
+                    loaded_runner.as_ref(),
+                    &runner.id().to_string(),
                     &cx,
                 )
                 .await?;
@@ -86,8 +75,7 @@ impl BottleManager {
                     return Err(Error::Cancelled);
                 }
 
-                let bottle =
-                    Bottle::new(id, name, selection, winebridge, storage, cx.clone()).await?;
+                let bottle = Bottle::new(id, name, runner, winebridge, storage, cx.clone()).await?;
                 progress.send_replace(Some(CreateProgress::InitializingRepository));
                 cx.fvs()
                     .await?

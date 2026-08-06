@@ -11,7 +11,7 @@ use crate::error::Result;
 /// effective for running Windows games through Steam or standalone.
 ///
 #[derive(Debug)]
-pub(super) struct Proton {
+pub(crate) struct Proton {
     proton_path: PathBuf,
     umu_executable: PathBuf,
 }

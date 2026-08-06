@@ -12,20 +12,12 @@ mod wrapper;
 pub use bottle::{
     Bottle, BottleEdit, BottleManager, BottleState, BottleType, CreateProgress, DeleteProgress,
     DllOverride, DllOverrideMode, GamescopeConfig, GamescopeFilter, GamescopeScaler,
-    MangoHudConfig, Process, Program, RegistryHive, RollbackProgress, RunnerSelection,
-    SetRunnerProgress, Snapshot, SnapshotProgress, SnapshotSummary, Wrappers,
+    MangoHudConfig, Process, Program, RegistryHive, RollbackProgress, SetRunnerProgress, Snapshot,
+    SnapshotProgress, SnapshotSummary, Wrappers,
 };
 pub use compatibility::{
-    Architecture, CatalogKind, Checksum, ComponentStatus, DependencyStatus, Library, LibraryError,
-    LibraryProgress, LibraryState, OperatingSystem, Target,
-    components::{
-        Component,
-        catalog::{CatalogComponentEntry, ComponentArtifact, ComponentCatalog, ComponentKind},
-    },
-    dependencies::{
-        Dependency,
-        catalog::{CatalogDependencyEntry, DependencyCatalog, DependencyResource},
-    },
+    Addon, Architecture, Availability, CatalogKind, Checksum, Library, LibraryError,
+    LibraryProgress, OperatingSystem, RunnerComponent, Slot, Target,
     installer::{InstallProgress, UninstallProgress},
 };
 pub use core::{Bottles, Config};

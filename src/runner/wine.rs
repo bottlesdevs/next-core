@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 /// the core Windows API translation functionality that allows Windows applications
 /// to run on Unix-like systems.
 #[derive(Debug)]
-pub(super) struct Wine {
+pub(crate) struct Wine {
     executable: PathBuf,
 }
 

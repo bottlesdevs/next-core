@@ -5,7 +5,9 @@ use ::directories::ProjectDirs;
 use uuid::Uuid;
 
 use crate::{
-    bottle::error::BottleError, compatibility::components::catalog::ComponentKind, error::Result,
+    bottle::error::BottleError,
+    compatibility::catalog::{ItemKind, category},
+    error::Result,
 };
 
 #[derive(Clone, Debug)]
@@ -58,8 +60,8 @@ impl Directories {
         self.data_dir().join("components")
     }
 
-    pub(crate) fn component_category(&self, kind: ComponentKind) -> PathBuf {
-        self.components().join(kind.directory_name())
+    pub(crate) fn component_category(&self, kind: ItemKind) -> Option<PathBuf> {
+        category(kind).map(|category| self.components().join(category))
     }
 
     pub(crate) fn component_index(&self) -> PathBuf {

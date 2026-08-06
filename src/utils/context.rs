@@ -1,6 +1,6 @@
 use crate::{
     Directories,
-    compatibility::{Library, components::Component, installer::InstallStep},
+    compatibility::Library,
     error::{Error, Result},
     utils::absolute_path,
 };
@@ -51,8 +51,8 @@ impl Context {
         &self.0.directories
     }
 
-    pub(crate) fn component_steps(&self, component: &Component) -> Vec<InstallStep> {
-        self.0.library.component_steps(component)
+    pub(crate) fn library(&self) -> &Library {
+        &self.0.library
     }
 
     pub(crate) async fn fvs(&self) -> Result<&Fvs2dClient> {

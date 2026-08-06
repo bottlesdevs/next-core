@@ -1,17 +1,15 @@
-//! Types and deserializers shared by component and dependency catalogs.
+//! Compatibility library and prefix installation.
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-mod catalog;
-pub mod components;
-pub mod dependencies;
+pub(crate) mod catalog;
+mod index;
 pub mod installer;
+pub(crate) mod item;
 mod library;
 
-pub use library::{
-    CatalogKind, ComponentStatus, DependencyStatus, Library, LibraryError, LibraryProgress,
-    LibraryState,
-};
+pub use item::{Addon, Availability, RunnerComponent, Slot};
+pub use library::{CatalogKind, Library, LibraryError, LibraryProgress};
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "algorithm", content = "value", rename_all = "kebab-case")]
@@ -37,6 +35,7 @@ impl Checksum {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Target {
     os: OperatingSystem,
     arch: Architecture,

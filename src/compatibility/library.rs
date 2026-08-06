@@ -1,35 +1,25 @@
 use std::{
-    io,
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use download_manager::{events::Progress as DownloadProgress, manager::DownloadManager};
-use futures_core::Stream;
 use futures_lite::io::AsyncReadExt;
 use futures_util::{FutureExt, StreamExt};
-use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256, Sha512};
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
-use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
 use url::Url;
-use uuid::Uuid;
+use uuid::{NonNilUuid, Uuid};
 
 use super::{
     Checksum, Target,
-    components::{
-        Component,
-        catalog::{CatalogComponentEntry, ComponentCatalog, ComponentKind},
-        index as component_index,
-    },
-    dependencies::{
-        Dependency,
-        catalog::{CatalogDependencyEntry, DependencyCatalog},
-        storage as dependency_storage,
-    },
-    installer::{InstallStep, component_steps},
+    catalog::{Catalog, CatalogArtifact, CatalogEntry, InternalRole, ItemKind, category},
+    index,
+    installer::recipe_steps,
+    item::{Addon, InternalComponent, Resource, RunnerComponent},
 };
 use crate::{
     Directories, Operation, Transfer,
@@ -54,125 +44,92 @@ impl Library {
         directories: Directories,
         component_catalog_url: Option<Url>,
         dependency_catalog_url: Option<Url>,
-        downloads: Arc<DownloadManager>,
+        downloader: Arc<DownloadManager>,
     ) -> Result<Self> {
-        let component_catalog: Option<Arc<ComponentCatalog>> =
-            load_cached_catalog(&component_catalog_path(&directories)).await;
-        let dependency_catalog: Option<Arc<DependencyCatalog>> =
-            load_cached_catalog(&dependency_catalog_path(&directories)).await;
-        let components = component_index::scan(&directories).await?;
-        let dependencies =
-            dependency_storage::scan(&directories, dependency_catalog.as_deref()).await?;
-        let (published, _) = watch::channel(Arc::new(LibraryState::new(
-            component_catalog,
-            dependency_catalog,
-            components,
-            dependencies,
-        )));
+        let component_catalog = load_catalog(
+            &catalog_path(&directories, CatalogKind::Components),
+            CatalogKind::Components,
+        )
+        .await;
+        let dependency_catalog = load_catalog(
+            &catalog_path(&directories, CatalogKind::Dependencies),
+            CatalogKind::Dependencies,
+        )
+        .await;
+        let state = LibraryState::load(component_catalog, dependency_catalog, &directories).await?;
+        let (published, _) = watch::channel(Arc::new(state));
         Ok(Self(Arc::new(LibraryInner {
             directories,
             component_catalog_url,
             dependency_catalog_url,
-            downloader: downloads,
+            downloader,
             published,
             write: Mutex::new(()),
         })))
     }
 
-    pub fn state(&self) -> Arc<LibraryState> {
-        self.0.published.borrow().clone()
+    pub fn runners(&self) -> Vec<RunnerComponent> {
+        let mut runners = self.state().runners.values().cloned().collect::<Vec<_>>();
+        runners.sort_unstable_by_key(RunnerComponent::id);
+        runners
     }
 
-    pub fn updates(&self) -> impl Stream<Item = Arc<LibraryState>> + Send + 'static {
-        WatchStream::new(self.0.published.subscribe())
+    pub fn addons(&self) -> Vec<Addon> {
+        let mut addons = self.state().addons.values().cloned().collect::<Vec<_>>();
+        addons.sort_unstable_by_key(Addon::id);
+        addons
     }
 
-    pub async fn refresh(&self) -> Result<()> {
-        let _write = self.0.write.lock().await;
-        let current = self.state();
-        let components = component_index::scan(&self.0.directories).await?;
-        let dependencies =
-            dependency_storage::scan(&self.0.directories, current.dependency_catalog.as_deref())
-                .await?;
-        self.publish(
-            current.component_catalog.clone(),
-            current.dependency_catalog.clone(),
-            components,
-            dependencies,
-        );
-        Ok(())
-    }
-
-    pub fn refresh_catalogs(&self) -> Operation<(), LibraryProgress> {
+    pub fn refresh(&self) -> Operation<(), LibraryProgress> {
         let library = self.clone();
         Operation::new(move |progress, cancellation| async move {
-            let component = library.download_catalog(
-                CatalogKind::Components,
-                library.0.component_catalog_url.clone(),
-                progress.clone(),
-                &cancellation,
-            );
-            let dependency = library.download_catalog(
-                CatalogKind::Dependencies,
-                library.0.dependency_catalog_url.clone(),
-                progress.clone(),
-                &cancellation,
-            );
-            let (component, dependency) = futures_util::future::join(component, dependency).await;
+            let component = library
+                .download_catalog(
+                    CatalogKind::Components,
+                    library.0.component_catalog_url.clone(),
+                    progress.clone(),
+                    &cancellation,
+                )
+                .await;
+            let dependency = library
+                .download_catalog(
+                    CatalogKind::Dependencies,
+                    library.0.dependency_catalog_url.clone(),
+                    progress,
+                    &cancellation,
+                )
+                .await;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
 
-            let component = match component {
-                Ok(path) => {
-                    progress.send_replace(Some(LibraryProgress::LoadingCatalog(
-                        CatalogKind::Components,
-                    )));
-                    save_downloaded_catalog::<ComponentCatalog>(
-                        &path,
-                        &component_catalog_path(&library.0.directories),
-                    )
-                    .await
-                    .map(Arc::new)
-                }
-                Err(error) => Err(error),
-            };
-            let dependency = match dependency {
-                Ok(path) => {
-                    progress.send_replace(Some(LibraryProgress::LoadingCatalog(
-                        CatalogKind::Dependencies,
-                    )));
-                    save_downloaded_catalog::<DependencyCatalog>(
-                        &path,
-                        &dependency_catalog_path(&library.0.directories),
-                    )
-                    .await
-                    .map(Arc::new)
-                }
-                Err(error) => Err(error),
-            };
-
             let _write = library.0.write.lock().await;
             let current = library.state();
-            let component_catalog = component
-                .as_ref()
-                .ok()
-                .cloned()
-                .or_else(|| current.component_catalog.clone());
-            let dependency_catalog = dependency
-                .as_ref()
-                .ok()
-                .cloned()
-                .or_else(|| current.dependency_catalog.clone());
-            let dependencies =
-                dependency_storage::scan(&library.0.directories, dependency_catalog.as_deref())
+            let component_catalog = match &component {
+                Ok((catalog, bytes)) => {
+                    async_fs::write(
+                        catalog_path(&library.0.directories, CatalogKind::Components),
+                        bytes,
+                    )
                     .await?;
-            library.publish(
-                component_catalog,
-                dependency_catalog,
-                current.downloaded_components(),
-                dependencies,
-            );
+                    Some(catalog.clone())
+                }
+                Err(_) => current.component_catalog.clone(),
+            };
+            let dependency_catalog = match &dependency {
+                Ok((catalog, bytes)) => {
+                    async_fs::write(
+                        catalog_path(&library.0.directories, CatalogKind::Dependencies),
+                        bytes,
+                    )
+                    .await?;
+                    Some(catalog.clone())
+                }
+                Err(_) => current.dependency_catalog.clone(),
+            };
+            library
+                .publish(component_catalog, dependency_catalog)
+                .await?;
 
             match (component, dependency) {
                 (Ok(_), Ok(_)) => Ok(()),
@@ -185,129 +142,142 @@ impl Library {
         })
     }
 
-    pub fn download_component(&self, id: Uuid) -> Operation<Component, LibraryProgress> {
+    pub fn fetch(&self, id: Uuid) -> Operation<(), LibraryProgress> {
         let library = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let state = library.state();
-            let status = state
-                .component(id)
-                .ok_or(LibraryError::ComponentNotFound(id))?;
-            if let Some(component) = status.downloaded() {
-                return Ok(component.clone());
+            if state.is_downloaded(id) {
+                return Ok(());
             }
-            let entry = status
-                .catalog
-                .clone()
-                .ok_or(LibraryError::ComponentNotFound(id))?;
-            let target = Target::current().ok_or(LibraryError::UnsupportedComponent(id))?;
-            let artifact = entry
-                .artifact_for(target)
+            let entry = state
+                .entry(id)
                 .cloned()
-                .ok_or(LibraryError::UnsupportedComponent(id))?;
-            let stage = library
-                .0
-                .directories
-                .components()
-                .join(".staging")
-                .join(Uuid::new_v4().to_string());
-            async_fs::create_dir_all(&stage).await?;
-
-            let result = library
-                .download_component_entry(entry, artifact, &stage, progress, &cancellation)
-                .await;
-            let _ = async_fs::remove_dir_all(stage).await;
-            result
-        })
-    }
-
-    pub async fn delete_component(&self, id: Uuid) -> Result<()> {
-        let _write = self.0.write.lock().await;
-        let state = self.state();
-        let component = state
-            .component(id)
-            .and_then(ComponentStatus::downloaded)
-            .cloned()
-            .ok_or(LibraryError::ComponentNotFound(id))?;
-        async_fs::remove_dir_all(component.path()).await?;
-        let components = component_index::scan(&self.0.directories).await?;
-        self.publish(
-            state.component_catalog.clone(),
-            state.dependency_catalog.clone(),
-            components,
-            state.downloaded_dependencies(),
-        );
-        Ok(())
-    }
-
-    pub fn download_dependency(&self, id: Uuid) -> Operation<Dependency, LibraryProgress> {
-        let library = self.clone();
-        Operation::new(move |progress, cancellation| async move {
-            let state = library.state();
-            let status = state
-                .dependency(id)
-                .ok_or(LibraryError::DependencyNotFound(id))?;
-            if let Some(dependency) = status.downloaded() {
-                return Ok(dependency.clone());
+                .ok_or(LibraryError::ItemNotFound(id))?;
+            let target = Target::current().ok_or(LibraryError::UnsupportedItem(id))?;
+            let artifacts = entry.matching_artifacts(target).collect::<Vec<_>>();
+            if artifacts.is_empty() {
+                return Err(LibraryError::UnsupportedItem(id).into());
             }
-            let dependency = Dependency::from(&status.catalog);
-            let stage = library
-                .0
-                .directories
-                .dependencies()
-                .join(".staging")
-                .join(Uuid::new_v4().to_string());
-            async_fs::create_dir_all(&stage).await?;
 
+            let staging_root = library.0.directories.data_dir().join(".staging");
+            async_fs::create_dir_all(&staging_root).await?;
+            let stage = staging_root.join(Uuid::new_v4().to_string());
+            async_fs::create_dir_all(&stage).await?;
             let result = library
-                .download_dependency_entry(dependency, &stage, progress, &cancellation)
+                .download_entry(&entry, artifacts, &stage, progress, &cancellation)
                 .await;
             let _ = async_fs::remove_dir_all(&stage).await;
             result
         })
     }
 
-    pub async fn delete_dependency(&self, id: Uuid) -> Result<()> {
+    pub async fn remove(&self, id: Uuid) -> Result<()> {
         let _write = self.0.write.lock().await;
         let state = self.state();
-        state
-            .dependency(id)
-            .and_then(DependencyStatus::downloaded)
-            .ok_or(LibraryError::DependencyNotFound(id))?;
-        async_fs::remove_dir_all(self.0.directories.dependency(id)).await?;
-        let dependencies =
-            dependency_storage::scan(&self.0.directories, state.dependency_catalog.as_deref())
-                .await?;
+        let stored = state
+            .stored
+            .get(&id)
+            .cloned()
+            .ok_or(LibraryError::ItemNotFound(id))?;
+        if !exists(&stored.path).await? {
+            return Err(LibraryError::ItemNotFound(id).into());
+        }
+        async_fs::remove_dir_all(&stored.path).await?;
+        if stored.kind.is_single_artifact() {
+            index::remove(&self.0.directories, id).await?;
+        }
         self.publish(
             state.component_catalog.clone(),
             state.dependency_catalog.clone(),
-            state.downloaded_components(),
-            dependencies,
-        );
-        Ok(())
+        )
+        .await
     }
 
-    pub(crate) fn component_steps(&self, component: &Component) -> Vec<InstallStep> {
-        self.state().component_steps(component)
+    pub(crate) fn winebridge(&self) -> Result<InternalComponent> {
+        self.state()
+            .internals
+            .get(&InternalRole::Winebridge)
+            .cloned()
+            .ok_or_else(|| LibraryError::InternalNotDownloaded("winebridge").into())
+    }
+
+    fn state(&self) -> Arc<LibraryState> {
+        self.0.published.borrow().clone()
+    }
+
+    async fn download_catalog(
+        &self,
+        kind: CatalogKind,
+        url: Option<Url>,
+        progress: watch::Sender<Option<LibraryProgress>>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Arc<Catalog>, Vec<u8>)> {
+        let url = url.ok_or(LibraryError::CatalogUrlNotConfigured(kind))?;
+        let staging = self.0.directories.data_dir().join(".staging");
+        async_fs::create_dir_all(&staging).await?;
+        let downloaded = staging.join(format!("catalog-{}.json", Uuid::new_v4()));
+        let result = async {
+            download(
+                &self.0.downloader,
+                url,
+                &downloaded,
+                cancellation,
+                |transfer| {
+                    progress.send_replace(Some(LibraryProgress::CatalogDownload {
+                        catalog: kind,
+                        transfer,
+                    }));
+                },
+            )
+            .await?;
+            progress.send_replace(Some(LibraryProgress::LoadingCatalog(kind)));
+            let bytes = async_fs::read(&downloaded).await?;
+            let catalog = Arc::new(serde_json::from_slice::<Catalog>(&bytes)?);
+            validate_catalog(&catalog, kind)?;
+            Ok((catalog, bytes))
+        }
+        .await;
+        let _ = async_fs::remove_file(downloaded).await;
+        result
+    }
+
+    async fn download_entry(
+        &self,
+        entry: &CatalogEntry,
+        artifacts: Vec<(usize, &CatalogArtifact)>,
+        stage: &Path,
+        progress: watch::Sender<Option<LibraryProgress>>,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        if entry.kind().is_single_artifact() {
+            self.download_component_entry(entry, &artifacts, stage, progress, cancellation)
+                .await
+        } else {
+            self.download_dependency_entry(entry, &artifacts, stage, progress, cancellation)
+                .await
+        }
     }
 
     async fn download_component_entry(
         &self,
-        entry: CatalogComponentEntry,
-        artifact: super::components::catalog::ComponentArtifact,
+        entry: &CatalogEntry,
+        artifacts: &[(usize, &CatalogArtifact)],
         stage: &Path,
         progress: watch::Sender<Option<LibraryProgress>>,
         cancellation: &CancellationToken,
-    ) -> Result<Component> {
-        let file_name = artifact.file_name();
-        let archive_path = stage.join(file_name);
+    ) -> Result<()> {
+        let (_, artifact) = artifacts
+            .first()
+            .ok_or(LibraryError::UnsupportedItem(entry.id()))?;
+        let file = stage.join(artifact.file_name());
         download(
             &self.0.downloader,
             artifact.url().clone(),
-            &archive_path,
+            &file,
             cancellation,
             |transfer| {
                 progress.send_replace(Some(LibraryProgress::Downloading {
-                    file: file_name.to_owned(),
+                    file: artifact.file_name().to_owned(),
                     resource: 1,
                     resources: 1,
                     transfer,
@@ -316,64 +286,66 @@ impl Library {
         )
         .await?;
         progress.send_replace(Some(LibraryProgress::Verifying {
-            file: file_name.to_owned(),
+            file: artifact.file_name().to_owned(),
             resource: 1,
             resources: 1,
         }));
-        verify_checksum(&archive_path, artifact.checksum(), cancellation).await?;
-
+        verify_checksum(&file, artifact.checksum(), cancellation).await?;
         progress.send_replace(Some(LibraryProgress::Extracting));
         let extracted = stage.join("extracted");
         async_fs::create_dir_all(&extracted).await?;
-        let extraction = archive::extract(&archive_path, &extracted).fuse();
-        let cancelled = cancellation.cancelled().fuse();
-        futures_util::pin_mut!(extraction, cancelled);
-        futures_util::select_biased! {
-            result = extraction => result?,
-            _ = cancelled => return Err(Error::Cancelled),
+        {
+            let extraction = archive::extract(&file, &extracted).fuse();
+            let cancelled = cancellation.cancelled().fuse();
+            futures_util::pin_mut!(extraction, cancelled);
+            futures_util::select_biased! {
+                result = extraction => result?,
+                _ = cancelled => return Err(Error::Cancelled),
+            }
         }
         let release = top_level_directory(&extracted).await?;
-        let category = entry.kind().directory_name();
-        let found = component_index::detect_kind(category, &release)
+        let component_category = category(entry.kind()).expect("component-class item has category");
+        let found = index::detect_kind(component_category, &release)
             .await?
-            .ok_or(LibraryError::InvalidComponentArchive)?;
+            .ok_or_else(|| LibraryError::InvalidHandPlacedComponent(release.clone()))?;
         if found != entry.kind() {
             return Err(LibraryError::ComponentKindMismatch {
-                expected: entry.kind(),
-                found,
+                expected: format!("{:?}", entry.kind()),
+                found: format!("{found:?}"),
             }
             .into());
         }
 
-        let category_root = self.0.directories.component_category(entry.kind());
+        let category_root = self
+            .0
+            .directories
+            .component_category(entry.kind())
+            .expect("component-class item has category");
         let target = category_root.join(artifact.file_name());
         let _write = self.0.write.lock().await;
-        if let Some(component) = self
-            .state()
-            .component(entry.uuid())
-            .and_then(ComponentStatus::downloaded)
-        {
-            return Ok(component.clone());
+        if self.state().is_downloaded(entry.id()) {
+            return Ok(());
         }
         if exists(&target).await? {
             return Err(LibraryError::TargetExists(target).into());
         }
         async_fs::create_dir_all(category_root).await?;
-        async_fs::rename(&release, &target).await?;
-
+        async_fs::rename(release, &target).await?;
         let result = async {
-            let component = Component::from_catalog_entry(&entry, &self.0.directories).await?;
-            component_index::ComponentIndex::record(&self.0.directories, component.clone()).await?;
+            index::record(
+                &self.0.directories,
+                entry.id(),
+                entry.version().to_owned(),
+                target.clone(),
+                entry.kind(),
+            )
+            .await?;
             let state = self.state();
-            let mut components = state.downloaded_components();
-            components.push(component.clone());
             self.publish(
                 state.component_catalog.clone(),
                 state.dependency_catalog.clone(),
-                components,
-                state.downloaded_dependencies(),
-            );
-            Ok(component)
+            )
+            .await
         }
         .await;
         if result.is_err() {
@@ -384,25 +356,24 @@ impl Library {
 
     async fn download_dependency_entry(
         &self,
-        dependency: Dependency,
+        entry: &CatalogEntry,
+        artifacts: &[(usize, &CatalogArtifact)],
         stage: &Path,
         progress: watch::Sender<Option<LibraryProgress>>,
         cancellation: &CancellationToken,
-    ) -> Result<Dependency> {
-        let id = dependency.id();
-        let total = dependency.resources.len();
-        for (index, resource) in dependency.resources.iter().enumerate() {
-            let file_name = resource.file_name();
-            let destination = stage.join(file_name);
+    ) -> Result<()> {
+        let total = artifacts.len();
+        for (resource, (_, artifact)) in artifacts.iter().enumerate() {
+            let file = stage.join(artifact.file_name());
             download(
                 &self.0.downloader,
-                resource.url().clone(),
-                &destination,
+                artifact.url().clone(),
+                &file,
                 cancellation,
                 |transfer| {
                     progress.send_replace(Some(LibraryProgress::Downloading {
-                        file: file_name.to_owned(),
-                        resource: index + 1,
+                        file: artifact.file_name().to_owned(),
+                        resource: resource + 1,
                         resources: total,
                         transfer,
                     }));
@@ -410,77 +381,40 @@ impl Library {
             )
             .await?;
             progress.send_replace(Some(LibraryProgress::Verifying {
-                file: file_name.to_owned(),
-                resource: index + 1,
+                file: artifact.file_name().to_owned(),
+                resource: resource + 1,
                 resources: total,
             }));
-            verify_checksum(&destination, resource.checksum(), cancellation).await?;
+            verify_checksum(&file, artifact.checksum(), cancellation).await?;
         }
 
-        let target = self.0.directories.dependency(id);
+        let target = self.0.directories.dependency(entry.id());
         let _write = self.0.write.lock().await;
-        if let Some(dependency) = self
-            .state()
-            .dependency(id)
-            .and_then(DependencyStatus::downloaded)
-        {
-            return Ok(dependency.clone());
+        if self.state().is_downloaded(entry.id()) {
+            let _ = async_fs::remove_dir_all(stage).await;
+            return Ok(());
         }
         if exists(&target).await? {
             return Err(LibraryError::TargetExists(target).into());
         }
         async_fs::rename(stage, &target).await?;
-
         let state = self.state();
-        let mut dependencies = state.downloaded_dependencies();
-        dependencies.push(dependency.clone());
         self.publish(
             state.component_catalog.clone(),
             state.dependency_catalog.clone(),
-            state.downloaded_components(),
-            dependencies,
-        );
-        Ok(dependency)
-    }
-
-    async fn download_catalog(
-        &self,
-        catalog: CatalogKind,
-        url: Option<Url>,
-        progress: watch::Sender<Option<LibraryProgress>>,
-        cancellation: &CancellationToken,
-    ) -> Result<PathBuf> {
-        let url = url.ok_or(LibraryError::CatalogUrlNotConfigured(catalog))?;
-        let staging = self.0.directories.data_dir().join(".staging");
-        async_fs::create_dir_all(&staging).await?;
-        let destination = staging.join(format!("catalog-{}.json", Uuid::new_v4()));
-        let result = download(
-            &self.0.downloader,
-            url,
-            &destination,
-            cancellation,
-            |transfer| {
-                progress.send_replace(Some(LibraryProgress::CatalogDownload { catalog, transfer }));
-            },
         )
-        .await;
-        result?;
-        Ok(destination)
+        .await
     }
 
-    fn publish(
+    async fn publish(
         &self,
-        component_catalog: Option<Arc<ComponentCatalog>>,
-        dependency_catalog: Option<Arc<DependencyCatalog>>,
-        components: Vec<Component>,
-        dependencies: Vec<Dependency>,
-    ) {
-        self.0.published.send_replace(Arc::new(LibraryState::new(
-            component_catalog,
-            dependency_catalog,
-            components,
-            dependencies,
-        )));
+        component_catalog: Option<Arc<Catalog>>,
+        dependency_catalog: Option<Arc<Catalog>>,
+    ) -> Result<()> {
+        let state =
+            LibraryState::load(component_catalog, dependency_catalog, &self.0.directories).await?;
+        self.0.published.send_replace(Arc::new(state));
+        Ok(())
     }
 }
 
@@ -520,208 +454,312 @@ pub enum LibraryError {
     },
     #[error("{0:?} catalog URL is not configured")]
     CatalogUrlNotConfigured(CatalogKind),
-    #[error("component {0} was not found")]
-    ComponentNotFound(Uuid),
-    #[error("dependency {0} was not found")]
-    DependencyNotFound(Uuid),
-    #[error("no artifact supports this system for component {0}")]
-    UnsupportedComponent(Uuid),
+    #[error("item {item} does not belong in the {catalog:?} catalog")]
+    WrongCatalog { item: Uuid, catalog: CatalogKind },
+    #[error("catalogs contain duplicate item {0}")]
+    DuplicateItem(Uuid),
+    #[error("library item {0} was not found")]
+    ItemNotFound(Uuid),
+    #[error("library item {0} is not downloaded")]
+    ItemNotDownloaded(Uuid),
+    #[error("no artifact supports this system for item {0}")]
+    UnsupportedItem(Uuid),
+    #[error("internal item {0} is not downloaded")]
+    InternalNotDownloaded(&'static str),
     #[error("checksum mismatch for {0}")]
     ChecksumMismatch(PathBuf),
-    #[error("component archive must contain exactly one top-level directory")]
-    InvalidComponentArchive,
-    #[error("component archive contains {found:?}, expected {expected:?}")]
-    ComponentKindMismatch {
-        expected: ComponentKind,
-        found: ComponentKind,
-    },
+    #[error("an extracted artifact must contain exactly one top-level directory")]
+    InvalidArchive,
+    #[error("component archive contains {found}, expected {expected}")]
+    ComponentKindMismatch { expected: String, found: String },
+    #[error("hand-placed component could not be identified: {0}")]
+    InvalidHandPlacedComponent(PathBuf),
     #[error("library target already exists: {0}")]
     TargetExists(PathBuf),
 }
 
 #[derive(Clone, Debug)]
-pub struct LibraryState {
-    components: Vec<ComponentStatus>,
-    dependencies: Vec<DependencyStatus>,
-    component_catalog: Option<Arc<ComponentCatalog>>,
-    dependency_catalog: Option<Arc<DependencyCatalog>>,
+struct LibraryState {
+    component_catalog: Option<Arc<Catalog>>,
+    dependency_catalog: Option<Arc<Catalog>>,
+    runners: HashMap<Uuid, RunnerComponent>,
+    addons: HashMap<Uuid, Addon>,
+    internals: HashMap<InternalRole, InternalComponent>,
+    stored: HashMap<Uuid, StoredItem>,
+}
+
+#[derive(Clone, Debug)]
+struct StoredItem {
+    kind: ItemKind,
+    path: PathBuf,
 }
 
 impl LibraryState {
-    fn new(
-        component_catalog: Option<Arc<ComponentCatalog>>,
-        dependency_catalog: Option<Arc<DependencyCatalog>>,
-        mut components: Vec<Component>,
-        dependencies: Vec<Dependency>,
-    ) -> Self {
-        let mut component_statuses = component_catalog
+    async fn load(
+        component_catalog: Option<Arc<Catalog>>,
+        dependency_catalog: Option<Arc<Catalog>>,
+        directories: &Directories,
+    ) -> Result<Self> {
+        let mut state = Self {
+            component_catalog: component_catalog.clone(),
+            dependency_catalog: dependency_catalog.clone(),
+            runners: HashMap::new(),
+            addons: HashMap::new(),
+            internals: HashMap::new(),
+            stored: HashMap::new(),
+        };
+        let discovered = index::scan(directories).await?;
+        let target = Target::current();
+        let mut ids = std::collections::HashSet::new();
+        let mut catalog_component_paths = std::collections::HashSet::new();
+        for entry in component_catalog
             .iter()
-            .flat_map(|catalog| catalog.as_ref())
-            .map(|entry| {
-                let downloaded = components
-                    .iter()
-                    .position(|component| component.id() == entry.uuid())
-                    .map(|index| components.remove(index));
-                ComponentStatus {
-                    catalog: Some(entry.clone()),
-                    downloaded,
-                }
-            })
-            .collect::<Vec<_>>();
-        component_statuses.extend(components.into_iter().map(|downloaded| ComponentStatus {
-            catalog: None,
-            downloaded: Some(downloaded),
-        }));
-
-        let dependency_statuses = dependency_catalog
-            .iter()
-            .flat_map(|catalog| catalog.as_ref())
-            .map(|entry| {
-                let downloaded = dependencies
-                    .iter()
-                    .find(|dependency| dependency.id() == entry.uuid())
-                    .cloned();
-                DependencyStatus {
-                    catalog: entry.clone(),
-                    downloaded,
-                }
-            })
-            .collect::<Vec<_>>();
-
-        Self {
-            components: component_statuses,
-            dependencies: dependency_statuses,
-            component_catalog,
-            dependency_catalog,
-        }
-    }
-
-    pub fn components(&self) -> &[ComponentStatus] {
-        &self.components
-    }
-
-    pub fn component(&self, id: Uuid) -> Option<&ComponentStatus> {
-        self.components
-            .iter()
-            .find(|component| component.id() == id)
-    }
-
-    pub fn dependencies(&self) -> &[DependencyStatus] {
-        &self.dependencies
-    }
-
-    pub fn dependency(&self, id: Uuid) -> Option<&DependencyStatus> {
-        self.dependencies
-            .iter()
-            .find(|dependency| dependency.id() == id)
-    }
-
-    pub fn has_component_catalog(&self) -> bool {
-        self.component_catalog.is_some()
-    }
-
-    pub fn has_dependency_catalog(&self) -> bool {
-        self.dependency_catalog.is_some()
-    }
-
-    fn downloaded_components(&self) -> Vec<Component> {
-        self.components
-            .iter()
-            .filter_map(|status| status.downloaded.clone())
-            .collect()
-    }
-
-    fn downloaded_dependencies(&self) -> Vec<Dependency> {
-        self.dependencies
-            .iter()
-            .filter_map(|status| status.downloaded.clone())
-            .collect()
-    }
-
-    fn component_steps(&self, component: &Component) -> Vec<InstallStep> {
-        if let Some(steps) = self
-            .component(component.id())
-            .and_then(|status| status.catalog.as_ref())
-            .map(CatalogComponentEntry::steps)
-            .filter(|steps| !steps.is_empty())
+            .chain(dependency_catalog.iter())
+            .flat_map(|catalog| catalog.items())
         {
-            return steps.to_vec();
+            if !ids.insert(entry.id()) {
+                return Err(LibraryError::DuplicateItem(entry.id()).into());
+            }
+            let matching = target
+                .map(|target| entry.matching_artifacts(target).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let supported = !matching.is_empty();
+            let (resources, stored_path) = catalog_resources(entry, &matching, directories).await;
+            if let Some(path) = stored_path {
+                if entry.kind().is_single_artifact() {
+                    catalog_component_paths.insert(path.clone());
+                    index::record(
+                        directories,
+                        entry.id(),
+                        entry.version().to_owned(),
+                        path.clone(),
+                        entry.kind(),
+                    )
+                    .await?;
+                }
+                state.stored.insert(
+                    entry.id(),
+                    StoredItem {
+                        kind: entry.kind(),
+                        path,
+                    },
+                );
+            } else if entry.kind().is_single_artifact()
+                && let Some((_, artifact)) = matching.first()
+            {
+                catalog_component_paths.insert(
+                    directories
+                        .component_category(entry.kind())
+                        .expect("component-class item has category")
+                        .join(artifact.file_name()),
+                );
+            }
+            let id = NonNilUuid::new(entry.id()).expect("catalog UUID is non-nil");
+            match entry.kind() {
+                ItemKind::RunnerComponent { flavour } => {
+                    state.runners.insert(
+                        entry.id(),
+                        RunnerComponent::new(
+                            id,
+                            entry.name().to_owned(),
+                            entry.version().to_owned(),
+                            flavour,
+                            resources
+                                .first()
+                                .map(|resource| resource.source().to_path_buf()),
+                            supported,
+                        ),
+                    );
+                }
+                ItemKind::Addon { slot } => {
+                    state.addons.insert(
+                        entry.id(),
+                        Addon::new(
+                            id,
+                            entry.name().to_owned(),
+                            entry.version().to_owned(),
+                            slot,
+                            resources,
+                            supported,
+                        ),
+                    );
+                }
+                ItemKind::InternalComponent { role } => {
+                    if let Some(resource) = resources.first() {
+                        state.internals.entry(role).or_insert_with(|| {
+                            InternalComponent::new(id, role, resource.source().to_path_buf())
+                        });
+                    }
+                }
+            }
         }
 
-        component_steps(component.kind())
-            .unwrap_or_default()
-            .to_vec()
+        for component in discovered {
+            if catalog_component_paths.contains(component.path()) {
+                continue;
+            }
+            if !ids.insert(component.id()) {
+                return Err(LibraryError::DuplicateItem(component.id()).into());
+            }
+            let id = NonNilUuid::new(component.id()).expect("index UUID is non-nil");
+            let version = component.version().to_owned();
+            let path = component.path().to_path_buf();
+            match component.kind() {
+                ItemKind::RunnerComponent { flavour } => {
+                    state.runners.insert(
+                        component.id(),
+                        RunnerComponent::new(
+                            id,
+                            version.clone(),
+                            version,
+                            flavour,
+                            Some(path.clone()),
+                            true,
+                        ),
+                    );
+                }
+                ItemKind::Addon { slot: Some(slot) } => {
+                    state.addons.insert(
+                        component.id(),
+                        Addon::new(
+                            id,
+                            version.clone(),
+                            version,
+                            Some(slot),
+                            vec![Resource::new(path.clone(), recipe_steps(slot).to_vec())],
+                            true,
+                        ),
+                    );
+                }
+                ItemKind::InternalComponent { role } => {
+                    state
+                        .internals
+                        .entry(role)
+                        .or_insert_with(|| InternalComponent::new(id, role, path.clone()));
+                }
+                ItemKind::Addon { slot: None } => {
+                    return Err(LibraryError::InvalidHandPlacedComponent(path).into());
+                }
+            }
+            state.stored.insert(
+                component.id(),
+                StoredItem {
+                    kind: component.kind(),
+                    path,
+                },
+            );
+        }
+        let umu = state.internals.get(&InternalRole::Umu).cloned();
+        for runner in state.runners.values_mut() {
+            runner.pair_umu(umu.clone());
+        }
+        Ok(state)
     }
-}
 
-#[derive(Clone, Debug)]
-pub struct ComponentStatus {
-    catalog: Option<CatalogComponentEntry>,
-    downloaded: Option<Component>,
-}
-
-impl ComponentStatus {
-    pub fn id(&self) -> Uuid {
-        self.catalog
+    fn entry(&self, id: Uuid) -> Option<&CatalogEntry> {
+        self.component_catalog
             .as_ref()
-            .map(CatalogComponentEntry::uuid)
-            .or_else(|| self.downloaded.as_ref().map(Component::id))
-            .expect("component status has catalog metadata or a download")
+            .and_then(|catalog| catalog.item(id))
+            .or_else(|| {
+                self.dependency_catalog
+                    .as_ref()
+                    .and_then(|catalog| catalog.item(id))
+            })
     }
 
-    pub fn version(&self) -> &str {
-        self.catalog
-            .as_ref()
-            .map(CatalogComponentEntry::version)
-            .or_else(|| self.downloaded.as_ref().map(Component::version))
-            .expect("component status has catalog metadata or a download")
-    }
-
-    pub fn kind(&self) -> ComponentKind {
-        self.catalog
-            .as_ref()
-            .map(CatalogComponentEntry::kind)
-            .or_else(|| self.downloaded.as_ref().map(Component::kind))
-            .expect("component status has catalog metadata or a download")
-    }
-
-    pub fn downloaded(&self) -> Option<&Component> {
-        self.downloaded.as_ref()
+    fn is_downloaded(&self, id: Uuid) -> bool {
+        self.stored.contains_key(&id)
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct DependencyStatus {
-    catalog: CatalogDependencyEntry,
-    downloaded: Option<Dependency>,
+async fn catalog_resources(
+    entry: &CatalogEntry,
+    matching: &[(usize, &CatalogArtifact)],
+    directories: &Directories,
+) -> (Vec<Resource>, Option<PathBuf>) {
+    if matching.is_empty() {
+        return (Vec::new(), None);
+    }
+    if entry.kind().is_single_artifact() {
+        let artifact = matching[0].1;
+        let path = directories
+            .component_category(entry.kind())
+            .expect("component-class item has category")
+            .join(artifact.file_name());
+        if !async_fs::metadata(&path)
+            .await
+            .is_ok_and(|metadata| metadata.is_dir())
+        {
+            return (Vec::new(), None);
+        }
+        let steps = match entry.kind() {
+            ItemKind::Addon { slot: Some(slot) } if artifact.steps().is_empty() => {
+                recipe_steps(slot).to_vec()
+            }
+            _ => artifact.steps().to_vec(),
+        };
+        return (vec![Resource::new(path.clone(), steps)], Some(path));
+    }
+
+    let root = directories.dependency(entry.id());
+    let mut resources = Vec::with_capacity(matching.len());
+    for (_, artifact) in matching {
+        let source = root.join(artifact.file_name());
+        if !async_fs::metadata(&source)
+            .await
+            .is_ok_and(|metadata| metadata.is_file())
+        {
+            return (Vec::new(), None);
+        }
+        resources.push(Resource::new(source, artifact.steps().to_vec()));
+    }
+    (resources, Some(root))
 }
 
-impl DependencyStatus {
-    pub fn id(&self) -> Uuid {
-        self.catalog.uuid()
+fn validate_catalog(catalog: &Catalog, kind: CatalogKind) -> Result<()> {
+    for item in catalog.items() {
+        let valid = matches!(
+            (kind, item.kind()),
+            (
+                CatalogKind::Components,
+                ItemKind::RunnerComponent { .. }
+                    | ItemKind::InternalComponent { .. }
+                    | ItemKind::Addon { slot: Some(_) },
+            ) | (CatalogKind::Dependencies, ItemKind::Addon { slot: None })
+        );
+        if !valid {
+            return Err(LibraryError::WrongCatalog {
+                item: item.id(),
+                catalog: kind,
+            }
+            .into());
+        }
     }
+    Ok(())
+}
 
-    pub fn name(&self) -> &str {
-        self.catalog.name()
-    }
+async fn load_catalog(path: &Path, kind: CatalogKind) -> Option<Arc<Catalog>> {
+    let bytes = async_fs::read(path).await.ok()?;
+    let catalog = Arc::new(serde_json::from_slice(&bytes).ok()?);
+    validate_catalog(&catalog, kind).ok()?;
+    Some(catalog)
+}
 
-    pub fn version(&self) -> &str {
-        self.catalog.version()
-    }
-
-    pub fn downloaded(&self) -> Option<&Dependency> {
-        self.downloaded.as_ref()
+fn catalog_path(directories: &Directories, kind: CatalogKind) -> PathBuf {
+    match kind {
+        CatalogKind::Components => directories.components().join("catalog.json"),
+        CatalogKind::Dependencies => directories.dependencies().join("catalog.json"),
     }
 }
 
 async fn download(
-    downloads: &DownloadManager,
+    downloader: &DownloadManager,
     url: Url,
     destination: &Path,
     cancellation: &CancellationToken,
     mut on_progress: impl FnMut(Transfer),
 ) -> Result<()> {
-    let download = downloads.download(url, destination)?;
+    let download = downloader.download(url, destination)?;
     let mut updates = Box::pin(
         download
             .progress()
@@ -757,25 +795,10 @@ async fn verify_checksum(
     checksum: &Checksum,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let actual = match checksum {
-        Checksum::Sha256(_) => digest::<Sha256>(path, cancellation).await?,
-        Checksum::Sha512(_) => digest::<Sha512>(path, cancellation).await?,
-    };
-    if actual.eq_ignore_ascii_case(checksum.value()) {
-        Ok(())
-    } else {
-        Err(LibraryError::ChecksumMismatch(path.to_path_buf()).into())
-    }
-}
-
-async fn digest<D>(path: &Path, cancellation: &CancellationToken) -> Result<String>
-where
-    D: Digest + Default,
-    sha2::digest::Output<D>: std::fmt::LowerHex,
-{
     let mut file = async_fs::File::open(path).await?;
-    let mut digest = D::new();
-    let mut buffer = [0; 64 * 1024];
+    let mut buffer = vec![0; 64 * 1024];
+    let mut sha256 = Sha256::new();
+    let mut sha512 = Sha512::new();
     loop {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
@@ -784,69 +807,36 @@ where
         if read == 0 {
             break;
         }
-        digest.update(&buffer[..read]);
+        match checksum {
+            Checksum::Sha256(_) => sha256.update(&buffer[..read]),
+            Checksum::Sha512(_) => sha512.update(&buffer[..read]),
+        }
     }
-    Ok(format!("{:x}", digest.finalize()))
+    let actual = match checksum {
+        Checksum::Sha256(_) => format!("{:x}", sha256.finalize()),
+        Checksum::Sha512(_) => format!("{:x}", sha512.finalize()),
+    };
+    if actual != checksum.value() {
+        return Err(LibraryError::ChecksumMismatch(path.to_path_buf()).into());
+    }
+    Ok(())
 }
 
 async fn top_level_directory(root: &Path) -> Result<PathBuf> {
     let mut entries = async_fs::read_dir(root).await?;
     let Some(entry) = entries.next().await.transpose()? else {
-        return Err(LibraryError::InvalidComponentArchive.into());
+        return Err(LibraryError::InvalidArchive.into());
     };
     if entries.next().await.transpose()?.is_some() || !entry.file_type().await?.is_dir() {
-        return Err(LibraryError::InvalidComponentArchive.into());
+        return Err(LibraryError::InvalidArchive.into());
     }
     Ok(entry.path())
 }
 
-async fn load_cached_catalog<T>(path: &Path) -> Option<Arc<T>>
-where
-    T: DeserializeOwned,
-{
-    match async_fs::read(path).await {
-        Ok(bytes) => match serde_json::from_slice(&bytes) {
-            Ok(catalog) => Some(Arc::new(catalog)),
-            Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "ignoring invalid catalog cache");
-                None
-            }
-        },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "ignoring unreadable catalog cache");
-            None
-        }
-    }
-}
-
-async fn save_downloaded_catalog<T>(download: &Path, cache: &Path) -> Result<T>
-where
-    T: DeserializeOwned,
-{
-    let result = async {
-        let bytes = async_fs::read(download).await?;
-        let catalog = serde_json::from_slice(&bytes)?;
-        async_fs::rename(download, cache).await?;
-        Ok(catalog)
-    }
-    .await;
-    if result.is_err() {
-        let _ = async_fs::remove_file(download).await;
-    }
-    result
-}
-
-fn component_catalog_path(directories: &Directories) -> PathBuf {
-    directories.components().join("catalog.json")
-}
-
-fn dependency_catalog_path(directories: &Directories) -> PathBuf {
-    directories.dependencies().join("catalog.json")
-}
-
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use download_manager::manager::DownloadManagerConfig;
     use http::Response;
     use http_client::{MockClient, body};
@@ -875,180 +865,169 @@ mod tests {
         format!("{:x}", Sha256::digest(bytes))
     }
 
-    #[test]
-    fn state_joins_catalog_downloads_and_resolves_recipes() {
-        let catalog_component = Component::new(
-            ComponentKind::Dxvk,
-            "1",
-            std::env::temp_dir().join("catalog-dxvk"),
-        )
-        .unwrap();
-        let local_component = Component::new(
-            ComponentKind::Vkd3d,
-            "local",
-            std::env::temp_dir().join("local-vkd3d"),
-        )
-        .unwrap();
-        let catalog: ComponentCatalog = serde_json::from_str(&format!(
+    fn catalog(id: &str, kind: &str, file_name: &str) -> Catalog {
+        serde_json::from_str(&format!(
             r#"{{
                 "schema_version": 1,
                 "items": [{{
-                    "id": "{}",
+                    "id": "{id}",
+                    "name": "test",
                     "version": "1",
-                    "kind": {{ "type": "dxvk" }},
+                    "kind": {kind},
                     "artifacts": [{{
-                        "url": "https://example.test/dxvk.tar.gz",
-                        "file_name": "dxvk.tar.gz",
+                        "url": "https://example.test/item",
+                        "file_name": "{file_name}",
                         "checksum": {{ "algorithm": "sha256", "value": "abc" }}
-                    }}],
-                    "steps": [{{
-                        "action": "set-environment",
-                        "name": "FROM_CATALOG",
-                        "value": "yes"
                     }}]
                 }}]
             }}"#,
-            catalog_component.id()
         ))
-        .unwrap();
-        let state = LibraryState::new(
-            Some(Arc::new(catalog)),
-            None,
-            vec![catalog_component.clone(), local_component.clone()],
-            Vec::new(),
-        );
-
-        assert_eq!(state.components().len(), 2);
-        assert!(
-            state
-                .component(catalog_component.id())
-                .unwrap()
-                .catalog
-                .is_some()
-        );
-        assert!(
-            state
-                .component(local_component.id())
-                .unwrap()
-                .catalog
-                .is_none()
-        );
-        assert!(matches!(
-            state.component_steps(&catalog_component).as_slice(),
-            [InstallStep::SetEnvironment { name, value }]
-                if name == "FROM_CATALOG" && value == "yes"
-        ));
-        assert!(!state.component_steps(&local_component).is_empty());
+        .unwrap()
     }
 
     #[test]
-    fn catalog_refresh_publishes_independent_successes() {
-        let executor = async_executor::Executor::new();
-        futures_lite::future::block_on(executor.run(async {
-            let component_catalog = r#"{
-                "schema_version": 1,
-                "items": [{
-                    "id": "00000000-0000-0000-0000-000000000002",
-                    "version": "1",
-                    "kind": { "type": "dxvk" },
-                    "artifacts": [{
-                        "url": "https://example.test/dxvk.tar.gz",
-                        "file_name": "dxvk.tar.gz",
-                        "checksum": { "algorithm": "sha256", "value": "abc" }
-                    }]
-                }]
-            }"#;
-            let client = Arc::new(MockClient::new(move |request| {
-                let bytes = if request.uri().path().ends_with("components.json") {
-                    component_catalog
-                } else {
-                    "invalid dependency catalog"
-                };
-                Ok(Response::builder().status(200).body(body(bytes))?)
-            }));
-            let (downloads, scheduler) =
-                DownloadManager::new(client, DownloadManagerConfig::default());
-            let scheduler = executor.spawn(scheduler);
-            let root =
-                std::env::temp_dir().join(format!("bottles-next-library-{}", Uuid::new_v4()));
+    fn catalogs_accept_only_their_addon_class() {
+        let component = catalog(
+            "00000000-0000-0000-0000-000000000001",
+            r#"{ "type": "addon", "slot": "dxvk" }"#,
+            "dxvk",
+        );
+        let dependency = catalog(
+            "00000000-0000-0000-0000-000000000002",
+            r#"{ "type": "addon" }"#,
+            "dependency.dll",
+        );
+
+        validate_catalog(&component, CatalogKind::Components).unwrap();
+        validate_catalog(&dependency, CatalogKind::Dependencies).unwrap();
+        assert!(validate_catalog(&component, CatalogKind::Dependencies).is_err());
+        assert!(validate_catalog(&dependency, CatalogKind::Components).is_err());
+    }
+
+    #[test]
+    fn catalog_items_use_component_and_dependency_layouts() {
+        futures_lite::future::block_on(async {
+            let root = std::env::temp_dir().join(format!("bottles-next-layout-{}", Uuid::new_v4()));
             let directories = Directories::from_path(&root).unwrap();
-            let library = Library::load(
-                directories,
-                Some(Url::parse("https://example.test/components.json").unwrap()),
-                Some(Url::parse("https://example.test/dependencies.json").unwrap()),
-                Arc::new(downloads),
+            let component_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+            let dependency_id = Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+            let component_path = directories.components().join("dxvk/dxvk-2.4");
+            let dependency_path = directories.dependency(dependency_id);
+            fs::create_dir_all(&component_path).unwrap();
+            fs::create_dir_all(&dependency_path).unwrap();
+            fs::write(dependency_path.join("dependency.dll"), []).unwrap();
+
+            let state = LibraryState::load(
+                Some(Arc::new(catalog(
+                    &component_id.to_string(),
+                    r#"{ "type": "addon", "slot": "dxvk" }"#,
+                    "dxvk-2.4",
+                ))),
+                Some(Arc::new(catalog(
+                    &dependency_id.to_string(),
+                    r#"{ "type": "addon" }"#,
+                    "dependency.dll",
+                ))),
+                &directories,
             )
             .await
             .unwrap();
 
-            assert!(library.refresh_catalogs().await.is_err());
-            assert!(library.state().has_component_catalog());
-            assert!(!library.state().has_dependency_catalog());
-
-            drop(library);
-            scheduler.await;
-            async_fs::remove_dir_all(root).await.unwrap();
-        }));
+            assert_eq!(state.stored[&component_id].path, component_path);
+            assert_eq!(state.stored[&dependency_id].path, dependency_path);
+            assert!(
+                index::scan(&directories)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|component| component.id() == component_id)
+            );
+            fs::remove_dir_all(root).unwrap();
+        });
     }
 
     #[test]
-    fn downloads_and_deletes_components_and_dependencies() {
+    fn hand_placed_addon_uses_recipe_and_can_be_removed() {
+        futures_lite::future::block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("bottles-next-library-{}", Uuid::new_v4()));
+            let directories = Directories::from_path(&root).unwrap();
+            let path = directories.components().join("dxvk/2.4");
+            fs::create_dir_all(&path).unwrap();
+            let client =
+                http_client::MockClient::new(|_| Ok(http::Response::new(http_client::body([]))));
+            let (downloader, _scheduler) = download_manager::manager::DownloadManager::new(
+                Arc::new(client),
+                download_manager::manager::DownloadManagerConfig::default(),
+            );
+            let library = Library::load(directories.clone(), None, None, Arc::new(downloader))
+                .await
+                .unwrap();
+
+            let addon = library.addons().pop().unwrap();
+            assert_eq!(addon.slot(), Some(super::super::Slot::Dxvk));
+            assert_eq!(addon.availability(), super::super::Availability::Downloaded);
+            assert!(!addon.prepare().unwrap()[0].steps.is_empty());
+            library.remove(addon.id()).await.unwrap();
+            assert!(library.addons().is_empty());
+            assert!(!path.exists());
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    fn fetch_and_remove_use_restored_layouts() {
         let executor = async_executor::Executor::new();
         futures_lite::future::block_on(executor.run(async {
             let component_id = Uuid::new_v4();
             let dependency_id = Uuid::new_v4();
             let component_archive = tar("dxvk-1/x64/d3d11.dll", b"dll").await;
             let dependency_file = b"installer".to_vec();
-            let root =
-                std::env::temp_dir().join(format!("bottles-next-library-{}", Uuid::new_v4()));
+            let root = std::env::temp_dir().join(format!("bottles-next-fetch-{}", Uuid::new_v4()));
             let directories = Directories::from_path(&root).unwrap();
             async_fs::write(
-                component_catalog_path(&directories),
-                format!(
-                    r#"{{
-                        "schema_version": 1,
-                        "items": [{{
-                            "id": "{component_id}",
-                            "version": "1",
-                            "kind": {{ "type": "dxvk" }},
-                            "artifacts": [{{
-                                "url": "https://example.test/dxvk.tar",
-                                "file_name": "dxvk.tar",
-                                "checksum": {{
-                                    "algorithm": "sha256",
-                                    "value": "{}"
-                                }}
-                            }}]
-                        }}]
-                    }}"#,
-                    sha256(&component_archive)
-                ),
+                catalog_path(&directories, CatalogKind::Components),
+                serde_json::json!({
+                    "schema_version": 1,
+                    "items": [{
+                        "id": component_id,
+                        "name": "DXVK",
+                        "version": "1",
+                        "kind": { "type": "addon", "slot": "dxvk" },
+                        "artifacts": [{
+                            "url": "https://example.test/dxvk.tar",
+                            "file_name": "dxvk.tar",
+                            "checksum": {
+                                "algorithm": "sha256",
+                                "value": sha256(&component_archive)
+                            }
+                        }]
+                    }]
+                })
+                .to_string(),
             )
             .await
             .unwrap();
             async_fs::write(
-                dependency_catalog_path(&directories),
-                format!(
-                    r#"{{
-                        "schema_version": 1,
-                        "items": [{{
-                            "id": "{dependency_id}",
-                            "name": "runtime",
-                            "version": "1",
-                            "resources": [{{
-                                "url": "https://example.test/runtime.exe",
-                                "file_name": "runtime.exe",
-                                "checksum": {{
-                                    "algorithm": "sha256",
-                                    "value": "{}"
-                                }},
-                                "target_arch": "x86_64",
-                                "steps": []
-                            }}]
-                        }}]
-                    }}"#,
-                    sha256(&dependency_file)
-                ),
+                catalog_path(&directories, CatalogKind::Dependencies),
+                serde_json::json!({
+                    "schema_version": 1,
+                    "items": [{
+                        "id": dependency_id,
+                        "name": "Runtime",
+                        "version": "1",
+                        "kind": { "type": "addon" },
+                        "artifacts": [{
+                            "url": "https://example.test/runtime.exe",
+                            "file_name": "runtime.exe",
+                            "checksum": {
+                                "algorithm": "sha256",
+                                "value": sha256(&dependency_file)
+                            }
+                        }]
+                    }]
+                })
+                .to_string(),
             )
             .await
             .unwrap();
@@ -1062,45 +1041,37 @@ mod tests {
                 };
                 Ok(Response::builder().status(200).body(body(bytes))?)
             }));
-            let (downloads, scheduler) =
+            let (downloader, scheduler) =
                 DownloadManager::new(client, DownloadManagerConfig::default());
             let scheduler = executor.spawn(scheduler);
-            let library = Library::load(directories, None, None, Arc::new(downloads))
+            let library = Library::load(directories.clone(), None, None, Arc::new(downloader))
                 .await
                 .unwrap();
 
-            let component = library.download_component(component_id).await.unwrap();
-            assert_eq!(component.id(), component_id);
-            assert!(component.path().ends_with("dxvk/dxvk.tar"));
-            let dependency = library.download_dependency(dependency_id).await.unwrap();
-            assert_eq!(dependency.id(), dependency_id);
+            library.fetch(component_id).await.unwrap();
+            library.fetch(dependency_id).await.unwrap();
+            assert!(directories.components().join("dxvk/dxvk.tar").is_dir());
             assert!(
-                root.join(format!("dependencies/{dependency_id}/runtime.exe"))
+                directories
+                    .dependency(dependency_id)
+                    .join("runtime.exe")
                     .is_file()
             );
-
-            library.delete_component(component_id).await.unwrap();
-            library.delete_dependency(dependency_id).await.unwrap();
             assert!(
-                library
-                    .state()
-                    .component(component_id)
+                index::scan(&directories)
+                    .await
                     .unwrap()
-                    .downloaded()
-                    .is_none()
-            );
-            assert!(
-                library
-                    .state()
-                    .dependency(dependency_id)
-                    .unwrap()
-                    .downloaded()
-                    .is_none()
+                    .iter()
+                    .any(|component| component.id() == component_id)
             );
 
+            library.remove(component_id).await.unwrap();
+            library.remove(dependency_id).await.unwrap();
+            assert!(!directories.components().join("dxvk/dxvk.tar").exists());
+            assert!(!directories.dependency(dependency_id).exists());
             drop(library);
             scheduler.await;
-            async_fs::remove_dir_all(root).await.unwrap();
+            fs::remove_dir_all(root).unwrap();
         }));
     }
 }

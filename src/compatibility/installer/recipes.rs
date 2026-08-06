@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use crate::{
-    compatibility::{components::catalog::ComponentKind, installer::InstallStep},
+    compatibility::{Slot, installer::InstallStep},
     proto::DllOverrideMode,
 };
 
@@ -147,12 +147,11 @@ static LATENCY_FLEX_STEPS: LazyLock<Vec<InstallStep>> = LazyLock::new(|| {
     ]
 });
 
-pub(crate) fn component_steps(kind: ComponentKind) -> Option<&'static [InstallStep]> {
-    match kind {
-        ComponentKind::Dxvk => Some(&DXVK_STEPS),
-        ComponentKind::Vkd3d => Some(&VKD3D_STEPS),
-        ComponentKind::Nvapi => Some(&NVAPI_STEPS),
-        ComponentKind::LatencyFlex => Some(&LATENCY_FLEX_STEPS),
-        ComponentKind::Runner { .. } | ComponentKind::Winebridge | ComponentKind::Umu => None,
+pub(crate) fn steps(slot: Slot) -> &'static [InstallStep] {
+    match slot {
+        Slot::Dxvk => &DXVK_STEPS,
+        Slot::Vkd3d => &VKD3D_STEPS,
+        Slot::Nvapi => &NVAPI_STEPS,
+        Slot::LatencyFlex => &LATENCY_FLEX_STEPS,
     }
 }
