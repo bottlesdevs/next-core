@@ -44,7 +44,7 @@ struct LibraryInner {
     directories: Directories,
     component_catalog_url: Option<Url>,
     dependency_catalog_url: Option<Url>,
-    downloads: Arc<DownloadManager>,
+    downloader: Arc<DownloadManager>,
     published: watch::Sender<Arc<LibraryState>>,
     write: Mutex<()>,
 }
@@ -73,7 +73,7 @@ impl Library {
             directories,
             component_catalog_url,
             dependency_catalog_url,
-            downloads,
+            downloader: downloads,
             published,
             write: Mutex::new(()),
         })))
@@ -301,7 +301,7 @@ impl Library {
         let file_name = artifact.file_name();
         let archive_path = stage.join(file_name);
         download(
-            &self.0.downloads,
+            &self.0.downloader,
             artifact.url().clone(),
             &archive_path,
             cancellation,
@@ -395,7 +395,7 @@ impl Library {
             let file_name = resource.file_name();
             let destination = stage.join(file_name);
             download(
-                &self.0.downloads,
+                &self.0.downloader,
                 resource.url().clone(),
                 &destination,
                 cancellation,
@@ -455,7 +455,7 @@ impl Library {
         async_fs::create_dir_all(&staging).await?;
         let destination = staging.join(format!("catalog-{}.json", Uuid::new_v4()));
         let result = download(
-            &self.0.downloads,
+            &self.0.downloader,
             url,
             &destination,
             cancellation,

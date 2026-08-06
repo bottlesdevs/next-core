@@ -1,63 +1,58 @@
 use crate::{
     Directories,
-    compatibility::{
-        Library,
-        components::Component,
-        installer::{InstallStep, component_steps},
-    },
+    compatibility::{Library, components::Component, installer::InstallStep},
     error::{Error, Result},
     utils::absolute_path,
 };
 use fvs_rs::Fvs2dClient;
-use std::{
-    path::PathBuf,
-    sync::{Arc, OnceLock},
-};
+use std::{path::PathBuf, sync::Arc};
 use tokio::sync::OnceCell;
 
 struct ContextInner {
     directories: Directories,
     fvs2d_executable: Option<PathBuf>,
     fvs: OnceCell<Fvs2dClient>,
-    library: OnceLock<Library>,
+    library: Library,
 }
 
 #[derive(Clone)]
 pub(crate) struct Context(Arc<ContextInner>);
 
 impl Context {
-    pub(crate) fn new(directories: Directories, fvs2d_executable: Option<PathBuf>) -> Result<Self> {
+    pub(crate) fn new(
+        directories: Directories,
+        fvs2d_executable: Option<PathBuf>,
+        library: Library,
+    ) -> Result<Self> {
         Ok(Self(Arc::new(ContextInner {
             directories,
             fvs2d_executable: fvs2d_executable.map(absolute_path).transpose()?,
             fvs: OnceCell::new(),
-            library: OnceLock::new(),
+            library,
         })))
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn for_test(
+        directories: Directories,
+        fvs2d_executable: Option<PathBuf>,
+    ) -> Result<Self> {
+        let client =
+            http_client::MockClient::new(|_| Ok(http::Response::new(http_client::body([]))));
+        let (downloads, _scheduler) = download_manager::manager::DownloadManager::new(
+            Arc::new(client),
+            download_manager::manager::DownloadManagerConfig::default(),
+        );
+        let library = Library::load(directories.clone(), None, None, Arc::new(downloads)).await?;
+        Self::new(directories, fvs2d_executable, library)
     }
 
     pub(crate) fn directories(&self) -> &Directories {
         &self.0.directories
     }
 
-    pub(crate) fn set_library(&self, library: Library) {
-        self.0
-            .library
-            .set(library)
-            .unwrap_or_else(|_| panic!("context library already initialized"));
-    }
-
-    pub(crate) fn library(&self) -> Option<&Library> {
-        self.0.library.get()
-    }
-
     pub(crate) fn component_steps(&self, component: &Component) -> Vec<InstallStep> {
-        if let Some(library) = self.library() {
-            return library.component_steps(component);
-        }
-
-        component_steps(component.kind())
-            .unwrap_or_default()
-            .to_vec()
+        self.0.library.component_steps(component)
     }
 
     pub(crate) async fn fvs(&self) -> Result<&Fvs2dClient> {

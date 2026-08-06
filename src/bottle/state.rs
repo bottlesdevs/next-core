@@ -350,10 +350,11 @@ mod tests {
                 fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
                 fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
             }
-            let context = Context::new(
+            let context = Context::for_test(
                 crate::Directories::from_path(root.join("data")).unwrap(),
                 Some(root.join("fvs2d")),
             )
+            .await
             .unwrap();
             let id = Uuid::new_v4();
             fs::create_dir_all(context.directories().bottle(id)).unwrap();
@@ -434,10 +435,11 @@ mod tests {
     fn runner_components_require_set_runner() {
         futures_lite::future::block_on(async {
             let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
-            let context = Context::new(
+            let context = Context::for_test(
                 crate::Directories::from_path(root.join("data")).unwrap(),
                 Some(root.join("fvs2d")),
             )
+            .await
             .unwrap();
             let wine = Component::new(
                 ComponentKind::Runner {

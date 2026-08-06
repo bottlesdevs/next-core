@@ -63,10 +63,14 @@ fn bottle_managers_are_scoped_to_their_context_roots() {
         }
 
         let left_manager = BottleManager::new(
-            Context::new(left.clone(), Some(left.data_dir().join("fvs2d"))).unwrap(),
+            Context::for_test(left.clone(), Some(left.data_dir().join("fvs2d")))
+                .await
+                .unwrap(),
         );
         let right_manager = BottleManager::new(
-            Context::new(right.clone(), Some(right.data_dir().join("fvs2d"))).unwrap(),
+            Context::for_test(right.clone(), Some(right.data_dir().join("fvs2d")))
+                .await
+                .unwrap(),
         );
 
         assert_eq!(
@@ -119,10 +123,11 @@ fn list_reports_corrupt_bottles() {
         )
         .unwrap();
         let manager = BottleManager::new(
-            Context::new(
+            Context::for_test(
                 directories.clone(),
                 Some(directories.data_dir().join("fvs2d")),
             )
+            .await
             .unwrap(),
         );
 
@@ -243,10 +248,11 @@ mod unix {
     fn components_and_programs_round_trip_through_bottle_toml() {
         futures_lite::future::block_on(async {
             let directories = test_directories();
-            let context = Context::new(
+            let context = Context::for_test(
                 directories.clone(),
                 Some(directories.data_dir().join("fvs2d")),
             )
+            .await
             .unwrap();
             let assets = directories
                 .data_dir()

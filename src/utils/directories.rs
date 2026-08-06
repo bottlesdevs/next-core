@@ -12,9 +12,9 @@ use crate::{
 pub struct Directories(ProjectDirs);
 
 impl Directories {
-    pub async fn for_project(project_name: &str) -> Result<Self> {
+    pub(crate) async fn new() -> Result<Self> {
         let directories = Self(
-            ProjectDirs::from("com", "usebottles", project_name)
+            ProjectDirs::from("com", "usebottles", "bottles-next")
                 .ok_or(BottleError::ProjectDirectoriesUnavailable)?,
         );
         for directory in directories.paths() {
@@ -35,26 +35,26 @@ impl Directories {
         Ok(directories)
     }
 
-    pub fn data_dir(&self) -> &Path {
+    pub(crate) fn data_dir(&self) -> &Path {
         self.0.data_local_dir()
     }
 
-    pub fn runtime_dir(&self) -> PathBuf {
+    pub(crate) fn runtime_dir(&self) -> PathBuf {
         self.0
             .runtime_dir()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.data_dir().join("runtime"))
     }
 
-    pub fn bottles(&self) -> PathBuf {
+    pub(crate) fn bottles(&self) -> PathBuf {
         self.data_dir().join("bottles")
     }
 
-    pub fn bottle(&self, id: Uuid) -> PathBuf {
+    pub(crate) fn bottle(&self, id: Uuid) -> PathBuf {
         self.bottles().join(id.to_string())
     }
 
-    pub fn components(&self) -> PathBuf {
+    pub(crate) fn components(&self) -> PathBuf {
         self.data_dir().join("components")
     }
 
@@ -66,7 +66,7 @@ impl Directories {
         self.components().join("index.toml")
     }
 
-    pub fn dependencies(&self) -> PathBuf {
+    pub(crate) fn dependencies(&self) -> PathBuf {
         self.data_dir().join("dependencies")
     }
 

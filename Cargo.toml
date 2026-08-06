@@ -11,6 +11,7 @@ async-process.workspace = true
 async-trait.workspace = true
 blocking.workspace = true
 download-manager.workspace = true
+http-client = { workspace = true, features = ["reqwest"] }
 next-config.workspace = true
 next-proto.workspace = true
 fvs-rs.workspace = true
@@ -21,7 +22,7 @@ thiserror.workspace = true
 tracing.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["rt", "sync"] }
 directories.workspace = true
 futures-core.workspace = true
 futures-lite.workspace = true
@@ -36,5 +37,4 @@ uuid = { workspace = true, features = ["serde"] }
 [dev-dependencies]
 async-executor.workspace = true
 http.workspace = true
-http-client.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "time"] }

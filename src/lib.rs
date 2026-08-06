@@ -16,8 +16,8 @@ pub use bottle::{
     SetRunnerProgress, Snapshot, SnapshotProgress, SnapshotSummary, Wrappers,
 };
 pub use compatibility::{
-    Architecture, CatalogKind, Checksum, ComponentStatus, DependencyStatus, Library,
-    LibraryError, LibraryProgress, LibraryState, OperatingSystem, Target,
+    Architecture, CatalogKind, Checksum, ComponentStatus, DependencyStatus, Library, LibraryError,
+    LibraryProgress, LibraryState, OperatingSystem, Target,
     components::{
         Component,
         catalog::{CatalogComponentEntry, ComponentArtifact, ComponentCatalog, ComponentKind},
@@ -28,11 +28,11 @@ pub use compatibility::{
     },
     installer::{InstallProgress, UninstallProgress},
 };
-pub use core::{Core, CoreBuilder};
+pub use core::{Bottles, Config};
 pub use operation::Operation;
 pub use prefix::{TransactionPhase, TransactionProgress, Transfer};
 pub use runner::RunnerKind;
-pub use utils::{directories::Directories as Paths, environment::Environment};
+pub use utils::environment::Environment;
 
 pub(crate) use next_proto::winebridge as proto;
 pub(crate) use utils::{context::Context, directories::Directories};
