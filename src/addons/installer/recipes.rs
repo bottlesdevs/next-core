@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use crate::{
-    compatibility::{Slot, installer::InstallStep},
+    addons::{Slot, installer::InstallStep},
     proto::DllOverrideMode,
 };
 

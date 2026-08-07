@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use uuid::{NonNilUuid, Uuid};
 
 use crate::{
-    compatibility::{
+    addons::{
         Architecture, Checksum, Target, deserialize_non_empty_string, deserialize_non_empty_vec,
     },
     runner::RunnerKind,

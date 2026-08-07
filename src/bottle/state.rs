@@ -15,7 +15,7 @@ use uuid::Uuid;
 use super::{edit::BottleEdit, error::BottleError};
 use crate::{
     Context,
-    compatibility::{Addon, RunnerComponent, Slot, item::InternalComponent},
+    addons::{Addon, RunnerComponent, Slot, item::InternalComponent},
     error::Result,
     prefix::Prefix,
     utils::environment::Environment,

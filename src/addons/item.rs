@@ -125,7 +125,7 @@ impl RunnerComponent {
     pub(crate) fn installed_path(&self) -> Result<&Path> {
         self.path
             .as_deref()
-            .ok_or_else(|| super::LibraryError::ItemNotDownloaded(self.id()).into())
+            .ok_or_else(|| super::AddonError::ItemNotDownloaded(self.id()).into())
     }
 
     pub(crate) fn pair_umu(&mut self, umu: Option<InternalComponent>) {
@@ -232,7 +232,7 @@ impl Addon {
 
     pub(crate) fn prepare(&self) -> Result<Vec<InstallResource>> {
         if self.resources.is_empty() {
-            return Err(super::LibraryError::ItemNotDownloaded(self.id()).into());
+            return Err(super::AddonError::ItemNotDownloaded(self.id()).into());
         }
         Ok(self.resources.iter().map(Resource::install).collect())
     }

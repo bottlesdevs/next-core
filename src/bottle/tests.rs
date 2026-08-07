@@ -1,7 +1,7 @@
 use crate::{
     Context, Directories,
+    addons::{Addon, RunnerComponent, Slot, catalog::InternalRole, item::InternalComponent},
     bottle::{BottleManager, BottleState, BottleType},
-    compatibility::{Addon, RunnerComponent, Slot, catalog::InternalRole, item::InternalComponent},
     prefix::Prefix,
     runner::RunnerKind,
     utils::environment::Environment,

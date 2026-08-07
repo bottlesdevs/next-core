@@ -5,7 +5,7 @@ use http_client::ReqwestClient;
 use tokio::runtime::Handle;
 use url::Url;
 
-use crate::{BottleManager, Context, Directories, Library, error::Result};
+use crate::{Addons, BottleManager, Context, Directories, error::Result};
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -16,7 +16,7 @@ pub struct Config {
 
 pub struct Bottles {
     bottles: BottleManager,
-    library: Library,
+    addons: Addons,
     downloader: Arc<DownloadManager>,
 }
 
@@ -34,18 +34,18 @@ impl Bottles {
             DownloadManager::new(Arc::new(client), DownloadManagerConfig::default());
         let _ = runtime.spawn(scheduler);
         let downloader = Arc::new(downloader);
-        let library = Library::load(
+        let addons = Addons::load(
             directories.clone(),
             component_catalog,
             dependency_catalog,
             downloader.clone(),
         )
         .await?;
-        let context = Context::new(directories, fvs2d, library.clone())?;
+        let context = Context::new(directories, fvs2d, addons.clone())?;
 
         Ok(Self {
             bottles: BottleManager::new(context),
-            library,
+            addons,
             downloader,
         })
     }
@@ -59,7 +59,7 @@ impl Bottles {
         &self.bottles
     }
 
-    pub fn library(&self) -> &Library {
-        &self.library
+    pub fn addons(&self) -> &Addons {
+        &self.addons
     }
 }

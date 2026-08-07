@@ -1,8 +1,8 @@
 use thiserror::Error;
 
 pub use crate::{
+    addons::{AddonError, installer::InstallerError},
     bottle::error::{BottleError, VirgoError},
-    compatibility::{LibraryError, installer::InstallerError},
     runner::RunnerError,
     utils::archive::ArchiveError,
     winebridge::BridgeError,
@@ -37,8 +37,8 @@ pub enum Error {
     Archive(#[from] ArchiveError),
     #[error("installer error: {0}")]
     Installer(#[from] InstallerError),
-    #[error("library error: {0}")]
-    Library(#[from] LibraryError),
+    #[error("addon error: {0}")]
+    Addon(#[from] AddonError),
     #[error("download error: {0}")]
     Download(#[from] download_manager::error::Error),
     #[error("fvs2d executable is not configured")]

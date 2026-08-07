@@ -5,8 +5,8 @@ use ::directories::ProjectDirs;
 use uuid::Uuid;
 
 use crate::{
+    addons::catalog::{ItemKind, category},
     bottle::error::BottleError,
-    compatibility::catalog::{ItemKind, category},
     error::Result,
 };
 

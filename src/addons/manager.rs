@@ -28,18 +28,18 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct Library(Arc<LibraryInner>);
+pub struct Addons(Arc<AddonsInner>);
 
-struct LibraryInner {
+struct AddonsInner {
     directories: Directories,
     component_catalog_url: Option<Url>,
     dependency_catalog_url: Option<Url>,
     downloader: Arc<DownloadManager>,
-    published: watch::Sender<Arc<LibraryState>>,
+    published: watch::Sender<Arc<AddonsState>>,
     write: Mutex<()>,
 }
 
-impl Library {
+impl Addons {
     pub(crate) async fn load(
         directories: Directories,
         component_catalog_url: Option<Url>,
@@ -56,9 +56,9 @@ impl Library {
             CatalogKind::Dependencies,
         )
         .await;
-        let state = LibraryState::load(component_catalog, dependency_catalog, &directories).await?;
+        let state = AddonsState::load(component_catalog, dependency_catalog, &directories).await?;
         let (published, _) = watch::channel(Arc::new(state));
-        Ok(Self(Arc::new(LibraryInner {
+        Ok(Self(Arc::new(AddonsInner {
             directories,
             component_catalog_url,
             dependency_catalog_url,
@@ -133,7 +133,7 @@ impl Library {
 
             match (component, dependency) {
                 (Ok(_), Ok(_)) => Ok(()),
-                (component, dependency) => Err(LibraryError::CatalogRefresh {
+                (component, dependency) => Err(AddonError::CatalogRefresh {
                     components: component.err().map(|error| error.to_string()),
                     dependencies: dependency.err().map(|error| error.to_string()),
                 }
@@ -152,11 +152,11 @@ impl Library {
             let entry = state
                 .entry(id)
                 .cloned()
-                .ok_or(LibraryError::ItemNotFound(id))?;
-            let target = Target::current().ok_or(LibraryError::UnsupportedItem(id))?;
+                .ok_or(AddonError::ItemNotFound(id))?;
+            let target = Target::current().ok_or(AddonError::UnsupportedItem(id))?;
             let artifacts = entry.matching_artifacts(target).collect::<Vec<_>>();
             if artifacts.is_empty() {
-                return Err(LibraryError::UnsupportedItem(id).into());
+                return Err(AddonError::UnsupportedItem(id).into());
             }
 
             let staging_root = library.0.directories.data_dir().join(".staging");
@@ -178,9 +178,9 @@ impl Library {
             .stored
             .get(&id)
             .cloned()
-            .ok_or(LibraryError::ItemNotFound(id))?;
+            .ok_or(AddonError::ItemNotFound(id))?;
         if !exists(&stored.path).await? {
-            return Err(LibraryError::ItemNotFound(id).into());
+            return Err(AddonError::ItemNotFound(id).into());
         }
         async_fs::remove_dir_all(&stored.path).await?;
         if stored.kind.is_single_artifact() {
@@ -198,10 +198,10 @@ impl Library {
             .internals
             .get(&InternalRole::Winebridge)
             .cloned()
-            .ok_or_else(|| LibraryError::InternalNotDownloaded("winebridge").into())
+            .ok_or_else(|| AddonError::InternalNotDownloaded("winebridge").into())
     }
 
-    fn state(&self) -> Arc<LibraryState> {
+    fn state(&self) -> Arc<AddonsState> {
         self.0.published.borrow().clone()
     }
 
@@ -212,7 +212,7 @@ impl Library {
         progress: watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<(Arc<Catalog>, Vec<u8>)> {
-        let url = url.ok_or(LibraryError::CatalogUrlNotConfigured(kind))?;
+        let url = url.ok_or(AddonError::CatalogUrlNotConfigured(kind))?;
         let staging = self.0.directories.data_dir().join(".staging");
         async_fs::create_dir_all(&staging).await?;
         let downloaded = staging.join(format!("catalog-{}.json", Uuid::new_v4()));
@@ -276,7 +276,7 @@ impl Library {
     ) -> Result<()> {
         let (_, artifact) = artifacts
             .first()
-            .ok_or(LibraryError::UnsupportedItem(entry.id()))?;
+            .ok_or(AddonError::UnsupportedItem(entry.id()))?;
         let file = stage.join(artifact.file_name());
         download(
             &self.0.downloader,
@@ -315,9 +315,9 @@ impl Library {
         let component_category = category(entry.kind()).expect("component-class item has category");
         let found = index::detect_kind(component_category, &release)
             .await?
-            .ok_or_else(|| LibraryError::InvalidHandPlacedComponent(release.clone()))?;
+            .ok_or_else(|| AddonError::InvalidHandPlacedComponent(release.clone()))?;
         if found != entry.kind() {
-            return Err(LibraryError::ComponentKindMismatch {
+            return Err(AddonError::ComponentKindMismatch {
                 expected: format!("{:?}", entry.kind()),
                 found: format!("{found:?}"),
             }
@@ -335,7 +335,7 @@ impl Library {
             return Ok(());
         }
         if exists(&target).await? {
-            return Err(LibraryError::TargetExists(target).into());
+            return Err(AddonError::TargetExists(target).into());
         }
         async_fs::create_dir_all(category_root).await?;
         async_fs::rename(release, &target).await?;
@@ -403,7 +403,7 @@ impl Library {
             return Ok(());
         }
         if exists(&target).await? {
-            return Err(LibraryError::TargetExists(target).into());
+            return Err(AddonError::TargetExists(target).into());
         }
         async_fs::rename(stage, &target).await?;
         let state = self.state();
@@ -420,7 +420,7 @@ impl Library {
         dependency_catalog: Option<Arc<Catalog>>,
     ) -> Result<()> {
         let state =
-            LibraryState::load(component_catalog, dependency_catalog, &self.0.directories).await?;
+            AddonsState::load(component_catalog, dependency_catalog, &self.0.directories).await?;
         self.0.published.send_replace(Arc::new(state));
         Ok(())
     }
@@ -433,7 +433,7 @@ pub enum CatalogKind {
 }
 
 #[derive(Debug, Error)]
-pub enum LibraryError {
+pub enum AddonError {
     #[error("catalog refresh failed (components: {components:?}, dependencies: {dependencies:?})")]
     CatalogRefresh {
         components: Option<String>,
@@ -445,9 +445,9 @@ pub enum LibraryError {
     WrongCatalog { item: Uuid, catalog: CatalogKind },
     #[error("catalogs contain duplicate item {0}")]
     DuplicateItem(Uuid),
-    #[error("library item {0} was not found")]
+    #[error("addon item {0} was not found")]
     ItemNotFound(Uuid),
-    #[error("library item {0} is not downloaded")]
+    #[error("addon item {0} is not downloaded")]
     ItemNotDownloaded(Uuid),
     #[error("no artifact supports this system for item {0}")]
     UnsupportedItem(Uuid),
@@ -461,12 +461,12 @@ pub enum LibraryError {
     ComponentKindMismatch { expected: String, found: String },
     #[error("hand-placed component could not be identified: {0}")]
     InvalidHandPlacedComponent(PathBuf),
-    #[error("library target already exists: {0}")]
+    #[error("addon target already exists: {0}")]
     TargetExists(PathBuf),
 }
 
 #[derive(Clone, Debug)]
-struct LibraryState {
+struct AddonsState {
     component_catalog: Option<Arc<Catalog>>,
     dependency_catalog: Option<Arc<Catalog>>,
     runners: HashMap<Uuid, RunnerComponent>,
@@ -481,7 +481,7 @@ struct StoredItem {
     path: PathBuf,
 }
 
-impl LibraryState {
+impl AddonsState {
     async fn load(
         component_catalog: Option<Arc<Catalog>>,
         dependency_catalog: Option<Arc<Catalog>>,
@@ -505,7 +505,7 @@ impl LibraryState {
             .flat_map(|catalog| catalog.items())
         {
             if !ids.insert(entry.id()) {
-                return Err(LibraryError::DuplicateItem(entry.id()).into());
+                return Err(AddonError::DuplicateItem(entry.id()).into());
             }
             let matching = target
                 .map(|target| entry.matching_artifacts(target).collect::<Vec<_>>())
@@ -586,7 +586,7 @@ impl LibraryState {
                 continue;
             }
             if !ids.insert(component.id()) {
-                return Err(LibraryError::DuplicateItem(component.id()).into());
+                return Err(AddonError::DuplicateItem(component.id()).into());
             }
             let id = NonNilUuid::new(component.id()).expect("index UUID is non-nil");
             let version = component.version().to_owned();
@@ -625,7 +625,7 @@ impl LibraryState {
                         .or_insert_with(|| InternalComponent::new(id, role, path.clone()));
                 }
                 ItemKind::Addon { slot: None } => {
-                    return Err(LibraryError::InvalidHandPlacedComponent(path).into());
+                    return Err(AddonError::InvalidHandPlacedComponent(path).into());
                 }
             }
             state.stored.insert(
@@ -715,7 +715,7 @@ fn validate_catalog(catalog: &Catalog, kind: CatalogKind) -> Result<()> {
             ) | (CatalogKind::Dependencies, ItemKind::Addon { slot: None })
         );
         if !valid {
-            return Err(LibraryError::WrongCatalog {
+            return Err(AddonError::WrongCatalog {
                 item: item.id(),
                 catalog: kind,
             }
@@ -804,7 +804,7 @@ async fn verify_checksum(
         Checksum::Sha512(_) => format!("{:x}", sha512.finalize()),
     };
     if actual != checksum.value() {
-        return Err(LibraryError::ChecksumMismatch(path.to_path_buf()).into());
+        return Err(AddonError::ChecksumMismatch(path.to_path_buf()).into());
     }
     Ok(())
 }
@@ -812,10 +812,10 @@ async fn verify_checksum(
 async fn top_level_directory(root: &Path) -> Result<PathBuf> {
     let mut entries = async_fs::read_dir(root).await?;
     let Some(entry) = entries.next().await.transpose()? else {
-        return Err(LibraryError::InvalidArchive.into());
+        return Err(AddonError::InvalidArchive.into());
     };
     if entries.next().await.transpose()?.is_some() || !entry.file_type().await?.is_dir() {
-        return Err(LibraryError::InvalidArchive.into());
+        return Err(AddonError::InvalidArchive.into());
     }
     Ok(entry.path())
 }
@@ -904,7 +904,7 @@ mod tests {
             fs::create_dir_all(&dependency_path).unwrap();
             fs::write(dependency_path.join("dependency.dll"), []).unwrap();
 
-            let state = LibraryState::load(
+            let state = AddonsState::load(
                 Some(Arc::new(catalog(
                     &component_id.to_string(),
                     r#"{ "type": "addon", "slot": "dxvk" }"#,
@@ -947,7 +947,7 @@ mod tests {
                 Arc::new(client),
                 download_manager::manager::DownloadManagerConfig::default(),
             );
-            let library = Library::load(directories.clone(), None, None, Arc::new(downloader))
+            let library = Addons::load(directories.clone(), None, None, Arc::new(downloader))
                 .await
                 .unwrap();
 
@@ -1031,7 +1031,7 @@ mod tests {
             let (downloader, scheduler) =
                 DownloadManager::new(client, DownloadManagerConfig::default());
             let scheduler = executor.spawn(scheduler);
-            let library = Library::load(directories.clone(), None, None, Arc::new(downloader))
+            let library = Addons::load(directories.clone(), None, None, Arc::new(downloader))
                 .await
                 .unwrap();
 

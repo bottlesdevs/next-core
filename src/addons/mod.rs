@@ -1,4 +1,4 @@
-//! Compatibility library and prefix installation.
+//! Addon discovery, download, and prefix installation.
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 
@@ -6,10 +6,10 @@ pub(crate) mod catalog;
 mod index;
 pub mod installer;
 pub(crate) mod item;
-mod library;
+mod manager;
 
 pub use item::{Addon, Availability, RunnerComponent, Slot};
-pub use library::{CatalogKind, Library, LibraryError};
+pub use manager::{AddonError, Addons, CatalogKind};
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "algorithm", content = "value", rename_all = "kebab-case")]

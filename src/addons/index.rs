@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::{NonNilUuid, Uuid};
 
 use super::{
-    LibraryError, Slot,
+    AddonError, Slot,
     catalog::{InternalRole, ItemKind},
 };
 use crate::{Directories, error::Result, runner::detect_runner_kind};
@@ -174,7 +174,7 @@ pub(crate) async fn detect_kind(category: &str, path: &Path) -> Result<Option<It
                 .await
                 .is_ok_and(|entry| entry.is_file())
             {
-                return Err(LibraryError::InvalidHandPlacedComponent(path.to_path_buf()).into());
+                return Err(AddonError::InvalidHandPlacedComponent(path.to_path_buf()).into());
             }
             ItemKind::InternalComponent {
                 role: InternalRole::Winebridge,
@@ -185,7 +185,7 @@ pub(crate) async fn detect_kind(category: &str, path: &Path) -> Result<Option<It
                 .await
                 .is_ok_and(|entry| entry.is_file())
             {
-                return Err(LibraryError::InvalidHandPlacedComponent(path.to_path_buf()).into());
+                return Err(AddonError::InvalidHandPlacedComponent(path.to_path_buf()).into());
             }
             ItemKind::InternalComponent {
                 role: InternalRole::Umu,

@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     Context, Operation, Progress, Stage,
-    compatibility::RunnerComponent,
+    addons::RunnerComponent,
     error::{Error, Result},
     prefix::{FVS_BLOCK_SIZE, Prefix},
 };
@@ -42,7 +42,7 @@ impl BottleManager {
         let cache = self.cache.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            let winebridge = cx.library().winebridge()?;
+            let winebridge = cx.addons().winebridge()?;
             let loaded_runner = runner.load().await?;
             let id = Uuid::new_v4();
             let bottle_path = cx.directories().bottle(id);

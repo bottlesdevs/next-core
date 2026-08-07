@@ -1,6 +1,6 @@
 use crate::{
     Directories,
-    compatibility::Library,
+    addons::Addons,
     error::{Error, Result},
     utils::absolute_path,
 };
@@ -12,7 +12,7 @@ struct ContextInner {
     directories: Directories,
     fvs2d_executable: Option<PathBuf>,
     fvs: OnceCell<Fvs2dClient>,
-    library: Library,
+    addons: Addons,
 }
 
 #[derive(Clone)]
@@ -22,13 +22,13 @@ impl Context {
     pub(crate) fn new(
         directories: Directories,
         fvs2d_executable: Option<PathBuf>,
-        library: Library,
+        addons: Addons,
     ) -> Result<Self> {
         Ok(Self(Arc::new(ContextInner {
             directories,
             fvs2d_executable: fvs2d_executable.map(absolute_path).transpose()?,
             fvs: OnceCell::new(),
-            library,
+            addons,
         })))
     }
 
@@ -43,16 +43,16 @@ impl Context {
             Arc::new(client),
             download_manager::manager::DownloadManagerConfig::default(),
         );
-        let library = Library::load(directories.clone(), None, None, Arc::new(downloads)).await?;
-        Self::new(directories, fvs2d_executable, library)
+        let addons = Addons::load(directories.clone(), None, None, Arc::new(downloads)).await?;
+        Self::new(directories, fvs2d_executable, addons)
     }
 
     pub(crate) fn directories(&self) -> &Directories {
         &self.0.directories
     }
 
-    pub(crate) fn library(&self) -> &Library {
-        &self.0.library
+    pub(crate) fn addons(&self) -> &Addons {
+        &self.0.addons
     }
 
     pub(crate) async fn fvs(&self) -> Result<&Fvs2dClient> {
