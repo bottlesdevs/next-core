@@ -5,7 +5,7 @@ use std::{ops::AsyncFnOnce, path::PathBuf, sync::Arc};
 use futures_core::Stream;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{RwLock, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
 use uuid::Uuid;
 
@@ -98,7 +98,7 @@ impl BottleState {
 
 pub(crate) struct BottleInner {
     pub(crate) published: watch::Sender<Option<Arc<BottleState>>>,
-    pub(crate) write: Mutex<()>,
+    pub(crate) write_lock: RwLock<()>,
     pub(crate) id: Uuid,
     pub(crate) cx: Context,
 }
@@ -139,7 +139,7 @@ impl Bottle {
         Self(Arc::new(BottleInner {
             id,
             published,
-            write: Mutex::new(()),
+            write_lock: RwLock::new(()),
             cx,
         }))
     }
@@ -182,7 +182,7 @@ impl Bottle {
     where
         F: for<'a> AsyncFnOnce(&'a mut BottleState, Context) -> Result<R>,
     {
-        let _write = self.0.write.lock().await;
+        let _write = self.0.write_lock.write().await;
         let mut draft = self.state()?.as_ref().clone();
         let value = operation(&mut draft, self.0.cx.clone()).await?;
         Self::save_state(&draft, &self.0.cx).await?;

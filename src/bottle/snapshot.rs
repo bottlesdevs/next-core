@@ -19,8 +19,10 @@ impl Bottle {
         let cx = self.0.cx.clone();
         let message = message.into();
         Operation::new(move |progress, cancellation| async move {
+            let _write = bottle.0.write_lock.write().await;
+            let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            bottle.stop().await?;
+            Bottle::stop_state(&state, &cx).await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
@@ -36,6 +38,7 @@ impl Bottle {
     }
 
     pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
+        let _read = self.0.write_lock.read().await;
         self.ensure_exists()?;
         let repository = self.snapshot_repository();
         Ok(self
@@ -57,13 +60,14 @@ impl Bottle {
         let cx = self.0.cx.clone();
         let state_id_or_prefix = state_id_or_prefix.to_owned();
         Operation::new(move |progress, cancellation| async move {
+            let _write = bottle.0.write_lock.write().await;
+            let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            bottle.stop().await?;
+            Bottle::stop_state(&state, &cx).await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
 
-            let _write = bottle.0.write.lock().await;
             bottle.ensure_exists()?;
             let stream = cx
                 .fvs()

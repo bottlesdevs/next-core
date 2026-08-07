@@ -93,7 +93,7 @@ impl Bottle {
 
     /// Stop WineBridge, wineserver, and prefix storage.
     pub async fn stop(&self) -> Result<()> {
-        let _write = self.0.write.lock().await;
+        let _write = self.0.write_lock.write().await;
         let state = self.state()?;
         Self::stop_state(&state, &self.0.cx).await
     }
@@ -296,7 +296,7 @@ impl Bottle {
         })
     }
 
-    async fn stop_state(state: &BottleState, cx: &Context) -> Result<()> {
+    pub(super) async fn stop_state(state: &BottleState, cx: &Context) -> Result<()> {
         let bottle_path = cx.directories().bottle(state.id);
         let prefix_path = bottle_path.join("prefix");
         let runner = state.runner.load().await;
@@ -337,6 +337,7 @@ impl Bottle {
         F: FnOnce(WineBridgeClient) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
+        let _read = self.0.write_lock.read().await;
         let state = self.state()?;
         let runner = state.runner.load().await?;
         let bottle_path = self.bottle_path();

@@ -155,8 +155,10 @@ impl BottleManager {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let bottle = manager.open(id).await?;
+            let _write = bottle.0.write_lock.write().await;
+            let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            bottle.stop().await?;
+            Bottle::stop_state(&state, &bottle.0.cx).await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
