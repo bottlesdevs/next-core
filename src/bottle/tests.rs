@@ -1,7 +1,7 @@
 use crate::{
     Context, Directories,
     addons::{Addon, RunnerComponent, Slot, catalog::InternalRole, item::InternalComponent},
-    bottle::{BottleManager, BottleState, BottleType},
+    bottle::{BottleManager, BottleState, Storage},
     prefix::Prefix,
     runner::RunnerKind,
     utils::environment::Environment,
@@ -169,7 +169,7 @@ fn virgo_layers_round_trip_through_bottle_toml() {
 
         next_config::save(&path, &bottle).await.unwrap();
         let loaded: BottleState = next_config::load(&path).await.unwrap();
-        assert_eq!(loaded.kind(), BottleType::Virgo);
+        assert_eq!(loaded.storage(), Storage::Virgo);
         assert_eq!(loaded.storage, bottle.storage);
         std::fs::remove_dir_all(directories.data_dir()).unwrap();
     });

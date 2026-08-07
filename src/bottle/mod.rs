@@ -17,4 +17,4 @@ pub use crate::wrapper::{
 pub use edit::BottleEdit;
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 pub use manager::BottleManager;
-pub use state::{Bottle, BottleState, BottleType, Program};
+pub use state::{Bottle, BottleState, Program, Storage};

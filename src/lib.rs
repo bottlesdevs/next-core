@@ -14,9 +14,9 @@ pub use addons::{
     RunnerComponent, Slot, Target,
 };
 pub use bottle::{
-    Bottle, BottleEdit, BottleManager, BottleState, BottleType, DllOverride, DllOverrideMode,
-    GamescopeConfig, GamescopeFilter, GamescopeScaler, MangoHudConfig, Process, Program,
-    RegistryHive, Snapshot, SnapshotSummary, Wrappers,
+    Bottle, BottleEdit, BottleManager, BottleState, DllOverride, DllOverrideMode, GamescopeConfig,
+    GamescopeFilter, GamescopeScaler, MangoHudConfig, Process, Program, RegistryHive, Snapshot,
+    SnapshotSummary, Storage, Wrappers,
 };
 pub use core::{Bottles, Config};
 pub use operation::{Operation, Progress, Stage, Transfer};

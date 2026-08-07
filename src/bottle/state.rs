@@ -91,7 +91,7 @@ impl BottleState {
         self.programs.iter().find(|program| program.id == id)
     }
 
-    pub fn kind(&self) -> BottleType {
+    pub fn storage(&self) -> Storage {
         self.storage.kind()
     }
 }
@@ -249,7 +249,7 @@ impl Program {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
-pub enum BottleType {
+pub enum Storage {
     Standard,
     Virgo,
 }

@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     Context, Progress, Stage, Transfer,
-    bottle::BottleType,
+    bottle::Storage,
     error::{Error, Result},
     runner::Runner,
 };
@@ -45,27 +45,27 @@ impl From<&FvsProgress> for Transfer {
 
 impl Prefix {
     pub(crate) async fn create(
-        kind: BottleType,
+        storage: Storage,
         bottle_path: &Path,
         runner: &dyn Runner,
         runner_key: &str,
         context: &Context,
     ) -> Result<Self> {
-        match kind {
-            BottleType::Standard => {
+        match storage {
+            Storage::Standard => {
                 standard::create(bottle_path, runner).await?;
                 Ok(Self::Standard)
             }
-            BottleType::Virgo => Ok(Self::Virgo {
+            Storage::Virgo => Ok(Self::Virgo {
                 layers: virgo::create(bottle_path, runner, runner_key, context).await?,
             }),
         }
     }
 
-    pub(crate) fn kind(&self) -> BottleType {
+    pub(crate) fn kind(&self) -> Storage {
         match self {
-            Self::Standard => BottleType::Standard,
-            Self::Virgo { .. } => BottleType::Virgo,
+            Self::Standard => Storage::Standard,
+            Self::Virgo { .. } => Storage::Virgo,
         }
     }
 

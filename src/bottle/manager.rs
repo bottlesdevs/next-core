@@ -16,7 +16,7 @@ use crate::{
 
 use super::{
     error::BottleError,
-    state::{Bottle, BottleState, BottleType},
+    state::{Bottle, BottleState, Storage},
 };
 
 struct BottleRegistry(watch::Sender<Arc<HashMap<Uuid, Bottle>>>);
@@ -101,7 +101,7 @@ impl BottleManager {
     pub fn create(
         &self,
         name: impl Into<String>,
-        kind: BottleType,
+        storage: Storage,
         runner: &RunnerComponent,
     ) -> Operation<Bottle> {
         let name = name.into();
@@ -119,7 +119,7 @@ impl BottleManager {
             let result = async {
                 progress.send_replace(Some(Progress::new(Stage::CreatingPrefix)));
                 let storage = Prefix::create(
-                    kind,
+                    storage,
                     &bottle_path,
                     loaded_runner.as_ref(),
                     &runner.id().to_string(),
