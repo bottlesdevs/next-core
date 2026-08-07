@@ -1,15 +1,12 @@
 //! Persisted bottle state and the shared bottle handle.
 
-use std::{
-    collections::HashMap,
-    ops::AsyncFnOnce,
-    path::PathBuf,
-    sync::{Arc, Weak},
-};
+use std::{ops::AsyncFnOnce, path::PathBuf, sync::Arc};
 
+use futures_core::Stream;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
+use tokio_stream::{StreamExt, wrappers::WatchStream};
 use uuid::Uuid;
 
 use super::{edit::BottleEdit, error::BottleError};
@@ -99,8 +96,6 @@ impl BottleState {
     }
 }
 
-pub(crate) type BottleCache = Mutex<HashMap<Uuid, Weak<BottleInner>>>;
-
 pub(crate) struct BottleInner {
     pub(crate) published: watch::Sender<Option<Arc<BottleState>>>,
     pub(crate) write: Mutex<()>,
@@ -141,16 +136,12 @@ impl Bottle {
     pub(crate) fn from_state(state: BottleState, cx: Context) -> Self {
         let id = state.id;
         let (published, _) = watch::channel(Some(Arc::new(state)));
-        Self::from_inner(Arc::new(BottleInner {
+        Self(Arc::new(BottleInner {
             id,
             published,
             write: Mutex::new(()),
             cx,
         }))
-    }
-
-    pub(crate) fn from_inner(inner: Arc<BottleInner>) -> Self {
-        Self(inner)
     }
 
     pub fn state(&self) -> Result<Arc<BottleState>> {
@@ -159,6 +150,12 @@ impl Bottle {
             .borrow()
             .clone()
             .ok_or_else(|| BottleError::Deleted(self.0.id).into())
+    }
+
+    pub fn watch(&self) -> impl Stream<Item = Arc<BottleState>> + Send + 'static {
+        WatchStream::new(self.0.published.subscribe())
+            .take_while(Option::is_some)
+            .filter_map(|state| state)
     }
 
     pub fn edit(&self) -> BottleEdit {

@@ -1,7 +1,10 @@
-use std::{io, sync::Arc};
+use std::{collections::HashMap, io, sync::Arc};
 
 use async_fs as fs;
+use futures_core::Stream;
 use futures_lite::StreamExt;
+use tokio::sync::watch;
+use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
 use crate::{
@@ -13,21 +16,86 @@ use crate::{
 
 use super::{
     error::BottleError,
-    state::{Bottle, BottleCache, BottleState, BottleType},
+    state::{Bottle, BottleState, BottleType},
 };
+
+struct BottleRegistry(watch::Sender<Arc<HashMap<Uuid, Bottle>>>);
+
+fn sorted_bottles(bottles: &HashMap<Uuid, Bottle>) -> Vec<Bottle> {
+    let mut bottles = bottles.values().cloned().collect::<Vec<_>>();
+    bottles.sort_unstable_by_key(|bottle| bottle.0.id);
+    bottles
+}
+
+impl BottleRegistry {
+    fn new() -> Self {
+        let (published, _) = watch::channel(Arc::new(HashMap::new()));
+        Self(published)
+    }
+
+    fn list(&self) -> Vec<Bottle> {
+        sorted_bottles(&self.0.borrow())
+    }
+
+    fn get(&self, id: Uuid) -> Option<Bottle> {
+        self.0.borrow().get(&id).cloned()
+    }
+
+    fn replace(&self, bottles: Vec<Bottle>) {
+        self.0.send_replace(Arc::new(
+            bottles
+                .into_iter()
+                .map(|bottle| (bottle.0.id, bottle))
+                .collect(),
+        ));
+    }
+
+    fn intern(&self, bottle: Bottle) -> Bottle {
+        let mut interned = bottle.clone();
+        self.0.send_if_modified(|published| {
+            if let Some(current) = published.get(&bottle.0.id) {
+                interned = current.clone();
+                return false;
+            }
+            let mut bottles = published.as_ref().clone();
+            bottles.insert(bottle.0.id, bottle);
+            *published = Arc::new(bottles);
+            true
+        });
+        interned
+    }
+
+    fn remove(&self, id: Uuid) {
+        self.0.send_if_modified(|published| {
+            let mut bottles = published.as_ref().clone();
+            if bottles.remove(&id).is_none() {
+                return false;
+            }
+            *published = Arc::new(bottles);
+            true
+        });
+    }
+}
 
 #[derive(Clone)]
 pub struct BottleManager {
     pub(super) context: Context,
-    pub(super) cache: Arc<BottleCache>,
+    registry: Arc<BottleRegistry>,
 }
 
 impl BottleManager {
     pub(crate) fn new(context: Context) -> Self {
         Self {
             context,
-            cache: Arc::new(Default::default()),
+            registry: Arc::new(BottleRegistry::new()),
         }
+    }
+
+    pub(crate) async fn load(context: Context) -> Result<Self> {
+        let manager = Self::new(context);
+        let bottles = manager.load_bottles().await?;
+        manager.registry.replace(bottles);
+        Ok(manager)
     }
 
     pub fn create(
@@ -39,7 +107,7 @@ impl BottleManager {
         let name = name.into();
         let runner = runner.clone();
         let cx = self.context.clone();
-        let cache = self.cache.clone();
+        let registry = self.registry.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
             let winebridge = cx.addons().winebridge()?;
@@ -71,7 +139,8 @@ impl BottleManager {
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
-                Ok(Self::intern(&cache, bottle).await)
+                let bottle = registry.intern(bottle);
+                Ok(bottle)
             }
             .await;
 
@@ -94,14 +163,14 @@ impl BottleManager {
             progress.send_replace(Some(Progress::new(Stage::Removing)));
             let path = manager.context.directories().bottle(id);
             fs::remove_dir_all(path).await?;
+            manager.registry.remove(id);
             bottle.mark_deleted();
-            manager.cache.lock().await.remove(&id);
             Ok(())
         })
     }
 
     pub async fn open(&self, id: Uuid) -> Result<Bottle> {
-        if let Some(bottle) = self.cached(id).await {
+        if let Some(bottle) = self.registry.get(id) {
             return Ok(bottle);
         }
         let path = self.context.directories().bottle(id).join("bottle.toml");
@@ -116,10 +185,20 @@ impl BottleManager {
             }
             .into());
         }
-        Ok(Self::intern(&self.cache, Bottle::from_state(state, self.context.clone())).await)
+        Ok(self
+            .registry
+            .intern(Bottle::from_state(state, self.context.clone())))
     }
 
-    pub async fn list(&self) -> Result<Vec<Result<Bottle>>> {
+    pub fn list(&self) -> Vec<Bottle> {
+        self.registry.list()
+    }
+
+    pub fn watch(&self) -> impl Stream<Item = Vec<Bottle>> + Send + 'static {
+        WatchStream::new(self.registry.0.subscribe()).map(|bottles| sorted_bottles(&bottles))
+    }
+
+    async fn load_bottles(&self) -> Result<Vec<Bottle>> {
         let bottles_path = self.context.directories().bottles();
         let mut entries = match fs::read_dir(bottles_path).await {
             Ok(entries) => entries,
@@ -133,49 +212,13 @@ impl BottleManager {
                 paths.push(path);
             }
         }
-        let mut configs = Vec::with_capacity(paths.len());
+        let mut bottles = Vec::with_capacity(paths.len());
         for path in paths {
-            configs.push(
-                next_config::load::<BottleState>(path)
-                    .await
-                    .map_err(Error::from),
-            );
-        }
-        let mut bottles = Vec::with_capacity(configs.len());
-        for config in configs {
-            bottles.push(match config {
-                Ok(config) => Ok(Self::intern(
-                    &self.cache,
-                    Bottle::from_state(config, self.context.clone()),
-                )
-                .await),
-                Err(error) => Err(error),
-            });
+            match next_config::load::<BottleState>(path).await {
+                Ok(state) => bottles.push(Bottle::from_state(state, self.context.clone())),
+                Err(error) => tracing::warn!("skipping unreadable bottle: {error}"),
+            }
         }
         Ok(bottles)
-    }
-
-    async fn cached(&self, id: Uuid) -> Option<Bottle> {
-        let mut cache = self.cache.lock().await;
-        if let Some(inner) = cache.get(&id).and_then(std::sync::Weak::upgrade) {
-            let bottle = Bottle::from_inner(inner);
-            if !bottle.is_deleted() {
-                return Some(bottle);
-            }
-        }
-        cache.remove(&id);
-        None
-    }
-
-    async fn intern(cache: &Arc<BottleCache>, bottle: Bottle) -> Bottle {
-        let mut entries = cache.lock().await;
-        if let Some(inner) = entries.get(&bottle.0.id).and_then(std::sync::Weak::upgrade) {
-            let existing = Bottle::from_inner(inner);
-            if !existing.is_deleted() {
-                return existing;
-            }
-        }
-        entries.insert(bottle.0.id, Arc::downgrade(&bottle.0));
-        bottle
     }
 }

@@ -5,11 +5,13 @@ use std::{
 };
 
 use download_manager::{events::Progress as DownloadProgress, manager::DownloadManager};
+use futures_core::Stream;
 use futures_lite::io::AsyncReadExt;
 use futures_util::{FutureExt, StreamExt};
 use sha2::{Digest, Sha256, Sha512};
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
+use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 use uuid::{NonNilUuid, Uuid};
@@ -78,6 +80,13 @@ impl Addons {
         let mut addons = self.state().addons.values().cloned().collect::<Vec<_>>();
         addons.sort_unstable_by_key(Addon::id);
         addons
+    }
+
+    pub fn watch(&self) -> impl Stream<Item = Self> + Send + 'static {
+        let addons = self.clone();
+        tokio_stream::StreamExt::map(WatchStream::new(self.0.published.subscribe()), move |_| {
+            addons.clone()
+        })
     }
 
     pub fn refresh(&self) -> Operation<()> {

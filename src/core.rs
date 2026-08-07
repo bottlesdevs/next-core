@@ -42,9 +42,10 @@ impl Bottles {
         )
         .await?;
         let context = Context::new(directories, fvs2d, addons.clone())?;
+        let bottles = BottleManager::load(context).await?;
 
         Ok(Self {
-            bottles: BottleManager::new(context),
+            bottles,
             addons,
             downloader,
         })

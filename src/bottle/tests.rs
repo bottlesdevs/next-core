@@ -7,7 +7,6 @@ use crate::{
     utils::environment::Environment,
     wrapper::Wrappers,
 };
-
 fn test_directories() -> Directories {
     let root = std::env::temp_dir().join(format!("bottles-next-{}", uuid::Uuid::new_v4()));
     Directories::from_path(root).unwrap()
@@ -70,7 +69,7 @@ fn bottle_managers_are_scoped_to_their_context_roots() {
 }
 
 #[test]
-fn list_reports_corrupt_bottles() {
+fn load_skips_corrupt_bottles() {
     futures_lite::future::block_on(async {
         let directories = test_directories();
         let id = uuid::Uuid::new_v4();
@@ -80,18 +79,18 @@ fn list_reports_corrupt_bottles() {
             "not valid toml =",
         )
         .unwrap();
-        let manager = BottleManager::new(
+        let manager = BottleManager::load(
             Context::for_test(
                 directories.clone(),
                 Some(directories.data_dir().join("fvs2d")),
             )
             .await
             .unwrap(),
-        );
+        )
+        .await
+        .unwrap();
 
-        let bottles = manager.list().await.unwrap();
-        assert_eq!(bottles.len(), 1);
-        assert!(bottles[0].is_err());
+        assert!(manager.list().is_empty());
         std::fs::remove_dir_all(directories.data_dir()).unwrap();
     });
 }

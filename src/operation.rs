@@ -158,11 +158,10 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
+    use super::*;
     use crate::error::Error;
     use tokio::sync::oneshot;
     use tokio_stream::StreamExt;
-
-    use super::*;
 
     fn update(stage: Stage) -> Progress {
         Progress::new(stage)
