@@ -1,3 +1,41 @@
+//! Addon installation recipes and their executor.
+//!
+//! Catalog artifacts carry an ordered sequence of [`InstallStep`] values that
+//! describes how to apply a downloaded resource to a Wine prefix. Bottle
+//! installation prepares those resources and calls [`execute`]; bottle
+//! uninstallation calls [`uninstall`] with the same recipe.
+//! Slot-based addons without an explicit catalog recipe, including hand-placed
+//! components, use the built-in recipe for their [`super::Slot`].
+//!
+//! # Installation
+//!
+//! Resources and steps are applied in declaration order. Steps may copy or
+//! extract files, run installers, register DLLs, update the registry, configure
+//! DLL overrides, or change the bottle environment. Changes made by completed
+//! steps remain if a later step fails; the bottle storage layer is responsible
+//! for any transaction-level rollback.
+//!
+//! # Uninstallation
+//!
+//! Resources and steps are visited in reverse order. Uninstallation can restore
+//! copied files, delete DLL overrides, and remove environment entries. Actions
+//! without an inverse—executing programs, extracting archives, registering DLLs,
+//! and setting registry values—are skipped. Consequently, a recipe is not
+//! necessarily fully reversible.
+//!
+//! # Cancellation and cleanup
+//!
+//! Cancellation is cooperative. It is checked between steps and during
+//! supported long-running work. Running child processes are killed and reaped
+//! when possible; WineBridge calls already in flight are not interrupted.
+//! Installation always attempts to stop WineBridge and the prefix runner before
+//! returning.
+//!
+//! # Path handling
+//!
+//! Recipe paths are not checked for containment. Catalog data must therefore be
+//! trusted.
+
 mod recipes;
 
 use std::{
@@ -22,49 +60,98 @@ use crate::{
 use self::super::deserialize_non_empty_string;
 pub(crate) use recipes::steps as recipe_steps;
 
+/// Recipe-specific failures produced while installing an addon.
+///
+/// Installation may also return I/O, archive, runner, WineBridge, and
+/// cancellation errors through their corresponding [`crate::error::Error`]
+/// variants.
 #[derive(Debug, Error)]
 pub enum InstallerError {
+    /// A recipe-provided executable returned an unsuccessful exit status.
     #[error("installer exited with status {0}")]
     InstallerFailed(std::process::ExitStatus),
+    /// Registering a DLL with `regsvr32` returned an unsuccessful exit status.
+    ///
+    /// DLLs are attempted sequentially, so this is the first unsuccessful status.
     #[error("regsvr32 exited with status {0}")]
     RegisterDllFailed(std::process::ExitStatus),
+    /// An extracted file resolved outside its staging directory.
     #[error("staged file {path} is outside staging directory {stage}")]
     FileOutsideStage { path: PathBuf, stage: PathBuf },
 }
 
+/// A declarative operation applied while installing an addon resource.
+///
+/// Steps are serialized as part of Bottles' internal catalog schema; their wire
+/// representation is not a stable interchange API. The module overview describes
+/// ordering, rollback, cancellation, and path requirements.
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum InstallStep {
+    /// Copies a resource file into the Wine prefix.
+    ///
+    /// An existing regular destination file is backed up once alongside the destination so an
+    /// uninstall mode that restores files can reinstate it.
     Copy {
+        /// Path intended to be relative to the resource, or empty to copy the resource itself.
         #[serde(default)]
         source: PathBuf,
+        /// Destination intended to be relative to the Wine prefix.
         destination: PathBuf,
     },
+    /// Runs the resource through the configured runner and requires a successful exit status.
+    ///
+    /// The process receives the bottle environment as it exists at this step.
     Execute {
+        /// Passed directly to the child process without shell parsing.
         #[serde(default)]
         arguments: Vec<String>,
     },
+    /// Extracts a supported tar archive and copies its regular files into the Wine prefix.
+    ///
+    /// Extraction uses a temporary staging directory. Archive links and special entries are
+    /// rejected, and removal of the staging directory is attempted after success, failure, or
+    /// cancellation. Extracted files are copied sequentially, temporarily requiring space for
+    /// both the staged and installed copies.
     Extract {
+        /// Destination intended to be relative to the Wine prefix.
         destination: PathBuf,
     },
+    /// Registers DLLs silently with `regsvr32` in list order.
+    ///
+    /// Each process receives the bottle environment as it exists at this step.
     RegisterDlls {
+        /// DLL paths intended to be relative to the Wine prefix.
         dlls: Vec<PathBuf>,
     },
+    /// Sets a registry value through WineBridge.
+    ///
+    /// WineBridge is started with the current bottle environment when it is not
+    /// already running.
     SetRegistryValue {
         hive: RegistryHive,
+        /// Non-empty registry key path.
         #[serde(deserialize_with = "deserialize_non_empty_string")]
         key: String,
+        /// Value name within the key; an empty name addresses the default value.
         name: String,
         value: RegistryValue,
     },
+    /// Applies the same Wine DLL override mode to each named DLL.
+    ///
+    /// WineBridge is started with the current bottle environment when needed.
+    /// Uninstall deletes these overrides rather than restoring their previous modes.
     SetDllOverrides {
+        /// DLL names whose overrides are changed, in application order.
         dlls: Vec<String>,
+        /// Applied uniformly; mixed per-DLL modes require separate steps.
         mode: DllOverrideMode,
     },
-    SetEnvironment {
-        name: String,
-        value: String,
-    },
+    /// Overwrites an entry in the bottle's process environment.
+    ///
+    /// The previous value is not retained. Uninstall removes the name rather than restoring a
+    /// previous value, and WineBridge is stopped so a later operation starts it with the change.
+    SetEnvironment { name: String, value: String },
 }
 
 #[derive(Clone)]
@@ -80,6 +167,18 @@ pub(crate) struct InstallInputs<'a> {
     pub(crate) environment: &'a mut Environment,
 }
 
+/// Applies every resource and step sequentially, reporting each step before it starts.
+///
+/// Cancellation is checked before the first step, after every step, while waiting for child
+/// processes, between per-DLL operations, and during extraction. Cancellation attempts to kill
+/// and reap a running child; a kill failure is returned. Before returning, this function always
+/// attempts to stop WineBridge and then the prefix runner.
+///
+/// # Errors
+///
+/// Returns the recipe error in preference to cleanup errors. When the recipe succeeds, a
+/// WineBridge shutdown error takes precedence over a runner shutdown error, although both
+/// shutdowns are attempted.
 pub(crate) async fn execute(
     inputs: InstallInputs<'_>,
     resources: &[InstallResource],
@@ -123,6 +222,12 @@ pub(crate) async fn execute(
     runner_stopped
 }
 
+/// Attempts to undo a recipe in reverse resource and step order.
+///
+/// File copies are restored or removed only when `restore_files` is true. Environment entries are
+/// removed and DLL overrides are deleted. Other step kinds have no inverse and are skipped with a
+/// warning. File, bridge, override, and final process-cleanup failures are also logged and ignored;
+/// cancellation and other control-flow errors are returned.
 pub(crate) async fn uninstall(
     inputs: InstallInputs<'_>,
     resources: &[InstallResource],
@@ -168,6 +273,12 @@ pub(crate) async fn uninstall(
     result
 }
 
+/// Ensures environment changes are applied when prefix storage reuses an existing addon layer.
+///
+/// A cached Virgo layer can complete installation without executing the recipe,
+/// so its [`InstallStep::SetEnvironment`] steps would otherwise be absent from
+/// the bottle's in-memory state. Replaying is idempotent when the recipe did run;
+/// later entries with the same name overwrite earlier ones.
 pub(crate) fn replay_environment(environment: &mut Environment, resources: &[InstallResource]) {
     for step in resources.iter().flat_map(|resource| &resource.steps) {
         if let InstallStep::SetEnvironment { name, value } = step {
@@ -325,6 +436,11 @@ fn check_cancellation(cancellation: &CancellationToken) -> Result<()> {
     }
 }
 
+/// Waits for a child to exit, or attempts to kill and reap it when cancellation wins the race.
+///
+/// An already-exited child may reject the kill with [`io::ErrorKind::InvalidInput`]; this is
+/// ignored before the child is reaped and cancellation is returned. Other kill failures are
+/// returned without another reap attempt.
 async fn wait_for_child(
     mut child: async_process::Child,
     cancellation: &CancellationToken,
@@ -357,6 +473,14 @@ async fn shutdown_bridge(prefix: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Copies a file into a prefix, preserving the first displaced regular file as a backup.
+///
+/// The backup is stored alongside the destination with `.bak` appended. An existing backup is
+/// never overwritten. `relative` is joined directly to `prefix` without containment validation.
+///
+/// # Panics
+///
+/// Panics if the resulting destination has no parent directory.
 async fn install_file(source: &Path, prefix: &Path, relative: &Path) -> Result<()> {
     let destination = prefix.join(relative);
     async_fs::create_dir_all(destination.parent().expect("destination has a parent")).await?;
@@ -373,6 +497,10 @@ async fn install_file(source: &Path, prefix: &Path, relative: &Path) -> Result<(
     Ok(())
 }
 
+/// Restores a copied file's backup, or removes the installed file when no backup exists.
+///
+/// A restored backup is deleted after it is copied. A missing installed file is treated as an
+/// already-completed uninstall.
 async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
     let destination = prefix.join(relative);
     let backup = prefix.join(backup_path(relative));
@@ -391,6 +519,15 @@ async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
     }
 }
 
+/// Extracts an archive into an isolated staging directory, then installs its files.
+///
+/// Files are installed in sorted path order through [`install_file`], preserving displaced files
+/// for possible restoration. The staging directory is removed on a best-effort basis regardless
+/// of the operation's result; a cleanup error does not replace the extraction result.
+///
+/// # Panics
+///
+/// Panics if `prefix` has no parent directory.
 async fn extract_into(
     archive: &Path,
     prefix: &Path,

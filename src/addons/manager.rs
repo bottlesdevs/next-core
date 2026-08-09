@@ -1,3 +1,10 @@
+//! Shared addon state, downloads, publication, and managed-file removal.
+//!
+//! The manager reconciles cached catalogs, the component index, and filesystem
+//! contents into immutable snapshots. Mutations rebuild and publish the complete
+//! state; downloads may overlap, while filesystem commits and publication are
+//! serialized.
+
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -30,6 +37,54 @@ use crate::{
 };
 
 #[derive(Clone)]
+/// A shared view of the available runners and bottle addons.
+///
+/// Clones are inexpensive handles to the same live state and may be used
+/// concurrently. Collection methods return owned item values that do not update
+/// after catalog refreshes, downloads, or removals. Query the collection again,
+/// or use [`watch`](Self::watch) to observe state publications.
+///
+/// The manager uses services owned by the [`crate::Bottles`] instance that
+/// created it. Using this handle after that instance has been closed is
+/// unsupported.
+///
+/// Every publication rescans the supported local component tree. An invalid
+/// entry in a recognized hand-placed category can therefore fail an otherwise
+/// unrelated refresh, fetch, or removal while rebuilding state.
+/// Concurrent mutations are safe, but their download phases may overlap and
+/// callers that require ordering must await them in that order; final state is
+/// determined by serialized commit order.
+///
+/// # Example
+///
+/// ```no_run
+/// use bottles_core::{Availability, Bottles, Config};
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let bottles = Bottles::open(Config {
+///     component_catalog: Some("https://example.test/components.json".parse()?),
+///     dependency_catalog: Some("https://example.test/dependencies.json".parse()?),
+///     ..Config::default()
+/// })
+/// .await?;
+/// let addons = bottles.addons();
+/// addons.refresh().await?;
+///
+/// if let Some(addon) = addons
+///     .addons()
+///     .into_iter()
+///     .find(|addon| addon.availability() == Availability::Downloadable)
+/// {
+///     let id = addon.id();
+///     addons.fetch(id).await?;
+///     let downloaded = addons.addons().into_iter().find(|addon| addon.id() == id);
+///     assert_eq!(downloaded.unwrap().availability(), Availability::Downloaded);
+/// }
+///
+/// bottles.close().await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct Addons(Arc<AddonsInner>);
 
 struct AddonsInner {
@@ -38,10 +93,16 @@ struct AddonsInner {
     dependency_catalog_url: Option<Url>,
     downloader: Arc<DownloadManager>,
     published: watch::Sender<Arc<AddonsState>>,
+    /// Serializes managed-file changes and publication; downloads run outside this lock.
     write: Mutex<()>,
 }
 
 impl Addons {
+    /// Loads cached catalogs and scans the library-managed component directories.
+    ///
+    /// Missing, malformed, or invalid cached catalogs are ignored independently.
+    /// Errors while scanning local components or rebuilding their index are
+    /// returned to the caller.
     pub(crate) async fn load(
         directories: Directories,
         component_catalog_url: Option<Url>,
@@ -70,18 +131,40 @@ impl Addons {
         })))
     }
 
+    /// Returns an owned snapshot of the currently known runners.
+    ///
+    /// The returned vector and its items are clones and do not update when the
+    /// manager changes. Its ordering is unspecified; call this method again or
+    /// use [`watch`](Self::watch) for newer state.
     pub fn runners(&self) -> Vec<RunnerComponent> {
         let mut runners = self.state().runners.values().cloned().collect::<Vec<_>>();
         runners.sort_unstable_by_key(RunnerComponent::id);
         runners
     }
 
+    /// Returns an owned snapshot of the currently known bottle addons.
+    ///
+    /// The returned vector and its items are clones and do not update when the
+    /// manager changes. Its ordering is unspecified; call this method again or
+    /// use [`watch`](Self::watch) for newer state.
     pub fn addons(&self) -> Vec<Addon> {
         let mut addons = self.state().addons.values().cloned().collect::<Vec<_>>();
         addons.sort_unstable_by_key(Addon::id);
         addons
     }
 
+    /// Watches the latest addon state.
+    ///
+    /// The stream first yields once for the current state, then once for observed
+    /// publications. Slow consumers may see publications coalesced, and callers
+    /// must tolerate notifications whose visible values equal a previous state.
+    /// Each item is a live handle to this manager, not the state that caused the
+    /// notification; call [`runners`](Self::runners) or [`addons`](Self::addons)
+    /// to clone the latest values.
+    ///
+    /// The returned stream retains the manager until the stream is dropped and
+    /// therefore does not end merely because the originating [`crate::Bottles`]
+    /// value is dropped.
     pub fn watch(&self) -> impl Stream<Item = Self> + Send + 'static {
         let addons = self.clone();
         tokio_stream::StreamExt::map(WatchStream::new(self.0.published.subscribe()), move |_| {
@@ -89,6 +172,25 @@ impl Addons {
         })
     }
 
+    /// Downloads and publishes the configured component and dependency catalogs.
+    ///
+    /// The returned operation is lazy. Both catalogs are downloaded, decoded, and
+    /// validated independently. If one of those phases fails, the successful
+    /// catalog is persisted and published with the previous version of the failed
+    /// catalog, provided persistence and state rebuilding succeed; the operation
+    /// then returns [`AddonError::CatalogRefresh`]. If both fail, the existing
+    /// catalogs are still rebuilt and published before that error is returned.
+    ///
+    /// Persistence and state rebuilding are not transactional. An I/O or rebuild
+    /// failure may leave one catalog file updated on disk without publishing that
+    /// state, and is returned directly instead of as `CatalogRefresh`.
+    ///
+    /// # Errors
+    ///
+    /// In addition to [`AddonError::CatalogRefresh`], the operation returns errors
+    /// from writing catalog files or rebuilding addon state. Cancellation is
+    /// checked after both download attempts and before waiting for the commit lock;
+    /// persistence and publication after that check are not cancellable.
     pub fn refresh(&self) -> Operation<()> {
         let library = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -151,6 +253,35 @@ impl Addons {
         })
     }
 
+    /// Ensures the item identified by `id` is downloaded for the current platform.
+    ///
+    /// An item already recorded as downloaded, including a hand-placed component,
+    /// succeeds without doing any work or revalidating its path. Otherwise the item
+    /// must be in a catalog.
+    /// Every selected artifact is checksum-verified; component archives must extract
+    /// to one top-level directory whose detected kind matches the catalog. A
+    /// successful item is committed to library-managed storage and published.
+    ///
+    /// Concurrent fetches of the same UUID may perform duplicate transfers. They
+    /// converge when committing: once one fetch publishes the item, another
+    /// succeeds without replacing it. This is idempotency, not a guarantee that
+    /// transfers are coalesced.
+    ///
+    /// Commit is not fully transactional. In particular, a dependency directory
+    /// may remain in place if rebuilding state fails after its final rename, and a
+    /// component index may have been rewritten before a later publication failure.
+    ///
+    /// # Errors
+    ///
+    /// The operation fails if the item is unknown, has no artifact for the current
+    /// platform, cannot be downloaded, verified, extracted, or classified, or
+    /// conflicts with an existing target on disk. Cancellation is observed while
+    /// transferring, verifying, and extracting. When the operation remains polled
+    /// through cancellation, staging files are then removed on a best-effort basis.
+    /// Dropping a started operation also requests cancellation but may leave staging
+    /// files because it drops the cleanup future. Cancellation does not roll back a
+    /// commit already in progress.
+    // TODO: Return Operation<Addon>
     pub fn fetch(&self, id: Uuid) -> Operation<()> {
         let library = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -180,6 +311,25 @@ impl Addons {
         })
     }
 
+    /// Deletes the downloaded files for an addon, runner, or internal component.
+    ///
+    /// This recursively removes the recorded path, including hand-placed
+    /// components, without checking whether a bottle still refers to it. It does
+    /// not undo an addon's changes inside any bottle; use
+    /// [`crate::Bottle::uninstall`] for that. Removing a referenced runner or
+    /// component can therefore make existing bottles unusable.
+    ///
+    /// Existing [`Addon`] and [`RunnerComponent`] snapshots are not updated.
+    /// Removal is not transactional: deletion is not rolled back if a later index
+    /// update or state publication fails.
+    /// Unlike [`refresh`](Self::refresh) and [`fetch`](Self::fetch), removal does
+    /// not return an [`Operation`] and provides no progress or cancellation handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AddonError::ItemNotFound`] if the UUID is not recorded as
+    /// downloaded or its recorded path no longer exists. Filesystem, index, and
+    /// state-rebuild failures are returned directly.
     pub async fn remove(&self, id: Uuid) -> Result<()> {
         let _write = self.0.write.lock().await;
         let state = self.state();
@@ -202,6 +352,12 @@ impl Addons {
         .await
     }
 
+    /// Reads the latest WineBridge selection without downloading or provisioning one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AddonError::InternalNotDownloaded`] when no WineBridge directory
+    /// was recorded in the latest state.
     pub(crate) fn winebridge(&self) -> Result<InternalComponent> {
         self.state()
             .internals
@@ -214,6 +370,10 @@ impl Addons {
         self.0.published.borrow().clone()
     }
 
+    /// Uses a temporary file that is removed best-effort on both success and
+    /// returned failure. Dropping the owning operation can drop this cleanup future.
+    /// The returned bytes are the exact payload to persist after parsing.
+    // TODO: Dont return raw bytes. Re-serialize the Catalog when needed
     async fn download_catalog(
         &self,
         kind: CatalogKind,
@@ -275,6 +435,11 @@ impl Addons {
         }
     }
 
+    /// Only the first matching artifact is used. The archive must have one
+    /// top-level directory and its contents must match the declared component
+    /// kind. Commit and publication are serialized; if index recording or
+    /// publication fails after the rename, the target is removed best-effort.
+    // TODO: Maybe we can return `Addon`
     async fn download_component_entry(
         &self,
         entry: &CatalogEntry,
@@ -371,6 +536,10 @@ impl Addons {
         result
     }
 
+    /// Dependency artifacts remain as files and are moved into one directory named
+    /// for the entry UUID. Commit and publication are serialized, but a successful
+    /// rename is not rolled back if rebuilding state fails.
+    // TODO: Maybe we can return `Addon`
     async fn download_dependency_entry(
         &self,
         entry: &CatalogEntry,
@@ -436,40 +605,83 @@ impl Addons {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Catalog placement determines which item classes are accepted during refresh.
 pub enum CatalogKind {
+    /// Runners, internal components, and slot-based addons.
     Components,
+    /// Addons that are installed as dependencies without occupying a slot.
     Dependencies,
 }
 
 #[derive(Debug, Error)]
+/// Errors raised while loading, refreshing, downloading, or removing addons.
+///
+/// Lower-level I/O, decoding, download, archive, runner, and cancellation failures
+/// are represented by other variants of [`crate::error::Error`].
 pub enum AddonError {
+    /// One or both catalogs failed to refresh.
+    ///
+    /// A `None` field means that catalog refreshed successfully. Successful
+    /// catalogs have already been published when this error is returned.
     #[error("catalog refresh failed (components: {components:?}, dependencies: {dependencies:?})")]
     CatalogRefresh {
         components: Option<String>,
         dependencies: Option<String>,
     },
+    /// No download URL was configured for the named catalog during refresh.
+    ///
+    /// The public refresh operation normally stores this error's text in the
+    /// corresponding [`Self::CatalogRefresh`] field.
     #[error("{0:?} catalog URL is not configured")]
     CatalogUrlNotConfigured(CatalogKind),
+    /// A catalog contains an item class that is only valid in the other catalog.
+    ///
+    /// For a downloaded catalog, the public refresh operation normally stores this
+    /// error's text in the corresponding [`Self::CatalogRefresh`] field.
     #[error("item {item} does not belong in the {catalog:?} catalog")]
     WrongCatalog { item: Uuid, catalog: CatalogKind },
+    /// Multiple catalog or local-index items use the same UUID.
     #[error("catalogs contain duplicate item {0}")]
     DuplicateItem(Uuid),
+    /// The requested UUID cannot be fetched or removed.
+    ///
+    /// Fetching produces this error for UUIDs absent from both catalogs. Removal
+    /// also produces it when the item is known but is not recorded as downloaded,
+    /// or when its recorded path is missing.
     #[error("addon item {0} was not found")]
     ItemNotFound(Uuid),
+    /// A runner or addon snapshot has no recorded downloaded resources.
     #[error("addon item {0} is not downloaded")]
     ItemNotDownloaded(Uuid),
+    /// The item has no artifact compatible with the current platform, or the
+    /// current platform cannot be represented by [`Target`].
     #[error("no artifact supports this system for item {0}")]
     UnsupportedItem(Uuid),
+    /// A library-managed support component required for the operation is missing.
+    ///
+    /// The contained value is the component role used in the error message. The
+    /// operation does not provision the component automatically.
     #[error("internal item {0} is not downloaded")]
     InternalNotDownloaded(&'static str),
+    /// A downloaded artifact's exact lowercase digest did not match its catalog
+    /// checksum.
     #[error("checksum mismatch for {0}")]
     ChecksumMismatch(PathBuf),
+    /// A component archive was empty or did not contain exactly one top-level
+    /// directory and no other top-level entries.
     #[error("an extracted artifact must contain exactly one top-level directory")]
     InvalidArchive,
+    /// A downloaded component's detected kind differs from its catalog entry.
     #[error("component archive contains {found}, expected {expected}")]
     ComponentKindMismatch { expected: String, found: String },
+    /// A component directory could not be represented as a supported local item.
+    ///
+    /// This covers unclassifiable extracted or hand-placed components and
+    /// hand-placed no-slot dependencies, which are not supported by local scanning.
     #[error("hand-placed component could not be identified: {0}")]
     InvalidHandPlacedComponent(PathBuf),
+    /// Committing a download would overwrite an existing target not recorded as
+    /// this item.
     #[error("addon target already exists: {0}")]
     TargetExists(PathBuf),
 }
@@ -485,12 +697,22 @@ struct AddonsState {
 }
 
 #[derive(Clone, Debug)]
+/// Recorded on-disk ownership needed to make fetch idempotent and remove items.
 struct StoredItem {
+    /// Component-class items also require index removal; dependencies do not.
     kind: ItemKind,
+    /// Root path recursively removed by [`Addons::remove`].
     path: PathBuf,
 }
 
 impl AddonsState {
+    /// Catalog entries are processed before distinct hand-placed components.
+    /// Catalog-backed components refresh their local index record. When several
+    /// downloaded internal entries have the same role, catalog order selects the
+    /// first. If no catalog entry is downloaded, the first path-sorted hand-placed
+    /// component is used. All Proton runners are paired with the selected UMU
+    /// component, if present. This routine only pairs existing files and does not
+    /// provision UMU.
     async fn load(
         component_catalog: Option<Arc<Catalog>>,
         dependency_catalog: Option<Arc<Catalog>>,
@@ -668,6 +890,11 @@ impl AddonsState {
     }
 }
 
+/// Component-class items require their single artifact path to be a directory.
+/// Slot addons with no catalog recipe receive the built-in recipe for their slot.
+/// Dependencies require every matching artifact to be a regular file; one missing
+/// artifact makes the entire entry not downloaded. The returned root is the path
+/// owned by the entry and recursively removed by [`Addons::remove`].
 async fn catalog_resources(
     entry: &CatalogEntry,
     matching: &[(usize, &CatalogArtifact)],
@@ -734,6 +961,10 @@ fn validate_catalog(catalog: &Catalog, kind: CatalogKind) -> Result<()> {
     Ok(())
 }
 
+/// Loads a cached catalog, treating any read, decode, or validation failure as absent.
+///
+/// Startup deliberately ignores an unusable catalog so local items and the other
+/// independently cached catalog remain available.
 async fn load_catalog(path: &Path, kind: CatalogKind) -> Option<Arc<Catalog>> {
     let bytes = async_fs::read(path).await.ok()?;
     let catalog = Arc::new(serde_json::from_slice(&bytes).ok()?);
@@ -748,6 +979,11 @@ fn catalog_path(directories: &Directories, kind: CatalogKind) -> PathBuf {
     }
 }
 
+/// Downloads one URL while forwarding byte progress and observing cancellation.
+///
+/// Cancellation asks the download manager to cancel the transfer and waits for
+/// that request before returning [`Error::Cancelled`]. The destination may contain
+/// a partial file; its caller owns cleanup.
 async fn download(
     downloader: &DownloadManager,
     url: Url,
@@ -786,6 +1022,9 @@ async fn download(
     }
 }
 
+/// The file is read in fixed-size chunks so memory use is constant. Cancellation
+/// is checked between chunks. Comparison is exact against lowercase hexadecimal
+/// output.
 async fn verify_checksum(
     path: &Path,
     checksum: &Checksum,
@@ -818,6 +1057,10 @@ async fn verify_checksum(
     Ok(())
 }
 
+/// Component archives must contain exactly one top-level directory.
+///
+/// Empty archives, multiple entries, or a sole non-directory entry produce
+/// [`AddonError::InvalidArchive`].
 async fn top_level_directory(root: &Path) -> Result<PathBuf> {
     let mut entries = async_fs::read_dir(root).await?;
     let Some(entry) = entries.next().await.transpose()? else {

@@ -1,3 +1,12 @@
+//! Internal representation of Bottles-maintained addon catalogs.
+//!
+//! Catalog schema describes downloadable components and dependency
+//! addons. It is an internal persistence and distribution format, not a stable
+//! third-party catalog-authoring API. Unsupported schema versions and invalid
+//! structural records are rejected. Cached catalogs are loaded best-effort by
+//! the addon manager, so an invalid cache is ignored; invalid data received
+//! during an explicit refresh is reported to that operation instead.
+
 use std::collections::HashSet;
 use std::path::{Component, Path};
 
@@ -15,6 +24,10 @@ use super::installer::InstallStep;
 
 const CATALOG_VERSION: u32 = 1;
 
+/// A validated catalog in its declared order.
+///
+/// Entry order is significant when choosing internal components: the addon
+/// manager uses the first downloaded entry for each internal role.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Catalog {
@@ -34,6 +47,11 @@ impl Catalog {
     }
 }
 
+/// Metadata and downloadable artifacts for one catalog item.
+///
+/// IDs are non-nil and unique within a catalog, and correlate metadata with
+/// downloaded storage and index records. Names, versions, and artifact lists
+/// are non-empty, although names and versions otherwise remain opaque.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CatalogEntry {
@@ -64,6 +82,11 @@ impl CatalogEntry {
         self.kind
     }
 
+    /// Iterates over artifacts usable on `target`, retaining catalog indexes.
+    ///
+    /// Artifacts without a platform match every target. Component-class items
+    /// are validated to have at most one match; dependency addons may return
+    /// multiple resources, in catalog order.
     pub(crate) fn matching_artifacts(
         &self,
         target: Target,
@@ -75,6 +98,11 @@ impl CatalogEntry {
     }
 }
 
+/// Storage and installation class declared for a catalog item.
+///
+/// Runners and slotted addons are stored as one extracted component tree;
+/// un-slotted addons retain every matching artifact. Internal components serve
+/// next-core itself and are not exposed for bottle installation.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) enum ItemKind {
@@ -126,6 +154,13 @@ pub(crate) enum InternalRole {
     Winebridge,
 }
 
+/// One downloadable resource and its installation metadata.
+///
+/// Checksums are validated after download. The schema requires a non-empty
+/// digest but does not validate its encoding or algorithm-specific length.
+/// File names must be a single path component. An omitted `platform` matches
+/// every recognized host; `guest_arch` is informational.
+/// An empty recipe on a slot addon selects that slot's built-in recipe.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CatalogArtifact {
@@ -166,6 +201,7 @@ impl CatalogArtifact {
     }
 }
 
+/// Rejects unsupported versions without a forward-compatible fallback.
 fn deserialize_catalog_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: Deserializer<'de>,
@@ -179,6 +215,11 @@ where
     Ok(version)
 }
 
+/// Deserializes entries and enforces catalog-wide artifact invariants.
+///
+/// Item IDs must be unique. Component-class platform selectors may not
+/// overlap, dependency artifact file names must be unique, and every artifact
+/// file name must be a single path component.
 fn deserialize_items<'de, D>(deserializer: D) -> Result<Vec<CatalogEntry>, D::Error>
 where
     D: Deserializer<'de>,
@@ -233,6 +274,7 @@ where
     Ok(items)
 }
 
+/// Rejects only an empty digest; encoding and algorithm-specific length remain unchecked.
 fn deserialize_checksum<'de, D>(deserializer: D) -> Result<Checksum, D::Error>
 where
     D: Deserializer<'de>,

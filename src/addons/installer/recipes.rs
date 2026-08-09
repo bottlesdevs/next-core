@@ -1,3 +1,9 @@
+//! Built-in installation recipes for recognized addon slots.
+//!
+//! These recipes are implementation defaults, not stable step-by-step contracts. They are used
+//! for hand-placed slot components and for catalog slot artifacts whose recipe is empty. Catalog
+//! recipes otherwise take precedence.
+
 use std::sync::LazyLock;
 
 use crate::{
