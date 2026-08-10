@@ -1,20 +1,20 @@
+//! Direct Wine command lowering.
+//!
+//! Windows commands run through the configured Wine executable with `WINEPREFIX`
+//! set to the bottle prefix and `WINEARCH=win64`. Server control bypasses Wine
+//! and uses the sibling `wineserver` executable with the same environment.
+
 use super::{Command, Runner, RunnerCommand, RunnerError, Spawnable, Wrapper};
 use crate::error::Result;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 
-/// Wine runner implementation
-///
-/// Wine is the base compatibility layer that all other runners build upon. It provides
-/// the core Windows API translation functionality that allows Windows applications
-/// to run on Unix-like systems.
 #[derive(Debug)]
 pub(crate) struct Wine {
     executable: PathBuf,
 }
 
 impl Wine {
-    /// Creates a new Wine runner with the specified executable path
     pub fn new(executable: impl AsRef<Path>) -> Self {
         Self {
             executable: executable.as_ref().to_path_buf(),

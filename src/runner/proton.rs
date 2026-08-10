@@ -1,15 +1,16 @@
+//! UMU-backed Proton command lowering.
+//!
+//! Guest commands run through the paired UMU executable with `PROTONPATH` set to
+//! the selected Proton directory, `WINEPREFIX` set to the bottle prefix, and
+//! `WINEARCH=win64`. Server control also runs through UMU because Proton's
+//! `wineserver` requires its runtime.
+
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 
 use super::{Command, Runner, RunnerCommand, RunnerError, Spawnable, Wrapper};
 use crate::error::Result;
 
-/// Proton runner implementation
-///
-/// Proton is Valve's Wine fork designed specifically for gaming on Linux. It includes
-/// numerous patches and enhancements over standard Wine, making it particularly
-/// effective for running Windows games through Steam or standalone.
-///
 #[derive(Debug)]
 pub(crate) struct Proton {
     proton_path: PathBuf,
@@ -38,7 +39,12 @@ impl Runner for Proton {
         )
     }
 
-    // See: https://github.com/Open-Wine-Components/umu-launcher/issues/593#issuecomment-3958136985
+    /// Runs Proton's `wineserver` inside UMU's runtime.
+    ///
+    /// Exit status `1` is accepted only for `-k`; other commands and statuses
+    /// retain normal success semantics.
+    ///
+    /// See <https://github.com/Open-Wine-Components/umu-launcher/issues/593>.
     async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
         let command = Command::new(self.proton_path.join("files/bin/wineserver"))
             .arg(arg)
