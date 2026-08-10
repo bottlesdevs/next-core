@@ -80,7 +80,7 @@ impl IndexedComponent {
 /// Versioned contents of `components/index.toml`.
 #[derive(Debug, Default, Deserialize, Eq, PartialEq, Serialize, Config)]
 #[config(version = 1)]
-struct ComponentIndex {
+pub(crate) struct ComponentIndex {
     #[serde(default, rename = "component")]
     components: Vec<IndexedComponent>,
 }
@@ -108,11 +108,28 @@ impl ComponentIndex {
         Ok(())
     }
 
-    /// Records `component`, replacing entries with the same ID or path.
+    /// Canonicalizes and records a catalog-backed component, replacing entries
+    /// with the same ID or path.
+    ///
+    /// The ID must be non-nil; callers satisfy this with validated catalog IDs.
+    /// Returns an error if canonicalization or index loading or saving fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is nil.
     pub(crate) async fn record(
         directories: &Directories,
-        component: IndexedComponent,
+        id: Uuid,
+        version: String,
+        path: PathBuf,
+        kind: ItemKind,
     ) -> Result<()> {
+        let component = IndexedComponent {
+            id: NonNilUuid::new(id).expect("catalog UUID is non-nil"),
+            version,
+            path: async_fs::canonicalize(path).await?,
+            kind,
+        };
         let mut index = Self::load(directories).await?.unwrap_or_default();
         index
             .components
@@ -121,53 +138,16 @@ impl ComponentIndex {
         index.save(directories).await
     }
 
-    /// Removes `id` from the index and persists the resulting snapshot.
+    /// Removes only the identity record, not the component directory.
     ///
-    /// Removing an unknown ID is successful but still writes the index.
+    /// A later scan can rediscover the directory under a new UUID. Removing an
+    /// unknown ID is successful but still writes the index. Returns an error if
+    /// the index cannot be loaded or saved.
     pub(crate) async fn remove(directories: &Directories, id: Uuid) -> Result<()> {
         let mut index = Self::load(directories).await?.unwrap_or_default();
         index.components.retain(|entry| entry.id() != id);
         index.save(directories).await
     }
-}
-
-/// Canonicalizes and records a catalog-backed component.
-///
-/// The ID must be non-nil; callers satisfy this with validated catalog IDs.
-/// Returns an error if canonicalization or index loading or saving fails.
-///
-/// # Panics
-///
-/// Panics if `id` is nil.
-// TODO: Move UUID validation and path canonicalization into
-// `ComponentIndex::record`, then remove this wrapper.
-pub(crate) async fn record(
-    directories: &Directories,
-    id: Uuid,
-    version: String,
-    path: PathBuf,
-    kind: ItemKind,
-) -> Result<()> {
-    ComponentIndex::record(
-        directories,
-        IndexedComponent {
-            id: NonNilUuid::new(id).expect("catalog UUID is non-nil"),
-            version,
-            path: async_fs::canonicalize(path).await?,
-            kind,
-        },
-    )
-    .await
-}
-
-/// Removes only the identity record, not the component directory.
-///
-/// A later scan can rediscover the directory under a new UUID. Returns an error
-/// if the index cannot be loaded or saved.
-// TODO: Expose `ComponentIndex::remove` within the addons module, then remove
-// this forwarding wrapper.
-pub(crate) async fn remove(directories: &Directories, id: Uuid) -> Result<()> {
-    ComponentIndex::remove(directories, id).await
 }
 
 /// Discovers supported component directories and synchronizes the local index.
