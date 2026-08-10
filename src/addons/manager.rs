@@ -218,10 +218,10 @@ impl Addons {
             let _write = library.0.write.lock().await;
             let current = library.state();
             let component_catalog = match &component {
-                Ok((catalog, bytes)) => {
+                Ok(catalog) => {
                     async_fs::write(
                         catalog_path(&library.0.directories, CatalogKind::Components),
-                        bytes,
+                        serde_json::to_vec(catalog.as_ref())?,
                     )
                     .await?;
                     Some(catalog.clone())
@@ -229,10 +229,10 @@ impl Addons {
                 Err(_) => current.component_catalog.clone(),
             };
             let dependency_catalog = match &dependency {
-                Ok((catalog, bytes)) => {
+                Ok(catalog) => {
                     async_fs::write(
                         catalog_path(&library.0.directories, CatalogKind::Dependencies),
-                        bytes,
+                        serde_json::to_vec(catalog.as_ref())?,
                     )
                     .await?;
                     Some(catalog.clone())
@@ -373,15 +373,13 @@ impl Addons {
 
     /// Uses a temporary file that is removed best-effort on both success and
     /// returned failure. Dropping the owning operation can drop this cleanup future.
-    /// The returned bytes are the exact payload to persist after parsing.
-    // TODO: Dont return raw bytes. Re-serialize the Catalog when needed
     async fn download_catalog(
         &self,
         kind: CatalogKind,
         url: Option<Url>,
         progress: watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
-    ) -> Result<(Arc<Catalog>, Vec<u8>)> {
+    ) -> Result<Arc<Catalog>> {
         let url = url.ok_or(AddonError::CatalogUrlNotConfigured(kind))?;
         let staging = self.0.directories.data_dir().join(".staging");
         async_fs::create_dir_all(&staging).await?;
@@ -412,7 +410,7 @@ impl Addons {
             let bytes = async_fs::read(&downloaded).await?;
             let catalog = Arc::new(serde_json::from_slice::<Catalog>(&bytes)?);
             validate_catalog(&catalog, kind)?;
-            Ok((catalog, bytes))
+            Ok(catalog)
         }
         .await;
         let _ = async_fs::remove_file(downloaded).await;
