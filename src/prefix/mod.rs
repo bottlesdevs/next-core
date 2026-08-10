@@ -1,4 +1,9 @@
-//! Prefix persistence and transactional mutation.
+//! Prefix storage backends and checkpointed addon mutation.
+//!
+//! [`Prefix`] is persisted as part of each bottle's state. Standard storage
+//! mutates a conventional prefix directly; Virgo stores an ordered FVS layer
+//! stack with a per-bottle writable upper directory. Addon installation and
+//! removal use the same FVS checkpoint-and-restore boundary for both backends.
 
 mod standard;
 mod virgo;
@@ -21,14 +26,20 @@ use crate::{
     runner::Runner,
 };
 
+/// Identifies rollback checkpoints that must not appear as user snapshots.
+///
+/// Snapshot filtering compares this persisted value exactly, so changing it
+/// would expose checkpoints created by older versions.
 pub(crate) const AUTO_CHECKPOINT_MESSAGE: &str = "bottles-next:auto-checkpoint";
 pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
+/// Backend-specific state persisted in [`crate::bottle::BottleState`].
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind")]
 pub(crate) enum Prefix {
     Standard,
     Virgo {
+        /// Mount order: shared base, runner adapter, then installed addon layers.
         #[serde(default)]
         layers: Vec<Layer>,
     },
@@ -36,6 +47,8 @@ pub(crate) enum Prefix {
 
 impl From<&FvsProgress> for Transfer {
     fn from(progress: &FvsProgress) -> Self {
+        // FVS uses negative counters when progress is unavailable. Core progress
+        // uses unsigned values and represents an unavailable total explicitly.
         Self {
             current: progress.current.try_into().unwrap_or_default(),
             total: progress.total.try_into().ok().filter(|total| *total > 0),
@@ -93,6 +106,8 @@ impl Prefix {
         let Self::Virgo { layers } = self else {
             return Ok(());
         };
+        // Resolve the complete replacement before changing persisted state. A
+        // missing cached addon therefore leaves the old layer stack intact.
         virgo::rebuild(layers, runner, runner_key, installed, context).await
     }
 
@@ -147,6 +162,13 @@ impl Prefix {
     }
 }
 
+/// Runs a prefix mutation behind a rollback checkpoint.
+///
+/// Cancellation is checked after checkpointing and after successful work. Any
+/// work error or observed cancellation triggers a restore. If restore also
+/// fails, the restore failure is logged and the original error is preserved.
+/// Dropping the surrounding [`crate::Operation`] abandons this future and does
+/// not drive the restore path.
 async fn transact<F, T, P>(
     bottle_path: &Path,
     context: &Context,
@@ -213,6 +235,7 @@ where
     }
 }
 
+/// Drains an FVS commit stream, forwarding every frame and requiring a terminal commit.
 pub(crate) async fn finish_commit(
     stream: impl Stream<Item = std::result::Result<FvsProgress, FvsError>>,
     on_progress: impl FnMut(&FvsProgress),
@@ -226,6 +249,7 @@ pub(crate) async fn finish_commit(
     .await
 }
 
+/// Drains an FVS restore stream, forwarding every frame and requiring a terminal result.
 pub(crate) async fn finish_restore(
     stream: impl Stream<Item = std::result::Result<FvsProgress, FvsError>>,
     on_progress: impl FnMut(&FvsProgress),
@@ -239,6 +263,11 @@ pub(crate) async fn finish_restore(
     .await
 }
 
+/// Consumes the FVS streaming protocol and extracts its terminal payload.
+///
+/// Every frame, including the terminal frame, is forwarded to `on_progress`.
+/// End-of-stream or a terminal frame without the expected payload is a protocol
+/// error rather than successful completion.
 async fn finish_stream<T>(
     stream: impl Stream<Item = std::result::Result<FvsProgress, FvsError>>,
     mut on_progress: impl FnMut(&FvsProgress),

@@ -1,4 +1,9 @@
 //! Layered Virgo prefix storage.
+//!
+//! A mounted bottle combines a shared base, a runner-specific adapter, cached
+//! addon layers, and the bottle's writable `upper` directory. Layer order is
+//! persisted in [`super::Prefix`] and must be changed only while the bottle is
+//! stopped.
 
 mod cache;
 
@@ -46,6 +51,8 @@ pub(super) async fn rebuild(
     installed: &[Uuid],
     context: &Context,
 ) -> Result<()> {
+    // Build separately so failure to resolve any cached addon does not partially
+    // replace the bottle's persisted layer order.
     let mut rebuilt = base_layers(runner, runner_key, context).await?;
     for id in installed {
         rebuilt.push(cache::layer(*id, context).await?);
@@ -65,6 +72,8 @@ pub(super) async fn install<F>(
 where
     F: for<'a> AsyncFnOnce(&'a Path) -> Result<()>,
 {
+    // A cache hit deliberately skips the recipe. The cached filesystem layer and
+    // registry patch must therefore capture every prefix effect of installation.
     if !cache::exists(item_id, context).await? {
         cache::install(layers.clone(), item_id, execute, context).await?;
     }
@@ -88,6 +97,8 @@ pub(super) async fn uninstall<F>(
 where
     F: for<'a> AsyncFnOnce(&'a Path, bool) -> Result<()>,
 {
+    // Removing the layer reveals the previous filesystem contents, so the recipe
+    // must not restore overwritten files into the writable upper directory.
     cache::remove(layers, item_id, context);
     let prefix = bottle_path.join("prefix");
     let upper = bottle_path.join("upper");
@@ -97,6 +108,10 @@ where
     .await
 }
 
+/// Mounts for the duration of `work` and always attempts a normal unmount.
+///
+/// An unmount failure becomes the result only when `work` succeeded. If both
+/// fail, the work error is preserved and the unmount failure is logged.
 async fn with_mount<F, T>(
     mountpoint: &Path,
     layers: Vec<Layer>,
@@ -127,6 +142,10 @@ where
     }
 }
 
+/// Prepares a bottle's long-lived Virgo mount.
+///
+/// An existing mount at the same path is trusted without comparing its layer
+/// specification. Callers must stop the bottle before changing persisted layers.
 async fn mount_layers(bottle_path: &Path, layers: Vec<Layer>, context: &Context) -> Result<()> {
     let prefix = bottle_path.join("prefix");
     let mountpoint = prefix.display().to_string();
@@ -170,6 +189,10 @@ async fn base_layers(
     Ok(vec![base, adapter])
 }
 
+/// Loads or creates the single base shared by every Virgo bottle.
+///
+/// Once the base repository exists, `runner` is not used. A nonempty directory
+/// without an FVS repository is rejected rather than overwritten.
 async fn ensure_base(runner: &dyn Runner, context: &Context) -> Result<Layer> {
     let base_path = context.directories().data_dir().join("virgo/base");
     let repository_path = base_path.join("prefix");
@@ -222,6 +245,10 @@ async fn ensure_base(runner: &dyn Runner, context: &Context) -> Result<Layer> {
     committed
 }
 
+/// Loads or creates the adapter cache identified solely by `runner_key`.
+///
+/// Creation is staged over the shared base and published by renaming the
+/// committed upper directory into the adapter cache.
 async fn ensure_adapter(
     runner: &dyn Runner,
     runner_key: &str,
@@ -292,6 +319,7 @@ fn adapter_root(context: &Context) -> PathBuf {
     context.directories().data_dir().join("virgo/adapters")
 }
 
+/// Refuses to mount over existing contents, which would otherwise be hidden.
 async fn ensure_empty_dir(path: &Path) -> Result<()> {
     async_fs::create_dir_all(path).await?;
     if async_fs::read_dir(path).await?.try_next().await?.is_some() {

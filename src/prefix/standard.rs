@@ -1,4 +1,8 @@
-//! Standard prefix storage.
+//! Direct mutable prefix storage.
+//!
+//! Recipes operate on `<bottle>/prefix`. Uninstallation asks the recipe to
+//! restore overwritten files because, unlike Virgo, this backend has no lower
+//! layer to reveal. Transaction rollback is provided by the parent module.
 
 use std::{ops::AsyncFnOnce, path::Path};
 

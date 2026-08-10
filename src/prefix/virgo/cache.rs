@@ -1,4 +1,8 @@
-//! Shared immutable Virgo layer cache helpers.
+//! Shared immutable Virgo addon cache.
+//!
+//! Each addon UUID owns an FVS filesystem layer and a separate set of forward
+//! registry patches. Registry hives are excluded from the layer so their changes
+//! can be merged into each bottle's writable upper directory.
 
 use std::{
     fs,
@@ -19,11 +23,13 @@ use crate::{
 
 use super::with_mount;
 
+/// Removes references from one bottle's stack without deleting the shared cache.
 pub(super) fn remove(layers: &mut Vec<Layer>, id: Uuid, context: &Context) {
     let repository = layer_path(id, context).display().to_string();
     layers.retain(|layer| layer.repository_path != repository);
 }
 
+/// Checks only for FVS repository metadata; [`layer`] validates its commit.
 pub(super) async fn exists(id: Uuid, context: &Context) -> Result<bool> {
     let path = layer_path(id, context).join(".fvs2");
     Ok(async_fs::metadata(path)
@@ -31,6 +37,17 @@ pub(super) async fn exists(id: Uuid, context: &Context) -> Result<bool> {
         .is_ok_and(|entry| entry.is_dir()))
 }
 
+/// Builds and publishes the cached filesystem layer and registry patches.
+///
+/// Installation runs in a unique staging mount over the preceding layers. The
+/// registry is diffed separately, unchanged filesystem entries are pruned by
+/// FVS, and the registry hives are removed before the upper directory is
+/// committed as a reusable layer.
+///
+/// Existing cache entries are removed before the build. Publishing the registry
+/// and filesystem destinations requires two renames and is not atomic as a pair;
+/// failure may therefore leave only one destination present. Staging cleanup is
+/// best-effort.
 pub(super) async fn install<F>(
     layers: Vec<Layer>,
     item_id: Uuid,
@@ -114,6 +131,12 @@ where
     result
 }
 
+/// Merges a cached addon's registry patches into a bottle's writable upper.
+///
+/// A missing patch directory means the addon has no recorded registry effects.
+/// Both replacement hives are prepared in a scratch directory before either is
+/// installed, but the final renames are not atomic as a pair. Scratch cleanup is
+/// best-effort.
 pub(super) async fn apply_registry(
     bottle_path: &Path,
     layers: &[Layer],
@@ -164,6 +187,9 @@ pub(super) async fn apply_registry(
     .await
 }
 
+/// Resolves a cached layer and its first available commit.
+///
+/// Repository metadata without a commit is treated as a corrupt cache entry.
 pub(super) async fn layer(id: Uuid, context: &Context) -> Result<Layer> {
     let destination = layer_path(id, context);
     if !async_fs::metadata(destination.join(".fvs2"))
