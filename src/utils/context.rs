@@ -39,10 +39,10 @@ impl Context {
     ) -> Result<Self> {
         let client =
             http_client::MockClient::new(|_| Ok(http::Response::new(http_client::body([]))));
-        let (downloads, _scheduler) = download_manager::manager::DownloadManager::new(
+        let downloads = download_manager::manager::DownloadManager::new(
             Arc::new(client),
             download_manager::manager::DownloadManagerConfig::default(),
-        );
+        )?;
         let addons = Addons::load(directories.clone(), None, None, Arc::new(downloads)).await?;
         Self::new(directories, fvs2d_executable, addons)
     }

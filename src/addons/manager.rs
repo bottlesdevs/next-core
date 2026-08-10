@@ -1195,10 +1195,11 @@ mod tests {
             fs::create_dir_all(&path).unwrap();
             let client =
                 http_client::MockClient::new(|_| Ok(http::Response::new(http_client::body([]))));
-            let (downloader, _scheduler) = download_manager::manager::DownloadManager::new(
+            let downloader = download_manager::manager::DownloadManager::new(
                 Arc::new(client),
                 download_manager::manager::DownloadManagerConfig::default(),
-            );
+            )
+            .unwrap();
             let library = Addons::load(directories.clone(), None, None, Arc::new(downloader))
                 .await
                 .unwrap();
@@ -1280,9 +1281,8 @@ mod tests {
                 };
                 Ok(Response::builder().status(200).body(body(bytes))?)
             }));
-            let (downloader, scheduler) =
-                DownloadManager::new(client, DownloadManagerConfig::default());
-            let scheduler = executor.spawn(scheduler);
+            let downloader =
+                DownloadManager::new(client, DownloadManagerConfig::default()).unwrap();
             let library = Addons::load(directories.clone(), None, None, Arc::new(downloader))
                 .await
                 .unwrap();
@@ -1309,7 +1309,6 @@ mod tests {
             assert!(!directories.components().join("dxvk/dxvk.tar").exists());
             assert!(!directories.dependency(dependency_id).exists());
             drop(library);
-            scheduler.await;
             fs::remove_dir_all(root).unwrap();
         }));
     }

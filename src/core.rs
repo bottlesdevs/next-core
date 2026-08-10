@@ -2,7 +2,6 @@ use std::{path::PathBuf, sync::Arc};
 
 use download_manager::manager::{DownloadManager, DownloadManagerConfig};
 use http_client::ReqwestClient;
-use tokio::runtime::Handle;
 use url::Url;
 
 use crate::{Addons, BottleManager, Context, Directories, error::Result};
@@ -27,13 +26,12 @@ impl Bottles {
             component_catalog,
             dependency_catalog,
         } = config;
-        let runtime = Handle::current();
         let directories = Directories::new().await?;
         let client = ReqwestClient::new().map_err(download_manager::error::Error::from)?;
-        let (downloader, scheduler) =
-            DownloadManager::new(Arc::new(client), DownloadManagerConfig::default());
-        let _ = runtime.spawn(scheduler);
-        let downloader = Arc::new(downloader);
+        let downloader = Arc::new(DownloadManager::new(
+            Arc::new(client),
+            DownloadManagerConfig::default(),
+        )?);
         let addons = Addons::load(
             directories.clone(),
             component_catalog,
