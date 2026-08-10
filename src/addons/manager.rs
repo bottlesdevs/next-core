@@ -32,6 +32,7 @@ use super::{
 };
 use crate::{
     Directories, Operation, Progress, Stage, Transfer,
+    addons::index::ComponentIndex,
     error::{Error, Result},
     utils::{archive, exists},
 };
@@ -343,7 +344,7 @@ impl Addons {
         }
         async_fs::remove_dir_all(&stored.path).await?;
         if stored.kind.is_single_artifact() {
-            index::remove(&self.0.directories, id).await?;
+            ComponentIndex::remove(&self.0.directories, id).await?;
         }
         self.publish(
             state.component_catalog.clone(),
@@ -514,7 +515,7 @@ impl Addons {
         async_fs::create_dir_all(category_root).await?;
         async_fs::rename(release, &target).await?;
         let result = async {
-            index::record(
+            ComponentIndex::record(
                 &self.0.directories,
                 entry.id(),
                 entry.version().to_owned(),
@@ -746,7 +747,7 @@ impl AddonsState {
             if let Some(path) = stored_path {
                 if entry.kind().is_single_artifact() {
                     catalog_component_paths.insert(path.clone());
-                    index::record(
+                    ComponentIndex::record(
                         directories,
                         entry.id(),
                         entry.version().to_owned(),
