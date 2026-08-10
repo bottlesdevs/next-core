@@ -120,7 +120,7 @@ impl BottleManager {
 
     /// Creates a bottle using `runner` and the selected storage strategy.
     ///
-    /// The returned operation is lazy. A new UUID is assigned when it runs;
+    /// A new UUID is assigned when the operation starts;
     /// display names are stored verbatim, may be empty, and need not be unique.
     /// Creation requires the runner, WineBridge component, and configured FVS
     /// service to be available even for [`Storage::Standard`]. Failures, and
@@ -188,8 +188,8 @@ impl BottleManager {
 
     /// Stops and permanently deletes the bottle identified by `id`.
     ///
-    /// The returned operation is lazy. Cancellation is observed after stopping
-    /// and before recursive removal starts; removal itself is not cancellable.
+    /// Cancellation is observed after stopping and before recursive removal
+    /// starts; removal itself is not cancellable.
     ///
     /// After successful deletion, existing [`Bottle`] handles report deletion
     /// and their state streams end. Previously obtained [`BottleState`]

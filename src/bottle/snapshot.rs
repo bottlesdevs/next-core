@@ -15,9 +15,9 @@ use super::{Bottle, Snapshot, SnapshotSummary, error::BottleError, state::Bottle
 impl Bottle {
     /// Saves the bottle's current files and configuration in snapshot history.
     ///
-    /// The returned operation is lazy and takes exclusive bottle access. It
-    /// stops the bottle before inspecting the complete library-managed bottle
-    /// directory, including `bottle.toml`.
+    /// The operation takes exclusive bottle access and stops the bottle before
+    /// inspecting the complete library-managed bottle directory, including
+    /// `bottle.toml`.
     ///
     /// If the tree has not changed, no history entry is created. The returned
     /// [`Snapshot`] then has `created == false`, and its state ID, message, and
@@ -89,8 +89,8 @@ impl Bottle {
 
     /// Restores the bottle to a snapshot selected by full state ID or prefix.
     ///
-    /// The returned operation is lazy and takes exclusive bottle access. It
-    /// stops the bottle, then replaces the complete bottle tree with the target;
+    /// The operation takes exclusive bottle access. It stops the bottle, then
+    /// replaces the complete bottle tree with the target;
     /// files absent from that snapshot are removed. The state being replaced is
     /// not saved automatically. On success, the returned string is the resolved
     /// full state ID and the restored `bottle.toml` is published as a new

@@ -174,12 +174,12 @@ impl Addons {
 
     /// Downloads and publishes the configured component and dependency catalogs.
     ///
-    /// The returned operation is lazy. Both catalogs are downloaded, decoded, and
-    /// validated independently. If one of those phases fails, the successful
-    /// catalog is persisted and published with the previous version of the failed
-    /// catalog, provided persistence and state rebuilding succeed; the operation
-    /// then returns [`AddonError::CatalogRefresh`]. If both fail, the existing
-    /// catalogs are still rebuilt and published before that error is returned.
+    /// Both catalogs are downloaded, decoded, and validated independently. If
+    /// one of those phases fails, the successful catalog is persisted and
+    /// published with the previous version of the failed catalog, provided
+    /// persistence and state rebuilding succeed; the operation then returns
+    /// [`AddonError::CatalogRefresh`]. If both fail, the existing catalogs are
+    /// still rebuilt and published before that error is returned.
     ///
     /// Persistence and state rebuilding are not transactional. An I/O or rebuild
     /// failure may leave one catalog file updated on disk without publishing that
@@ -278,9 +278,9 @@ impl Addons {
     /// conflicts with an existing target on disk. Cancellation is observed while
     /// transferring, verifying, and extracting. When the operation remains polled
     /// through cancellation, staging files are then removed on a best-effort basis.
-    /// Dropping a started operation also requests cancellation but may leave staging
-    /// files because it drops the cleanup future. Cancellation does not roll back a
-    /// commit already in progress.
+    /// Dropping a started operation abandons it and may leave staging files because
+    /// it drops the cleanup future. Cancellation does not roll back a commit already
+    /// in progress.
     // TODO: Return Operation<Addon>
     pub fn fetch(&self, id: Uuid) -> Operation<()> {
         let library = self.clone();
