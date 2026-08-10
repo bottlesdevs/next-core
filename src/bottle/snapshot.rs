@@ -13,6 +13,27 @@ use crate::{
 use super::{Bottle, Snapshot, SnapshotSummary, error::BottleError, state::BottleState};
 
 impl Bottle {
+    /// Saves the bottle's current files and configuration in snapshot history.
+    ///
+    /// The returned operation is lazy and takes exclusive bottle access. It
+    /// stops the bottle before inspecting the complete library-managed bottle
+    /// directory, including `bottle.toml`.
+    ///
+    /// If the tree has not changed, no history entry is created. The returned
+    /// [`Snapshot`] then has `created == false`, and its state ID, message, and
+    /// timestamp describe the pre-existing FVS head rather than `message`.
+    /// The message `bottles-next:auto-checkpoint` is reserved for internal
+    /// transactions; snapshots using it are hidden by [`snapshots`](Self::snapshots).
+    ///
+    /// Cancellation is observed after stopping and before the FVS commit
+    /// begins. Once streaming starts, this operation does not check for
+    /// cancellation again.
+    ///
+    /// # Errors
+    ///
+    /// The operation returns an error if the bottle was deleted, cannot be
+    /// stopped, the FVS service is unavailable, cancellation is requested, or
+    /// the snapshot cannot be created.
     pub fn create_snapshot(&self, message: impl Into<String>) -> Operation<Snapshot> {
         let bottle = self.clone();
         let repository = self.snapshot_repository();
@@ -37,6 +58,19 @@ impl Bottle {
         })
     }
 
+    /// Lists caller-visible snapshots for this bottle.
+    ///
+    /// Results are newest-first. Every commit whose message is exactly
+    /// `bottles-next:auto-checkpoint` is excluded because that value is reserved
+    /// for internal mutation checkpoints.
+    ///
+    /// Listing holds shared bottle access: WineBridge requests may continue,
+    /// while edits, stop, snapshot mutation, and deletion wait.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bottle was deleted, the FVS service is
+    /// unavailable, or its snapshot history cannot be read.
     pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
         let _read = self.0.write_lock.read().await;
         self.ensure_exists()?;
@@ -53,6 +87,29 @@ impl Bottle {
             .collect())
     }
 
+    /// Restores the bottle to a snapshot selected by full state ID or prefix.
+    ///
+    /// The returned operation is lazy and takes exclusive bottle access. It
+    /// stops the bottle, then replaces the complete bottle tree with the target;
+    /// files absent from that snapshot are removed. The state being replaced is
+    /// not saved automatically. On success, the returned string is the resolved
+    /// full state ID and the restored `bottle.toml` is published as a new
+    /// [`BottleState`] snapshot.
+    ///
+    /// Currently this restores the working files without moving FVS's current
+    /// commit to the target. Cancellation is observed before restore begins,
+    /// but not while the FVS stream is running.
+    ///
+    /// Restore changes the filesystem before loading and validating the
+    /// restored metadata. If that final step fails, the operation returns an
+    /// error after disk contents have changed, while the previously published
+    /// live state remains in place.
+    ///
+    /// # Errors
+    ///
+    /// The operation returns an error if the bottle cannot be stopped, the
+    /// target is missing or ambiguous, the restore fails, cancellation is
+    /// requested, or the restored metadata has a different bottle UUID.
     pub fn rollback(&self, state_id_or_prefix: &str) -> Operation<String> {
         let bottle = self.clone();
         let repository = self.snapshot_repository();
@@ -95,6 +152,8 @@ impl Bottle {
         })
     }
 
+    /// Addresses the history repository that every bottle owns independently
+    /// of its prefix storage strategy.
     fn snapshot_repository(&self) -> Repository {
         Repository {
             repository_path: self.bottle_path().display().to_string(),
