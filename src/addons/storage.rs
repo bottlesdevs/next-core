@@ -4,7 +4,7 @@
 //! `dependencies/<uuid>/`. Catalog downloads retain their UUID in `.addon.toml`.
 
 use std::{
-    marker::PhantomData,
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -28,17 +28,32 @@ use crate::{
 
 pub(crate) const MANIFEST: &str = ".addon.toml";
 
+#[derive(Clone, Debug)]
 pub(crate) struct AddonStorage<K> {
     dirs: Directories,
-    marker: PhantomData<K>,
+    pub(crate) catalog: Option<Arc<Catalog<K>>>,
+    pub(crate) addons: HashMap<Uuid, Arc<Addon<K>>>,
 }
 
 impl<K> AddonStorage<K> {
-    pub(crate) fn new(dirs: Directories) -> Self {
+    pub(crate) fn new(dirs: Directories, catalog: Option<Arc<Catalog<K>>>) -> Self {
         Self {
             dirs,
-            marker: PhantomData,
+            catalog,
+            addons: HashMap::new(),
         }
+    }
+
+    fn replace_addons(&mut self, addons: Vec<Addon<K>>) -> Result<()> {
+        let mut by_id = HashMap::new();
+        for addon in addons {
+            let id = addon.id();
+            if by_id.insert(id, Arc::new(addon)).is_some() {
+                return Err(AddonError::Duplicate(id).into());
+            }
+        }
+        self.addons = by_id;
+        Ok(())
     }
 
     pub(crate) async fn save(&self, addon: &Addon<K>, staging_path: &Path) -> Result<()>
@@ -82,7 +97,7 @@ impl<K> AddonStorage<K> {
 }
 
 impl AddonStorage<Component> {
-    pub(crate) async fn scan(&self) -> Result<Vec<Addon<Component>>> {
+    pub(crate) async fn scan(&mut self) -> Result<()> {
         let mut addons = Vec::new();
         for slot in Slot::iter() {
             let slot_root = self.dirs.components().join(slot.as_str());
@@ -130,7 +145,7 @@ impl AddonStorage<Component> {
                 addons.push(addon);
             }
         }
-        Ok(addons)
+        self.replace_addons(addons)
     }
 
     pub(crate) async fn target(&self, slot: Slot, version: &str) -> Result<PathBuf> {
@@ -169,7 +184,7 @@ impl AddonStorage<Component> {
 }
 
 impl AddonStorage<Dependency> {
-    pub(crate) async fn scan(&self) -> Result<Vec<Addon<Dependency>>> {
+    pub(crate) async fn scan(&mut self) -> Result<()> {
         let mut addons = Vec::new();
         let mut entries = async_fs::read_dir(self.dirs.dependencies()).await?;
         while let Some(directory) = entries.try_next().await? {
@@ -189,7 +204,7 @@ impl AddonStorage<Dependency> {
             }
             addons.push(addon);
         }
-        Ok(addons)
+        self.replace_addons(addons)
     }
 
     pub(crate) async fn target(&self, id: Uuid) -> Result<PathBuf> {
