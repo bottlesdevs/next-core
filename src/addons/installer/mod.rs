@@ -1,11 +1,10 @@
 //! Addon installation recipes and their executor.
 //!
-//! Catalog artifacts carry an ordered sequence of [`InstallStep`] values that
-//! describes how to apply a downloaded resource to a Wine prefix. Bottle
-//! installation prepares those resources and calls [`execute`]; bottle
-//! uninstallation calls [`uninstall`] with the same recipe.
-//! Slot-based addons without an explicit catalog recipe, including hand-placed
-//! components, use the built-in recipe for their [`super::Slot`].
+//! Component entries carry one recipe for their extracted directory; dependency
+//! artifacts each carry their own recipe. Bottle installation prepares those
+//! resources and calls [`execute`]; component removal calls [`uninstall`] with
+//! the persisted recipe. Components without a catalog recipe, including
+//! hand-placed components, use the built-in recipe for their [`super::Slot`].
 //!
 //! # Installation
 //!
@@ -15,13 +14,14 @@
 //! steps remain if a later step fails; the bottle storage layer is responsible
 //! for any transaction-level rollback.
 //!
-//! # Uninstallation
+//! # Component removal
 //!
 //! Resources and steps are visited in reverse order. Uninstallation can restore
 //! copied files, delete DLL overrides, and remove environment entries. Actions
 //! without an inverse—executing programs, extracting archives, registering DLLs,
 //! and setting registry values—are skipped. Consequently, a recipe is not
-//! necessarily fully reversible.
+//! necessarily fully reversible. Dependencies cannot be removed separately from
+//! their bottle.
 //!
 //! # Cancellation and cleanup
 //!
@@ -45,11 +45,11 @@ use std::{
 
 use futures_lite::future;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
+    addons::{InstallerError, item::Artifact},
     error::{Error, Result, ResultExt},
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
     runner::{Command, Runner, Spawnable, shutdown_prefix},
@@ -59,26 +59,6 @@ use crate::{
 
 use self::super::deserialize_non_empty_string;
 pub(crate) use recipes::steps as recipe_steps;
-
-/// Recipe-specific failures produced while installing an addon.
-///
-/// Installation may also return I/O, archive, runner, WineBridge, and
-/// cancellation errors through their corresponding [`crate::error::Error`]
-/// variants.
-#[derive(Debug, Error)]
-pub enum InstallerError {
-    /// A recipe-provided executable returned an unsuccessful exit status.
-    #[error("installer exited with status {0}")]
-    InstallerFailed(std::process::ExitStatus),
-    /// Registering a DLL with `regsvr32` returned an unsuccessful exit status.
-    ///
-    /// DLLs are attempted sequentially, so this is the first unsuccessful status.
-    #[error("regsvr32 exited with status {0}")]
-    RegisterDllFailed(std::process::ExitStatus),
-    /// An extracted file resolved outside its staging directory.
-    #[error("staged file {path} is outside staging directory {stage}")]
-    FileOutsideStage { path: PathBuf, stage: PathBuf },
-}
 
 /// A declarative operation applied while installing an addon resource.
 ///
@@ -154,12 +134,6 @@ pub enum InstallStep {
     SetEnvironment { name: String, value: String },
 }
 
-#[derive(Clone)]
-pub(crate) struct InstallResource {
-    pub(crate) source: PathBuf,
-    pub(crate) steps: Vec<InstallStep>,
-}
-
 pub(crate) struct InstallInputs<'a> {
     pub(crate) prefix: &'a Path,
     pub(crate) runner: &'a dyn Runner,
@@ -181,7 +155,7 @@ pub(crate) struct InstallInputs<'a> {
 /// shutdowns are attempted.
 pub(crate) async fn execute(
     inputs: InstallInputs<'_>,
-    resources: &[InstallResource],
+    resources: &[Artifact],
     cancellation: &CancellationToken,
     on_step: impl Fn(&InstallStep) + Send,
 ) -> Result<()> {
@@ -230,7 +204,7 @@ pub(crate) async fn execute(
 /// cancellation and other control-flow errors are returned.
 pub(crate) async fn uninstall(
     inputs: InstallInputs<'_>,
-    resources: &[InstallResource],
+    resources: &[Artifact],
     restore_files: bool,
     item_id: Uuid,
     cancellation: &CancellationToken,
@@ -279,7 +253,7 @@ pub(crate) async fn uninstall(
 /// so its [`InstallStep::SetEnvironment`] steps would otherwise be absent from
 /// the bottle's in-memory state. Replaying is idempotent when the recipe did run;
 /// later entries with the same name overwrite earlier ones.
-pub(crate) fn replay_environment(environment: &mut Environment, resources: &[InstallResource]) {
+pub(crate) fn replay_environment(environment: &mut Environment, resources: &[Artifact]) {
     for step in resources.iter().flat_map(|resource| &resource.steps) {
         if let InstallStep::SetEnvironment { name, value } = step {
             environment.insert(name.clone(), value.clone());
@@ -289,7 +263,7 @@ pub(crate) fn replay_environment(environment: &mut Environment, resources: &[Ins
 
 async fn execute_step(
     inputs: InstallInputs<'_>,
-    resource: &InstallResource,
+    resource: &Artifact,
     step: &InstallStep,
     cancellation: &CancellationToken,
 ) -> Result<()> {
@@ -305,17 +279,17 @@ async fn execute_step(
             destination,
         } => {
             let source = if source.as_os_str().is_empty() {
-                resource.source.clone()
+                resource.path.clone()
             } else {
-                resource.source.join(source)
+                resource.path.join(source)
             };
             install_file(&source, prefix, destination).await?;
         }
         InstallStep::Extract { destination } => {
-            extract_into(&resource.source, prefix, destination, cancellation).await?;
+            extract_into(&resource.path, prefix, destination, cancellation).await?;
         }
         InstallStep::Execute { arguments } => {
-            let mut command = Command::new(&resource.source);
+            let mut command = Command::new(&resource.path);
             for argument in arguments {
                 command = command.arg(argument);
             }
@@ -377,7 +351,7 @@ async fn uninstall_step(
     inputs: InstallInputs<'_>,
     step: &InstallStep,
     restore_files: bool,
-    component_id: Uuid,
+    addon_id: Uuid,
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let InstallInputs {
@@ -419,7 +393,7 @@ async fn uninstall_step(
         }
         unsupported => {
             tracing::warn!(
-                %component_id,
+                %addon_id,
                 step = ?unsupported,
                 "skipping unsupported component uninstall action"
             );

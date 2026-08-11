@@ -1,25 +1,26 @@
-//! Discovering, downloading, and describing runners and bottle addons.
+//! Discovering, downloading, and describing bottle addons.
 //!
 //! Obtain the shared [`Addons`] manager from [`crate::Bottles::addons`]. The
-//! manager combines Bottles-maintained catalogs with components found in the
-//! application data directory. Returned [`Addon`] and [`RunnerComponent`]
-//! values are snapshots: fetch an [`Availability::Downloadable`] item, then
-//! query the manager again before using it.
+//! manager exposes typed Bottles-maintained [`CatalogEntry`] values separately
+//! from downloaded and hand-placed [`Addon`] values.
 //!
-//! Downloading an addon only places its resources in library-managed storage.
-//! [`crate::Bottle::install`] is the separate operation that applies those
-//! resources to a bottle.
+//! Fetching only places resources in library-managed storage. Bottles select
+//! components with [`crate::Bottle::set_component`] and install dependencies
+//! with [`crate::Bottle::install`].
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 pub(crate) mod catalog;
-mod index;
-pub mod installer;
+mod error;
+pub(crate) mod installer;
 pub(crate) mod item;
 mod manager;
+mod storage;
 
-pub use item::{Addon, Availability, RunnerComponent, Slot};
-pub use manager::{AddonError, Addons, CatalogKind};
+pub use catalog::CatalogEntry;
+pub use error::{AddonError, CatalogError, InstallerError};
+pub use item::{Addon, Component, Dependency, Requirement, Slot};
+pub use manager::Addons;
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "algorithm", content = "value", rename_all = "kebab-case")]
@@ -37,16 +38,6 @@ pub enum Checksum {
 }
 
 impl Checksum {
-    /// Stores a SHA-256 expectation verbatim; no format validation is performed.
-    pub fn sha256(value: impl Into<String>) -> Self {
-        Self::Sha256(value.into())
-    }
-
-    /// Stores a SHA-512 expectation verbatim; no format validation is performed.
-    pub fn sha512(value: impl Into<String>) -> Self {
-        Self::Sha512(value.into())
-    }
-
     /// Exposes the unnormalized string used for exact checksum verification.
     pub fn value(&self) -> &str {
         match self {
@@ -67,12 +58,8 @@ pub struct Target {
 }
 
 impl Target {
-    pub fn new(os: OperatingSystem, arch: Architecture) -> Self {
+    fn new(os: OperatingSystem, arch: Architecture) -> Self {
         Self { os, arch }
-    }
-
-    pub fn linux_x86_64() -> Self {
-        Self::new(OperatingSystem::Linux, Architecture::X86_64)
     }
 
     /// Maps the compile target into the subset represented by this type.
@@ -99,14 +86,6 @@ impl Target {
             return None;
         };
         Some(Self::new(os, arch))
-    }
-
-    pub fn os(self) -> OperatingSystem {
-        self.os
-    }
-
-    pub fn arch(self) -> Architecture {
-        self.arch
     }
 }
 

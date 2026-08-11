@@ -9,7 +9,6 @@ mod wine;
 
 pub(crate) use crate::wrapper::{Command, Spawnable, Wrapper};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::error::Result;
@@ -26,9 +25,8 @@ use std::{
 ///
 /// This identifies how next-core invokes the component, not a distribution or
 /// version of Wine.
-#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RunnerKind {
+#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
+pub(crate) enum RunnerKind {
     /// A direct Wine layout selected by `bin/wine`; server control expects its
     /// sibling `wineserver`.
     Wine,

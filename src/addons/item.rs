@@ -1,15 +1,14 @@
-//! Values describing runners, addons, and internal components.
-//!
-//! The manager builds owned values by reconciling catalogs with local files.
-//! Existing values do not change after a catalog refresh, download, removal, or
-//! filesystem change; query [`crate::Addons`] again for updated state. UUIDs
-//! identify logical items across queries, while derived equality compares all
-//! persisted state. Their Serde representations belong to internal persistence
-//! and are not supported interchange formats.
+//! Downloaded components and dependencies used by bottle APIs.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
+use next_config::Config;
 use serde::{Deserialize, Serialize};
+use strum::EnumIter;
 use uuid::{NonNilUuid, Uuid};
 
 use crate::{
@@ -17,204 +16,224 @@ use crate::{
     runner::{Proton, Runner, RunnerError, RunnerKind, Wine, detect_runner_kind},
 };
 
-use super::{
-    catalog::InternalRole,
-    installer::{InstallResource, InstallStep},
-};
+use super::installer::InstallStep;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
 /// A mutually exclusive component role within a bottle.
-///
-/// Installing an addon in a slot replaces the addon already occupying that slot.
+#[derive(Clone, Copy, Debug, Deserialize, EnumIter, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Slot {
+    #[serde(rename = "winebridge")]
+    WineBridge,
+    Runner,
+    Umu,
     Dxvk,
     Vkd3d,
     Nvapi,
     LatencyFlex,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Recorded local-file and platform-support state for a catalog item.
-///
-/// Availability is cached in the [`Addon`] or [`RunnerComponent`] snapshot that
-/// produced it. Obtain a new snapshot from [`crate::Addons`] after the manager
-/// changes. `Downloaded` only describes the item's own recorded files; it does
-/// not guarantee that those files still exist or that separately managed runtime
-/// prerequisites are present.
-pub enum Availability {
-    /// The item's selected artifacts were recorded in local storage.
-    ///
-    /// Recorded paths are not revalidated and may no longer exist.
-    Downloaded,
-    /// A matching artifact exists, but transfer and installation may still fail.
-    Downloadable,
-    /// No matching artifact exists; a recorded item still reports [`Self::Downloaded`].
-    Unsupported,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-/// Internal persistence state; only library-produced serialized values are supported.
-pub(crate) struct Resource {
-    source: PathBuf,
-    steps: Vec<InstallStep>,
-}
-
-impl Resource {
-    pub(crate) fn new(source: PathBuf, steps: Vec<InstallStep>) -> Self {
-        Self { source, steps }
-    }
-
-    pub(crate) fn install(&self) -> InstallResource {
-        InstallResource {
-            source: self.source.clone(),
-            steps: self.steps.clone(),
+impl Slot {
+    /// Returns the canonical catalog and filesystem spelling.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::WineBridge => "winebridge",
+            Self::Runner => "runner",
+            Self::Umu => "umu",
+            Self::Dxvk => "dxvk",
+            Self::Vkd3d => "vkd3d",
+            Self::Nvapi => "nvapi",
+            Self::LatencyFlex => "latency-flex",
         }
     }
 
-    pub(crate) fn source(&self) -> &Path {
-        &self.source
+    pub(crate) fn is_runtime(self) -> bool {
+        matches!(self, Self::WineBridge | Self::Runner | Self::Umu)
     }
 }
 
+impl fmt::Display for Slot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for Slot {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match value {
+            "winebridge" => Self::WineBridge,
+            "runner" => Self::Runner,
+            "umu" => Self::Umu,
+            "dxvk" => Self::Dxvk,
+            "vkd3d" => Self::Vkd3d,
+            "nvapi" => Self::Nvapi,
+            "latency-flex" => Self::LatencyFlex,
+            _ => return Err(format!("unknown addon slot {value:?}")),
+        })
+    }
+}
+
+/// A dependency that must already be selected or installed in a bottle.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Requirement {
+    /// Any addon with this exact, case-sensitive name.
+    Name(String),
+    /// The component occupying this slot.
+    Slot(Slot),
+    /// One exact addon release.
+    Id(Uuid),
+}
+
+/// Category data carried by a downloaded component.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-/// A Wine or Proton runtime available to bottles.
+#[serde(deny_unknown_fields)]
+pub struct Component {
+    pub(crate) slot: Slot,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) steps: Vec<InstallStep>,
+}
+
+/// Category data carried by a downloaded dependency.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Dependency {}
+
+/// One local dependency artifact and its installation recipe.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct Artifact {
+    pub(crate) path: PathBuf,
+    pub(crate) steps: Vec<InstallStep>,
+}
+
+impl Artifact {
+    pub(crate) fn new(path: PathBuf, steps: Vec<InstallStep>) -> Self {
+        Self { path, steps }
+    }
+}
+
+/// A complete downloaded or hand-placed addon snapshot.
 ///
-/// Values returned by [`crate::Addons::runners`] are owned copies and do not
-/// update after downloads, removals, or filesystem changes. After fetching a
-/// runner, query the manager again before passing it to
-/// [`crate::Bottle::set_runner`]. The UUID is the runner's logical identity;
-/// [`PartialEq`] compares the complete value, including availability and paired
-/// internal components.
-///
-/// The serialized representation is internal persistence data, not a stable
-/// interchange format. Only values serialized by this library are supported for
-/// deserialization.
-pub struct RunnerComponent {
+/// `K` is either [`Component`] or [`Dependency`]. Values do not update after
+/// downloads, removals, or catalog refreshes; query [`crate::Addons`] again to
+/// observe later state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Addon<K> {
     id: NonNilUuid,
     name: String,
     version: String,
-    flavour: RunnerKind,
-    path: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    umu: Option<InternalComponent>,
-    supported: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    requirements: Vec<Requirement>,
+    path: PathBuf,
+    #[serde(flatten)]
+    kind: K,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    artifacts: Vec<Artifact>,
 }
 
-impl RunnerComponent {
-    pub(crate) fn new(
+impl Config for Addon<Component> {
+    const VERSION: u32 = 1;
+}
+
+impl Config for Addon<Dependency> {
+    const VERSION: u32 = 1;
+}
+
+impl<K> Addon<K> {
+    fn new(
         id: NonNilUuid,
         name: String,
         version: String,
-        flavour: RunnerKind,
-        path: Option<PathBuf>,
-        supported: bool,
+        requirements: Vec<Requirement>,
+        path: PathBuf,
+        kind: K,
+        artifacts: Vec<Artifact>,
     ) -> Self {
         Self {
             id,
             name,
             version,
-            flavour,
+            requirements,
             path,
-            umu: None,
-            supported,
+            kind,
+            artifacts,
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn for_test(flavour: RunnerKind, path: impl Into<PathBuf>) -> Result<Self> {
-        Ok(Self::new(
-            NonNilUuid::new(Uuid::new_v4()).expect("v4 UUID is non-nil"),
-            String::from("test runner"),
-            String::from("test"),
-            flavour,
-            Some(crate::utils::absolute_path(path.into())?),
-            true,
-        ))
-    }
-
-    /// Returns the runner's catalog or local-index identity.
-    ///
-    /// Use this UUID, rather than [`PartialEq`], to compare logical identity
-    /// across snapshots.
+    /// Returns the immutable release identifier.
     pub fn id(&self) -> Uuid {
         self.id.get()
     }
-    /// Returns the catalog label, or the indexed version for a hand-placed runner.
+
+    /// Returns the catalog label, or version directory name for hand-placed components.
     pub fn name(&self) -> &str {
         &self.name
     }
-    /// Returns catalog or index metadata without probing the runtime.
+
+    /// Returns the downloaded catalog or hand-placed version string.
     pub fn version(&self) -> &str {
         &self.version
     }
-    /// Returns the recorded classification without inspecting installed files.
-    pub fn flavour(&self) -> RunnerKind {
-        self.flavour
-    }
-    /// This library-managed path is exposed for inspection and should be treated
-    /// as read-only. It is not revalidated and may become stale if files are
-    /// removed after this snapshot was created.
-    pub fn path(&self) -> Option<&Path> {
-        self.path.as_deref()
+
+    /// Returns the requirements checked before a bottle mutation.
+    pub fn requirements(&self) -> &[Requirement] {
+        &self.requirements
     }
 
-    /// Returns the runner's own-file availability when this snapshot was created.
-    ///
-    /// [`Availability::Downloaded`] does not validate the runner executable or,
-    /// for Proton, guarantee that the separately managed UMU component is present.
-    pub fn availability(&self) -> Availability {
-        if self.path.is_some() {
-            Availability::Downloaded
-        } else if self.supported {
-            Availability::Downloadable
-        } else {
-            Availability::Unsupported
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Addon<Component> {
+    pub(crate) fn new_component(
+        id: NonNilUuid,
+        name: String,
+        version: String,
+        slot: Slot,
+        requirements: Vec<Requirement>,
+        path: PathBuf,
+        steps: Vec<InstallStep>,
+    ) -> Self {
+        Self::new(
+            id,
+            name,
+            version,
+            requirements,
+            path,
+            Component { slot, steps },
+            Vec::new(),
+        )
+    }
+
+    /// Returns the mutually exclusive role occupied by this component.
+    pub fn slot(&self) -> Slot {
+        self.kind.slot
+    }
+
+    pub(crate) fn artifact(&self) -> Artifact {
+        Artifact::new(self.path.clone(), self.kind.steps.clone())
+    }
+
+    /// Reports whether this component satisfies `requirement`.
+    pub fn satisfies(&self, requirement: &Requirement) -> bool {
+        match requirement {
+            Requirement::Name(name) => self.name == *name,
+            Requirement::Slot(slot) => self.slot() == *slot,
+            Requirement::Id(id) => self.id() == *id,
         }
     }
 
-    pub(crate) fn installed_path(&self) -> Result<&Path> {
-        self.path
-            .as_deref()
-            .ok_or_else(|| super::AddonError::ItemNotDownloaded(self.id()).into())
-    }
-
-    /// Associates the currently selected UMU component with a Proton snapshot.
-    ///
-    /// Passing a component for a Wine runner has no effect. Pairing only records an
-    /// existing component; it does not download or provision UMU.
-    pub(crate) fn pair_umu(&mut self, umu: Option<InternalComponent>) {
-        self.umu = match self.flavour {
-            RunnerKind::Wine => None,
-            RunnerKind::Proton => umu,
-        };
-    }
-
-    pub(crate) fn umu_path(&self) -> Option<&Path> {
-        self.umu.as_ref().map(InternalComponent::path)
-    }
-
-    /// Loads an executable runner from the recorded component paths.
-    ///
-    /// The detected layout must match [`Self::flavour`]. Proton additionally
-    /// requires a paired UMU component containing a regular `umu-run` file.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`super::AddonError::ItemNotDownloaded`] when no runner directory
-    /// is recorded, or a [`RunnerError`] when the runner layout or required UMU
-    /// executable is missing.
-    pub(crate) async fn load(&self) -> Result<Box<dyn Runner>> {
-        let path = self.installed_path()?;
-        if detect_runner_kind(path).await? != self.flavour {
-            return Err(RunnerError::RunnerNotFound(path.to_path_buf()).into());
-        }
-        match self.flavour {
+    pub(crate) async fn load_runner(&self, umu: Option<&Self>) -> Result<Box<dyn Runner>> {
+        let path = self.path();
+        match detect_runner_kind(path).await? {
             RunnerKind::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
             RunnerKind::Proton => {
-                let umu = self
-                    .umu_path()
+                let umu = umu
                     .ok_or(RunnerError::UmuExecutableMissing)?
+                    .path()
                     .join("umu-run");
                 if !async_fs::metadata(&umu)
                     .await
@@ -228,182 +247,36 @@ impl RunnerComponent {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-/// A versioned component or dependency that augments a bottle's Wine prefix.
-///
-/// A [`RunnerComponent`] selects the Wine or Proton runtime; an addon changes
-/// the environment built around that runtime. Slot-based addons represent
-/// replaceable components such as DXVK, VKD3D, DXVK-NVAPI, or LatencyFleX.
-/// Addons without a [`Slot`] are dependencies that can coexist with one another.
-/// Installing an addon applies its files and configuration to one bottle;
-/// installing another addon in the same slot replaces the previous occupant.
-///
-/// Downloading and installing are separate operations. [`crate::Addons::fetch`]
-/// downloads the addon's artifacts into library-managed storage, after which
-/// [`crate::Bottle::install`] applies them to a bottle. Existing values do not
-/// update when the addon library or filesystem changes; query
-/// [`crate::Addons::addons`] again after fetching or removing an item. The UUID
-/// is the addon's logical identity; [`PartialEq`] compares the complete value
-/// instead.
-///
-/// The serialized representation is internal persistence data, not a stable
-/// interchange format. Only values serialized by this library are supported for
-/// deserialization.
-pub struct Addon {
-    id: NonNilUuid,
-    name: String,
-    version: String,
-    slot: Option<Slot>,
-    resources: Vec<Resource>,
-    supported: bool,
-}
-
-impl Addon {
-    pub(crate) fn new(
+impl Addon<Dependency> {
+    pub(crate) fn new_dependency(
         id: NonNilUuid,
         name: String,
         version: String,
-        slot: Option<Slot>,
-        resources: Vec<Resource>,
-        supported: bool,
+        requirements: Vec<Requirement>,
+        path: PathBuf,
+        artifacts: Vec<Artifact>,
     ) -> Self {
-        Self {
+        Self::new(
             id,
             name,
             version,
-            slot,
-            resources,
-            supported,
+            requirements,
+            path,
+            Dependency::default(),
+            artifacts,
+        )
+    }
+
+    pub(crate) fn artifacts(&self) -> &[Artifact] {
+        &self.artifacts
+    }
+
+    /// Reports whether this dependency satisfies `requirement`.
+    pub fn satisfies(&self, requirement: &Requirement) -> bool {
+        match requirement {
+            Requirement::Name(name) => self.name == *name,
+            Requirement::Slot(_) => false,
+            Requirement::Id(id) => self.id() == *id,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_test(slot: Option<Slot>, path: impl Into<PathBuf>) -> Result<Self> {
-        Ok(Self::new(
-            NonNilUuid::new(Uuid::new_v4()).expect("v4 UUID is non-nil"),
-            String::from("test addon"),
-            String::from("test"),
-            slot,
-            vec![Resource::new(
-                crate::utils::absolute_path(path.into())?,
-                Vec::new(),
-            )],
-            true,
-        ))
-    }
-
-    /// Returns the addon's catalog or local-index identity.
-    ///
-    /// Use this UUID, rather than [`PartialEq`], to compare logical identity
-    /// across snapshots.
-    pub fn id(&self) -> Uuid {
-        self.id.get()
-    }
-    /// Returns the catalog label, or the indexed version for a hand-placed addon.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-    /// Returns catalog or index metadata without inspecting artifact contents.
-    pub fn version(&self) -> &str {
-        &self.version
-    }
-    /// Returns the replacement boundary; `None` means installations may coexist.
-    pub fn slot(&self) -> Option<Slot> {
-        self.slot
-    }
-
-    /// Returns the addon's own-file availability when this snapshot was created.
-    ///
-    /// [`Availability::Downloaded`] means every selected artifact was recorded as
-    /// present. It does not revalidate the paths or guarantee that installing the
-    /// recipe will succeed.
-    pub fn availability(&self) -> Availability {
-        if !self.resources.is_empty() {
-            Availability::Downloaded
-        } else if self.supported {
-            Availability::Downloadable
-        } else {
-            Availability::Unsupported
-        }
-    }
-
-    /// # Errors
-    ///
-    /// Returns [`super::AddonError::ItemNotDownloaded`] when this snapshot has no
-    /// recorded resources.
-    pub(crate) fn prepare(&self) -> Result<Vec<InstallResource>> {
-        if self.resources.is_empty() {
-            return Err(super::AddonError::ItemNotDownloaded(self.id()).into());
-        }
-        Ok(self.resources.iter().map(Resource::install).collect())
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-/// Internal persistence state for a component that is not user-selectable.
-///
-/// Only library-produced serialized values are supported.
-pub(crate) struct InternalComponent {
-    id: NonNilUuid,
-    role: InternalRole,
-    path: PathBuf,
-}
-
-impl InternalComponent {
-    pub(crate) fn new(id: NonNilUuid, role: InternalRole, path: PathBuf) -> Self {
-        Self { id, role, path }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_test(role: InternalRole, path: impl Into<PathBuf>) -> Result<Self> {
-        Ok(Self::new(
-            NonNilUuid::new(Uuid::new_v4()).expect("v4 UUID is non-nil"),
-            role,
-            crate::utils::absolute_path(path.into())?,
-        ))
-    }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use super::*;
-
-    #[test]
-    fn proton_load_uses_its_paired_umu() {
-        futures_lite::future::block_on(async {
-            let root = std::env::temp_dir().join(format!("bottles-next-runner-{}", Uuid::new_v4()));
-            let proton = root.join("proton");
-            let umu = root.join("umu");
-            fs::create_dir_all(&proton).unwrap();
-            fs::create_dir_all(&umu).unwrap();
-            fs::write(proton.join("proton"), []).unwrap();
-            fs::write(umu.join("umu-run"), []).unwrap();
-            let mut runner = RunnerComponent::new(
-                NonNilUuid::new(Uuid::new_v4()).unwrap(),
-                "Proton".into(),
-                "test".into(),
-                RunnerKind::Proton,
-                Some(proton),
-                true,
-            );
-
-            assert!(matches!(
-                runner.load().await,
-                Err(crate::error::Error::Runner(
-                    RunnerError::UmuExecutableMissing
-                ))
-            ));
-            runner.pair_umu(Some(
-                InternalComponent::for_test(InternalRole::Umu, umu).unwrap(),
-            ));
-            runner.load().await.unwrap();
-            fs::remove_dir_all(root).unwrap();
-        });
     }
 }

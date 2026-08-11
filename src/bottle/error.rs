@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::{Requirement, Slot};
+
 /// Bottle-specific failures carried by [`crate::error::Error::Bottle`].
 #[derive(Debug, Error)]
 pub enum BottleError {
@@ -49,9 +51,20 @@ pub enum BottleError {
     /// No program is registered with the requested UUID.
     #[error("program {0} was not found")]
     ProgramNotFound(Uuid),
-    /// No installed addon has the requested UUID.
-    #[error("addon {0} is not installed")]
-    AddonNotInstalled(Uuid),
+    /// No selected component occupies the requested slot.
+    #[error("component slot {0:?} is not installed")]
+    ComponentNotInstalled(Slot),
+    /// One or more dependencies must be downloaded or installed before the operation.
+    #[error("addon requirements are not satisfied: {requirements:?}")]
+    RequiresAddon {
+        /// Release requesting the dependencies, or `None` for bottle creation.
+        required_by: Option<Uuid>,
+        /// Every currently unsatisfied requirement.
+        requirements: Vec<Requirement>,
+    },
+    /// A bottle operation received a component for a different role.
+    #[error("component {component} must occupy slot {required:?}")]
+    InvalidComponentSlot { component: Uuid, required: Slot },
 }
 
 /// Virgo-specific failures carried by [`crate::error::Error::Virgo`].

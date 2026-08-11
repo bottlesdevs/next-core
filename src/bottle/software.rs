@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     Context, Operation, Progress, Stage,
-    addons::{Addon, RunnerComponent, installer::InstallResource},
+    addons::{Addon, Component, Dependency, Requirement, Slot, item::Artifact},
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
     runner::shutdown_prefix,
@@ -170,55 +170,85 @@ impl Bottle {
         Self::stop_state(&state, &self.0.cx).await
     }
 
-    /// Installs an addon into this bottle.
+    /// Selects or replaces one downloaded component.
     ///
-    /// The operation captures an owned copy of `addon`; later catalog refreshes
-    /// do not alter it. When prefix work is required, the addon must record
-    /// downloaded resources whose paths still exist when the operation runs.
-    ///
-    /// For Standard storage, installing a slotted addon runs the new recipe and
-    /// replaces the recorded occupant without first uninstalling the old
-    /// recipe. For Virgo, the old layer UUID is replaced by the new layer, which
-    /// is created if it is not cached. Addons without slots coexist.
-    ///
-    /// Installation stops the bottle and uses an FVS checkpoint under both
-    /// storage strategies. If work fails, or cancellation is observed while
-    /// the operation remains polled, checkpoint restoration is attempted.
-    /// Restore failure is logged and the original error is returned, so the
-    /// prefix may remain partially modified. A metadata-save failure after
-    /// successful prefix work is not rolled back.
-    ///
-    /// If the same addon UUID is already recorded, stop and prefix work are
-    /// skipped. The current metadata is still persisted, so this path can
-    /// return a persistence error.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the captured addon is not downloaded or its recorded
-    /// resources are unavailable. Prefix, FVS, installer, cancellation, and
-    /// persistence failures are also returned.
-    pub fn install(&self, addon: &Addon) -> Operation<()> {
-        let addon = addon.clone();
+    /// The operation checks the proposed complete bottle state before mutation.
+    /// Switching to Proton selects the newest downloaded UMU when necessary;
+    /// switching to Wine removes the unused UMU selection.
+    pub fn set_component(&self, component: &Addon<Component>) -> Operation<()> {
+        let component = component.clone();
         let bottle = self.clone();
         Operation::new(move |progress, cancellation| async move {
             bottle
                 .update(async |state, cx| {
-                    let replaced_id = state.replaced_addon_id(&addon);
                     if state
-                        .addons
-                        .iter()
-                        .any(|installed| installed.id() == addon.id())
+                        .component(component.slot())
+                        .is_some_and(|installed| installed.id() == component.id())
                     {
                         return Ok(());
                     }
-                    let resources = addon.prepare()?;
+
+                    let mut candidate = state.clone();
+                    let needs_umu = component
+                        .requirements()
+                        .contains(&Requirement::Slot(Slot::Umu));
+                    if needs_umu && candidate.umu().is_none() {
+                        let umu = cx.addons().latest_component(Slot::Umu).ok_or_else(|| {
+                            BottleError::RequiresAddon {
+                                required_by: Some(component.id()),
+                                requirements: vec![Requirement::Slot(Slot::Umu)],
+                            }
+                        })?;
+                        candidate.components.insert(Slot::Umu, umu);
+                    }
+                    candidate
+                        .components
+                        .insert(component.slot(), component.clone());
+                    if component.slot() == Slot::Runner && !needs_umu {
+                        candidate.components.remove(&Slot::Umu);
+                    }
+                    candidate.validate_requirements()?;
+
+                    if component.slot().is_runtime() {
+                        progress.send_replace(Some(Progress::new(Stage::Stopping)));
+                        Self::stop_state(state, &cx).await?;
+                        if cancellation.is_cancelled() {
+                            return Err(Error::Cancelled);
+                        }
+                        let rebuild = component.slot() == Slot::Runner;
+                        *state = candidate;
+                        if rebuild {
+                            progress.send_replace(Some(Progress::new(Stage::Rebuilding)));
+                            let installed = state
+                                .components
+                                .values()
+                                .filter(|component| !component.slot().is_runtime())
+                                .map(Addon::id)
+                                .chain(state.dependencies.iter().map(Addon::id))
+                                .collect::<Vec<_>>();
+                            let runner = state.runner().load_runner(state.umu()).await?;
+                            state
+                                .storage
+                                .rebuild(
+                                    runner.as_ref(),
+                                    &state.runner().id().to_string(),
+                                    &installed,
+                                    &cx,
+                                )
+                                .await?;
+                        }
+                        return Ok(());
+                    }
+
+                    let replaced_id = state.component(component.slot()).map(Addon::id);
+                    let resources = vec![component.artifact()];
                     Self::install_item(
                         state,
                         &cx,
-                        addon.id(),
+                        component.id(),
                         replaced_id,
                         resources,
-                        |state| state.put_addon(addon.clone()),
+                        |state| *state = candidate,
                         progress,
                         &cancellation,
                     )
@@ -228,46 +258,33 @@ impl Bottle {
         })
     }
 
-    /// Uninstalls the addon identified by `id` from this bottle.
+    /// Removes the component occupying `slot`.
     ///
-    /// Uninstallation stops the bottle and uses an FVS checkpoint under both
-    /// storage strategies. If work fails, or cancellation is observed while
-    /// the operation remains polled, checkpoint restoration is attempted.
-    /// Restore failure is logged and the original error is returned, so the
-    /// prefix may remain partially modified. A metadata-save failure after
-    /// successful prefix work is not rolled back.
-    ///
-    /// Recipe removal is best-effort and not every installation step has an
-    /// inverse. Some cleanup failures are logged and ignored, so success means
-    /// the addon was removed from bottle metadata; files, registry values, or
-    /// other prefix effects may remain.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BottleError::AddonNotInstalled`] if `id` is not recorded as
-    /// installed. The operation also returns component, prefix, installer,
-    /// cancellation, and persistence failures.
-    pub fn uninstall(&self, id: Uuid) -> Operation<()> {
+    /// The operation is rejected when removing the component would violate a
+    /// bottle or installed-addon requirement. Prefix recipe reversal remains
+    /// best effort and does not require the catalog or downloaded files.
+    pub fn remove_component(&self, slot: Slot) -> Operation<()> {
         let bottle = self.clone();
         Operation::new(move |progress, cancellation| async move {
             bottle
                 .update(async |state, cx| {
-                    let addon = state
-                        .addons
-                        .iter()
-                        .find(|addon| addon.id() == id)
+                    let component = state
+                        .component(slot)
                         .cloned()
-                        .ok_or(BottleError::AddonNotInstalled(id))?;
-                    let resources = addon.prepare()?;
-                    let winebridge = state.winebridge.path().to_path_buf();
+                        .ok_or(BottleError::ComponentNotInstalled(slot))?;
+                    let mut candidate = state.clone();
+                    candidate.components.remove(&slot);
+                    candidate.validate_requirements()?;
+                    let item_id = component.id();
+                    let resources = vec![component.artifact()];
+                    let winebridge = state.winebridge().path().to_path_buf();
                     let prefix_progress = progress.clone();
                     Self::stop_state(state, &cx).await?;
                     if cancellation.is_cancelled() {
                         return Err(Error::Cancelled);
                     }
-                    state.addons.retain(|installed| installed.id() != id);
-
-                    let runner = state.runner.load().await?;
+                    *state = candidate;
+                    let runner = state.runner().load_runner(state.umu()).await?;
                     let bottle_path = cx.directories().bottle(state.id);
                     let context = cx.clone();
                     let BottleState {
@@ -278,7 +295,7 @@ impl Bottle {
                     storage
                         .uninstall(
                             &bottle_path,
-                            addon.id(),
+                            item_id,
                             async |prefix, restore_files| {
                                 crate::addons::installer::uninstall(
                                     crate::addons::installer::InstallInputs {
@@ -289,7 +306,7 @@ impl Bottle {
                                     },
                                     &resources,
                                     restore_files,
-                                    addon.id(),
+                                    item_id,
                                     &cancellation,
                                     move |_| {
                                         progress.send_replace(Some(Progress::new(Stage::Removing)));
@@ -303,8 +320,49 @@ impl Bottle {
                                 prefix_progress.send_replace(Some(event));
                             },
                         )
-                        .await?;
-                    Ok(())
+                        .await
+                })
+                .await
+        })
+    }
+
+    /// Permanently installs one downloaded dependency into this bottle.
+    ///
+    /// Reinstalling the same release is idempotent. Dependencies remain
+    /// recorded for the bottle's lifetime and cannot be uninstalled separately.
+    pub fn install(&self, dependency: &Addon<Dependency>) -> Operation<()> {
+        let dependency = dependency.clone();
+        let bottle = self.clone();
+        Operation::new(move |progress, cancellation| async move {
+            bottle
+                .update(async |state, cx| {
+                    if state.dependency(dependency.id()).is_some() {
+                        return Ok(());
+                    }
+                    let mut candidate = state.clone();
+                    candidate.dependencies.push(dependency.clone());
+                    candidate.validate_requirements()?;
+                    let resources = dependency
+                        .artifacts()
+                        .iter()
+                        .map(|artifact| {
+                            Artifact::new(
+                                dependency.path().join(&artifact.path),
+                                artifact.steps.clone(),
+                            )
+                        })
+                        .collect();
+                    Self::install_item(
+                        state,
+                        &cx,
+                        dependency.id(),
+                        None,
+                        resources,
+                        |state| *state = candidate,
+                        progress,
+                        &cancellation,
+                    )
+                    .await
                 })
                 .await
         })
@@ -324,7 +382,7 @@ impl Bottle {
         cx: &Context,
         item_id: Uuid,
         replaced_id: Option<Uuid>,
-        resources: Vec<InstallResource>,
+        resources: Vec<Artifact>,
         update_config: F,
         progress: tokio::sync::watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
@@ -338,8 +396,8 @@ impl Bottle {
             return Err(Error::Cancelled);
         }
 
-        let runner = state.runner.load().await?;
-        let winebridge = state.winebridge.path().to_path_buf();
+        let runner = state.runner().load_runner(state.umu()).await?;
+        let winebridge = state.winebridge().path().to_path_buf();
         let bottle_path = cx.directories().bottle(state.id);
         let context = cx.clone();
         let BottleState {
@@ -380,66 +438,6 @@ impl Bottle {
         Ok(())
     }
 
-    /// Changes the runner used by this bottle.
-    ///
-    /// The operation captures an owned copy of `runner`; later catalog
-    /// refreshes do not alter it. Runner UUID defines identity. If it matches
-    /// the recorded runner, differing metadata or paths in the supplied
-    /// snapshot are ignored and prefix work is skipped, although the current
-    /// bottle metadata is still persisted.
-    ///
-    /// Otherwise the new runner must record an installed path. The bottle is
-    /// stopped and remains stopped. Standard storage changes only the recorded
-    /// runner; Virgo rebuilds its base and addon layer list. Runner layout and
-    /// Proton/UMU requirements are revalidated during loading.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the runner is unavailable or invalid, the bottle
-    /// cannot be stopped or rebuilt, cancellation is requested, or the updated
-    /// metadata cannot be persisted. Failure before persistence leaves the old
-    /// published state in place but may leave the bottle stopped.
-    pub fn set_runner(&self, runner: &RunnerComponent) -> Operation<()> {
-        let runner = runner.clone();
-        let bottle = self.clone();
-        Operation::new(move |progress, cancellation| async move {
-            bottle
-                .update(async |state, cx| {
-                    if state.runner.id() == runner.id() {
-                        return Ok(());
-                    }
-                    runner.installed_path()?;
-                    if cancellation.is_cancelled() {
-                        return Err(Error::Cancelled);
-                    }
-                    let installed = state.addons.iter().map(Addon::id).collect::<Vec<_>>();
-                    progress.send_replace(Some(Progress::new(Stage::Stopping)));
-                    Self::stop_state(state, &cx).await?;
-                    if cancellation.is_cancelled() {
-                        return Err(Error::Cancelled);
-                    }
-                    state.runner = runner;
-
-                    progress.send_replace(Some(Progress::new(Stage::Rebuilding)));
-                    let runner = state.runner.load().await?;
-                    state
-                        .storage
-                        .rebuild(
-                            runner.as_ref(),
-                            &state.runner.id().to_string(),
-                            &installed,
-                            &cx,
-                        )
-                        .await?;
-                    if cancellation.is_cancelled() {
-                        return Err(Error::Cancelled);
-                    }
-                    Ok(())
-                })
-                .await
-        })
-    }
-
     /// Performs uncancellable lifecycle cleanup while exclusive bottle access
     /// prevents new bridge work.
     ///
@@ -448,7 +446,7 @@ impl Bottle {
     pub(super) async fn stop_state(state: &BottleState, cx: &Context) -> Result<()> {
         let bottle_path = cx.directories().bottle(state.id);
         let prefix_path = bottle_path.join("prefix");
-        let runner = state.runner.load().await;
+        let runner = state.runner().load_runner(state.umu()).await;
         let storage = state.storage.clone();
         let mut first_error = None;
         match WineBridgeClient::try_connect(&prefix_path).await {
@@ -494,13 +492,13 @@ impl Bottle {
     {
         let _read = self.0.write_lock.read().await;
         let state = self.state()?;
-        let runner = state.runner.load().await?;
+        let runner = state.runner().load_runner(state.umu()).await?;
         let bottle_path = self.bottle_path();
         let prefix = self.prefix_path();
         let storage = state.storage.clone();
         let cx = self.0.cx.clone();
         let command = state.wrappers.apply(
-            WineBridgeClient::command(runner.as_ref(), &prefix, state.winebridge.path())
+            WineBridgeClient::command(runner.as_ref(), &prefix, state.winebridge().path())
                 .envs(state.environment.iter()),
         );
         storage.prepare(&bottle_path, &cx).await?;

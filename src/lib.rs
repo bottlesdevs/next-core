@@ -10,8 +10,8 @@ mod winebridge;
 mod wrapper;
 
 pub use addons::{
-    Addon, AddonError, Addons, Architecture, Availability, CatalogKind, Checksum, OperatingSystem,
-    RunnerComponent, Slot, Target,
+    Addon, AddonError, Addons, CatalogEntry, CatalogError, Component, Dependency, InstallerError,
+    Requirement, Slot,
 };
 pub use bottle::{
     Bottle, BottleEdit, BottleManager, BottleState, DllOverride, DllOverrideMode, GamescopeConfig,
@@ -20,7 +20,6 @@ pub use bottle::{
 };
 pub use core::{Bottles, Config};
 pub use operation::{Operation, Progress, Stage, Transfer};
-pub use runner::RunnerKind;
 pub use utils::environment::Environment;
 
 pub(crate) use next_proto::winebridge as proto;

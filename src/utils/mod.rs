@@ -1,4 +1,5 @@
 pub(crate) mod archive;
+pub(crate) mod checksum;
 pub(crate) mod context;
 pub(crate) mod directories;
 pub(crate) mod environment;
