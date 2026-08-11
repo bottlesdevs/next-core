@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 pub use crate::{
-    addons::{AddonError, installer::InstallerError},
+    addons::{AddonError, CatalogError, InstallerError},
     bottle::error::{BottleError, VirgoError},
     runner::RunnerError,
     utils::archive::ArchiveError,
@@ -33,18 +33,36 @@ pub enum Error {
     Bottle(#[from] BottleError),
     #[error("Virgo error: {0}")]
     Virgo(#[from] VirgoError),
-    #[error("archive error: {0}")]
-    Archive(#[from] ArchiveError),
-    #[error("installer error: {0}")]
-    Installer(#[from] InstallerError),
     #[error("addon error: {0}")]
     Addon(#[from] AddonError),
-    #[error("download error: {0}")]
-    Download(#[from] download_manager::error::Error),
     #[error("fvs2d executable is not configured")]
     Fvs2dNotConfigured,
     #[error("operation cancelled")]
     Cancelled,
+}
+
+impl From<CatalogError> for Error {
+    fn from(error: CatalogError) -> Self {
+        AddonError::from(error).into()
+    }
+}
+
+impl From<InstallerError> for Error {
+    fn from(error: InstallerError) -> Self {
+        AddonError::from(error).into()
+    }
+}
+
+impl From<ArchiveError> for Error {
+    fn from(error: ArchiveError) -> Self {
+        AddonError::from(error).into()
+    }
+}
+
+impl From<download_manager::error::Error> for Error {
+    fn from(error: download_manager::error::Error) -> Self {
+        AddonError::from(error).into()
+    }
 }
 
 #[allow(dead_code)]

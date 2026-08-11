@@ -1,6 +1,6 @@
 //! Persisted bottle state and the shared bottle handle.
 
-use std::{ops::AsyncFnOnce, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, ops::AsyncFnOnce, path::PathBuf, sync::Arc};
 
 use futures_core::Stream;
 use next_config::Config;
@@ -12,7 +12,7 @@ use uuid::Uuid;
 use super::{edit::BottleEdit, error::BottleError};
 use crate::{
     Context,
-    addons::{Addon, RunnerComponent, Slot, item::InternalComponent},
+    addons::{Addon, Component, Dependency, Requirement, Slot},
     error::Result,
     prefix::Prefix,
     utils::environment::Environment,
@@ -35,11 +35,10 @@ pub struct BottleState {
     #[serde(default)]
     pub(crate) programs: Vec<Program>,
 
-    pub(crate) runner: RunnerComponent,
-    /// Internal WineBridge component pinned to this bottle's persisted state.
-    pub(crate) winebridge: InternalComponent,
-    #[serde(default)]
-    pub(crate) addons: Vec<Addon>,
+    /// Runtime and prefix components pinned to exact releases.
+    pub(crate) components: HashMap<Slot, Addon<Component>>,
+    /// Installed dependency releases.
+    pub(crate) dependencies: Vec<Addon<Dependency>>,
     #[serde(default, skip_serializing_if = "Environment::is_empty")]
     pub(crate) environment: Environment,
 
@@ -64,44 +63,102 @@ impl BottleState {
     ///
     /// Catalog refreshes do not replace this value, and its recorded path may
     /// become stale if the component is removed.
-    pub fn runner(&self) -> &RunnerComponent {
-        &self.runner
+    pub fn runner(&self) -> &Addon<Component> {
+        self.component(Slot::Runner)
+            .expect("persisted bottle state is runtime-validated")
     }
 
-    /// Returns the addons recorded when this snapshot was published.
-    ///
-    /// This is persisted configuration, not a fresh inspection of prefix
-    /// contents or component paths.
-    pub fn addons(&self) -> &[Addon] {
-        &self.addons
+    /// Returns the exact WineBridge release selected for this bottle.
+    pub fn winebridge(&self) -> &Addon<Component> {
+        self.component(Slot::WineBridge)
+            .expect("persisted bottle state is runtime-validated")
     }
 
-    /// Returns the addon occupying `slot`, if any.
-    ///
-    /// At most one recorded addon occupies a given slot. Installing a new
-    /// occupant updates this metadata, but Standard storage does not first run
-    /// the old occupant's uninstall recipe.
-    pub fn addon(&self, slot: Slot) -> Option<&Addon> {
-        self.addons.iter().find(|addon| addon.slot() == Some(slot))
+    /// Returns the selected UMU release, if this runtime uses one.
+    pub fn umu(&self) -> Option<&Addon<Component>> {
+        self.component(Slot::Umu)
     }
 
-    /// Carries the previous occupant's UUID into prefix storage so Virgo can
-    /// remove that layer while installing the replacement.
-    pub(crate) fn replaced_addon_id(&self, addon: &Addon) -> Option<Uuid> {
-        addon
-            .slot()
-            .and_then(|slot| self.addon(slot))
-            .map(Addon::id)
+    /// Returns exact component releases keyed by their occupied slots.
+    pub fn components(&self) -> &HashMap<Slot, Addon<Component>> {
+        &self.components
     }
 
-    /// Applies the metadata invariant that slotted addons replace their
-    /// recorded occupant while un-slotted addons accumulate.
-    pub(crate) fn put_addon(&mut self, addon: Addon) {
-        if let Some(slot) = addon.slot() {
-            self.addons
-                .retain(|installed| installed.slot() != Some(slot));
+    /// Returns every dependency installed in this bottle.
+    pub fn dependencies(&self) -> &[Addon<Dependency>] {
+        &self.dependencies
+    }
+
+    /// Returns the component occupying `slot`, if any.
+    pub fn component(&self, slot: Slot) -> Option<&Addon<Component>> {
+        self.components.get(&slot)
+    }
+
+    /// Returns the installed dependency with this release identifier.
+    pub fn dependency(&self, id: Uuid) -> Option<&Addon<Dependency>> {
+        self.dependencies
+            .iter()
+            .find(|dependency| dependency.id() == id)
+    }
+
+    pub(crate) fn contains_addon_matching(&self, requirement: &Requirement) -> bool {
+        self.components
+            .values()
+            .any(|component| component.satisfies(requirement))
+            || self
+                .dependencies
+                .iter()
+                .any(|dependency| dependency.satisfies(requirement))
+    }
+
+    pub(crate) fn validate_requirements(&self) -> Result<()> {
+        for (slot, component) in &self.components {
+            if component.slot() != *slot {
+                return Err(BottleError::InvalidComponentSlot {
+                    component: component.id(),
+                    required: *slot,
+                }
+                .into());
+            }
         }
-        self.addons.push(addon);
+
+        let missing = [Slot::WineBridge, Slot::Runner]
+            .into_iter()
+            .filter(|slot| self.component(*slot).is_none())
+            .map(Requirement::Slot)
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(BottleError::RequiresAddon {
+                required_by: None,
+                requirements: missing,
+            }
+            .into());
+        }
+
+        for (id, requirements) in self
+            .components
+            .values()
+            .map(|addon| (addon.id(), addon.requirements()))
+            .chain(
+                self.dependencies
+                    .iter()
+                    .map(|addon| (addon.id(), addon.requirements())),
+            )
+        {
+            let missing = requirements
+                .iter()
+                .filter(|requirement| !self.contains_addon_matching(requirement))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !missing.is_empty() {
+                return Err(BottleError::RequiresAddon {
+                    required_by: Some(id),
+                    requirements: missing,
+                }
+                .into());
+            }
+        }
+        Ok(())
     }
 
     /// Returns environment variables supplied when WineBridge is started.
@@ -175,40 +232,37 @@ impl Bottle {
     pub(crate) async fn new(
         id: Uuid,
         name: String,
-        runner: RunnerComponent,
-        winebridge: InternalComponent,
+        components: HashMap<Slot, Addon<Component>>,
+        dependencies: Vec<Addon<Dependency>>,
         storage: Prefix,
         context: Context,
     ) -> Result<Self> {
-        let bottle = Self::from_state(
-            BottleState {
-                id,
-                name,
-                runner,
-                winebridge,
-                addons: Vec::new(),
-                storage,
-                programs: Vec::new(),
-                wrappers: Wrappers::default(),
-                environment: Environment::default(),
-            },
-            context,
-        );
+        let state = BottleState {
+            id,
+            name,
+            components,
+            dependencies,
+            storage,
+            programs: Vec::new(),
+            wrappers: Wrappers::default(),
+            environment: Environment::default(),
+        };
+        let bottle = Self::from_state(state, context)?;
         bottle.save().await?;
         Ok(bottle)
     }
 
-    /// Reconstructs a live handle without revalidating its persisted component
-    /// records or paths.
-    pub(crate) fn from_state(state: BottleState, cx: Context) -> Self {
+    /// Reconstructs a live handle after validating its addon requirements.
+    pub(crate) fn from_state(state: BottleState, cx: Context) -> Result<Self> {
+        state.validate_requirements()?;
         let id = state.id;
         let (published, _) = watch::channel(Some(Arc::new(state)));
-        Self(Arc::new(BottleInner {
+        Ok(Self(Arc::new(BottleInner {
             id,
             published,
             write_lock: RwLock::new(()),
             cx,
-        }))
+        })))
     }
 
     /// Returns the latest published state.

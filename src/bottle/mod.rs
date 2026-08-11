@@ -9,9 +9,8 @@
 //!
 //! Bottle directories and their `bottle.toml` files are library-managed.
 //! Manager queries read an in-memory registry rather than rescanning or
-//! reloading externally modified files. Runner, WineBridge, and addon records
-//! are likewise pinned in each persisted state until a bottle operation
-//! explicitly replaces them.
+//! reloading externally modified files. Component and dependency records are pinned in each
+//! persisted state until a bottle operation explicitly replaces them.
 //!
 //! Every bottle has an FVS repository, regardless of its [`Storage`] strategy.
 //! FVS provides caller-visible snapshots and the internal checkpoints used to

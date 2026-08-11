@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     Context, Operation, Progress, Stage,
-    addons::RunnerComponent,
+    addons::{Addon, Component, Requirement, Slot},
     error::{Error, Result},
     prefix::{FVS_BLOCK_SIZE, Prefix},
 };
@@ -122,8 +122,10 @@ impl BottleManager {
     ///
     /// A new UUID is assigned when the operation starts;
     /// display names are stored verbatim, may be empty, and need not be unique.
-    /// Creation requires the runner, WineBridge component, and configured FVS
-    /// service to be available even for [`Storage::Standard`]. Failures, and
+    /// The newest downloaded WineBridge is selected automatically. A runner
+    /// requiring UMU also receives the newest downloaded UMU release. No addon
+    /// is downloaded implicitly. Creation requires the configured FVS service
+    /// even for [`Storage::Standard`]. Failures, and
     /// cancellation observed while the operation remains polled, remove the
     /// partially-created bottle directory on a best-effort basis. Dropping a
     /// started operation or a cleanup failure can leave a directory that a
@@ -131,22 +133,51 @@ impl BottleManager {
     ///
     /// # Errors
     ///
-    /// The operation fails for an unavailable component or service, or an I/O
-    /// or prefix-creation failure.
+    /// Returns [`BottleError::RequiresAddon`] with every missing runtime
+    /// requirement before creating any files. Other service, I/O, and prefix
+    /// creation failures are returned directly.
     pub fn create(
         &self,
         name: impl Into<String>,
         storage: Storage,
-        runner: &RunnerComponent,
+        runner_component: &Addon<Component>,
     ) -> Operation<Bottle> {
         let name = name.into();
-        let runner = runner.clone();
+        let runner_component = runner_component.clone();
         let cx = self.context.clone();
         let registry = self.registry.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            let winebridge = cx.addons().winebridge()?;
-            let loaded_runner = runner.load().await?;
+            if runner_component.slot() != Slot::Runner {
+                return Err(BottleError::InvalidComponentSlot {
+                    component: runner_component.id(),
+                    required: Slot::Runner,
+                }
+                .into());
+            }
+            let winebridge = cx.addons().latest_component(Slot::WineBridge);
+            let needs_umu = runner_component
+                .requirements()
+                .contains(&Requirement::Slot(Slot::Umu));
+            let umu = needs_umu
+                .then(|| cx.addons().latest_component(Slot::Umu))
+                .flatten();
+            let mut missing = Vec::new();
+            if winebridge.is_none() {
+                missing.push(Requirement::Slot(Slot::WineBridge));
+            }
+            if needs_umu && umu.is_none() {
+                missing.push(Requirement::Slot(Slot::Umu));
+            }
+            if !missing.is_empty() {
+                return Err(BottleError::RequiresAddon {
+                    required_by: None,
+                    requirements: missing,
+                }
+                .into());
+            }
+            let winebridge = winebridge.unwrap(); // Safe to unwrap since we just checked it above
+            let loaded_runner = runner_component.load_runner(umu.as_ref()).await?;
             let id = Uuid::new_v4();
             let bottle_path = cx.directories().bottle(id);
             fs::create_dir_all(&bottle_path).await?;
@@ -157,7 +188,7 @@ impl BottleManager {
                     storage,
                     &bottle_path,
                     loaded_runner.as_ref(),
-                    &runner.id().to_string(),
+                    &runner_component.id().to_string(),
                     &cx,
                 )
                 .await?;
@@ -165,7 +196,15 @@ impl BottleManager {
                     return Err(Error::Cancelled);
                 }
 
-                let bottle = Bottle::new(id, name, runner, winebridge, storage, cx.clone()).await?;
+                let mut components = HashMap::from([
+                    (Slot::WineBridge, winebridge),
+                    (Slot::Runner, runner_component.clone()),
+                ]);
+                if let Some(umu) = umu {
+                    components.insert(Slot::Umu, umu);
+                }
+                let bottle =
+                    Bottle::new(id, name, components, Vec::new(), storage, cx.clone()).await?;
                 progress.send_replace(Some(Progress::new(Stage::Configuring)));
                 cx.fvs()
                     .await?
@@ -250,9 +289,8 @@ impl BottleManager {
             }
             .into());
         }
-        Ok(self
-            .registry
-            .intern(Bottle::from_state(state, self.context.clone())))
+        let bottle = Bottle::from_state(state, self.context.clone())?;
+        Ok(self.registry.intern(bottle))
     }
 
     /// Returns the bottles currently known to this manager.
@@ -296,7 +334,10 @@ impl BottleManager {
         let mut bottles = Vec::with_capacity(paths.len());
         for path in paths {
             match next_config::load::<BottleState>(path).await {
-                Ok(state) => bottles.push(Bottle::from_state(state, self.context.clone())),
+                Ok(state) => match Bottle::from_state(state, self.context.clone()) {
+                    Ok(bottle) => bottles.push(bottle),
+                    Err(error) => tracing::warn!("skipping bottle with invalid runtime: {error}"),
+                },
                 Err(error) => tracing::warn!("skipping unreadable bottle: {error}"),
             }
         }
