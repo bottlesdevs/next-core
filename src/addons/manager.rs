@@ -1,7 +1,6 @@
 //! Shared addon catalogs, local discovery, downloads, and removal.
 
 use std::{
-    collections::HashMap,
     path::{Component as PathComponent, Path, PathBuf},
     sync::Arc,
 };
@@ -40,8 +39,6 @@ pub struct Addons(Arc<AddonsInner>);
 
 struct AddonsInner {
     directories: Directories,
-    component_storage: AddonStorage<Component>,
-    dependency_storage: AddonStorage<Dependency>,
     catalog_urls: CatalogUrls,
     downloader: Arc<DownloadManager>,
     published: watch::Sender<Arc<AddonsState>>,
@@ -56,22 +53,10 @@ impl Addons {
         dependency_catalog_url: Option<Url>,
         downloader: Arc<DownloadManager>,
     ) -> Result<Self> {
-        let component_storage = AddonStorage::<Component>::new(directories.clone());
-        let dependency_storage = AddonStorage::<Dependency>::new(directories.clone());
-        let component_catalog = component_storage.load_catalog().await;
-        let dependency_catalog = dependency_storage.load_catalog().await;
-        let state = AddonsState::load(
-            component_catalog,
-            dependency_catalog,
-            &component_storage,
-            &dependency_storage,
-        )
-        .await?;
+        let state = AddonsState::load_cached(&directories).await?;
         let (published, _) = watch::channel(Arc::new(state));
         Ok(Self(Arc::new(AddonsInner {
             directories,
-            component_storage,
-            dependency_storage,
             catalog_urls: CatalogUrls {
                 components: component_catalog_url,
                 dependencies: dependency_catalog_url,
@@ -85,7 +70,8 @@ impl Addons {
     /// Returns all releases in the current component catalog.
     pub fn component_entries(&self) -> Vec<CatalogEntry<Component>> {
         self.state()
-            .component_catalog
+            .components
+            .catalog
             .iter()
             .flat_map(|catalog| catalog.entries().iter().cloned())
             .collect()
@@ -94,36 +80,38 @@ impl Addons {
     /// Returns all releases in the current dependency catalog.
     pub fn dependency_entries(&self) -> Vec<CatalogEntry<Dependency>> {
         self.state()
-            .dependency_catalog
+            .dependencies
+            .catalog
             .iter()
             .flat_map(|catalog| catalog.entries().iter().cloned())
             .collect()
     }
 
     /// Returns downloaded and hand-placed components.
-    pub fn components(&self) -> Vec<Addon<Component>> {
-        self.state().components.values().cloned().collect()
+    pub fn components(&self) -> Vec<Arc<Addon<Component>>> {
+        self.state().components.addons.values().cloned().collect()
     }
 
     /// Returns complete downloaded dependencies.
-    pub fn dependencies(&self) -> Vec<Addon<Dependency>> {
-        self.state().dependencies.values().cloned().collect()
+    pub fn dependencies(&self) -> Vec<Arc<Addon<Dependency>>> {
+        self.state().dependencies.addons.values().cloned().collect()
     }
 
     /// Returns the local component with this immutable release identifier.
-    pub fn component(&self, id: Uuid) -> Option<Addon<Component>> {
-        self.state().components.get(&id).cloned()
+    pub fn component(&self, id: Uuid) -> Option<Arc<Addon<Component>>> {
+        self.state().components.addons.get(&id).cloned()
     }
 
     /// Returns the local dependency with this immutable release identifier.
-    pub fn dependency(&self, id: Uuid) -> Option<Addon<Dependency>> {
-        self.state().dependencies.get(&id).cloned()
+    pub fn dependency(&self, id: Uuid) -> Option<Arc<Addon<Dependency>>> {
+        self.state().dependencies.addons.get(&id).cloned()
     }
 
     /// Returns the current component catalog entry with this identifier.
     pub fn component_entry(&self, id: Uuid) -> Option<CatalogEntry<Component>> {
         self.state()
-            .component_catalog
+            .components
+            .catalog
             .as_ref()
             .and_then(|catalog| catalog.entry(id))
             .cloned()
@@ -132,7 +120,8 @@ impl Addons {
     /// Returns the current dependency catalog entry with this identifier.
     pub fn dependency_entry(&self, id: Uuid) -> Option<CatalogEntry<Dependency>> {
         self.state()
-            .dependency_catalog
+            .dependencies
+            .catalog
             .as_ref()
             .and_then(|catalog| catalog.entry(id))
             .cloned()
@@ -170,17 +159,17 @@ impl Addons {
             let current = addons.state();
             let component_catalog = match &component {
                 Ok(catalog) => {
-                    addons.0.component_storage.save_catalog(catalog).await?;
+                    current.components.save_catalog(catalog).await?;
                     Some(catalog.clone())
                 }
-                Err(_) => current.component_catalog.clone(),
+                Err(_) => current.components.catalog.clone(),
             };
             let dependency_catalog = match &dependency {
                 Ok(catalog) => {
-                    addons.0.dependency_storage.save_catalog(catalog).await?;
+                    current.dependencies.save_catalog(catalog).await?;
                     Some(catalog.clone())
                 }
-                Err(_) => current.dependency_catalog.clone(),
+                Err(_) => current.dependencies.catalog.clone(),
             };
             addons
                 .publish(component_catalog, dependency_catalog)
@@ -198,7 +187,10 @@ impl Addons {
     }
 
     /// Downloads, extracts, validates, and atomically publishes one component.
-    pub fn fetch_component(&self, entry: &CatalogEntry<Component>) -> Operation<Addon<Component>> {
+    pub fn fetch_component(
+        &self,
+        entry: &CatalogEntry<Component>,
+    ) -> Operation<Arc<Addon<Component>>> {
         let addons = self.clone();
         let entry = entry.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -249,11 +241,8 @@ impl Addons {
                 }
                 let release = top_level_directory(&extracted).await?;
                 let slot = entry.slot();
-                let requirements = addons
-                    .0
-                    .component_storage
-                    .inspect_release(slot, &release)
-                    .await?;
+                let state = addons.state();
+                let requirements = state.components.inspect_release(slot, &release).await?;
                 let steps = if entry.steps().is_empty() {
                     recipe_steps(slot).to_vec()
                 } else {
@@ -267,11 +256,8 @@ impl Addons {
                 if let Some(component) = addons.component(entry.id()) {
                     return Ok(component);
                 }
-                let target = addons
-                    .0
-                    .component_storage
-                    .target(slot, entry.version())
-                    .await?;
+                let state = addons.state();
+                let target = state.components.target(slot, entry.version()).await?;
                 if exists(&target).await? {
                     return Err(AddonError::TargetExists(target).into());
                 }
@@ -284,17 +270,12 @@ impl Addons {
                     target.clone(),
                     steps,
                 );
-                addons
-                    .0
-                    .component_storage
-                    .save(&component, &release)
-                    .await?;
+                state.components.save(&component, &release).await?;
                 async_fs::rename(release, &target).await?;
-                let state = addons.state();
                 let published = addons
                     .publish(
-                        state.component_catalog.clone(),
-                        state.dependency_catalog.clone(),
+                        state.components.catalog.clone(),
+                        state.dependencies.catalog.clone(),
                     )
                     .await
                     .and_then(|_| {
@@ -317,7 +298,7 @@ impl Addons {
     pub fn fetch_dependency(
         &self,
         entry: &CatalogEntry<Dependency>,
-    ) -> Operation<Addon<Dependency>> {
+    ) -> Operation<Arc<Addon<Dependency>>> {
         let addons = self.clone();
         let entry = entry.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -358,7 +339,8 @@ impl Addons {
                 if let Some(dependency) = addons.dependency(entry.id()) {
                     return Ok(dependency);
                 }
-                let target = addons.0.dependency_storage.target(entry.id()).await?;
+                let state = addons.state();
+                let target = state.dependencies.target(entry.id()).await?;
                 if exists(&target).await? {
                     async_fs::remove_dir_all(&target).await?;
                 }
@@ -378,17 +360,12 @@ impl Addons {
                         })
                         .collect(),
                 );
-                addons
-                    .0
-                    .dependency_storage
-                    .save(&dependency, &stage)
-                    .await?;
+                state.dependencies.save(&dependency, &stage).await?;
                 async_fs::rename(&stage, &target).await?;
-                let state = addons.state();
                 let published = addons
                     .publish(
-                        state.component_catalog.clone(),
-                        state.dependency_catalog.clone(),
+                        state.components.catalog.clone(),
+                        state.dependencies.catalog.clone(),
                     )
                     .await
                     .and_then(|_| {
@@ -413,12 +390,13 @@ impl Addons {
         let state = self.state();
         let component = state
             .components
+            .addons
             .get(&component.id())
             .ok_or(AddonError::NotFound(component.id()))?;
-        self.0.component_storage.remove(component).await?;
+        state.components.remove(component).await?;
         self.publish(
-            state.component_catalog.clone(),
-            state.dependency_catalog.clone(),
+            state.components.catalog.clone(),
+            state.dependencies.catalog.clone(),
         )
         .await
     }
@@ -429,35 +407,28 @@ impl Addons {
         let state = self.state();
         let dependency = state
             .dependencies
+            .addons
             .get(&dependency.id())
             .ok_or(AddonError::NotFound(dependency.id()))?;
-        self.0.dependency_storage.remove(dependency).await?;
+        state.dependencies.remove(dependency).await?;
         self.publish(
-            state.component_catalog.clone(),
-            state.dependency_catalog.clone(),
+            state.components.catalog.clone(),
+            state.dependencies.catalog.clone(),
         )
         .await
     }
 
-    pub(crate) fn latest_component(&self, slot: Slot) -> Option<Addon<Component>> {
+    pub(crate) fn latest_component(&self, slot: Slot) -> Option<Arc<Addon<Component>>> {
         self.state()
             .components
+            .addons
             .values()
             .filter(|component| component.slot() == slot)
-            .fold(
-                None,
-                |selected: Option<(&Addon<Component>, Version)>, component| {
-                    let version = Version::parse(component.version())
-                        .expect("selected component versions are semantic");
-                    match selected {
-                        Some((current_component, current)) if version <= current => {
-                            Some((current_component, current))
-                        }
-                        _ => Some((component, version)),
-                    }
-                },
-            )
-            .map(|(component, _)| component.clone())
+            .max_by_key(|component| {
+                Version::parse(component.version())
+                    .expect("selected component versions are semantic")
+            })
+            .cloned()
     }
 
     fn state(&self) -> Arc<AddonsState> {
@@ -518,13 +489,8 @@ impl Addons {
         component_catalog: Option<Arc<Catalog<Component>>>,
         dependency_catalog: Option<Arc<Catalog<Dependency>>>,
     ) -> Result<()> {
-        let state = AddonsState::load(
-            component_catalog,
-            dependency_catalog,
-            &self.0.component_storage,
-            &self.0.dependency_storage,
-        )
-        .await?;
+        let state =
+            AddonsState::load(component_catalog, dependency_catalog, &self.0.directories).await?;
         self.0.published.send_replace(Arc::new(state));
         Ok(())
     }
@@ -532,40 +498,31 @@ impl Addons {
 
 #[derive(Clone, Debug)]
 struct AddonsState {
-    component_catalog: Option<Arc<Catalog<Component>>>,
-    dependency_catalog: Option<Arc<Catalog<Dependency>>>,
-    components: HashMap<Uuid, Addon<Component>>,
-    dependencies: HashMap<Uuid, Addon<Dependency>>,
+    components: AddonStorage<Component>,
+    dependencies: AddonStorage<Dependency>,
 }
 
 impl AddonsState {
+    async fn load_cached(directories: &Directories) -> Result<Self> {
+        let components = AddonStorage::<Component>::new(directories.clone(), None);
+        let dependencies = AddonStorage::<Dependency>::new(directories.clone(), None);
+        let component_catalog = components.load_catalog().await;
+        let dependency_catalog = dependencies.load_catalog().await;
+        Self::load(component_catalog, dependency_catalog, directories).await
+    }
+
     async fn load(
         component_catalog: Option<Arc<Catalog<Component>>>,
         dependency_catalog: Option<Arc<Catalog<Dependency>>>,
-        component_storage: &AddonStorage<Component>,
-        dependency_storage: &AddonStorage<Dependency>,
+        directories: &Directories,
     ) -> Result<Self> {
-        let components = component_storage.scan().await?;
-        let dependencies = dependency_storage.scan().await?;
-        let mut component_map = HashMap::new();
-        for component in components {
-            let id = component.id();
-            if component_map.insert(id, component).is_some() {
-                return Err(AddonError::Duplicate(id).into());
-            }
-        }
-        let mut dependency_map = HashMap::new();
-        for dependency in dependencies {
-            let id = dependency.id();
-            if dependency_map.insert(id, dependency).is_some() {
-                return Err(AddonError::Duplicate(id).into());
-            }
-        }
+        let mut components = AddonStorage::new(directories.clone(), component_catalog);
+        components.scan().await?;
+        let mut dependencies = AddonStorage::new(directories.clone(), dependency_catalog);
+        dependencies.scan().await?;
         Ok(Self {
-            component_catalog,
-            dependency_catalog,
-            components: component_map,
-            dependencies: dependency_map,
+            components,
+            dependencies,
         })
     }
 }

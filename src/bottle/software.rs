@@ -199,7 +199,7 @@ impl Bottle {
                                 requirements: vec![Requirement::Slot(Slot::Umu)],
                             }
                         })?;
-                        candidate.components.insert(Slot::Umu, umu);
+                        candidate.components.insert(Slot::Umu, umu.as_ref().clone());
                     }
                     candidate
                         .components

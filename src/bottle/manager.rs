@@ -177,7 +177,7 @@ impl BottleManager {
                 .into());
             }
             let winebridge = winebridge.unwrap(); // Safe to unwrap since we just checked it above
-            let loaded_runner = runner_component.load_runner(umu.as_ref()).await?;
+            let loaded_runner = runner_component.load_runner(umu.as_deref()).await?;
             let id = Uuid::new_v4();
             let bottle_path = cx.directories().bottle(id);
             fs::create_dir_all(&bottle_path).await?;
@@ -197,11 +197,11 @@ impl BottleManager {
                 }
 
                 let mut components = HashMap::from([
-                    (Slot::WineBridge, winebridge),
+                    (Slot::WineBridge, winebridge.as_ref().clone()),
                     (Slot::Runner, runner_component.clone()),
                 ]);
                 if let Some(umu) = umu {
-                    components.insert(Slot::Umu, umu);
+                    components.insert(Slot::Umu, umu.as_ref().clone());
                 }
                 let bottle =
                     Bottle::new(id, name, components, Vec::new(), storage, cx.clone()).await?;
