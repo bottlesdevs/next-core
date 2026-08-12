@@ -155,10 +155,6 @@ impl CatalogEntry<Component> {
     pub fn slot(&self) -> Slot {
         self.kind.slot
     }
-
-    pub(crate) fn steps(&self) -> &[InstallStep] {
-        &self.kind.steps
-    }
 }
 
 impl CatalogEntry<Dependency> {

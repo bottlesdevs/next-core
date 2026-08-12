@@ -24,7 +24,6 @@ use uuid::{NonNilUuid, Uuid};
 use super::{
     Addon, AddonError, Component, Dependency, Requirement, Slot,
     catalog::{Catalog, CatalogKind},
-    installer::recipe_steps,
 };
 use crate::{
     Directories,
@@ -174,7 +173,6 @@ impl AddonIndex<Component> {
                         slot,
                         requirements,
                         path,
-                        recipe_steps(slot).to_vec(),
                     ))
                 };
                 if addons.insert(addon.id(), addon.clone()).is_some() {
