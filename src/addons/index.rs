@@ -45,6 +45,7 @@ pub(crate) struct AddonIndex<K> {
     #[serde(skip)]
     pub(crate) catalog: Option<Arc<Catalog<K>>>,
     /// Complete local releases keyed by immutable release UUID.
+    #[serde(rename = "addon")]
     pub(crate) addons: HashMap<Uuid, Arc<Addon<K>>>,
 }
 
