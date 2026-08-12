@@ -19,9 +19,9 @@ use uuid::{NonNilUuid, Uuid};
 use super::{
     Addon, AddonError, CatalogError, Component, Dependency, Slot, Target,
     catalog::{Catalog, CatalogArtifact, CatalogEntry, CatalogKind, CatalogUrls},
+    index::AddonIndex,
     installer::recipe_steps,
     item::Artifact,
-    storage::{self, AddonStorage},
 };
 use crate::{
     Directories, Operation, Progress, Stage, Transfer,
@@ -159,14 +159,14 @@ impl Addons {
             let current = addons.state();
             let component_catalog = match &component {
                 Ok(catalog) => {
-                    current.components.save_catalog(catalog).await?;
+                    catalog.save(&addons.0.directories).await?;
                     Some(catalog.clone())
                 }
                 Err(_) => current.components.catalog.clone(),
             };
             let dependency_catalog = match &dependency {
                 Ok(catalog) => {
-                    current.dependencies.save_catalog(catalog).await?;
+                    catalog.save(&addons.0.directories).await?;
                     Some(catalog.clone())
                 }
                 Err(_) => current.dependencies.catalog.clone(),
@@ -212,7 +212,6 @@ impl Addons {
             let artifact = artifacts[0];
             if !single_path_component(entry.version())
                 || !single_path_component(artifact.file_name())
-                || artifact.file_name() == storage::MANIFEST
             {
                 return Err(CatalogError::InvalidEntry(entry.id()).into());
             }
@@ -224,8 +223,6 @@ impl Addons {
                     &addons.0.downloader,
                     artifact,
                     &file,
-                    1,
-                    1,
                     progress,
                     &cancellation,
                 )
@@ -241,8 +238,7 @@ impl Addons {
                 }
                 let release = top_level_directory(&extracted).await?;
                 let slot = entry.slot();
-                let state = addons.state();
-                let requirements = state.components.inspect_release(slot, &release).await?;
+                let requirements = AddonIndex::<Component>::inspect_release(slot, &release).await?;
                 let steps = if entry.steps().is_empty() {
                     recipe_steps(slot).to_vec()
                 } else {
@@ -257,7 +253,9 @@ impl Addons {
                     return Ok(component);
                 }
                 let state = addons.state();
-                let target = state.components.target(slot, entry.version()).await?;
+                let target =
+                    AddonIndex::<Component>::target(&addons.0.directories, slot, entry.version())
+                        .await?;
                 if exists(&target).await? {
                     return Err(AddonError::TargetExists(target).into());
                 }
@@ -270,8 +268,13 @@ impl Addons {
                     target.clone(),
                     steps,
                 );
-                state.components.save(&component, &release).await?;
-                async_fs::rename(release, &target).await?;
+                let mut next = state.components.clone();
+                next.addons.insert(component.id(), Arc::new(component));
+                next.save(&addons.0.directories).await?;
+                if let Err(error) = async_fs::rename(release, &target).await {
+                    let _ = state.components.save(&addons.0.directories).await;
+                    return Err(error.into());
+                }
                 let published = addons
                     .publish(
                         state.components.catalog.clone(),
@@ -285,6 +288,7 @@ impl Addons {
                     });
                 if published.is_err() {
                     let _ = async_fs::remove_dir_all(target).await;
+                    let _ = state.components.save(&addons.0.directories).await;
                 }
                 published
             }
@@ -310,22 +314,20 @@ impl Addons {
             if artifacts.is_empty() {
                 return Err(CatalogError::Unsupported(entry.id()).into());
             }
-            if artifacts.iter().any(|artifact| {
-                !single_path_component(artifact.file_name())
-                    || artifact.file_name() == storage::MANIFEST
-            }) {
+            if artifacts
+                .iter()
+                .any(|artifact| !single_path_component(artifact.file_name()))
+            {
                 return Err(CatalogError::InvalidEntry(entry.id()).into());
             }
 
             let stage = addons.create_stage().await?;
             let result = async {
-                for (index, artifact) in artifacts.iter().enumerate() {
+                for artifact in artifacts.iter().copied() {
                     download_artifact(
                         &addons.0.downloader,
                         artifact,
                         &stage.join(artifact.file_name()),
-                        index + 1,
-                        artifacts.len(),
                         progress.clone(),
                         &cancellation,
                     )
@@ -340,7 +342,8 @@ impl Addons {
                     return Ok(dependency);
                 }
                 let state = addons.state();
-                let target = state.dependencies.target(entry.id()).await?;
+                let target =
+                    AddonIndex::<Dependency>::target(&addons.0.directories, entry.id()).await?;
                 if exists(&target).await? {
                     async_fs::remove_dir_all(&target).await?;
                 }
@@ -360,8 +363,13 @@ impl Addons {
                         })
                         .collect(),
                 );
-                state.dependencies.save(&dependency, &stage).await?;
-                async_fs::rename(&stage, &target).await?;
+                let mut next = state.dependencies.clone();
+                next.addons.insert(dependency.id(), Arc::new(dependency));
+                next.save(&addons.0.directories).await?;
+                if let Err(error) = async_fs::rename(&stage, &target).await {
+                    let _ = state.dependencies.save(&addons.0.directories).await;
+                    return Err(error.into());
+                }
                 let published = addons
                     .publish(
                         state.components.catalog.clone(),
@@ -375,6 +383,7 @@ impl Addons {
                     });
                 if published.is_err() {
                     let _ = async_fs::remove_dir_all(target).await;
+                    let _ = state.dependencies.save(&addons.0.directories).await;
                 }
                 published
             }
@@ -393,7 +402,10 @@ impl Addons {
             .addons
             .get(&component.id())
             .ok_or(AddonError::NotFound(component.id()))?;
-        state.components.remove(component).await?;
+        state.components.remove_files(component).await?;
+        let mut next = state.components.clone();
+        next.addons.remove(&component.id());
+        next.save(&self.0.directories).await?;
         self.publish(
             state.components.catalog.clone(),
             state.dependencies.catalog.clone(),
@@ -410,7 +422,10 @@ impl Addons {
             .addons
             .get(&dependency.id())
             .ok_or(AddonError::NotFound(dependency.id()))?;
-        state.dependencies.remove(dependency).await?;
+        state.dependencies.remove_files(dependency).await?;
+        let mut next = state.dependencies.clone();
+        next.addons.remove(&dependency.id());
+        next.save(&self.0.directories).await?;
         self.publish(
             state.components.catalog.clone(),
             state.dependencies.catalog.clone(),
@@ -466,8 +481,6 @@ impl Addons {
                     progress.send_replace(Some(Progress::transferring(
                         Stage::Downloading {
                             file: format!("{} catalog", K::LABEL),
-                            index: K::INDEX,
-                            total: 2,
                         },
                         transfer,
                     )));
@@ -498,16 +511,14 @@ impl Addons {
 
 #[derive(Clone, Debug)]
 struct AddonsState {
-    components: AddonStorage<Component>,
-    dependencies: AddonStorage<Dependency>,
+    components: AddonIndex<Component>,
+    dependencies: AddonIndex<Dependency>,
 }
 
 impl AddonsState {
     async fn load_cached(directories: &Directories) -> Result<Self> {
-        let components = AddonStorage::<Component>::new(directories.clone(), None);
-        let dependencies = AddonStorage::<Dependency>::new(directories.clone(), None);
-        let component_catalog = components.load_catalog().await;
-        let dependency_catalog = dependencies.load_catalog().await;
+        let component_catalog = Catalog::<Component>::load(directories).await;
+        let dependency_catalog = Catalog::<Dependency>::load(directories).await;
         Self::load(component_catalog, dependency_catalog, directories).await
     }
 
@@ -516,10 +527,16 @@ impl AddonsState {
         dependency_catalog: Option<Arc<Catalog<Dependency>>>,
         directories: &Directories,
     ) -> Result<Self> {
-        let mut components = AddonStorage::new(directories.clone(), component_catalog);
-        components.scan().await?;
-        let mut dependencies = AddonStorage::new(directories.clone(), dependency_catalog);
-        dependencies.scan().await?;
+        let components = AddonIndex::<Component>::load(directories).await?;
+        let components = match component_catalog {
+            Some(catalog) => components.with_catalog(catalog),
+            None => components,
+        };
+        let dependencies = AddonIndex::<Dependency>::load(directories).await?;
+        let dependencies = match dependency_catalog {
+            Some(catalog) => dependencies.with_catalog(catalog),
+            None => dependencies,
+        };
         Ok(Self {
             components,
             dependencies,
@@ -536,8 +553,6 @@ async fn download_artifact(
     downloader: &DownloadManager,
     artifact: &CatalogArtifact,
     destination: &Path,
-    index: usize,
-    total: usize,
     progress: watch::Sender<Option<Progress>>,
     cancellation: &CancellationToken,
 ) -> Result<()> {
@@ -550,8 +565,6 @@ async fn download_artifact(
             progress.send_replace(Some(Progress::transferring(
                 Stage::Downloading {
                     file: artifact.file_name().to_owned(),
-                    index,
-                    total,
                 },
                 transfer,
             )));

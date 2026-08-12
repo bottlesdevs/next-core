@@ -55,6 +55,9 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
             .into_iter()
             .find(|addon| addon.slot() == Slot::Runner)
             .unwrap();
+        let runner_id = runner.id();
+        assert!(directories.components().join("index.toml").is_file());
+        assert!(!runner_path.join(".addon.toml").exists());
         let manager = BottleManager::new(context);
 
         let error = match manager.create("test", Storage::Standard, &runner).await {
@@ -77,6 +80,16 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
                 .unwrap()
                 .next()
                 .is_none()
+        );
+        let reloaded = Context::for_test(
+            directories.clone(),
+            Some(directories.data_dir().join("fvs2d")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            reloaded.addons().component(runner_id).unwrap().id(),
+            runner_id
         );
         std::fs::remove_dir_all(directories.data_dir()).unwrap();
     });

@@ -1,14 +1,15 @@
 //! Typed Bottles-maintained component and dependency catalogs.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Deserializer, Serialize, de, de::DeserializeOwned};
 use url::Url;
 use uuid::{NonNilUuid, Uuid};
 
 use crate::{
     Directories,
     addons::{Checksum, Target, deserialize_non_empty_string, deserialize_non_empty_vec},
+    error::Result,
 };
 
 use super::{Component, Dependency, Requirement, Slot, installer::InstallStep};
@@ -24,6 +25,29 @@ pub(crate) struct Catalog<K> {
 }
 
 impl<K> Catalog<K> {
+    /// Loads the cached catalog when it is both readable and valid.
+    ///
+    /// Missing, unreadable, and malformed catalogs are treated as absent so
+    /// local addons remain usable and a later refresh can replace the cache.
+    pub(crate) async fn load(directories: &Directories) -> Option<Arc<Self>>
+    where
+        K: CatalogKind,
+        Self: DeserializeOwned,
+    {
+        let catalog =
+            serde_json::from_slice(&async_fs::read(K::catalog(directories)).await.ok()?).ok()?;
+        Some(Arc::new(catalog))
+    }
+
+    pub(crate) async fn save(&self, directories: &Directories) -> Result<()>
+    where
+        K: CatalogKind,
+        Self: Serialize,
+    {
+        async_fs::write(K::catalog(directories), serde_json::to_vec(self)?).await?;
+        Ok(())
+    }
+
     pub(crate) fn entries(&self) -> &[CatalogEntry<K>] {
         &self.entries
     }
@@ -40,35 +64,41 @@ pub(crate) struct CatalogUrls {
 
 pub(crate) trait CatalogKind {
     const LABEL: &'static str;
-    const INDEX: usize;
 
     fn url(urls: &CatalogUrls) -> Option<Url>;
-    fn path(directories: &Directories) -> PathBuf;
+    fn catalog(directories: &Directories) -> PathBuf;
+    fn index(directories: &Directories) -> PathBuf;
 }
 
 impl CatalogKind for Component {
     const LABEL: &'static str = "components";
-    const INDEX: usize = 1;
 
     fn url(urls: &CatalogUrls) -> Option<Url> {
         urls.components.clone()
     }
 
-    fn path(directories: &Directories) -> PathBuf {
+    fn catalog(directories: &Directories) -> PathBuf {
         directories.components().join("catalog.json")
+    }
+
+    fn index(directories: &Directories) -> PathBuf {
+        directories.components().join("index.toml")
     }
 }
 
 impl CatalogKind for Dependency {
     const LABEL: &'static str = "dependencies";
-    const INDEX: usize = 2;
 
     fn url(urls: &CatalogUrls) -> Option<Url> {
         urls.dependencies.clone()
     }
 
-    fn path(directories: &Directories) -> PathBuf {
+    fn catalog(directories: &Directories) -> PathBuf {
         directories.dependencies().join("catalog.json")
+    }
+
+    fn index(directories: &Directories) -> PathBuf {
+        directories.dependencies().join("index.toml")
     }
 }
 
@@ -174,7 +204,7 @@ impl CatalogArtifact {
     }
 }
 
-fn deserialize_catalog_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
+fn deserialize_catalog_version<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -187,7 +217,7 @@ where
     Ok(version)
 }
 
-fn deserialize_checksum<'de, D>(deserializer: D) -> Result<Checksum, D::Error>
+fn deserialize_checksum<'de, D>(deserializer: D) -> std::result::Result<Checksum, D::Error>
 where
     D: Deserializer<'de>,
 {

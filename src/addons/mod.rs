@@ -12,10 +12,10 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 
 pub(crate) mod catalog;
 mod error;
+mod index;
 pub(crate) mod installer;
 pub(crate) mod item;
 mod manager;
-mod storage;
 
 pub use catalog::CatalogEntry;
 pub use error::{AddonError, CatalogError, InstallerError};
