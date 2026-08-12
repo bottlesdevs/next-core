@@ -76,10 +76,6 @@ pub enum Stage {
     Downloading {
         /// The file name or caller-facing label of the current download.
         file: String,
-        /// The one-based position of this download in the group.
-        index: usize,
-        /// The number of downloads in the group.
-        total: usize,
     },
     Verifying {
         /// The file name or caller-facing label of the item being verified.
@@ -100,9 +96,7 @@ impl fmt::Display for Stage {
         match self {
             Self::Preparing => formatter.write_str("Preparing"),
             Self::Stopping => formatter.write_str("Stopping"),
-            Self::Downloading { file, index, total } => {
-                write!(formatter, "Downloading {file} ({index}/{total})")
-            }
+            Self::Downloading { file } => write!(formatter, "Downloading {file}"),
             Self::Verifying { file } => write!(formatter, "Verifying {file}"),
             Self::Extracting => formatter.write_str("Extracting"),
             Self::CreatingPrefix => formatter.write_str("Creating prefix"),
@@ -223,8 +217,6 @@ mod tests {
             Progress::transferring(
                 Stage::Downloading {
                     file: "runner".into(),
-                    index: 1,
-                    total: 1,
                 },
                 Transfer {
                     current: 150,

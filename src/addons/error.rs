@@ -37,9 +37,9 @@ pub enum AddonError {
     /// A component directory lacks the marker required by its slot.
     #[error("component could not be identified: {0}")]
     InvalidComponent(PathBuf),
-    /// A local addon manifest disagrees with its release directory.
-    #[error("addon manifest is invalid: {0}")]
-    InvalidAddonManifest(PathBuf),
+    /// A local addon index contains inconsistent or unsafe metadata.
+    #[error("addon index is invalid: {0}")]
+    InvalidAddonIndex(PathBuf),
     /// A component download would overwrite an existing version directory.
     #[error("addon target already exists: {0}")]
     TargetExists(PathBuf),

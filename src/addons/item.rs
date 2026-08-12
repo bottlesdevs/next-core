@@ -6,7 +6,6 @@ use std::{
     str::FromStr,
 };
 
-use next_config::Config;
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
 use uuid::{NonNilUuid, Uuid};
@@ -131,14 +130,6 @@ pub struct Addon<K> {
     kind: K,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     artifacts: Vec<Artifact>,
-}
-
-impl Config for Addon<Component> {
-    const VERSION: u32 = 1;
-}
-
-impl Config for Addon<Dependency> {
-    const VERSION: u32 = 1;
 }
 
 impl<K> Addon<K> {
