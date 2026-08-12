@@ -363,9 +363,7 @@ mod tests {
                 let directories = crate::Directories::from_path(root.join("data")).unwrap();
                 let socket = directories.runtime_dir().join("fvs2d.sock");
                 let context =
-                    crate::Context::for_test(directories.clone(), Some(executable.into()))
-                        .await
-                        .unwrap();
+                    crate::Context::for_test(directories.clone(), Some(executable.into())).unwrap();
                 let bottle_path = directories.bottle(Uuid::new_v4());
                 std::fs::create_dir_all(&bottle_path).unwrap();
                 context

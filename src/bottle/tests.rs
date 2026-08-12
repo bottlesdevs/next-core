@@ -1,6 +1,6 @@
 use crate::{
     Context, Directories,
-    addons::{AddonError, CatalogError, Requirement, Slot},
+    addons::{AddonError, Addons, CatalogError, Requirement, Slot},
     bottle::{BottleManager, Storage, error::BottleError},
     error::Error,
 };
@@ -20,16 +20,13 @@ fn load_skips_corrupt_bottles() {
             "not valid toml =",
         )
         .unwrap();
-        let manager = BottleManager::load(
-            Context::for_test(
-                directories.clone(),
-                Some(directories.data_dir().join("fvs2d")),
-            )
-            .await
-            .unwrap(),
+        let context = Context::for_test(
+            directories.clone(),
+            Some(directories.data_dir().join("fvs2d")),
         )
-        .await
         .unwrap();
+        let addons = Addons::load(context.clone(), None, None).await.unwrap();
+        let manager = BottleManager::load(context, addons).await.unwrap();
 
         assert!(manager.list().is_empty());
         std::fs::remove_dir_all(directories.data_dir()).unwrap();
@@ -47,10 +44,9 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
             directories.clone(),
             Some(directories.data_dir().join("fvs2d")),
         )
-        .await
         .unwrap();
-        let runner = context
-            .addons()
+        let addons = Addons::load(context.clone(), None, None).await.unwrap();
+        let runner = addons
             .components()
             .into_iter()
             .find(|addon| addon.slot() == Slot::Runner)
@@ -66,14 +62,14 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
         assert!(!runner_path.join(".addon.toml").exists());
         let unknown = uuid::Uuid::new_v4();
         assert!(matches!(
-            context.addons().fetch_component(unknown).await,
+            addons.fetch_component(unknown).await,
             Err(Error::Addon(AddonError::Catalog(CatalogError::NotFound(id)))) if id == unknown
         ));
         assert!(matches!(
-            context.addons().remove_component(unknown).await,
+            addons.remove_component(unknown).await,
             Err(Error::Addon(AddonError::NotFound(id))) if id == unknown
         ));
-        let manager = BottleManager::new(context);
+        let manager = BottleManager::new(context, addons);
 
         let error = match manager.create("test", Storage::Standard, runner_id).await {
             Ok(_) => panic!("creation should fail before mutation"),
@@ -100,10 +96,10 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
             directories.clone(),
             Some(directories.data_dir().join("fvs2d")),
         )
-        .await
         .unwrap();
+        let reloaded_addons = Addons::load(reloaded, None, None).await.unwrap();
         assert_eq!(
-            reloaded.addons().component(runner_id).unwrap().id(),
+            reloaded_addons.component(runner_id).unwrap().id(),
             runner_id
         );
         std::fs::remove_dir_all(directories.data_dir()).unwrap();

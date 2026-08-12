@@ -12,7 +12,7 @@ use uuid::Uuid;
 use super::{edit::BottleEdit, error::BottleError};
 use crate::{
     Context,
-    addons::{Addon, Component, Dependency, Requirement, Slot},
+    addons::{Addon, Addons, Component, Dependency, Requirement, Slot},
     error::Result,
     prefix::Prefix,
     utils::environment::Environment,
@@ -210,6 +210,8 @@ pub(crate) struct BottleInner {
     pub(crate) id: Uuid,
     /// Shared services and storage locations scoped to the owning manager.
     pub(crate) cx: Context,
+    /// Shared addon registry scoped to the owning manager.
+    pub(crate) addons: Addons,
 }
 
 /// A live, shared handle to one bottle.
@@ -235,6 +237,7 @@ impl Bottle {
         dependencies: Vec<Addon<Dependency>>,
         storage: Prefix,
         context: Context,
+        addons: Addons,
     ) -> Result<Self> {
         let state = BottleState {
             id,
@@ -246,13 +249,13 @@ impl Bottle {
             wrappers: Wrappers::default(),
             environment: Environment::default(),
         };
-        let bottle = Self::from_state(state, context)?;
+        let bottle = Self::from_state(state, context, addons)?;
         bottle.save().await?;
         Ok(bottle)
     }
 
     /// Reconstructs a live handle after validating its addon requirements.
-    pub(crate) fn from_state(state: BottleState, cx: Context) -> Result<Self> {
+    pub(crate) fn from_state(state: BottleState, cx: Context, addons: Addons) -> Result<Self> {
         state.validate_requirements()?;
         let id = state.id;
         let (published, _) = watch::channel(Some(Arc::new(state)));
@@ -261,6 +264,7 @@ impl Bottle {
             published,
             write_lock: RwLock::new(()),
             cx,
+            addons,
         })))
     }
 
