@@ -25,7 +25,7 @@ use crate::{
 /// They remain valid after the bottle changes or is deleted;
 /// their getters continue to return the values recorded when that particular
 /// snapshot was published. Obtain another snapshot to observe later changes.
-/// Component paths are configuration records and are not revalidated when read.
+/// Component locations are derived from their slot and version.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Config)]
 #[config(version = 1)]
 pub struct BottleState {
@@ -61,8 +61,7 @@ impl BottleState {
 
     /// Returns the runner recorded when this snapshot was published.
     ///
-    /// Catalog refreshes do not replace this value, and its recorded path may
-    /// become stale if the component is removed.
+    /// Catalog refreshes do not replace this value.
     pub fn runner(&self) -> &Addon<Component> {
         self.component(Slot::Runner)
             .expect("persisted bottle state is runtime-validated")

@@ -1,16 +1,13 @@
 //! Downloaded components and dependencies used by bottle APIs.
 
-use std::{
-    fmt,
-    path::{Path, PathBuf},
-    str::FromStr,
-};
+use std::{fmt, path::PathBuf, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
 use uuid::{NonNilUuid, Uuid};
 
 use crate::{
+    Directories,
     error::Result,
     runner::{Proton, Runner, RunnerError, RunnerKind, Wine, detect_runner_kind},
 };
@@ -114,7 +111,8 @@ impl Artifact {
 ///
 /// `K` is either [`Component`] or [`Dependency`]. Values do not update after
 /// downloads, removals, or catalog refreshes; query [`crate::Addons`] again to
-/// observe later state.
+/// observe later state. Local paths are derived from the active Bottles data
+/// directory.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Addon<K> {
@@ -123,7 +121,6 @@ pub struct Addon<K> {
     version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
-    path: PathBuf,
     #[serde(flatten)]
     kind: K,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -136,7 +133,6 @@ impl<K> Addon<K> {
         name: String,
         version: String,
         requirements: Vec<Requirement>,
-        path: PathBuf,
         kind: K,
         artifacts: Vec<Artifact>,
     ) -> Self {
@@ -145,7 +141,6 @@ impl<K> Addon<K> {
             name,
             version,
             requirements,
-            path,
             kind,
             artifacts,
         }
@@ -170,10 +165,6 @@ impl<K> Addon<K> {
     pub fn requirements(&self) -> &[Requirement] {
         &self.requirements
     }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 impl Addon<Component> {
@@ -183,14 +174,12 @@ impl Addon<Component> {
         version: String,
         slot: Slot,
         requirements: Vec<Requirement>,
-        path: PathBuf,
     ) -> Self {
         Self::new(
             id,
             name,
             version,
             requirements,
-            path,
             Component { slot },
             Vec::new(),
         )
@@ -201,8 +190,15 @@ impl Addon<Component> {
         self.kind.slot
     }
 
-    pub(crate) fn artifact(&self) -> Artifact {
-        Artifact::new(self.path.clone(), recipe_steps(self.slot()).to_vec())
+    pub(crate) fn path(&self, directories: &Directories) -> PathBuf {
+        directories
+            .components()
+            .join(self.slot().as_str())
+            .join(self.version())
+    }
+
+    pub(crate) fn artifact(&self, directories: &Directories) -> Artifact {
+        Artifact::new(self.path(directories), recipe_steps(self.slot()).to_vec())
     }
 
     /// Reports whether this component satisfies `requirement`.
@@ -214,14 +210,18 @@ impl Addon<Component> {
         }
     }
 
-    pub(crate) async fn load_runner(&self, umu: Option<&Self>) -> Result<Box<dyn Runner>> {
-        let path = self.path();
-        match detect_runner_kind(path).await? {
+    pub(crate) async fn load_runner(
+        &self,
+        directories: &Directories,
+        umu: Option<&Self>,
+    ) -> Result<Box<dyn Runner>> {
+        let path = self.path(directories);
+        match detect_runner_kind(&path).await? {
             RunnerKind::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
             RunnerKind::Proton => {
                 let umu = umu
                     .ok_or(RunnerError::UmuExecutableMissing)?
-                    .path()
+                    .path(directories)
                     .join("umu-run");
                 if !async_fs::metadata(&umu)
                     .await
@@ -229,7 +229,7 @@ impl Addon<Component> {
                 {
                     return Err(RunnerError::RunnerExecutableNotFound(umu).into());
                 }
-                Ok(Box::new(Proton::new(path, umu)))
+                Ok(Box::new(Proton::new(&path, umu)))
             }
         }
     }
@@ -241,7 +241,6 @@ impl Addon<Dependency> {
         name: String,
         version: String,
         requirements: Vec<Requirement>,
-        path: PathBuf,
         artifacts: Vec<Artifact>,
     ) -> Self {
         Self::new(
@@ -249,7 +248,6 @@ impl Addon<Dependency> {
             name,
             version,
             requirements,
-            path,
             Dependency::default(),
             artifacts,
         )
@@ -257,6 +255,10 @@ impl Addon<Dependency> {
 
     pub(crate) fn artifacts(&self) -> &[Artifact] {
         &self.artifacts
+    }
+
+    pub(crate) fn path(&self, directories: &Directories) -> PathBuf {
+        directories.dependencies().join(self.id().to_string())
     }
 
     /// Reports whether this dependency satisfies `requirement`.

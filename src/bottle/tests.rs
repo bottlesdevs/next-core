@@ -1,6 +1,6 @@
 use crate::{
     Context, Directories,
-    addons::{Requirement, Slot},
+    addons::{AddonError, CatalogError, Requirement, Slot},
     bottle::{BottleManager, Storage, error::BottleError},
     error::Error,
 };
@@ -55,12 +55,27 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
             .into_iter()
             .find(|addon| addon.slot() == Slot::Runner)
             .unwrap();
+        assert_eq!(runner.path(&directories), runner_path);
         let runner_id = runner.id();
         assert!(directories.components().join("index.toml").is_file());
+        assert!(
+            !std::fs::read_to_string(directories.components().join("index.toml"))
+                .unwrap()
+                .contains("path =")
+        );
         assert!(!runner_path.join(".addon.toml").exists());
+        let unknown = uuid::Uuid::new_v4();
+        assert!(matches!(
+            context.addons().fetch_component(unknown).await,
+            Err(Error::Addon(AddonError::Catalog(CatalogError::NotFound(id)))) if id == unknown
+        ));
+        assert!(matches!(
+            context.addons().remove_component(unknown).await,
+            Err(Error::Addon(AddonError::NotFound(id))) if id == unknown
+        ));
         let manager = BottleManager::new(context);
 
-        let error = match manager.create("test", Storage::Standard, &runner).await {
+        let error = match manager.create("test", Storage::Standard, runner_id).await {
             Ok(_) => panic!("creation should fail before mutation"),
             Err(error) => error,
         };

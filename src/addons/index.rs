@@ -10,7 +10,7 @@
 //! serialized into an index.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::{Component as PathComponent, Path, PathBuf},
     sync::Arc,
 };
@@ -38,8 +38,8 @@ use crate::{
 )]
 /// A snapshot of the catalog and indexed local addons for one category.
 ///
-/// Only `addons` is persisted. UUID keys must match their addon records, and
-/// each recorded path must belong to the category's managed directory.
+/// Only `addons` is persisted. UUID keys must match their addon records;
+/// release locations are derived from their typed identities.
 pub(crate) struct AddonIndex<K> {
     /// The last usable catalog, retained only for the current process snapshot.
     #[serde(skip)]
@@ -95,11 +95,6 @@ impl<K> AddonIndex<K> {
         next_config::save(K::index(directories), self).await?;
         Ok(())
     }
-
-    pub(crate) async fn remove_files(&self, addon: &Addon<K>) -> Result<()> {
-        async_fs::remove_dir_all(addon.path()).await?;
-        Ok(())
-    }
 }
 
 impl AddonIndex<Component> {
@@ -116,25 +111,24 @@ impl AddonIndex<Component> {
 
     /// Reconstructs the component set from managed slot directories.
     ///
-    /// Existing records retain their catalog UUID and recipes when their path,
-    /// slot, version, and derived requirements still agree with disk. Unindexed
-    /// directories become hand-placed components with path-derived UUIDs, while
-    /// records without a directory are dropped.
+    /// Existing records retain their catalog UUID when their slot, version, and
+    /// derived requirements agree with disk. Unindexed directories become
+    /// hand-placed components with path-derived UUIDs, while records without a
+    /// directory are dropped.
     async fn rebuild(&mut self, directories: &Directories) -> Result<()> {
         let index_path = Component::index(directories);
         let root = async_fs::canonicalize(directories.components()).await?;
-        let mut paths = HashSet::new();
         let mut indexed = HashMap::new();
         for (id, addon) in &self.addons {
-            let expected = root.join(addon.slot().as_str()).join(addon.version());
-            if *id != addon.id()
-                || !single_path_component(addon.version())
-                || addon.path() != expected
-                || !paths.insert(addon.path().to_path_buf())
+            if *id != addon.id() {
+                return Err(AddonError::InvalidAddonIndex(index_path).into());
+            }
+            if indexed
+                .insert((addon.slot(), addon.version().to_owned()), addon.clone())
+                .is_some()
             {
                 return Err(AddonError::InvalidAddonIndex(index_path).into());
             }
-            indexed.insert(addon.path().to_path_buf(), addon.clone());
         }
 
         let mut addons = HashMap::new();
@@ -156,11 +150,8 @@ impl AddonIndex<Component> {
                 }
 
                 let requirements = Self::inspect_release(slot, &path).await?;
-                let addon = if let Some(addon) = indexed.remove(&path) {
-                    if addon.slot() != slot
-                        || addon.version() != version
-                        || addon.requirements() != requirements
-                    {
+                let addon = if let Some(addon) = indexed.remove(&(slot, version.clone())) {
+                    if addon.requirements() != requirements {
                         return Err(AddonError::InvalidAddonIndex(index_path).into());
                     }
                     addon
@@ -173,7 +164,6 @@ impl AddonIndex<Component> {
                         version,
                         slot,
                         requirements,
-                        path,
                     ))
                 };
                 if addons.insert(addon.id(), addon.clone()).is_some() {
@@ -239,27 +229,16 @@ impl AddonIndex<Dependency> {
     /// and installation recipes cannot be derived from downloaded files.
     async fn rebuild(&mut self, directories: &Directories) -> Result<()> {
         let index_path = Dependency::index(directories);
-        let path = async_fs::canonicalize(directories.dependencies()).await?;
-        let mut paths = HashSet::new();
         let mut addons = HashMap::new();
         for (id, addon) in &self.addons {
             if *id != addon.id()
-                || addon.path() != path.join(id.to_string())
                 || addon.artifacts().is_empty()
-                || !paths.insert(addon.path().to_path_buf())
                 || addon
                     .artifacts()
                     .iter()
                     .any(|artifact| !single_path_component(&artifact.path))
             {
                 return Err(AddonError::InvalidAddonIndex(index_path).into());
-            }
-            if !async_fs::metadata(addon.path())
-                .await
-                .is_ok_and(|metadata| metadata.is_dir())
-                || !all_artifacts_exist(addon).await
-            {
-                continue;
             }
             addons.insert(*id, addon.clone());
         }
@@ -277,15 +256,6 @@ impl AddonIndex<Dependency> {
 fn single_path_component(value: impl AsRef<Path>) -> bool {
     let mut components = value.as_ref().components();
     matches!(components.next(), Some(PathComponent::Normal(_))) && components.next().is_none()
-}
-
-async fn all_artifacts_exist(addon: &Addon<Dependency>) -> bool {
-    for artifact in addon.artifacts() {
-        if !regular_file(&addon.path().join(&artifact.path)).await {
-            return false;
-        }
-    }
-    true
 }
 
 async fn regular_file(path: &Path) -> bool {
