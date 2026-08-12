@@ -20,7 +20,6 @@ use super::{
     Addon, AddonError, CatalogError, Component, Dependency, Slot, Target,
     catalog::{Catalog, CatalogArtifact, CatalogEntry, CatalogKind, CatalogUrls},
     index::AddonIndex,
-    installer::recipe_steps,
     item::Artifact,
 };
 use crate::{
@@ -239,12 +238,6 @@ impl Addons {
                 let release = top_level_directory(&extracted).await?;
                 let slot = entry.slot();
                 let requirements = AddonIndex::<Component>::inspect_release(slot, &release).await?;
-                let steps = if entry.steps().is_empty() {
-                    recipe_steps(slot).to_vec()
-                } else {
-                    entry.steps().to_vec()
-                };
-
                 let _write = addons.0.write.lock().await;
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
@@ -266,7 +259,6 @@ impl Addons {
                     slot,
                     requirements,
                     target.clone(),
-                    steps,
                 );
                 let mut next = state.components.clone();
                 next.addons.insert(component.id(), Arc::new(component));

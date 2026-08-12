@@ -15,7 +15,7 @@ use crate::{
     runner::{Proton, Runner, RunnerError, RunnerKind, Wine, detect_runner_kind},
 };
 
-use super::installer::InstallStep;
+use super::installer::{InstallStep, recipe_steps};
 
 /// A mutually exclusive component role within a bottle.
 #[derive(Clone, Copy, Debug, Deserialize, EnumIter, Eq, Hash, PartialEq, Serialize)]
@@ -90,8 +90,6 @@ pub enum Requirement {
 #[serde(deny_unknown_fields)]
 pub struct Component {
     pub(crate) slot: Slot,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) steps: Vec<InstallStep>,
 }
 
 /// Category data carried by a downloaded dependency.
@@ -186,7 +184,6 @@ impl Addon<Component> {
         slot: Slot,
         requirements: Vec<Requirement>,
         path: PathBuf,
-        steps: Vec<InstallStep>,
     ) -> Self {
         Self::new(
             id,
@@ -194,7 +191,7 @@ impl Addon<Component> {
             version,
             requirements,
             path,
-            Component { slot, steps },
+            Component { slot },
             Vec::new(),
         )
     }
@@ -205,7 +202,7 @@ impl Addon<Component> {
     }
 
     pub(crate) fn artifact(&self) -> Artifact {
-        Artifact::new(self.path.clone(), self.kind.steps.clone())
+        Artifact::new(self.path.clone(), recipe_steps(self.slot()).to_vec())
     }
 
     /// Reports whether this component satisfies `requirement`.
