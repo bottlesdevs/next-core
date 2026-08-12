@@ -185,15 +185,15 @@ impl Addons {
         })
     }
 
-    /// Downloads, extracts, validates, and atomically publishes one component.
-    pub fn fetch_component(
-        &self,
-        entry: &CatalogEntry<Component>,
-    ) -> Operation<Arc<Addon<Component>>> {
+    /// Downloads, extracts, validates, and atomically publishes the component
+    /// identified by `id` in the current catalog.
+    pub fn fetch_component(&self, id: Uuid) -> Operation<Arc<Addon<Component>>> {
         let addons = self.clone();
-        let entry = entry.clone();
         Operation::new(move |progress, cancellation| async move {
-            if let Some(component) = addons.component(entry.id()) {
+            let entry = addons
+                .component_entry(id)
+                .ok_or(CatalogError::NotFound(id))?;
+            if let Some(component) = addons.component(id) {
                 return Ok(component);
             }
             let target = Target::current().ok_or(CatalogError::Unsupported(entry.id()))?;
@@ -258,7 +258,6 @@ impl Addons {
                     entry.version().to_owned(),
                     slot,
                     requirements,
-                    target.clone(),
                 );
                 let mut next = state.components.clone();
                 next.addons.insert(component.id(), Arc::new(component));
@@ -290,15 +289,15 @@ impl Addons {
         })
     }
 
-    /// Downloads every platform artifact and atomically publishes one dependency.
-    pub fn fetch_dependency(
-        &self,
-        entry: &CatalogEntry<Dependency>,
-    ) -> Operation<Arc<Addon<Dependency>>> {
+    /// Downloads every platform artifact and atomically publishes the dependency
+    /// identified by `id` in the current catalog.
+    pub fn fetch_dependency(&self, id: Uuid) -> Operation<Arc<Addon<Dependency>>> {
         let addons = self.clone();
-        let entry = entry.clone();
         Operation::new(move |progress, cancellation| async move {
-            if let Some(dependency) = addons.dependency(entry.id()) {
+            let entry = addons
+                .dependency_entry(id)
+                .ok_or(CatalogError::NotFound(id))?;
+            if let Some(dependency) = addons.dependency(id) {
                 return Ok(dependency);
             }
             let target = Target::current().ok_or(CatalogError::Unsupported(entry.id()))?;
@@ -344,7 +343,6 @@ impl Addons {
                     entry.name().to_owned(),
                     entry.version().to_owned(),
                     entry.requirements().to_vec(),
-                    target.clone(),
                     artifacts
                         .iter()
                         .map(|artifact| {
@@ -386,17 +384,17 @@ impl Addons {
     }
 
     /// Removes a component from shared storage without checking bottle references.
-    pub async fn remove_component(&self, component: &Addon<Component>) -> Result<()> {
+    pub async fn remove_component(&self, id: Uuid) -> Result<()> {
         let _write = self.0.write.lock().await;
         let state = self.state();
         let component = state
             .components
             .addons
-            .get(&component.id())
-            .ok_or(AddonError::NotFound(component.id()))?;
-        state.components.remove_files(component).await?;
+            .get(&id)
+            .ok_or(AddonError::NotFound(id))?;
+        async_fs::remove_dir_all(component.path(&self.0.directories)).await?;
         let mut next = state.components.clone();
-        next.addons.remove(&component.id());
+        next.addons.remove(&id);
         next.save(&self.0.directories).await?;
         self.publish(
             state.components.catalog.clone(),
@@ -406,17 +404,17 @@ impl Addons {
     }
 
     /// Removes a dependency from shared storage without checking bottle references.
-    pub async fn remove_dependency(&self, dependency: &Addon<Dependency>) -> Result<()> {
+    pub async fn remove_dependency(&self, id: Uuid) -> Result<()> {
         let _write = self.0.write.lock().await;
         let state = self.state();
         let dependency = state
             .dependencies
             .addons
-            .get(&dependency.id())
-            .ok_or(AddonError::NotFound(dependency.id()))?;
-        state.dependencies.remove_files(dependency).await?;
+            .get(&id)
+            .ok_or(AddonError::NotFound(id))?;
+        async_fs::remove_dir_all(dependency.path(&self.0.directories)).await?;
         let mut next = state.dependencies.clone();
-        next.addons.remove(&dependency.id());
+        next.addons.remove(&id);
         next.save(&self.0.directories).await?;
         self.publish(
             state.components.catalog.clone(),

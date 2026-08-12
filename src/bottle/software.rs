@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     Context, Operation, Progress, Stage,
-    addons::{Addon, Component, Dependency, Requirement, Slot, item::Artifact},
+    addons::{Addon, Requirement, Slot, item::Artifact},
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
     runner::shutdown_prefix,
@@ -174,13 +174,17 @@ impl Bottle {
     ///
     /// The operation checks the proposed complete bottle state before mutation.
     /// Switching to Proton selects the newest downloaded UMU when necessary;
-    /// switching to Wine removes the unused UMU selection.
-    pub fn set_component(&self, component: &Addon<Component>) -> Operation<()> {
-        let component = component.clone();
+    /// switching to Wine removes the unused UMU selection. The current
+    /// downloaded component with the supplied UUID is authoritative.
+    pub fn set_component(&self, id: Uuid) -> Operation<()> {
         let bottle = self.clone();
         Operation::new(move |progress, cancellation| async move {
             bottle
                 .update(async |state, cx| {
+                    let component = cx
+                        .addons()
+                        .component(id)
+                        .ok_or(crate::AddonError::NotFound(id))?;
                     if state
                         .component(component.slot())
                         .is_some_and(|installed| installed.id() == component.id())
@@ -203,7 +207,7 @@ impl Bottle {
                     }
                     candidate
                         .components
-                        .insert(component.slot(), component.clone());
+                        .insert(component.slot(), component.as_ref().clone());
                     if component.slot() == Slot::Runner && !needs_umu {
                         candidate.components.remove(&Slot::Umu);
                     }
@@ -226,7 +230,10 @@ impl Bottle {
                                 .map(Addon::id)
                                 .chain(state.dependencies.iter().map(Addon::id))
                                 .collect::<Vec<_>>();
-                            let runner = state.runner().load_runner(state.umu()).await?;
+                            let runner = state
+                                .runner()
+                                .load_runner(cx.directories(), state.umu())
+                                .await?;
                             state
                                 .storage
                                 .rebuild(
@@ -241,7 +248,7 @@ impl Bottle {
                     }
 
                     let replaced_id = state.component(component.slot()).map(Addon::id);
-                    let resources = vec![component.artifact()];
+                    let resources = vec![component.artifact(cx.directories())];
                     Self::install_item(
                         state,
                         &cx,
@@ -276,15 +283,18 @@ impl Bottle {
                     candidate.components.remove(&slot);
                     candidate.validate_requirements()?;
                     let item_id = component.id();
-                    let resources = vec![component.artifact()];
-                    let winebridge = state.winebridge().path().to_path_buf();
+                    let resources = vec![component.artifact(cx.directories())];
+                    let winebridge = state.winebridge().path(cx.directories());
                     let prefix_progress = progress.clone();
                     Self::stop_state(state, &cx).await?;
                     if cancellation.is_cancelled() {
                         return Err(Error::Cancelled);
                     }
                     *state = candidate;
-                    let runner = state.runner().load_runner(state.umu()).await?;
+                    let runner = state
+                        .runner()
+                        .load_runner(cx.directories(), state.umu())
+                        .await?;
                     let bottle_path = cx.directories().bottle(state.id);
                     let context = cx.clone();
                     let BottleState {
@@ -330,24 +340,28 @@ impl Bottle {
     ///
     /// Reinstalling the same release is idempotent. Dependencies remain
     /// recorded for the bottle's lifetime and cannot be uninstalled separately.
-    pub fn install(&self, dependency: &Addon<Dependency>) -> Operation<()> {
-        let dependency = dependency.clone();
+    /// The current downloaded dependency with the supplied UUID is authoritative.
+    pub fn install(&self, id: Uuid) -> Operation<()> {
         let bottle = self.clone();
         Operation::new(move |progress, cancellation| async move {
             bottle
                 .update(async |state, cx| {
+                    let dependency = cx
+                        .addons()
+                        .dependency(id)
+                        .ok_or(crate::AddonError::NotFound(id))?;
                     if state.dependency(dependency.id()).is_some() {
                         return Ok(());
                     }
                     let mut candidate = state.clone();
-                    candidate.dependencies.push(dependency.clone());
+                    candidate.dependencies.push(dependency.as_ref().clone());
                     candidate.validate_requirements()?;
                     let resources = dependency
                         .artifacts()
                         .iter()
                         .map(|artifact| {
                             Artifact::new(
-                                dependency.path().join(&artifact.path),
+                                dependency.path(cx.directories()).join(&artifact.path),
                                 artifact.steps.clone(),
                             )
                         })
@@ -396,8 +410,11 @@ impl Bottle {
             return Err(Error::Cancelled);
         }
 
-        let runner = state.runner().load_runner(state.umu()).await?;
-        let winebridge = state.winebridge().path().to_path_buf();
+        let runner = state
+            .runner()
+            .load_runner(cx.directories(), state.umu())
+            .await?;
+        let winebridge = state.winebridge().path(cx.directories());
         let bottle_path = cx.directories().bottle(state.id);
         let context = cx.clone();
         let BottleState {
@@ -446,7 +463,10 @@ impl Bottle {
     pub(super) async fn stop_state(state: &BottleState, cx: &Context) -> Result<()> {
         let bottle_path = cx.directories().bottle(state.id);
         let prefix_path = bottle_path.join("prefix");
-        let runner = state.runner().load_runner(state.umu()).await;
+        let runner = state
+            .runner()
+            .load_runner(cx.directories(), state.umu())
+            .await;
         let storage = state.storage.clone();
         let mut first_error = None;
         match WineBridgeClient::try_connect(&prefix_path).await {
@@ -492,14 +512,21 @@ impl Bottle {
     {
         let _read = self.0.write_lock.read().await;
         let state = self.state()?;
-        let runner = state.runner().load_runner(state.umu()).await?;
+        let runner = state
+            .runner()
+            .load_runner(self.0.cx.directories(), state.umu())
+            .await?;
         let bottle_path = self.bottle_path();
         let prefix = self.prefix_path();
         let storage = state.storage.clone();
         let cx = self.0.cx.clone();
         let command = state.wrappers.apply(
-            WineBridgeClient::command(runner.as_ref(), &prefix, state.winebridge().path())
-                .envs(state.environment.iter()),
+            WineBridgeClient::command(
+                runner.as_ref(),
+                &prefix,
+                state.winebridge().path(self.0.cx.directories()),
+            )
+            .envs(state.environment.iter()),
         );
         storage.prepare(&bottle_path, &cx).await?;
         work(WineBridgeClient::connect_or_spawn(&prefix, command).await?).await

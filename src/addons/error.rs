@@ -48,6 +48,9 @@ pub enum AddonError {
 /// Failures caused by catalog configuration, contents, or compatibility.
 #[derive(Debug, Error)]
 pub enum CatalogError {
+    /// The requested release is absent from the current catalog.
+    #[error("catalog addon {0} was not found")]
+    NotFound(Uuid),
     /// One or both catalogs failed to refresh after any successful catalog was published.
     #[error("catalog refresh failed (components: {components:?}, dependencies: {dependencies:?})")]
     Refresh {
