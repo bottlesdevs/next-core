@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     Context, Operation, Progress, Stage,
-    addons::{Requirement, Slot},
+    addons::{Addons, Requirement, Slot},
     error::{Error, Result},
     prefix::{FVS_BLOCK_SIZE, Prefix},
 };
@@ -98,21 +98,23 @@ impl BottleRegistry {
 #[derive(Clone)]
 pub struct BottleManager {
     pub(super) context: Context,
+    pub(super) addons: Addons,
     registry: Arc<BottleRegistry>,
 }
 
 impl BottleManager {
-    pub(crate) fn new(context: Context) -> Self {
+    pub(crate) fn new(context: Context, addons: Addons) -> Self {
         Self {
             context,
+            addons,
             registry: Arc::new(BottleRegistry::new()),
         }
     }
 
     /// Populates the shared registry, skipping unreadable bottle configuration
     /// with a warning so one corrupt bottle does not prevent startup.
-    pub(crate) async fn load(context: Context) -> Result<Self> {
-        let manager = Self::new(context);
+    pub(crate) async fn load(context: Context, addons: Addons) -> Result<Self> {
+        let manager = Self::new(context, addons);
         let bottles = manager.load_bottles().await?;
         manager.registry.replace(bottles);
         Ok(manager)
@@ -145,11 +147,11 @@ impl BottleManager {
     ) -> Operation<Bottle> {
         let name = name.into();
         let cx = self.context.clone();
+        let addons = self.addons.clone();
         let registry = self.registry.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            let runner_component = cx
-                .addons()
+            let runner_component = addons
                 .component(runner)
                 .ok_or(crate::AddonError::NotFound(runner))?;
             if runner_component.slot() != Slot::Runner {
@@ -159,12 +161,12 @@ impl BottleManager {
                 }
                 .into());
             }
-            let winebridge = cx.addons().latest_component(Slot::WineBridge);
+            let winebridge = addons.latest_component(Slot::WineBridge);
             let needs_umu = runner_component
                 .requirements()
                 .contains(&Requirement::Slot(Slot::Umu));
             let umu = needs_umu
-                .then(|| cx.addons().latest_component(Slot::Umu))
+                .then(|| addons.latest_component(Slot::Umu))
                 .flatten();
             let mut missing = Vec::new();
             if winebridge.is_none() {
@@ -209,8 +211,16 @@ impl BottleManager {
                 if let Some(umu) = umu {
                     components.insert(Slot::Umu, umu.as_ref().clone());
                 }
-                let bottle =
-                    Bottle::new(id, name, components, Vec::new(), storage, cx.clone()).await?;
+                let bottle = Bottle::new(
+                    id,
+                    name,
+                    components,
+                    Vec::new(),
+                    storage,
+                    cx.clone(),
+                    addons.clone(),
+                )
+                .await?;
                 progress.send_replace(Some(Progress::new(Stage::Configuring)));
                 cx.fvs()
                     .await?
@@ -295,7 +305,7 @@ impl BottleManager {
             }
             .into());
         }
-        let bottle = Bottle::from_state(state, self.context.clone())?;
+        let bottle = Bottle::from_state(state, self.context.clone(), self.addons.clone())?;
         Ok(self.registry.intern(bottle))
     }
 
@@ -340,10 +350,14 @@ impl BottleManager {
         let mut bottles = Vec::with_capacity(paths.len());
         for path in paths {
             match next_config::load::<BottleState>(path).await {
-                Ok(state) => match Bottle::from_state(state, self.context.clone()) {
-                    Ok(bottle) => bottles.push(bottle),
-                    Err(error) => tracing::warn!("skipping bottle with invalid runtime: {error}"),
-                },
+                Ok(state) => {
+                    match Bottle::from_state(state, self.context.clone(), self.addons.clone()) {
+                        Ok(bottle) => bottles.push(bottle),
+                        Err(error) => {
+                            tracing::warn!("skipping bottle with invalid runtime: {error}")
+                        }
+                    }
+                }
                 Err(error) => tracing::warn!("skipping unreadable bottle: {error}"),
             }
         }

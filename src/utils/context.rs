@@ -1,18 +1,18 @@
 use crate::{
     Directories,
-    addons::Addons,
     error::{Error, Result},
     utils::absolute_path,
 };
+use download_manager::manager::DownloadManager;
 use fvs_rs::Fvs2dClient;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::OnceCell;
 
 struct ContextInner {
     directories: Directories,
+    downloader: Arc<DownloadManager>,
     fvs2d_executable: Option<PathBuf>,
     fvs: OnceCell<Fvs2dClient>,
-    addons: Addons,
 }
 
 #[derive(Clone)]
@@ -21,38 +21,37 @@ pub(crate) struct Context(Arc<ContextInner>);
 impl Context {
     pub(crate) fn new(
         directories: Directories,
+        downloader: Arc<DownloadManager>,
         fvs2d_executable: Option<PathBuf>,
-        addons: Addons,
     ) -> Result<Self> {
         Ok(Self(Arc::new(ContextInner {
             directories,
+            downloader,
             fvs2d_executable: fvs2d_executable.map(absolute_path).transpose()?,
             fvs: OnceCell::new(),
-            addons,
         })))
     }
 
     #[cfg(test)]
-    pub(crate) async fn for_test(
+    pub(crate) fn for_test(
         directories: Directories,
         fvs2d_executable: Option<PathBuf>,
     ) -> Result<Self> {
         let client =
             http_client::MockClient::new(|_| Ok(http::Response::new(http_client::body([]))));
-        let downloads = download_manager::manager::DownloadManager::new(
+        let downloader = download_manager::manager::DownloadManager::new(
             Arc::new(client),
             download_manager::manager::DownloadManagerConfig::default(),
         )?;
-        let addons = Addons::load(directories.clone(), None, None, Arc::new(downloads)).await?;
-        Self::new(directories, fvs2d_executable, addons)
+        Self::new(directories, Arc::new(downloader), fvs2d_executable)
     }
 
     pub(crate) fn directories(&self) -> &Directories {
         &self.0.directories
     }
 
-    pub(crate) fn addons(&self) -> &Addons {
-        &self.0.addons
+    pub(crate) fn downloader(&self) -> &DownloadManager {
+        &self.0.downloader
     }
 
     pub(crate) async fn fvs(&self) -> Result<&Fvs2dClient> {

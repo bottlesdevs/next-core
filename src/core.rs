@@ -14,9 +14,9 @@ pub struct Config {
 }
 
 pub struct Bottles {
+    context: Context,
     bottles: BottleManager,
     addons: Addons,
-    downloader: Arc<DownloadManager>,
 }
 
 impl Bottles {
@@ -32,25 +32,19 @@ impl Bottles {
             Arc::new(client),
             DownloadManagerConfig::default(),
         )?);
-        let addons = Addons::load(
-            directories.clone(),
-            component_catalog,
-            dependency_catalog,
-            downloader.clone(),
-        )
-        .await?;
-        let context = Context::new(directories, fvs2d, addons.clone())?;
-        let bottles = BottleManager::load(context).await?;
+        let context = Context::new(directories, downloader.clone(), fvs2d)?;
+        let addons = Addons::load(context.clone(), component_catalog, dependency_catalog).await?;
+        let bottles = BottleManager::load(context.clone(), addons.clone()).await?;
 
         Ok(Self {
+            context,
             bottles,
             addons,
-            downloader,
         })
     }
 
     pub async fn close(self) -> Result<()> {
-        self.downloader.shutdown().await;
+        self.context.downloader().shutdown().await;
         Ok(())
     }
 

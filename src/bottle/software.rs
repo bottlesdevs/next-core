@@ -178,11 +178,11 @@ impl Bottle {
     /// downloaded component with the supplied UUID is authoritative.
     pub fn set_component(&self, id: Uuid) -> Operation<()> {
         let bottle = self.clone();
+        let addons = self.0.addons.clone();
         Operation::new(move |progress, cancellation| async move {
             bottle
                 .update(async |state, cx| {
-                    let component = cx
-                        .addons()
+                    let component = addons
                         .component(id)
                         .ok_or(crate::AddonError::NotFound(id))?;
                     if state
@@ -197,7 +197,7 @@ impl Bottle {
                         .requirements()
                         .contains(&Requirement::Slot(Slot::Umu));
                     if needs_umu && candidate.umu().is_none() {
-                        let umu = cx.addons().latest_component(Slot::Umu).ok_or_else(|| {
+                        let umu = addons.latest_component(Slot::Umu).ok_or_else(|| {
                             BottleError::RequiresAddon {
                                 required_by: Some(component.id()),
                                 requirements: vec![Requirement::Slot(Slot::Umu)],
@@ -343,11 +343,11 @@ impl Bottle {
     /// The current downloaded dependency with the supplied UUID is authoritative.
     pub fn install(&self, id: Uuid) -> Operation<()> {
         let bottle = self.clone();
+        let addons = self.0.addons.clone();
         Operation::new(move |progress, cancellation| async move {
             bottle
                 .update(async |state, cx| {
-                    let dependency = cx
-                        .addons()
+                    let dependency = addons
                         .dependency(id)
                         .ok_or(crate::AddonError::NotFound(id))?;
                     if state.dependency(dependency.id()).is_some() {
