@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     Context, Operation, Progress, Stage,
-    addons::{Addons, Requirement, Slot},
+    addons::{Addon, Addons, Requirement, Slot},
     error::{Error, Result},
     prefix::{FVS_BLOCK_SIZE, Prefix},
 };
@@ -205,11 +205,11 @@ impl BottleManager {
                 }
 
                 let mut components = HashMap::from([
-                    (Slot::WineBridge, winebridge.as_ref().clone()),
-                    (Slot::Runner, runner_component.as_ref().clone()),
+                    (Slot::WineBridge, Addon::from(winebridge.as_ref())),
+                    (Slot::Runner, Addon::from(runner_component.as_ref())),
                 ]);
                 if let Some(umu) = umu {
-                    components.insert(Slot::Umu, umu.as_ref().clone());
+                    components.insert(Slot::Umu, Addon::from(umu.as_ref()));
                 }
                 let bottle = Bottle::new(
                     id,

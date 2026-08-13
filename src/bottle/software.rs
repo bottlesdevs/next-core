@@ -203,11 +203,13 @@ impl Bottle {
                                 requirements: vec![Requirement::Slot(Slot::Umu)],
                             }
                         })?;
-                        candidate.components.insert(Slot::Umu, umu.as_ref().clone());
+                        candidate
+                            .components
+                            .insert(Slot::Umu, Addon::from(umu.as_ref()));
                     }
                     candidate
                         .components
-                        .insert(component.slot(), component.as_ref().clone());
+                        .insert(component.slot(), Addon::from(component.as_ref()));
                     if component.slot() == Slot::Runner && !needs_umu {
                         candidate.components.remove(&Slot::Umu);
                     }
@@ -354,7 +356,9 @@ impl Bottle {
                         return Ok(());
                     }
                     let mut candidate = state.clone();
-                    candidate.dependencies.push(dependency.as_ref().clone());
+                    candidate
+                        .dependencies
+                        .push(Addon::from(dependency.as_ref()));
                     candidate.validate_requirements()?;
                     let resources = dependency
                         .artifacts()

@@ -1,4 +1,4 @@
-//! Downloaded components and dependencies used by bottle APIs.
+//! Addon kinds, requirements, and selections stored by bottle APIs.
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
@@ -13,6 +13,122 @@ use crate::{
 };
 
 use super::installer::{InstallStep, recipe_steps};
+
+/// An addon selection persisted in a bottle.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    deny_unknown_fields,
+    bound(serialize = "K: Serialize", deserialize = "K: Deserialize<'de>")
+)]
+pub struct Addon<K> {
+    id: NonNilUuid,
+    name: String,
+    version: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    requirements: Vec<Requirement>,
+    #[serde(flatten)]
+    kind: K,
+}
+
+impl<K> Addon<K> {
+    pub(super) fn new(
+        id: NonNilUuid,
+        name: String,
+        version: String,
+        requirements: Vec<Requirement>,
+        kind: K,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            version,
+            requirements,
+            kind,
+        }
+    }
+
+    /// Returns the immutable release identifier.
+    pub fn id(&self) -> Uuid {
+        self.id.get()
+    }
+
+    /// Returns the catalog label, or version directory name for hand-placed components.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the downloaded catalog or hand-placed version string.
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Returns the requirements checked before a bottle mutation.
+    pub fn requirements(&self) -> &[Requirement] {
+        &self.requirements
+    }
+}
+
+impl Addon<Component> {
+    /// Returns the mutually exclusive role occupied by this component.
+    pub fn slot(&self) -> Slot {
+        self.kind.slot
+    }
+
+    pub(crate) fn path(&self, directories: &Directories) -> PathBuf {
+        directories
+            .components()
+            .join(self.slot().as_str())
+            .join(self.version())
+    }
+
+    pub(crate) fn artifact(&self, directories: &Directories) -> Artifact {
+        Artifact::new(self.path(directories), recipe_steps(self.slot()).to_vec())
+    }
+
+    /// Reports whether this component satisfies `requirement`.
+    pub fn satisfies(&self, requirement: &Requirement) -> bool {
+        match requirement {
+            Requirement::Name(name) => self.name == *name,
+            Requirement::Slot(slot) => self.slot() == *slot,
+            Requirement::Id(id) => self.id() == *id,
+        }
+    }
+
+    pub(crate) async fn load_runner(
+        &self,
+        directories: &Directories,
+        umu: Option<&Self>,
+    ) -> Result<Box<dyn Runner>> {
+        let path = self.path(directories);
+        match detect_runner_kind(&path).await? {
+            RunnerKind::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
+            RunnerKind::Proton => {
+                let umu = umu
+                    .ok_or(RunnerError::UmuExecutableMissing)?
+                    .path(directories)
+                    .join("umu-run");
+                if !async_fs::metadata(&umu)
+                    .await
+                    .is_ok_and(|entry| entry.is_file())
+                {
+                    return Err(RunnerError::RunnerExecutableNotFound(umu).into());
+                }
+                Ok(Box::new(Proton::new(&path, umu)))
+            }
+        }
+    }
+}
+
+impl Addon<Dependency> {
+    /// Reports whether this dependency satisfies `requirement`.
+    pub fn satisfies(&self, requirement: &Requirement) -> bool {
+        match requirement {
+            Requirement::Name(name) => self.name == *name,
+            Requirement::Slot(_) => false,
+            Requirement::Id(id) => self.id() == *id,
+        }
+    }
+}
 
 /// A mutually exclusive component role within a bottle.
 #[derive(Clone, Copy, Debug, Deserialize, EnumIter, Eq, Hash, PartialEq, Serialize)]
@@ -104,169 +220,5 @@ pub(crate) struct Artifact {
 impl Artifact {
     pub(crate) fn new(path: PathBuf, steps: Vec<InstallStep>) -> Self {
         Self { path, steps }
-    }
-}
-
-/// A complete downloaded or hand-placed addon snapshot.
-///
-/// `K` is either [`Component`] or [`Dependency`]. Values do not update after
-/// downloads, removals, or catalog refreshes; query [`crate::Addons`] again to
-/// observe later state. Local paths are derived from the active Bottles data
-/// directory.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Addon<K> {
-    id: NonNilUuid,
-    name: String,
-    version: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    requirements: Vec<Requirement>,
-    #[serde(flatten)]
-    kind: K,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    artifacts: Vec<Artifact>,
-}
-
-impl<K> Addon<K> {
-    fn new(
-        id: NonNilUuid,
-        name: String,
-        version: String,
-        requirements: Vec<Requirement>,
-        kind: K,
-        artifacts: Vec<Artifact>,
-    ) -> Self {
-        Self {
-            id,
-            name,
-            version,
-            requirements,
-            kind,
-            artifacts,
-        }
-    }
-
-    /// Returns the immutable release identifier.
-    pub fn id(&self) -> Uuid {
-        self.id.get()
-    }
-
-    /// Returns the catalog label, or version directory name for hand-placed components.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns the downloaded catalog or hand-placed version string.
-    pub fn version(&self) -> &str {
-        &self.version
-    }
-
-    /// Returns the requirements checked before a bottle mutation.
-    pub fn requirements(&self) -> &[Requirement] {
-        &self.requirements
-    }
-}
-
-impl Addon<Component> {
-    pub(crate) fn new_component(
-        id: NonNilUuid,
-        name: String,
-        version: String,
-        slot: Slot,
-        requirements: Vec<Requirement>,
-    ) -> Self {
-        Self::new(
-            id,
-            name,
-            version,
-            requirements,
-            Component { slot },
-            Vec::new(),
-        )
-    }
-
-    /// Returns the mutually exclusive role occupied by this component.
-    pub fn slot(&self) -> Slot {
-        self.kind.slot
-    }
-
-    pub(crate) fn path(&self, directories: &Directories) -> PathBuf {
-        directories
-            .components()
-            .join(self.slot().as_str())
-            .join(self.version())
-    }
-
-    pub(crate) fn artifact(&self, directories: &Directories) -> Artifact {
-        Artifact::new(self.path(directories), recipe_steps(self.slot()).to_vec())
-    }
-
-    /// Reports whether this component satisfies `requirement`.
-    pub fn satisfies(&self, requirement: &Requirement) -> bool {
-        match requirement {
-            Requirement::Name(name) => self.name == *name,
-            Requirement::Slot(slot) => self.slot() == *slot,
-            Requirement::Id(id) => self.id() == *id,
-        }
-    }
-
-    pub(crate) async fn load_runner(
-        &self,
-        directories: &Directories,
-        umu: Option<&Self>,
-    ) -> Result<Box<dyn Runner>> {
-        let path = self.path(directories);
-        match detect_runner_kind(&path).await? {
-            RunnerKind::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
-            RunnerKind::Proton => {
-                let umu = umu
-                    .ok_or(RunnerError::UmuExecutableMissing)?
-                    .path(directories)
-                    .join("umu-run");
-                if !async_fs::metadata(&umu)
-                    .await
-                    .is_ok_and(|entry| entry.is_file())
-                {
-                    return Err(RunnerError::RunnerExecutableNotFound(umu).into());
-                }
-                Ok(Box::new(Proton::new(&path, umu)))
-            }
-        }
-    }
-}
-
-impl Addon<Dependency> {
-    pub(crate) fn new_dependency(
-        id: NonNilUuid,
-        name: String,
-        version: String,
-        requirements: Vec<Requirement>,
-        artifacts: Vec<Artifact>,
-    ) -> Self {
-        Self::new(
-            id,
-            name,
-            version,
-            requirements,
-            Dependency::default(),
-            artifacts,
-        )
-    }
-
-    pub(crate) fn artifacts(&self) -> &[Artifact] {
-        &self.artifacts
-    }
-
-    pub(crate) fn path(&self, directories: &Directories) -> PathBuf {
-        directories.dependencies().join(self.id().to_string())
-    }
-
-    /// Reports whether this dependency satisfies `requirement`.
-    pub fn satisfies(&self, requirement: &Requirement) -> bool {
-        match requirement {
-            Requirement::Name(name) => self.name == *name,
-            Requirement::Slot(_) => false,
-            Requirement::Id(id) => self.id() == *id,
-        }
     }
 }
