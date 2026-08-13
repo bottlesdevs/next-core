@@ -72,6 +72,7 @@ impl Addons {
             let artifact = artifacts[0];
             if !single_path_component(entry.version())
                 || !single_path_component(artifact.file_name())
+                || !artifact.component_root().is_none_or(relative_subpath)
             {
                 return Err(CatalogError::InvalidEntry(entry.id()).into());
             }
@@ -97,6 +98,23 @@ impl Addons {
                     _ = cancelled => return Err(Error::Cancelled),
                 }
                 let release = top_level_directory(&extracted).await?;
+                // Some upstreams wrap a component in unrelated packaging, such as
+                // GPTK's Wine layout inside a macOS app bundle. The declared
+                // subdirectory becomes the component; the wrapper is discarded
+                // with the stage.
+                let release = match artifact.component_root() {
+                    Some(root) => {
+                        let root = release.join(root);
+                        if !async_fs::metadata(&root)
+                            .await
+                            .is_ok_and(|entry| entry.is_dir())
+                        {
+                            return Err(CatalogError::ComponentRootMissing(root).into());
+                        }
+                        root
+                    }
+                    None => release,
+                };
                 let slot = entry.slot();
                 let requirements = AddonIndex::<Component>::inspect_release(slot, &release).await?;
                 let _write = addons.0.write.lock().await;
@@ -279,6 +297,14 @@ fn single_path_component(value: &str) -> bool {
     matches!(components.next(), Some(PathComponent::Normal(_))) && components.next().is_none()
 }
 
+/// Accepts a non-empty relative path that cannot escape the directory it is
+/// resolved against.
+fn relative_subpath(value: &Path) -> bool {
+    let mut components = value.components().peekable();
+    components.peek().is_some()
+        && components.all(|component| matches!(component, PathComponent::Normal(_)))
+}
+
 /// Downloads one artifact and verifies its checksum before it can be committed.
 async fn download_artifact(
     downloader: &DownloadManager,
@@ -324,4 +350,21 @@ async fn top_level_directory(root: &Path) -> Result<PathBuf> {
         return Err(AddonError::InvalidComponentArchive.into());
     }
     Ok(entry.path())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Component roots select a subdirectory of the extracted release, so they
+    /// must stay relative and must not climb out of it.
+    #[test]
+    fn accepts_only_contained_relative_component_roots() {
+        for accepted in ["Contents/Resources/wine", "wine", "a/b/c"] {
+            assert!(relative_subpath(Path::new(accepted)), "{accepted}");
+        }
+        for rejected in ["", "..", "../wine", "Contents/../../wine", "/Applications"] {
+            assert!(!relative_subpath(Path::new(rejected)), "{rejected}");
+        }
+    }
 }

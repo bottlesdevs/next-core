@@ -1,6 +1,9 @@
 //! Remote component and dependency catalogs and their validation rules.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use serde::{Deserialize, Deserializer, Serialize, de, de::DeserializeOwned};
 use url::Url;
@@ -268,6 +271,11 @@ impl CatalogEntry<Dependency> {
 ///
 /// Dependency recipes are retained in the local index. Components are inspected
 /// after extraction and use the built-in recipe for their slot instead.
+///
+/// `component_root` names the subdirectory *of the archive's single top-level
+/// directory* that is the component itself, for archives that wrap it in
+/// unrelated packaging such as a macOS app bundle. Naming it relative to that
+/// directory keeps the selector independent of a versioned top-level name.
 pub(crate) struct CatalogArtifact {
     url: url::Url,
     #[serde(deserialize_with = "deserialize_non_empty_string")]
@@ -276,6 +284,8 @@ pub(crate) struct CatalogArtifact {
     checksum: Checksum,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     platform: Option<Target>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    component_root: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     steps: Vec<InstallStep>,
 }
@@ -295,6 +305,10 @@ impl CatalogArtifact {
 
     pub(crate) fn steps(&self) -> &[InstallStep] {
         &self.steps
+    }
+
+    pub(crate) fn component_root(&self) -> Option<&Path> {
+        self.component_root.as_deref()
     }
 
     fn matches(&self, target: Target) -> bool {

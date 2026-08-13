@@ -65,6 +65,9 @@ pub enum CatalogError {
     /// No catalog artifact supports this platform.
     #[error("no artifact supports this system for addon {0}")]
     Unsupported(Uuid),
+    /// A component archive did not contain the `component_root` it declared.
+    #[error("component archive is missing its declared component root: {0}")]
+    ComponentRootMissing(std::path::PathBuf),
     /// More than one artifact matched a component release on this platform.
     #[error("component {addon} has {count} matching artifacts; expected exactly one")]
     InvalidComponentArtifactCount {
