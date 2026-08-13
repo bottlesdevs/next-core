@@ -6,10 +6,9 @@
 
 use std::sync::LazyLock;
 
-use crate::{
-    addons::{Slot, installer::InstallStep},
-    proto::DllOverrideMode,
-};
+use crate::{addons::Slot, proto::DllOverrideMode};
+
+use super::InstallStep;
 
 static DXVK_STEPS: LazyLock<Vec<InstallStep>> = LazyLock::new(|| {
     vec![

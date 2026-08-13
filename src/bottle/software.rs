@@ -7,7 +7,9 @@ use uuid::Uuid;
 
 use crate::{
     Context, Operation, Progress, Stage,
-    addons::{Addon, Requirement, Slot, item::Artifact},
+    addons::{
+        Addon, Artifact, InstallInputs, Requirement, Slot, execute, replay_environment, uninstall,
+    },
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
     runner::shutdown_prefix,
@@ -309,8 +311,8 @@ impl Bottle {
                             &bottle_path,
                             item_id,
                             async |prefix, restore_files| {
-                                crate::addons::installer::uninstall(
-                                    crate::addons::installer::InstallInputs {
+                                uninstall(
+                                    InstallInputs {
                                         prefix,
                                         runner: runner.as_ref(),
                                         winebridge: &winebridge,
@@ -433,8 +435,8 @@ impl Bottle {
                 item_id,
                 replaced_id,
                 async |prefix| {
-                    crate::addons::installer::execute(
-                        crate::addons::installer::InstallInputs {
+                    execute(
+                        InstallInputs {
                             prefix,
                             runner: runner.as_ref(),
                             winebridge: &winebridge,
@@ -455,7 +457,7 @@ impl Bottle {
                 },
             )
             .await?;
-        crate::addons::installer::replay_environment(environment, &resources);
+        replay_environment(environment, &resources);
         Ok(())
     }
 
