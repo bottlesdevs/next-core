@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     Context, Operation, Progress, Stage,
-    addons::{Addons, Requirement, Slot},
+    addons::{Addon, Addons, Requirement, Runner, Slot, Umu, WineBridge},
     error::{Error, Result},
     prefix::{FVS_BLOCK_SIZE, Prefix},
 };
@@ -154,13 +154,7 @@ impl BottleManager {
             let runner_component = addons
                 .component(runner)
                 .ok_or(crate::AddonError::NotFound(runner))?;
-            if runner_component.slot() != Slot::Runner {
-                return Err(BottleError::InvalidComponentSlot {
-                    component: runner_component.id(),
-                    required: Slot::Runner,
-                }
-                .into());
-            }
+            let runner = Addon::<Runner>::try_from(runner_component.as_ref())?;
             let winebridge = addons.latest_component(Slot::WineBridge);
             let needs_umu = runner_component
                 .requirements()
@@ -186,6 +180,8 @@ impl BottleManager {
             let loaded_runner = runner_component
                 .load_runner(cx.directories(), umu.as_deref())
                 .await?;
+            let winebridge = Addon::<WineBridge>::try_from(winebridge.as_ref())?;
+            let umu = umu.as_deref().map(Addon::<Umu>::try_from).transpose()?;
             let id = Uuid::new_v4();
             let bottle_path = cx.directories().bottle(id);
             fs::create_dir_all(&bottle_path).await?;
@@ -204,17 +200,12 @@ impl BottleManager {
                     return Err(Error::Cancelled);
                 }
 
-                let mut components = HashMap::from([
-                    (Slot::WineBridge, winebridge.as_ref().clone()),
-                    (Slot::Runner, runner_component.as_ref().clone()),
-                ]);
-                if let Some(umu) = umu {
-                    components.insert(Slot::Umu, umu.as_ref().clone());
-                }
                 let bottle = Bottle::new(
                     id,
                     name,
-                    components,
+                    runner,
+                    winebridge,
+                    umu,
                     Vec::new(),
                     storage,
                     cx.clone(),

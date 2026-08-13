@@ -18,20 +18,19 @@ const CATALOG_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Catalog<K> {
+pub(crate) struct Catalog<K: AddonFamily> {
     #[serde(deserialize_with = "deserialize_catalog_version")]
     schema_version: u32,
     entries: Vec<CatalogEntry<K>>,
 }
 
-impl<K> Catalog<K> {
+impl<K: AddonFamily> Catalog<K> {
     /// Loads the cached catalog when it is both readable and valid.
     ///
     /// Missing, unreadable, and malformed catalogs are treated as absent so
     /// local addons remain usable and a later refresh can replace the cache.
     pub(crate) async fn load(directories: &Directories) -> Option<Arc<Self>>
     where
-        K: CatalogKind,
         Self: DeserializeOwned,
     {
         let catalog =
@@ -41,7 +40,6 @@ impl<K> Catalog<K> {
 
     pub(crate) async fn save(&self, directories: &Directories) -> Result<()>
     where
-        K: CatalogKind,
         Self: Serialize,
     {
         async_fs::write(K::catalog(directories), serde_json::to_vec(self)?).await?;
@@ -62,7 +60,7 @@ pub(crate) struct CatalogUrls {
     pub(crate) dependencies: Option<Url>,
 }
 
-pub(crate) trait CatalogKind {
+pub(crate) trait AddonFamily {
     const LABEL: &'static str;
 
     fn url(urls: &CatalogUrls) -> Option<Url>;
@@ -70,7 +68,7 @@ pub(crate) trait CatalogKind {
     fn index(directories: &Directories) -> PathBuf;
 }
 
-impl CatalogKind for Component {
+impl AddonFamily for Component {
     const LABEL: &'static str = "components";
 
     fn url(urls: &CatalogUrls) -> Option<Url> {
@@ -86,7 +84,7 @@ impl CatalogKind for Component {
     }
 }
 
-impl CatalogKind for Dependency {
+impl AddonFamily for Dependency {
     const LABEL: &'static str = "dependencies";
 
     fn url(urls: &CatalogUrls) -> Option<Url> {

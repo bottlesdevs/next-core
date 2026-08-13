@@ -98,10 +98,9 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
         )
         .unwrap();
         let reloaded_addons = Addons::load(reloaded, None, None).await.unwrap();
-        assert_eq!(
-            reloaded_addons.component(runner_id).unwrap().id(),
-            runner_id
-        );
+        let reloaded_runner = reloaded_addons.component(runner_id).unwrap();
+        assert_eq!(reloaded_runner.id(), runner_id);
+        assert_eq!(reloaded_runner.path(&directories), runner_path);
         std::fs::remove_dir_all(directories.data_dir()).unwrap();
     });
 }

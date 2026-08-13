@@ -7,7 +7,10 @@ use uuid::Uuid;
 
 use crate::{
     Context, Operation, Progress, Stage,
-    addons::{Addon, Requirement, Slot, item::Artifact},
+    addons::{
+        Addon, Component, ComponentKind, Dxvk, IndexEntry, LatencyFlex, Nvapi, Requirement, Runner,
+        Slot, Umu, Vkd3d, WineBridge, item::Artifact,
+    },
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
     runner::shutdown_prefix,
@@ -18,6 +21,40 @@ use super::{
     error::BottleError,
     state::{Bottle, BottleState},
 };
+
+fn typed_addon<K: ComponentKind>(entry: &IndexEntry<Component>) -> Addon<K> {
+    Addon::try_from(entry).expect("component slot selects its stored addon typestate")
+}
+
+fn required_component<K: ComponentKind>(state: &BottleState) -> &Addon<K> {
+    state
+        .component()
+        .expect("required component is always installed")
+}
+
+fn component_id(state: &BottleState, slot: Slot) -> Option<Uuid> {
+    match slot {
+        Slot::Runner => state.component::<Runner>().map(Addon::id),
+        Slot::WineBridge => state.component::<WineBridge>().map(Addon::id),
+        Slot::Umu => state.component::<Umu>().map(Addon::id),
+        Slot::Dxvk => state.component::<Dxvk>().map(Addon::id),
+        Slot::Vkd3d => state.component::<Vkd3d>().map(Addon::id),
+        Slot::Nvapi => state.component::<Nvapi>().map(Addon::id),
+        Slot::LatencyFlex => state.component::<LatencyFlex>().map(Addon::id),
+    }
+}
+
+fn set_component(state: &mut BottleState, entry: &IndexEntry<Component>) {
+    match entry.slot() {
+        Slot::Runner => state.runner = typed_addon::<Runner>(entry),
+        Slot::WineBridge => state.winebridge = typed_addon::<WineBridge>(entry),
+        Slot::Umu => state.umu = Some(typed_addon::<Umu>(entry)),
+        Slot::Dxvk => state.dxvk = Some(typed_addon::<Dxvk>(entry)),
+        Slot::Vkd3d => state.vkd3d = Some(typed_addon::<Vkd3d>(entry)),
+        Slot::Nvapi => state.nvapi = Some(typed_addon::<Nvapi>(entry)),
+        Slot::LatencyFlex => state.latency_flex = Some(typed_addon::<LatencyFlex>(entry)),
+    }
+}
 
 impl Bottle {
     /// Lists DLL overrides configured in this bottle's Wine registry.
@@ -185,10 +222,7 @@ impl Bottle {
                     let component = addons
                         .component(id)
                         .ok_or(crate::AddonError::NotFound(id))?;
-                    if state
-                        .component(component.slot())
-                        .is_some_and(|installed| installed.id() == component.id())
-                    {
+                    if component_id(state, component.slot()) == Some(component.id()) {
                         return Ok(());
                     }
 
@@ -196,20 +230,18 @@ impl Bottle {
                     let needs_umu = component
                         .requirements()
                         .contains(&Requirement::Slot(Slot::Umu));
-                    if needs_umu && candidate.umu().is_none() {
+                    if needs_umu && candidate.component::<Umu>().is_none() {
                         let umu = addons.latest_component(Slot::Umu).ok_or_else(|| {
                             BottleError::RequiresAddon {
                                 required_by: Some(component.id()),
                                 requirements: vec![Requirement::Slot(Slot::Umu)],
                             }
                         })?;
-                        candidate.components.insert(Slot::Umu, umu.as_ref().clone());
+                        candidate.umu = Some(typed_addon::<Umu>(&umu));
                     }
-                    candidate
-                        .components
-                        .insert(component.slot(), component.as_ref().clone());
+                    set_component(&mut candidate, &component);
                     if component.slot() == Slot::Runner && !needs_umu {
-                        candidate.components.remove(&Slot::Umu);
+                        candidate.umu = None;
                     }
                     candidate.validate_requirements()?;
 
@@ -223,22 +255,24 @@ impl Bottle {
                         *state = candidate;
                         if rebuild {
                             progress.send_replace(Some(Progress::new(Stage::Rebuilding)));
-                            let installed = state
-                                .components
-                                .values()
-                                .filter(|component| !component.slot().is_runtime())
-                                .map(Addon::id)
-                                .chain(state.dependencies.iter().map(Addon::id))
-                                .collect::<Vec<_>>();
-                            let runner = state
-                                .runner()
-                                .load_runner(cx.directories(), state.umu())
+                            let installed = [
+                                state.component::<Dxvk>().map(Addon::id),
+                                state.component::<Vkd3d>().map(Addon::id),
+                                state.component::<Nvapi>().map(Addon::id),
+                                state.component::<LatencyFlex>().map(Addon::id),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .chain(state.dependencies.iter().map(Addon::id))
+                            .collect::<Vec<_>>();
+                            let runner = required_component::<Runner>(state)
+                                .load_runner(cx.directories(), state.component::<Umu>())
                                 .await?;
                             state
                                 .storage
                                 .rebuild(
                                     runner.as_ref(),
-                                    &state.runner().id().to_string(),
+                                    &required_component::<Runner>(state).id().to_string(),
                                     &installed,
                                     &cx,
                                 )
@@ -247,7 +281,7 @@ impl Bottle {
                         return Ok(());
                     }
 
-                    let replaced_id = state.component(component.slot()).map(Addon::id);
+                    let replaced_id = component_id(state, component.slot());
                     let resources = vec![component.artifact(cx.directories())];
                     Self::install_item(
                         state,
@@ -275,25 +309,62 @@ impl Bottle {
         Operation::new(move |progress, cancellation| async move {
             bottle
                 .update(async |state, cx| {
-                    let component = state
-                        .component(slot)
-                        .cloned()
-                        .ok_or(BottleError::ComponentNotInstalled(slot))?;
                     let mut candidate = state.clone();
-                    candidate.components.remove(&slot);
+                    let (item_id, resource) = match slot {
+                        Slot::Runner | Slot::WineBridge => {
+                            return Err(BottleError::RequiresAddon {
+                                required_by: None,
+                                requirements: vec![Requirement::Slot(slot)],
+                            }
+                            .into());
+                        }
+                        Slot::Umu => {
+                            let addon = candidate
+                                .umu
+                                .take()
+                                .ok_or(BottleError::ComponentNotInstalled(slot))?;
+                            (addon.id(), addon.artifact(cx.directories()))
+                        }
+                        Slot::Dxvk => {
+                            let addon = candidate
+                                .dxvk
+                                .take()
+                                .ok_or(BottleError::ComponentNotInstalled(slot))?;
+                            (addon.id(), addon.artifact(cx.directories()))
+                        }
+                        Slot::Vkd3d => {
+                            let addon = candidate
+                                .vkd3d
+                                .take()
+                                .ok_or(BottleError::ComponentNotInstalled(slot))?;
+                            (addon.id(), addon.artifact(cx.directories()))
+                        }
+                        Slot::Nvapi => {
+                            let addon = candidate
+                                .nvapi
+                                .take()
+                                .ok_or(BottleError::ComponentNotInstalled(slot))?;
+                            (addon.id(), addon.artifact(cx.directories()))
+                        }
+                        Slot::LatencyFlex => {
+                            let addon = candidate
+                                .latency_flex
+                                .take()
+                                .ok_or(BottleError::ComponentNotInstalled(slot))?;
+                            (addon.id(), addon.artifact(cx.directories()))
+                        }
+                    };
                     candidate.validate_requirements()?;
-                    let item_id = component.id();
-                    let resources = vec![component.artifact(cx.directories())];
-                    let winebridge = state.winebridge().path(cx.directories());
+                    let resources = vec![resource];
+                    let winebridge = required_component::<WineBridge>(state).path(cx.directories());
                     let prefix_progress = progress.clone();
                     Self::stop_state(state, &cx).await?;
                     if cancellation.is_cancelled() {
                         return Err(Error::Cancelled);
                     }
                     *state = candidate;
-                    let runner = state
-                        .runner()
-                        .load_runner(cx.directories(), state.umu())
+                    let runner = required_component::<Runner>(state)
+                        .load_runner(cx.directories(), state.component::<Umu>())
                         .await?;
                     let bottle_path = cx.directories().bottle(state.id);
                     let context = cx.clone();
@@ -354,7 +425,7 @@ impl Bottle {
                         return Ok(());
                     }
                     let mut candidate = state.clone();
-                    candidate.dependencies.push(dependency.as_ref().clone());
+                    candidate.dependencies.push(dependency.as_ref().into());
                     candidate.validate_requirements()?;
                     let resources = dependency
                         .artifacts()
@@ -410,11 +481,10 @@ impl Bottle {
             return Err(Error::Cancelled);
         }
 
-        let runner = state
-            .runner()
-            .load_runner(cx.directories(), state.umu())
+        let runner = required_component::<Runner>(state)
+            .load_runner(cx.directories(), state.component::<Umu>())
             .await?;
-        let winebridge = state.winebridge().path(cx.directories());
+        let winebridge = required_component::<WineBridge>(state).path(cx.directories());
         let bottle_path = cx.directories().bottle(state.id);
         let context = cx.clone();
         let BottleState {
@@ -463,9 +533,8 @@ impl Bottle {
     pub(super) async fn stop_state(state: &BottleState, cx: &Context) -> Result<()> {
         let bottle_path = cx.directories().bottle(state.id);
         let prefix_path = bottle_path.join("prefix");
-        let runner = state
-            .runner()
-            .load_runner(cx.directories(), state.umu())
+        let runner = required_component::<Runner>(state)
+            .load_runner(cx.directories(), state.component::<Umu>())
             .await;
         let storage = state.storage.clone();
         let mut first_error = None;
@@ -512,9 +581,8 @@ impl Bottle {
     {
         let _read = self.0.write_lock.read().await;
         let state = self.state()?;
-        let runner = state
-            .runner()
-            .load_runner(self.0.cx.directories(), state.umu())
+        let runner = required_component::<Runner>(&state)
+            .load_runner(self.0.cx.directories(), state.component::<Umu>())
             .await?;
         let bottle_path = self.bottle_path();
         let prefix = self.prefix_path();
@@ -524,7 +592,7 @@ impl Bottle {
             WineBridgeClient::command(
                 runner.as_ref(),
                 &prefix,
-                state.winebridge().path(self.0.cx.directories()),
+                required_component::<WineBridge>(&state).path(self.0.cx.directories()),
             )
             .envs(state.environment.iter()),
         );

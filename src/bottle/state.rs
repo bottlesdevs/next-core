@@ -1,6 +1,6 @@
 //! Persisted bottle state and the shared bottle handle.
 
-use std::{collections::HashMap, ops::AsyncFnOnce, path::PathBuf, sync::Arc};
+use std::{ops::AsyncFnOnce, path::PathBuf, sync::Arc};
 
 use futures_core::Stream;
 use next_config::Config;
@@ -12,7 +12,10 @@ use uuid::Uuid;
 use super::{edit::BottleEdit, error::BottleError};
 use crate::{
     Context,
-    addons::{Addon, Addons, Component, Dependency, Requirement, Slot},
+    addons::{
+        Addon, AddonKind, Addons, ComponentKind, Dependency, Dxvk, LatencyFlex, Nvapi, Requirement,
+        Runner, Slot, Umu, Vkd3d, WineBridge,
+    },
     error::Result,
     prefix::Prefix,
     utils::environment::Environment,
@@ -35,8 +38,18 @@ pub struct BottleState {
     #[serde(default)]
     pub(crate) programs: Vec<Program>,
 
-    /// Runtime and prefix components pinned to exact releases.
-    pub(crate) components: HashMap<Slot, Addon<Component>>,
+    pub(crate) runner: Addon<Runner>,
+    pub(crate) winebridge: Addon<WineBridge>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) umu: Option<Addon<Umu>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) dxvk: Option<Addon<Dxvk>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) vkd3d: Option<Addon<Vkd3d>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) nvapi: Option<Addon<Nvapi>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) latency_flex: Option<Addon<LatencyFlex>>,
     /// Installed dependency releases.
     pub(crate) dependencies: Vec<Addon<Dependency>>,
     #[serde(default, skip_serializing_if = "Environment::is_empty")]
@@ -59,38 +72,14 @@ impl BottleState {
         &self.name
     }
 
-    /// Returns the runner recorded when this snapshot was published.
-    ///
-    /// Catalog refreshes do not replace this value.
-    pub fn runner(&self) -> &Addon<Component> {
-        self.component(Slot::Runner)
-            .expect("persisted bottle state is runtime-validated")
-    }
-
-    /// Returns the exact WineBridge release selected for this bottle.
-    pub fn winebridge(&self) -> &Addon<Component> {
-        self.component(Slot::WineBridge)
-            .expect("persisted bottle state is runtime-validated")
-    }
-
-    /// Returns the selected UMU release, if this runtime uses one.
-    pub fn umu(&self) -> Option<&Addon<Component>> {
-        self.component(Slot::Umu)
-    }
-
-    /// Returns exact component releases keyed by their occupied slots.
-    pub fn components(&self) -> &HashMap<Slot, Addon<Component>> {
-        &self.components
+    /// Returns the component selected for typestate `K`, if installed.
+    pub fn component<K: ComponentKind>(&self) -> Option<&Addon<K>> {
+        K::from_state(self)
     }
 
     /// Returns every dependency installed in this bottle.
     pub fn dependencies(&self) -> &[Addon<Dependency>] {
         &self.dependencies
-    }
-
-    /// Returns the component occupying `slot`, if any.
-    pub fn component(&self, slot: Slot) -> Option<&Addon<Component>> {
-        self.components.get(&slot)
     }
 
     /// Returns the installed dependency with this release identifier.
@@ -101,61 +90,82 @@ impl BottleState {
     }
 
     pub(crate) fn contains_addon_matching(&self, requirement: &Requirement) -> bool {
-        self.components
-            .values()
-            .any(|component| component.satisfies(requirement))
+        if let Requirement::Slot(slot) = requirement {
+            return match slot {
+                Slot::Runner | Slot::WineBridge => true,
+                Slot::Umu => self.umu.is_some(),
+                Slot::Dxvk => self.dxvk.is_some(),
+                Slot::Vkd3d => self.vkd3d.is_some(),
+                Slot::Nvapi => self.nvapi.is_some(),
+                Slot::LatencyFlex => self.latency_flex.is_some(),
+            };
+        }
+
+        self.runner.statisfies(requirement)
+            || self.winebridge.statisfies(requirement)
+            || self
+                .umu
+                .as_ref()
+                .is_some_and(|addon| addon.statisfies(requirement))
+            || self
+                .dxvk
+                .as_ref()
+                .is_some_and(|addon| addon.statisfies(requirement))
+            || self
+                .vkd3d
+                .as_ref()
+                .is_some_and(|addon| addon.statisfies(requirement))
+            || self
+                .nvapi
+                .as_ref()
+                .is_some_and(|addon| addon.statisfies(requirement))
+            || self
+                .latency_flex
+                .as_ref()
+                .is_some_and(|addon| addon.statisfies(requirement))
             || self
                 .dependencies
                 .iter()
-                .any(|dependency| dependency.satisfies(requirement))
+                .any(|addon| addon.statisfies(requirement))
     }
 
     pub(crate) fn validate_requirements(&self) -> Result<()> {
-        for (slot, component) in &self.components {
-            if component.slot() != *slot {
-                return Err(BottleError::InvalidComponentSlot {
-                    component: component.id(),
-                    required: *slot,
-                }
-                .into());
-            }
-        }
-
-        let missing = [Slot::WineBridge, Slot::Runner]
-            .into_iter()
-            .filter(|slot| self.component(*slot).is_none())
-            .map(Requirement::Slot)
-            .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            return Err(BottleError::RequiresAddon {
-                required_by: None,
-                requirements: missing,
-            }
-            .into());
-        }
-
-        for (id, requirements) in self
-            .components
-            .values()
-            .map(|addon| (addon.id(), addon.requirements()))
-            .chain(
-                self.dependencies
-                    .iter()
-                    .map(|addon| (addon.id(), addon.requirements())),
-            )
-        {
-            let missing = requirements
+        fn validate<K: AddonKind>(state: &BottleState, addon: &Addon<K>) -> Result<()> {
+            let missing = addon
+                .requirements()
                 .iter()
-                .filter(|requirement| !self.contains_addon_matching(requirement))
+                .filter(|requirement| !state.contains_addon_matching(requirement))
                 .cloned()
                 .collect::<Vec<_>>();
             if !missing.is_empty() {
                 return Err(BottleError::RequiresAddon {
-                    required_by: Some(id),
+                    required_by: Some(addon.id()),
                     requirements: missing,
                 }
                 .into());
             }
+            Ok(())
+        }
+
+        validate(self, &self.runner)?;
+        validate(self, &self.winebridge)?;
+        if let Some(addon) = &self.umu {
+            validate(self, addon)?;
+        }
+        if let Some(addon) = &self.dxvk {
+            validate(self, addon)?;
+        }
+        if let Some(addon) = &self.vkd3d {
+            validate(self, addon)?;
+        }
+        if let Some(addon) = &self.nvapi {
+            validate(self, addon)?;
+        }
+        if let Some(addon) = &self.latency_flex {
+            validate(self, addon)?;
+        }
+        for addon in &self.dependencies {
+            validate(self, addon)?;
         }
         Ok(())
     }
@@ -230,10 +240,13 @@ pub struct Bottle(pub(crate) Arc<BottleInner>);
 impl Bottle {
     /// Creates and persists the initial state before the handle is published by
     /// the manager.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn new(
         id: Uuid,
         name: String,
-        components: HashMap<Slot, Addon<Component>>,
+        runner: Addon<Runner>,
+        winebridge: Addon<WineBridge>,
+        umu: Option<Addon<Umu>>,
         dependencies: Vec<Addon<Dependency>>,
         storage: Prefix,
         context: Context,
@@ -242,7 +255,13 @@ impl Bottle {
         let state = BottleState {
             id,
             name,
-            components,
+            runner,
+            winebridge,
+            umu,
+            dxvk: None,
+            vkd3d: None,
+            nvapi: None,
+            latency_flex: None,
             dependencies,
             storage,
             programs: Vec::new(),

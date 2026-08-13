@@ -1,6 +1,6 @@
-//! Downloaded components and dependencies used by bottle APIs.
+//! Catalog/index kinds and strongly typed bottle addons.
 
-use std::{fmt, path::PathBuf, str::FromStr};
+use std::{fmt, marker::PhantomData, path::PathBuf, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
@@ -8,8 +8,9 @@ use uuid::{NonNilUuid, Uuid};
 
 use crate::{
     Directories,
+    bottle::error::BottleError,
     error::Result,
-    runner::{Proton, Runner, RunnerError, RunnerKind, Wine, detect_runner_kind},
+    runner::{Proton, Runner as RuntimeRunner, RunnerError, RunnerKind, Wine, detect_runner_kind},
 };
 
 use super::installer::{InstallStep, recipe_steps};
@@ -82,17 +83,101 @@ pub enum Requirement {
     Id(Uuid),
 }
 
-/// Category data carried by a downloaded component.
+/// Runtime category data carried by component catalog and index entries.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
     pub(crate) slot: Slot,
 }
 
-/// Category data carried by a downloaded dependency.
+/// Runtime category data carried by dependency catalog and index entries.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dependency {}
+
+mod private {
+    pub trait Sealed {}
+}
+
+/// A valid typestate for an addon stored in a bottle.
+pub trait AddonKind: private::Sealed {}
+
+/// A stored component typestate with one fixed slot.
+pub trait ComponentKind: AddonKind + Sized {
+    const SLOT: Slot;
+
+    #[doc(hidden)]
+    fn from_state(state: &crate::BottleState) -> Option<&Addon<Self>>;
+}
+
+macro_rules! component_kinds {
+    ($(($kind:ident, $slot:ident, $state:ident => $component:expr, $doc:literal)),+ $(,)?) => {
+        $(
+            #[doc = $doc]
+            #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+            pub struct $kind;
+
+            impl private::Sealed for $kind {}
+            impl AddonKind for $kind {}
+            impl ComponentKind for $kind {
+                const SLOT: Slot = Slot::$slot;
+
+                fn from_state(state: &crate::BottleState) -> Option<&Addon<Self>> {
+                    let $state = state;
+                    $component
+                }
+            }
+        )+
+    };
+}
+
+component_kinds!(
+    (
+        WineBridge,
+        WineBridge,
+        state => Some(&state.winebridge),
+        "The WineBridge component selected by a bottle."
+    ),
+    (
+        Runner,
+        Runner,
+        state => Some(&state.runner),
+        "The Wine or Proton runner selected by a bottle."
+    ),
+    (
+        Umu,
+        Umu,
+        state => state.umu.as_ref(),
+        "The UMU launcher selected by a bottle."
+    ),
+    (
+        Dxvk,
+        Dxvk,
+        state => state.dxvk.as_ref(),
+        "The DXVK component selected by a bottle."
+    ),
+    (
+        Vkd3d,
+        Vkd3d,
+        state => state.vkd3d.as_ref(),
+        "The VKD3D component selected by a bottle."
+    ),
+    (
+        Nvapi,
+        Nvapi,
+        state => state.nvapi.as_ref(),
+        "The NVAPI component selected by a bottle."
+    ),
+    (
+        LatencyFlex,
+        LatencyFlex,
+        state => state.latency_flex.as_ref(),
+        "The LatencyFlex component selected by a bottle."
+    ),
+);
+
+impl private::Sealed for Dependency {}
+impl AddonKind for Dependency {}
 
 /// One local dependency artifact and its installation recipe.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -108,14 +193,12 @@ impl Artifact {
 }
 
 /// A complete downloaded or hand-placed addon snapshot.
-///
-/// `K` is either [`Component`] or [`Dependency`]. Values do not update after
-/// downloads, removals, or catalog refreshes; query [`crate::Addons`] again to
-/// observe later state. Local paths are derived from the active Bottles data
-/// directory.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Addon<K> {
+#[serde(
+    deny_unknown_fields,
+    bound(serialize = "K: Serialize", deserialize = "K: Deserialize<'de>")
+)]
+pub struct IndexEntry<K> {
     id: NonNilUuid,
     name: String,
     version: String,
@@ -127,7 +210,7 @@ pub struct Addon<K> {
     artifacts: Vec<Artifact>,
 }
 
-impl<K> Addon<K> {
+impl<K> IndexEntry<K> {
     fn new(
         id: NonNilUuid,
         name: String,
@@ -167,7 +250,7 @@ impl<K> Addon<K> {
     }
 }
 
-impl Addon<Component> {
+impl IndexEntry<Component> {
     pub(crate) fn new_component(
         id: NonNilUuid,
         name: String,
@@ -214,7 +297,7 @@ impl Addon<Component> {
         &self,
         directories: &Directories,
         umu: Option<&Self>,
-    ) -> Result<Box<dyn Runner>> {
+    ) -> Result<Box<dyn RuntimeRunner>> {
         let path = self.path(directories);
         match detect_runner_kind(&path).await? {
             RunnerKind::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
@@ -235,7 +318,7 @@ impl Addon<Component> {
     }
 }
 
-impl Addon<Dependency> {
+impl IndexEntry<Dependency> {
     pub(crate) fn new_dependency(
         id: NonNilUuid,
         name: String,
@@ -267,6 +350,115 @@ impl Addon<Dependency> {
             Requirement::Name(name) => self.name == *name,
             Requirement::Slot(_) => false,
             Requirement::Id(id) => self.id() == *id,
+        }
+    }
+}
+
+/// An addon selection persisted in a bottle.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Addon<K: AddonKind> {
+    id: NonNilUuid,
+    name: String,
+    version: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    requirements: Vec<Requirement>,
+    #[serde(skip)]
+    kind: PhantomData<K>,
+}
+
+impl<K: AddonKind> Addon<K> {
+    /// Returns the immutable release identifier.
+    pub fn id(&self) -> Uuid {
+        self.id.get()
+    }
+
+    /// Returns the catalog label or hand-placed version name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the exact selected version.
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Returns the requirements checked before a bottle mutation.
+    pub fn requirements(&self) -> &[Requirement] {
+        &self.requirements
+    }
+
+    pub(crate) fn statisfies(&self, requirement: &Requirement) -> bool {
+        match requirement {
+            Requirement::Name(name) => self.name == *name,
+            Requirement::Id(id) => self.id() == *id,
+            Requirement::Slot(_) => false,
+        }
+    }
+}
+
+impl<K: ComponentKind> TryFrom<&IndexEntry<Component>> for Addon<K> {
+    type Error = BottleError;
+
+    fn try_from(entry: &IndexEntry<Component>) -> std::result::Result<Self, Self::Error> {
+        if entry.slot() != K::SLOT {
+            return Err(BottleError::InvalidComponentSlot {
+                component: entry.id(),
+                required: K::SLOT,
+            });
+        }
+
+        Ok(Self {
+            id: entry.id,
+            name: entry.name.clone(),
+            version: entry.version.clone(),
+            requirements: entry.requirements.clone(),
+            kind: PhantomData,
+        })
+    }
+}
+
+impl From<&IndexEntry<Dependency>> for Addon<Dependency> {
+    fn from(entry: &IndexEntry<Dependency>) -> Self {
+        Self {
+            id: entry.id,
+            name: entry.name.clone(),
+            version: entry.version.clone(),
+            requirements: entry.requirements.clone(),
+            kind: PhantomData,
+        }
+    }
+}
+
+impl<K: ComponentKind> Addon<K> {
+    pub(crate) fn path(&self, directories: &Directories) -> PathBuf {
+        directories
+            .components()
+            .join(K::SLOT.as_str())
+            .join(self.version())
+    }
+
+    pub(crate) fn artifact(&self, directories: &Directories) -> Artifact {
+        Artifact::new(self.path(directories), recipe_steps(K::SLOT).to_vec())
+    }
+}
+
+impl Addon<Runner> {
+    pub(crate) async fn load_runner(
+        &self,
+        directories: &Directories,
+        umu: Option<&Addon<Umu>>,
+    ) -> Result<Box<dyn RuntimeRunner>> {
+        let path = self.path(directories);
+        match detect_runner_kind(&path).await? {
+            RunnerKind::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
+            RunnerKind::Proton => {
+                let umu = umu
+                    .ok_or(RunnerError::UmuExecutableMissing)?
+                    .path(directories)
+                    .join("umu-run");
+                Ok(Box::new(Proton::new(&path, umu)))
+            }
         }
     }
 }

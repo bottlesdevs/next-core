@@ -22,8 +22,8 @@ use strum::IntoEnumIterator;
 use uuid::{NonNilUuid, Uuid};
 
 use super::{
-    Addon, AddonError, Component, Dependency, Requirement, Slot,
-    catalog::{Catalog, CatalogKind},
+    AddonError, Component, Dependency, IndexEntry, Requirement, Slot,
+    catalog::{AddonFamily, Catalog},
 };
 use crate::{
     Directories,
@@ -31,22 +31,22 @@ use crate::{
     runner::{RunnerKind, detect_runner_kind},
 };
 
+/// A snapshot of the catalog and indexed local addons for one category.
+///
+/// Only `addons` is persisted. UUID keys must match their addon records;
+/// release locations are derived from their typed identities.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
     deny_unknown_fields,
     bound(serialize = "K: Serialize", deserialize = "K: Deserialize<'de>")
 )]
-/// A snapshot of the catalog and indexed local addons for one category.
-///
-/// Only `addons` is persisted. UUID keys must match their addon records;
-/// release locations are derived from their typed identities.
-pub(crate) struct AddonIndex<K> {
+pub(crate) struct AddonIndex<K: AddonFamily> {
     /// The last usable catalog, retained only for the current process snapshot.
     #[serde(skip)]
     pub(crate) catalog: Option<Arc<Catalog<K>>>,
     /// Complete local releases keyed by immutable release UUID.
     #[serde(rename = "addon")]
-    pub(crate) addons: HashMap<Uuid, Arc<Addon<K>>>,
+    pub(crate) addons: HashMap<Uuid, Arc<IndexEntry<K>>>,
 }
 
 impl Config for AddonIndex<Component> {
@@ -57,7 +57,7 @@ impl Config for AddonIndex<Dependency> {
     const VERSION: u32 = 1;
 }
 
-impl<K> AddonIndex<K> {
+impl<K: AddonFamily> AddonIndex<K> {
     /// Loads the persisted index without examining addon directories.
     ///
     /// A missing file produces an empty index. An existing non-file or malformed
@@ -65,7 +65,6 @@ impl<K> AddonIndex<K> {
     /// UUIDs and installation recipes.
     async fn open(directories: &Directories) -> Result<Self>
     where
-        K: CatalogKind,
         Self: Config,
     {
         let path = K::index(directories);
@@ -89,7 +88,6 @@ impl<K> AddonIndex<K> {
     /// Atomically replaces the category index while omitting the runtime catalog.
     pub(crate) async fn save(&self, directories: &Directories) -> Result<()>
     where
-        K: CatalogKind,
         Self: Config,
     {
         next_config::save(K::index(directories), self).await?;
@@ -158,7 +156,7 @@ impl AddonIndex<Component> {
                 } else {
                     let id =
                         Uuid::new_v5(&Uuid::NAMESPACE_URL, path.as_os_str().as_encoded_bytes());
-                    Arc::new(Addon::new_component(
+                    Arc::new(IndexEntry::new_component(
                         NonNilUuid::new(id).expect("v5 UUID is non-nil"),
                         version.clone(),
                         version,
