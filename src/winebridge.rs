@@ -41,31 +41,25 @@ pub enum BridgeError {
     ShutdownTimeout,
     #[error("WineBridge returned an invalid response: {0}")]
     InvalidResponse(&'static str),
-    /// The runner's Wine is older than the release that can poll sockets.
-    ///
-    /// WineBridge serves gRPC over TCP, and its async runtime polls sockets
-    /// through a standalone `\Device\Afd` handle. Wine only accepts
-    /// `IOCTL_AFD_POLL` on such a handle from {MINIMUM_WINE} onwards; before
-    /// that the ioctl fails with `STATUS_BAD_DEVICE_TYPE`, surfacing as a bare
-    /// `os error 66`.
-    #[error(
-        "WineBridge requires {MINIMUM_WINE} or newer, but this runner reports {0}. \
-         Older Wine cannot poll sockets (IOCTL_AFD_POLL is rejected with \
-         STATUS_BAD_DEVICE_TYPE), so the bridge cannot start. Use a newer Wine \
-         runner for this bottle."
-    )]
-    UnsupportedWine(WineVersion),
 }
 
 /// The oldest Wine that accepts `IOCTL_AFD_POLL` on a standalone AFD handle,
-/// which every socket-polling async runtime in the guest depends on.
+/// which the tokio reactor WineBridge normally uses depends on. Below this,
+/// the ioctl fails with `STATUS_BAD_DEVICE_TYPE` (a bare `os error 66`), so
+/// [`WineBridgeClient::command`] switches WineBridge to a blocking transport
+/// that never registers a socket with that reactor instead.
 ///
 /// Apple's Game Porting Toolkit is built from CrossOver 22 sources and reports
-/// `wine-7.7`, so GPTK runners cannot host the bridge.
+/// `wine-7.7`, so every GPTK runner is below this line.
 pub(crate) const MINIMUM_WINE: WineVersion = WineVersion {
     major: 7,
     minor: 13,
 };
+
+/// Set for a spawned WineBridge whose runner reports a Wine older than
+/// [`MINIMUM_WINE`], telling it to bind its blocking transport. Must match the
+/// constant of the same name in `next-winebridge`.
+const BLOCKING_TRANSPORT_ENV: &str = "WINEBRIDGE_BLOCKING_TRANSPORT";
 
 const PORT_FILE_NAME: &str = "bottles-winebridge.port";
 
@@ -101,40 +95,31 @@ pub(crate) struct WineBridgeClient {
 }
 
 impl WineBridgeClient {
-    pub(crate) fn command(
+    /// Builds the command that launches WineBridge through `runner`.
+    ///
+    /// When `runner` reports a Wine older than [`MINIMUM_WINE`], the spawned
+    /// WineBridge is told to bind its blocking transport instead of the normal
+    /// tokio one, since that Wine cannot host the latter at all.
+    pub(crate) async fn command(
         runner: &dyn Runner,
         prefix: &Path,
         winebridge_root: impl AsRef<Path>,
     ) -> RunnerCommand {
-        runner.command(
-            prefix,
-            Command::new(winebridge_root.as_ref().join("bottles-winebridge.exe")).env(
+        let mut command = Command::new(winebridge_root.as_ref().join("bottles-winebridge.exe"))
+            .env(
                 "WINEBRIDGE_PORT_FILE",
                 format!(r"C:\windows\temp\{PORT_FILE_NAME}"),
-            ),
-        )
+            );
+        if runner.wine_version().await.is_some_and(|version| version < MINIMUM_WINE) {
+            command = command.env(BLOCKING_TRANSPORT_ENV, "1");
+        }
+        runner.command(prefix, command)
     }
 
     /// Connects to a bridge already serving in `prefix`, or starts one.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BridgeError::UnsupportedWine`] when a bridge has to be started
-    /// but `runner` reports a Wine older than [`MINIMUM_WINE`]. The check is
-    /// deliberately in the spawn path only: an already-serving bridge has proven
-    /// its Wine can host it, and the version probe costs a process spawn.
-    pub(crate) async fn connect_or_spawn(
-        prefix: &Path,
-        runner: &dyn Runner,
-        command: impl Spawnable,
-    ) -> Result<Self> {
+    pub(crate) async fn connect_or_spawn(prefix: &Path, command: impl Spawnable) -> Result<Self> {
         if let Some(client) = Self::try_connect(prefix).await? {
             return Ok(client);
-        }
-        if let Some(version) = runner.wine_version().await
-            && version < MINIMUM_WINE
-        {
-            return Err(BridgeError::UnsupportedWine(version).into());
         }
 
         Self::connect(prefix, command.spawn()?).await

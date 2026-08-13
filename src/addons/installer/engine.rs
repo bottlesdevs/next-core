@@ -201,8 +201,10 @@ async fn execute_step(
             value,
         } => {
             let command =
-                WineBridgeClient::command(runner, prefix, winebridge).envs(environment.iter());
-            let bridge = WineBridgeClient::connect_or_spawn(prefix, runner, command).await?;
+                WineBridgeClient::command(runner, prefix, winebridge)
+                    .await
+                    .envs(environment.iter());
+            let bridge = WineBridgeClient::connect_or_spawn(prefix, command).await?;
             check_cancellation(cancellation)?;
             bridge
                 .set_registry_value(*hive, key.clone(), name.clone(), value.clone())
@@ -210,8 +212,10 @@ async fn execute_step(
         }
         InstallStep::SetDllOverrides { dlls, mode } => {
             let command =
-                WineBridgeClient::command(runner, prefix, winebridge).envs(environment.iter());
-            let bridge = WineBridgeClient::connect_or_spawn(prefix, runner, command).await?;
+                WineBridgeClient::command(runner, prefix, winebridge)
+                    .await
+                    .envs(environment.iter());
+            let bridge = WineBridgeClient::connect_or_spawn(prefix, command).await?;
             for dll in dlls {
                 check_cancellation(cancellation)?;
                 bridge.set_dll_override(dll.clone(), *mode).await?;
@@ -251,8 +255,10 @@ async fn uninstall_step(
         }
         InstallStep::SetDllOverrides { dlls, .. } => {
             let command =
-                WineBridgeClient::command(runner, prefix, winebridge).envs(environment.iter());
-            let bridge = match WineBridgeClient::connect_or_spawn(prefix, runner, command).await {
+                WineBridgeClient::command(runner, prefix, winebridge)
+                    .await
+                    .envs(environment.iter());
+            let bridge = match WineBridgeClient::connect_or_spawn(prefix, command).await {
                 Ok(bridge) => bridge,
                 Err(error) => {
                     tracing::warn!(%error);

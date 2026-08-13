@@ -532,9 +532,10 @@ impl Bottle {
                 &prefix,
                 state.winebridge().path(self.0.cx.directories()),
             )
+            .await
             .envs(state.environment.iter()),
         );
         storage.prepare(&bottle_path, &cx).await?;
-        work(WineBridgeClient::connect_or_spawn(&prefix, runner.as_ref(), command).await?).await
+        work(WineBridgeClient::connect_or_spawn(&prefix, command).await?).await
     }
 }

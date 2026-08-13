@@ -340,16 +340,25 @@ async fn download_artifact(
     Ok(())
 }
 
-/// Requires a component archive to contain exactly one top-level directory.
+/// Returns the effective component directory.
+///
+/// If the archive contains exactly one top-level directory (and nothing else),
+/// that directory is returned. Otherwise, `root` itself is treated as the
+/// component directory (i.e., files live at the top level).
 async fn top_level_directory(root: &Path) -> Result<PathBuf> {
     let mut entries = async_fs::read_dir(root).await?;
-    let Some(entry) = entries.next().await.transpose()? else {
+    let Some(first) = entries.next().await.transpose()? else {
         return Err(AddonError::InvalidComponentArchive.into());
     };
-    if entries.next().await.transpose()?.is_some() || !entry.file_type().await?.is_dir() {
-        return Err(AddonError::InvalidComponentArchive.into());
+
+    match entries.next().await.transpose()? {
+        // Exactly one entry, and it's a directory -> unwrap it.
+        None if first.file_type().await?.is_dir() => Ok(first.path()),
+        // Exactly one entry, but it's a file -> treat root as the component dir.
+        None => Ok(root.to_path_buf()),
+        // More than one entry -> treat root as the component dir.
+        Some(_) => Ok(root.to_path_buf()),
     }
-    Ok(entry.path())
 }
 
 #[cfg(test)]
