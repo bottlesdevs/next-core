@@ -12,8 +12,6 @@ use crate::{
     runner::{Proton, Runner, RunnerError, RunnerKind, Wine, detect_runner_kind},
 };
 
-use super::installer::{InstallStep, recipe_steps};
-
 /// An addon selection persisted in a bottle.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
@@ -79,10 +77,6 @@ impl Addon<Component> {
             .components()
             .join(self.slot().as_str())
             .join(self.version())
-    }
-
-    pub(crate) fn artifact(&self, directories: &Directories) -> Artifact {
-        Artifact::new(self.path(directories), recipe_steps(self.slot()).to_vec())
     }
 
     /// Reports whether this component satisfies `requirement`.
@@ -209,16 +203,3 @@ pub struct Component {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dependency {}
-
-/// One local dependency artifact and its installation recipe.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct Artifact {
-    pub(crate) path: PathBuf,
-    pub(crate) steps: Vec<InstallStep>,
-}
-
-impl Artifact {
-    pub(crate) fn new(path: PathBuf, steps: Vec<InstallStep>) -> Self {
-        Self { path, steps }
-    }
-}

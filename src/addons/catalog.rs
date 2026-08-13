@@ -6,15 +6,93 @@ use serde::{Deserialize, Deserializer, Serialize, de, de::DeserializeOwned};
 use url::Url;
 use uuid::{NonNilUuid, Uuid};
 
-use crate::{
-    Directories,
-    addons::{Checksum, Target, deserialize_non_empty_string, deserialize_non_empty_vec},
-    error::Result,
-};
+use crate::{Directories, error::Result};
 
-use super::{Component, Dependency, Requirement, Slot, installer::InstallStep};
+use super::installer::InstallStep;
+use super::{Component, Dependency, Requirement, Slot, deserialize_non_empty_string};
 
 const CATALOG_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "algorithm", content = "value", rename_all = "kebab-case")]
+/// Expected digest used to verify a downloaded catalog artifact.
+///
+/// Values are stored without validating their length or encoding. Catalog
+/// deserialization rejects an empty value but does not validate hexadecimal
+/// syntax. Verification compares the value exactly and case-sensitively with a
+/// lowercase hexadecimal digest.
+pub(crate) enum Checksum {
+    /// Uses the `sha256` wire discriminator.
+    Sha256(String),
+    /// Uses the `sha512` wire discriminator.
+    Sha512(String),
+}
+
+impl Checksum {
+    /// Exposes the unnormalized string used for exact checksum verification.
+    pub(crate) fn value(&self) -> &str {
+        match self {
+            Self::Sha256(value) | Self::Sha512(value) => value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+/// Host operating-system and architecture pair used by catalog artifacts.
+///
+/// Matching is exact; the library does not infer compatibility between OS or
+/// architecture variants.
+pub(crate) struct Target {
+    os: OperatingSystem,
+    arch: Architecture,
+}
+
+impl Target {
+    const fn new(os: OperatingSystem, arch: Architecture) -> Self {
+        Self { os, arch }
+    }
+
+    /// Maps the compile target into the subset represented by this type.
+    pub(crate) fn current() -> Option<Self> {
+        let os = if cfg!(target_os = "linux") {
+            OperatingSystem::Linux
+        } else if cfg!(target_os = "macos") {
+            OperatingSystem::MacOs
+        } else if cfg!(target_os = "windows") {
+            OperatingSystem::Windows
+        } else {
+            return None;
+        };
+        let arch = if cfg!(target_arch = "x86") {
+            Architecture::X86
+        } else if cfg!(target_arch = "x86_64") {
+            Architecture::X86_64
+        } else if cfg!(target_arch = "aarch64") {
+            Architecture::Aarch64
+        } else {
+            return None;
+        };
+        Some(Self::new(os, arch))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum OperatingSystem {
+    Linux,
+    MacOs,
+    Windows,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum Architecture {
+    X86,
+    #[serde(rename = "x86_64")]
+    X86_64,
+    Aarch64,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -222,4 +300,16 @@ where
         return Err(de::Error::custom("checksum cannot be empty"));
     }
     Ok(checksum)
+}
+
+fn deserialize_non_empty_vec<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let value = Vec::<T>::deserialize(deserializer)?;
+    if value.is_empty() {
+        return Err(de::Error::custom("value cannot be empty"));
+    }
+    Ok(value)
 }
