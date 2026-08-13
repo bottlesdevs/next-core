@@ -39,6 +39,52 @@ pub(crate) enum RunnerKind {
     Gptk,
 }
 
+/// A Wine release, as reported by a runner's own executable.
+///
+/// Only the leading `major.minor` of strings such as `wine-11.0` or
+/// `wine-7.7 (Game Porting Toolkit 1.1)` is retained, which is enough to gate
+/// features on a minimum release. Ordering is by major then minor.
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub struct WineVersion {
+    pub major: u32,
+    pub minor: u32,
+}
+
+impl WineVersion {
+    /// Parses the leading version of a `--version` line, ignoring any suffix
+    /// such as a distribution name in parentheses.
+    pub fn parse(reported: &str) -> Option<Self> {
+        let reported = reported.trim();
+        let numbers = reported.strip_prefix("wine-").unwrap_or(reported);
+        let numbers = numbers.split_whitespace().next()?;
+        let mut parts = numbers.split('.');
+        Some(Self {
+            major: parts.next()?.parse().ok()?,
+            minor: parts
+                .next()
+                .map(|minor| minor.trim_end_matches(|c: char| !c.is_ascii_digit()))
+                .and_then(|minor| minor.parse().ok())
+                .unwrap_or(0),
+        })
+    }
+}
+
+impl std::fmt::Display for WineVersion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "wine-{}.{}", self.major, self.minor)
+    }
+}
+
+/// Reports the Wine version of an executable that answers `--version`.
+async fn report_version(executable: &Path) -> Option<WineVersion> {
+    let output = async_process::Command::new(executable)
+        .arg("--version")
+        .output()
+        .await
+        .ok()?;
+    WineVersion::parse(&String::from_utf8_lossy(&output.stdout))
+}
+
 /// Failures while discovering or controlling a runner.
 ///
 /// Process variants retain unsuccessful exit statuses. Failures to spawn or
@@ -109,6 +155,15 @@ pub(crate) trait Runner: Send + Sync {
 
     /// Runs runner-specific server control, including any status normalization.
     async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()>;
+
+    /// Reports the runner's Wine release, when this layout can be asked for one.
+    ///
+    /// Used to gate features that older Wine cannot support. [`None`] means the
+    /// version is unknown and no such gate applies, so a layout that does not
+    /// answer `--version` is never rejected for its version alone.
+    async fn wine_version(&self) -> Option<WineVersion> {
+        None
+    }
 }
 
 /// Initializes a prefix and then attempts to stop its server.
@@ -159,6 +214,49 @@ pub(crate) async fn detect_runner_kind(path: &Path) -> Result<RunnerKind> {
 mod tests {
     use super::*;
     use crate::wrapper::{Wrappers, gamescope::GamescopeConfig, mangohud::MangoHudConfig};
+
+    #[test]
+    fn parses_reported_wine_versions() {
+        // The two strings that matter in practice: a stock Wine build, and GPTK,
+        // which appends its own product name.
+        assert_eq!(
+            WineVersion::parse("wine-11.0"),
+            Some(WineVersion {
+                major: 11,
+                minor: 0
+            })
+        );
+        assert_eq!(
+            WineVersion::parse("wine-7.7 (Game Porting Toolkit 1.1)\n"),
+            Some(WineVersion { major: 7, minor: 7 })
+        );
+        assert_eq!(
+            WineVersion::parse("wine-11.15"),
+            Some(WineVersion {
+                major: 11,
+                minor: 15
+            })
+        );
+        assert_eq!(
+            WineVersion::parse("wine-9.0-rc1"),
+            Some(WineVersion { major: 9, minor: 0 })
+        );
+        assert_eq!(WineVersion::parse("not a version"), None);
+    }
+
+    /// The bridge gate is `>= 7.13`; 7.12 and older lack `IOCTL_AFD_POLL` on a
+    /// standalone AFD handle.
+    #[test]
+    fn orders_versions_across_the_bridge_minimum() {
+        let minimum = crate::winebridge::MINIMUM_WINE;
+        assert_eq!(minimum.to_string(), "wine-7.13");
+        for older in ["wine-7.7", "wine-7.12", "wine-6.23"] {
+            assert!(WineVersion::parse(older).unwrap() < minimum, "{older}");
+        }
+        for newer in ["wine-7.13", "wine-7.22", "wine-8.0", "wine-11.0"] {
+            assert!(WineVersion::parse(newer).unwrap() >= minimum, "{newer}");
+        }
+    }
 
     #[test]
     fn configured_wrappers_lower_valid_combinations() {

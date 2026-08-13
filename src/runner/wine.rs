@@ -34,6 +34,10 @@ impl Runner for Wine {
         )
     }
 
+    async fn wine_version(&self) -> Option<super::WineVersion> {
+        super::report_version(&self.executable).await
+    }
+
     async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
         let status = RunnerCommand(
             Command::new(self.executable.with_file_name("wineserver"))
