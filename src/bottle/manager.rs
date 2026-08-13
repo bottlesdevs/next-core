@@ -129,8 +129,10 @@ impl BottleManager {
     /// The newest downloaded WineBridge is selected automatically. A runner
     /// requiring UMU also receives the newest downloaded UMU release. No addon
     /// is downloaded implicitly. The runner UUID must identify a downloaded
-    /// runner component. With the default `fvs` feature, creation requires the
-    /// configured FVS service even for [`Storage::Standard`]. Failures, and
+    /// runner component. With the `fvs` feature, only [`Storage::Virgo`]
+    /// requires the FVS service at creation: a standard bottle's snapshot
+    /// repository is initialized by the first operation that needs history, so
+    /// bottles remain creatable without a running daemon. Failures, and
     /// cancellation observed while the operation remains polled, remove the
     /// partially-created bottle directory on a best-effort basis. Dropping a
     /// started operation or a cleanup failure can leave a directory that a
@@ -213,6 +215,8 @@ impl BottleManager {
                 if let Some(umu) = umu {
                     components.insert(Slot::Umu, Addon::from(umu.as_ref()));
                 }
+                #[cfg(feature = "fvs")]
+                let virgo = storage.kind() == Storage::Virgo;
                 let bottle = Bottle::new(
                     id,
                     name,
@@ -224,11 +228,16 @@ impl BottleManager {
                 )
                 .await?;
                 progress.send_replace(Some(Progress::new(Stage::Configuring)));
+                // Virgo already depends on FVS for its layers, so its repository
+                // is initialized up front; a standard bottle defers it to the
+                // first operation that needs history.
                 #[cfg(feature = "fvs")]
-                cx.fvs()
-                    .await?
-                    .new_repository(&bottle_path, FVS_BLOCK_SIZE)
-                    .await?;
+                if virgo {
+                    cx.fvs()
+                        .await?
+                        .new_repository(&bottle_path, FVS_BLOCK_SIZE)
+                        .await?;
+                }
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }

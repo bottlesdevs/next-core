@@ -36,6 +36,25 @@ pub(crate) const AUTO_CHECKPOINT_MESSAGE: &str = "bottles-next:auto-checkpoint";
 #[cfg(feature = "fvs")]
 pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
+/// Initializes `repository` if it does not exist yet and returns a client for it.
+///
+/// [`Storage::Standard`] bottles are created without a repository so that
+/// creating one does not require the FVS service at all; the first operation
+/// that needs history initializes it here instead. Initialization is idempotent
+/// for a matching block size, so repeating it on an existing repository is a
+/// no-op.
+#[cfg(feature = "fvs")]
+pub(crate) async fn ensure_repository<'a>(
+    context: &'a Context,
+    repository: &Repository,
+) -> Result<&'a fvs_rs::Fvs2dClient> {
+    let client = context.fvs().await?;
+    client
+        .new_repository(&repository.repository_path, repository.block_size)
+        .await?;
+    Ok(client)
+}
+
 /// Backend-specific state persisted in [`crate::bottle::BottleState`].
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind")]
@@ -208,8 +227,7 @@ where
         repository_path: bottle_path.display().to_string(),
         block_size: FVS_BLOCK_SIZE,
     };
-    let stream = context
-        .fvs()
+    let stream = ensure_repository(context, &repository)
         .await?
         .commit_stream(&repository, AUTO_CHECKPOINT_MESSAGE.into())
         .await?;

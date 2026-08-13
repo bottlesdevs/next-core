@@ -7,7 +7,9 @@ use fvs_rs::{Repository, RestoreResponse};
 use crate::{
     Operation, Progress, Stage, Transfer,
     error::{Error, Result},
-    prefix::{AUTO_CHECKPOINT_MESSAGE, FVS_BLOCK_SIZE, finish_commit, finish_restore},
+    prefix::{
+        AUTO_CHECKPOINT_MESSAGE, FVS_BLOCK_SIZE, ensure_repository, finish_commit, finish_restore,
+    },
 };
 
 use super::{Bottle, Snapshot, SnapshotSummary, error::BottleError, state::BottleState};
@@ -47,7 +49,10 @@ impl Bottle {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            let stream = cx.fvs().await?.commit_stream(&repository, message).await?;
+            let stream = ensure_repository(&cx, &repository)
+                .await?
+                .commit_stream(&repository, message)
+                .await?;
             finish_commit(stream, |update| {
                 progress.send_replace(Some(Progress::transferring(
                     Stage::Committing,
