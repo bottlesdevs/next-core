@@ -40,9 +40,6 @@ pub enum Error {
     Virgo(#[from] VirgoError),
     #[error("addon error: {0}")]
     Addon(#[from] AddonError),
-    #[cfg(target_os = "macos")]
-    #[error("GPTK setup error: {0}")]
-    GptkSetup(#[from] crate::gptk_setup::GptkSetupError),
     #[cfg(feature = "fvs")]
     #[error("fvs2d executable is not configured")]
     Fvs2dNotConfigured,
