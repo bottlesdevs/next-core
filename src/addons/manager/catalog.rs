@@ -1,4 +1,4 @@
-//! Catalog refresh operations.
+//! Catalog refresh and cache replacement.
 
 use std::sync::Arc;
 
@@ -20,6 +20,17 @@ use super::{Addons, download};
 
 impl Addons {
     /// Refreshes the two configured catalogs independently.
+    ///
+    /// Each successful catalog is validated, cached, and published even if the
+    /// other family fails. A failed family keeps its previously loaded catalog.
+    /// If either family fails, the operation returns [`CatalogError::Refresh`]
+    /// after publishing every successful result.
+    ///
+    /// # Errors
+    ///
+    /// The operation fails when a URL is not configured, a download or catalog
+    /// validation fails, a successful catalog cannot be cached, refreshed state
+    /// cannot be loaded, or cancellation is requested before publication.
     pub fn refresh(&self) -> Operation<()> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -64,6 +75,7 @@ impl Addons {
         })
     }
 
+    /// Downloads and validates one catalog through a best-effort temporary file.
     async fn download_catalog<K>(
         &self,
         progress: watch::Sender<Option<Progress>>,

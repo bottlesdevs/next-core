@@ -1,12 +1,20 @@
-//! Discovering, downloading, and describing bottle addons.
+//! Cataloging, downloading, and selecting bottle addons.
 //!
-//! Obtain the shared [`Addons`] manager from [`crate::Bottles::addons`]. The
-//! manager exposes typed Bottles-maintained [`CatalogEntry`] values separately
-//! from downloaded and hand-placed [`IndexEntry`] values.
+//! Addons pass through three representations:
 //!
-//! Fetching only places resources in library-managed storage. Bottles select
-//! components with [`crate::Bottle::set_component`] and install dependencies
-//! with [`crate::Bottle::install`].
+//! - [`CatalogEntry`] describes a release advertised by a remote catalog.
+//! - [`IndexEntry`] describes a downloaded or hand-placed release in shared
+//!   storage. Dependency entries retain the artifacts needed for installation.
+//! - [`Addon`] is the artifact-free selection persisted in a
+//!   [`crate::BottleState`].
+//!
+//! Obtain the shared [`Addons`] manager from [`crate::Bottles::addons`]. Catalog
+//! queries use the last successfully loaded catalog, while index queries expose
+//! locally available releases. Fetching an entry only places it in shared
+//! storage; select components with [`crate::Bottle::set_component`] and install
+//! dependencies with [`crate::Bottle::install`].
+
+#![warn(missing_docs)]
 
 use serde::{Deserialize, Deserializer, de};
 
