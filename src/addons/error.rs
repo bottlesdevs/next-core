@@ -54,7 +54,9 @@ pub enum CatalogError {
     /// One or both catalogs failed to refresh after any successful catalog was published.
     #[error("catalog refresh failed (components: {components:?}, dependencies: {dependencies:?})")]
     Refresh {
+        /// The component-catalog failure, or `None` when it refreshed successfully.
         components: Option<String>,
+        /// The dependency-catalog failure, or `None` when it refreshed successfully.
         dependencies: Option<String>,
     },
     /// No URL was configured for one of the catalogs.
@@ -65,7 +67,12 @@ pub enum CatalogError {
     Unsupported(Uuid),
     /// More than one artifact matched a component release on this platform.
     #[error("component {addon} has {count} matching artifacts; expected exactly one")]
-    InvalidComponentArtifactCount { addon: Uuid, count: usize },
+    InvalidComponentArtifactCount {
+        /// The component release containing the ambiguous artifacts.
+        addon: Uuid,
+        /// The number of artifacts matching the current platform.
+        count: usize,
+    },
     /// A catalog entry contains a path that is unsafe for managed storage.
     #[error("catalog entry contains an invalid storage path: {0}")]
     InvalidEntry(Uuid),
@@ -82,5 +89,10 @@ pub enum InstallerError {
     RegisterDllFailed(ExitStatus),
     /// An extracted file resolved outside its staging directory.
     #[error("staged file {path} is outside staging directory {stage}")]
-    FileOutsideStage { path: PathBuf, stage: PathBuf },
+    FileOutsideStage {
+        /// The extracted path that escaped the staging directory.
+        path: PathBuf,
+        /// The staging directory that should have contained the path.
+        stage: PathBuf,
+    },
 }

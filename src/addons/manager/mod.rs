@@ -1,4 +1,4 @@
-//! Shared addon catalogs, local discovery, downloads, and removal.
+//! Shared addon state, queries, publication, and storage removal.
 
 use std::{
     path::{Path, PathBuf},
@@ -28,11 +28,17 @@ use crate::{
 mod catalog;
 mod fetch;
 
-/// A shared snapshot-based view of catalog and hand-placed addons.
+/// The shared manager for addon catalogs and local storage.
 ///
-/// Values returned by collection methods do not update after a refresh, fetch,
-/// or removal. Query the manager again, or use [`watch`](Self::watch), to observe
-/// a later publication.
+/// Remote releases are exposed as [`CatalogEntry`] values. Fetching one adds an
+/// [`IndexEntry`] to shared storage; bottles then persist an artifact-free
+/// [`Addon`](crate::Addon) when selecting a component or installing a dependency.
+/// Fetching alone does not modify any bottle.
+///
+/// Clones refer to the same manager state. Returned [`CatalogEntry`] values and
+/// [`IndexEntry`] handles are snapshots: they do not change after a refresh,
+/// fetch, or removal. Query the manager again, or use [`watch`](Self::watch), to
+/// observe a later publication.
 #[derive(Clone)]
 pub struct Addons(Arc<AddonsInner>);
 
@@ -45,6 +51,10 @@ struct AddonsInner {
 }
 
 impl Addons {
+    /// Loads cached catalogs and validates the two local indexes.
+    ///
+    /// An unavailable or invalid catalog cache is ignored. An invalid index is
+    /// returned as an error because it carries local identity and recipe data.
     pub(crate) async fn load(
         context: Context,
         component_catalog_url: Option<Url>,
@@ -63,7 +73,9 @@ impl Addons {
         })))
     }
 
-    /// Returns all releases in the current component catalog.
+    /// Returns the component releases in current catalog order.
+    ///
+    /// The result is empty when no valid component catalog has been loaded.
     pub fn component_entries(&self) -> Vec<CatalogEntry<Component>> {
         self.state()
             .components
@@ -73,7 +85,9 @@ impl Addons {
             .collect()
     }
 
-    /// Returns all releases in the current dependency catalog.
+    /// Returns the dependency releases in current catalog order.
+    ///
+    /// The result is empty when no valid dependency catalog has been loaded.
     pub fn dependency_entries(&self) -> Vec<CatalogEntry<Dependency>> {
         self.state()
             .dependencies
@@ -83,27 +97,35 @@ impl Addons {
             .collect()
     }
 
-    /// Returns downloaded and hand-placed components.
+    /// Returns indexed downloaded and hand-placed components.
+    ///
+    /// The order is unspecified.
     pub fn components(&self) -> Vec<Arc<IndexEntry<Component>>> {
         self.state().components.addons.values().cloned().collect()
     }
 
-    /// Returns complete downloaded dependencies.
+    /// Returns dependencies recorded in the local index.
+    ///
+    /// The order is unspecified. Dependency records cannot be reconstructed or
+    /// verified from their files alone, so the persisted index is authoritative.
     pub fn dependencies(&self) -> Vec<Arc<IndexEntry<Dependency>>> {
         self.state().dependencies.addons.values().cloned().collect()
     }
 
-    /// Returns the local component with this immutable release identifier.
+    /// Returns the indexed component with this release identifier.
     pub fn component(&self, id: Uuid) -> Option<Arc<IndexEntry<Component>>> {
         self.state().components.addons.get(&id).cloned()
     }
 
-    /// Returns the local dependency with this immutable release identifier.
+    /// Returns the indexed dependency with this release identifier.
     pub fn dependency(&self, id: Uuid) -> Option<Arc<IndexEntry<Dependency>>> {
         self.state().dependencies.addons.get(&id).cloned()
     }
 
     /// Returns the current component catalog entry with this identifier.
+    ///
+    /// Returns `None` when no valid component catalog is loaded or the release
+    /// is absent from it.
     pub fn component_entry(&self, id: Uuid) -> Option<CatalogEntry<Component>> {
         self.state()
             .components
@@ -114,6 +136,9 @@ impl Addons {
     }
 
     /// Returns the current dependency catalog entry with this identifier.
+    ///
+    /// Returns `None` when no valid dependency catalog is loaded or the release
+    /// is absent from it.
     pub fn dependency_entry(&self, id: Uuid) -> Option<CatalogEntry<Dependency>> {
         self.state()
             .dependencies
@@ -123,7 +148,7 @@ impl Addons {
             .cloned()
     }
 
-    /// Watches state publications.
+    /// Watches changes to catalogs and local indexes.
     ///
     /// The stream yields immediately and may coalesce publications for slow
     /// consumers. Each value is a live manager handle; query it for current data.
@@ -134,7 +159,18 @@ impl Addons {
         })
     }
 
-    /// Removes a component from shared storage without checking bottle references.
+    /// Removes a component from shared storage and the local index.
+    ///
+    /// Bottle references are not checked or updated. Existing [`IndexEntry`]
+    /// handles remain valid metadata snapshots, but their derived path no longer
+    /// exists after successful removal. Filesystem removal and index persistence
+    /// are not transactional; an error does not guarantee that the directory was
+    /// left untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AddonError::NotFound`] when `id` is not indexed. Filesystem,
+    /// index-persistence, and state-reload failures are also returned.
     pub async fn remove_component(&self, id: Uuid) -> Result<()> {
         let _write = self.0.write.lock().await;
         let state = self.state();
@@ -154,7 +190,18 @@ impl Addons {
         .await
     }
 
-    /// Removes a dependency from shared storage without checking bottle references.
+    /// Removes a dependency from shared storage and the local index.
+    ///
+    /// Bottle references are not checked or updated. Existing [`IndexEntry`]
+    /// handles remain valid metadata snapshots, but their derived path no longer
+    /// exists after successful removal. Filesystem removal and index persistence
+    /// are not transactional; an error does not guarantee that the directory was
+    /// left untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AddonError::NotFound`] when `id` is not indexed. Filesystem,
+    /// index-persistence, and state-reload failures are also returned.
     pub async fn remove_dependency(&self, id: Uuid) -> Result<()> {
         let _write = self.0.write.lock().await;
         let state = self.state();
@@ -174,6 +221,7 @@ impl Addons {
         .await
     }
 
+    /// Selects the greatest semantic version currently indexed for `slot`.
     pub(crate) fn latest_component(&self, slot: Slot) -> Option<Arc<IndexEntry<Component>>> {
         self.state()
             .components
@@ -191,6 +239,7 @@ impl Addons {
         self.0.published.borrow().clone()
     }
 
+    /// Creates a unique staging directory on the same data tree as final storage.
     async fn create_stage(&self) -> Result<PathBuf> {
         let staging = self.0.context.directories().data_dir().join(".staging");
         async_fs::create_dir_all(&staging).await?;
@@ -199,6 +248,7 @@ impl Addons {
         Ok(stage)
     }
 
+    /// Reloads both indexes before notifying watchers of a coherent snapshot.
     async fn publish(
         &self,
         component_catalog: Option<Arc<Catalog<Component>>>,
@@ -222,6 +272,7 @@ struct AddonsState {
 }
 
 impl AddonsState {
+    /// Loads local indexes while tolerating unavailable catalog caches.
     async fn load_cached(directories: &Directories) -> Result<Self> {
         let component_catalog = Catalog::<Component>::load(directories).await;
         let dependency_catalog = Catalog::<Dependency>::load(directories).await;
@@ -250,6 +301,7 @@ impl AddonsState {
     }
 }
 
+/// Drives a download, translating its latest byte counts and cancellation result.
 async fn download(
     downloader: &DownloadManager,
     url: Url,

@@ -1,13 +1,13 @@
-//! Central addon indexes and hand-placed component discovery.
+//! Local addon indexes and hand-placed component discovery.
 //!
 //! Components live at `components/<slot>/<version>/`; dependencies live at
 //! `dependencies/<uuid>/`.
 //!
 //! Component directories are discoverable, so rebuilding adds hand-placed
 //! components and removes entries whose directories disappeared. Dependency
-//! recipes cannot be reconstructed from their files; only indexed dependencies
-//! are recognized. Catalogs remain separate JSON documents and are never
-//! serialized into an index.
+//! identity and recipes cannot be reconstructed from downloaded files; their
+//! index is therefore authoritative. Catalogs remain separate JSON documents
+//! and are never serialized into an index.
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
@@ -90,12 +90,13 @@ impl<K> AddonIndex<K> {
     }
 }
 
-/// A complete downloaded or hand-placed addon snapshot.
+/// A downloaded or hand-placed addon recorded in shared storage.
 ///
 /// `K` is either [`Component`] or [`Dependency`]. Values do not update after
 /// downloads, removals, or catalog refreshes; query [`crate::Addons`] again to
-/// observe later state. Local paths are derived from the active Bottles data
-/// directory.
+/// observe later state. Dependency entries retain installation artifacts;
+/// converting an entry to [`Addon`] produces the artifact-free value suitable
+/// for bottle state. Local paths are derived from the active Bottles data directory.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound(serialize = "K: Serialize", deserialize = "K: Deserialize<'de>"))]
 pub struct IndexEntry<K> {
@@ -110,12 +111,12 @@ impl<K> IndexEntry<K> {
         Self { addon, artifacts }
     }
 
-    /// Returns the artifact-free addon metadata stored in bottle state.
+    /// Returns the artifact-free selection metadata suitable for bottle state.
     pub fn addon(&self) -> &Addon<K> {
         &self.addon
     }
 
-    /// Returns the immutable release identifier.
+    /// Returns the release identifier shared by its catalog and bottle records.
     pub fn id(&self) -> Uuid {
         self.addon.id()
     }
@@ -130,7 +131,7 @@ impl<K> IndexEntry<K> {
         self.addon.version()
     }
 
-    /// Returns the requirements checked before a bottle mutation.
+    /// Returns the addons that must coexist with this release.
     pub fn requirements(&self) -> &[Requirement] {
         self.addon.requirements()
     }

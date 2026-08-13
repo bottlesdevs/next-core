@@ -1,4 +1,4 @@
-//! Addon kinds, requirements, and selections stored by bottle APIs.
+//! Artifact-free addon selections and their family discriminators.
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
@@ -13,6 +13,10 @@ use crate::{
 };
 
 /// An addon selection persisted in a bottle.
+///
+/// `K` is [`Component`] or [`Dependency`]. Unlike an [`IndexEntry`](super::IndexEntry),
+/// this value contains no download artifacts; it remains sufficient for requirement
+/// validation and for locating or removing a selected component.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     deny_unknown_fields,
@@ -45,7 +49,7 @@ impl<K> Addon<K> {
         }
     }
 
-    /// Returns the immutable release identifier.
+    /// Returns the release identifier shared by its catalog, index, and bottle records.
     pub fn id(&self) -> Uuid {
         self.id.get()
     }
@@ -60,7 +64,7 @@ impl<K> Addon<K> {
         &self.version
     }
 
-    /// Returns the requirements checked before a bottle mutation.
+    /// Returns the addons that must coexist with this selection.
     pub fn requirements(&self) -> &[Requirement] {
         &self.requirements
     }
@@ -80,6 +84,9 @@ impl Addon<Component> {
     }
 
     /// Reports whether this component satisfies `requirement`.
+    ///
+    /// Name and identifier matching is exact. Slot requirements match the
+    /// component's slot.
     pub fn satisfies(&self, requirement: &Requirement) -> bool {
         match requirement {
             Requirement::Name(name) => self.name == *name,
@@ -115,6 +122,9 @@ impl Addon<Component> {
 
 impl Addon<Dependency> {
     /// Reports whether this dependency satisfies `requirement`.
+    ///
+    /// Name and identifier matching is exact. Dependencies never satisfy slot
+    /// requirements because slots are occupied only by components.
     pub fn satisfies(&self, requirement: &Requirement) -> bool {
         match requirement {
             Requirement::Name(name) => self.name == *name,
@@ -125,6 +135,9 @@ impl Addon<Dependency> {
 }
 
 /// A mutually exclusive component role within a bottle.
+///
+/// Bottle state can select at most one component for each slot.
+#[allow(missing_docs)]
 #[derive(Clone, Copy, Debug, Deserialize, EnumIter, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Slot {
@@ -180,7 +193,10 @@ impl FromStr for Slot {
     }
 }
 
-/// A dependency that must already be selected or installed in a bottle.
+/// A constraint that must be satisfied by another addon in the bottle.
+///
+/// Name and identifier requirements may be satisfied by either components or
+/// dependencies. Slot requirements can be satisfied only by components.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Requirement {
@@ -192,14 +208,14 @@ pub enum Requirement {
     Id(Uuid),
 }
 
-/// Category data carried by a downloaded component.
+/// Type discriminator for component catalog, index, and bottle records.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
     pub(crate) slot: Slot,
 }
 
-/// Category data carried by a downloaded dependency.
+/// Type discriminator for dependency catalog, index, and bottle records.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dependency {}

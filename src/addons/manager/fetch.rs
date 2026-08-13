@@ -1,4 +1,4 @@
-//! Addon fetch transactions.
+//! Download, validation, and publication of catalog releases.
 
 use std::{
     path::{Component as PathComponent, Path, PathBuf},
@@ -27,7 +27,27 @@ use super::super::{
 use super::{Addons, download};
 
 impl Addons {
-    /// Downloads, extracts, validates, and atomically publishes a component.
+    /// Downloads and publishes a component from the current catalog.
+    ///
+    /// If the catalog still contains `id` and that release is already indexed,
+    /// the operation returns the existing entry without downloading it again.
+    /// Otherwise, exactly one artifact must match the current platform. Its
+    /// checksum, archive shape, slot-specific files, and storage paths are
+    /// validated before the release is moved into shared storage and published.
+    /// Fetching does not select the component in any bottle.
+    ///
+    /// Downloads and extraction occur outside the manager's write lock. The
+    /// operation rechecks the index before committing, so concurrent fetches of
+    /// the same release converge on the first published entry. Staging cleanup
+    /// and rollback after a failed commit are best effort.
+    ///
+    /// # Errors
+    ///
+    /// The operation returns [`CatalogError::NotFound`] if `id` is absent from
+    /// the current catalog, [`CatalogError::Unsupported`] if no artifact matches,
+    /// or [`CatalogError::InvalidComponentArtifactCount`] if more than one
+    /// matches. Invalid paths, checksum or archive failures, an occupied target,
+    /// I/O and persistence failures, and cancellation are also returned.
     pub fn fetch_component(&self, id: Uuid) -> Operation<Arc<IndexEntry<Component>>> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -133,7 +153,26 @@ impl Addons {
         })
     }
 
-    /// Downloads every platform artifact and atomically publishes a dependency.
+    /// Downloads and publishes a dependency from the current catalog.
+    ///
+    /// If the catalog still contains `id` and that release is already indexed,
+    /// the operation returns the existing entry without downloading it again.
+    /// Otherwise, every artifact matching the current platform is downloaded and
+    /// checksum-verified. Their catalog recipes are retained in the index for
+    /// later bottle installation. Fetching does not install the dependency into
+    /// any bottle.
+    ///
+    /// Downloads occur outside the manager's write lock. The operation rechecks
+    /// the index before committing, so concurrent fetches of the same release
+    /// converge on the first published entry. Staging cleanup and rollback after
+    /// a failed commit are best effort.
+    ///
+    /// # Errors
+    ///
+    /// The operation returns [`CatalogError::NotFound`] if `id` is absent from
+    /// the current catalog or [`CatalogError::Unsupported`] if no artifact
+    /// matches. Invalid paths, checksum failures, I/O and persistence failures,
+    /// and cancellation are also returned.
     pub fn fetch_dependency(&self, id: Uuid) -> Operation<Arc<IndexEntry<Dependency>>> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -234,11 +273,13 @@ impl Addons {
     }
 }
 
+/// Restricts catalog-controlled names to one normal path component.
 fn single_path_component(value: &str) -> bool {
     let mut components = Path::new(value).components();
     matches!(components.next(), Some(PathComponent::Normal(_))) && components.next().is_none()
 }
 
+/// Downloads one artifact and verifies its checksum before it can be committed.
 async fn download_artifact(
     downloader: &DownloadManager,
     artifact: &CatalogArtifact,
@@ -273,6 +314,7 @@ async fn download_artifact(
     Ok(())
 }
 
+/// Requires a component archive to contain exactly one top-level directory.
 async fn top_level_directory(root: &Path) -> Result<PathBuf> {
     let mut entries = async_fs::read_dir(root).await?;
     let Some(entry) = entries.next().await.transpose()? else {

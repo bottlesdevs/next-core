@@ -1,4 +1,4 @@
-//! Typed Bottles-maintained component and dependency catalogs.
+//! Remote component and dependency catalogs and their validation rules.
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -96,6 +96,10 @@ enum Architecture {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+/// One validated, cached catalog document.
+///
+/// Catalog loading is deliberately tolerant: an unavailable or invalid cache
+/// is treated as absent so local index entries remain usable.
 pub(crate) struct Catalog<K> {
     #[serde(deserialize_with = "deserialize_catalog_version")]
     schema_version: u32,
@@ -117,6 +121,7 @@ impl<K> Catalog<K> {
         Some(Arc::new(catalog))
     }
 
+    /// Replaces the cached catalog for this family.
     pub(crate) async fn save(&self, directories: &Directories) -> Result<()>
     where
         K: AddonFamily,
@@ -135,11 +140,16 @@ impl<K> Catalog<K> {
     }
 }
 
+/// Optional remote endpoints for the two supported addon families.
 pub(crate) struct CatalogUrls {
     pub(crate) components: Option<Url>,
     pub(crate) dependencies: Option<Url>,
 }
 
+/// Maps a family discriminator to its catalog URL and managed storage files.
+///
+/// Keeping this mapping on the two runtime families lets catalog and index
+/// persistence share generic code without introducing per-slot component types.
 pub(crate) trait AddonFamily {
     const LABEL: &'static str;
 
@@ -180,7 +190,11 @@ impl AddonFamily for Dependency {
     }
 }
 
-/// An immutable release advertised by one typed addon catalog.
+/// A release advertised by a remote addon catalog.
+///
+/// `K` is [`Component`] or [`Dependency`]. A catalog entry describes what can
+/// be fetched; it does not imply that the release supports the current platform
+/// or is present in shared storage.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogEntry<K> {
@@ -189,6 +203,8 @@ pub struct CatalogEntry<K> {
     name: String,
     #[serde(deserialize_with = "deserialize_non_empty_string")]
     version: String,
+    // Dependency requirements come from the catalog. Component requirements
+    // are derived from the downloaded release during inspection.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
     #[serde(deserialize_with = "deserialize_non_empty_vec")]
@@ -198,7 +214,7 @@ pub struct CatalogEntry<K> {
 }
 
 impl<K> CatalogEntry<K> {
-    /// Returns the immutable release identifier.
+    /// Returns the identifier used to correlate this release with an index entry.
     pub fn id(&self) -> Uuid {
         self.id.get()
     }
@@ -213,7 +229,11 @@ impl<K> CatalogEntry<K> {
         &self.version
     }
 
-    /// Reports whether an artifact supports the current platform.
+    /// Reports whether at least one artifact matches the current build target.
+    ///
+    /// Platform matching is exact. An artifact without a platform restriction
+    /// matches every represented target. Builds on an unrepresented operating
+    /// system or architecture report every entry as unsupported.
     pub fn is_supported(&self) -> bool {
         Target::current().is_some_and(|target| self.artifacts_for_target(target).next().is_some())
     }
@@ -236,7 +256,7 @@ impl CatalogEntry<Component> {
 }
 
 impl CatalogEntry<Dependency> {
-    /// Returns the addons required before installation.
+    /// Returns the addons that must already be present before installation.
     pub fn requirements(&self) -> &[Requirement] {
         &self.requirements
     }
@@ -244,6 +264,10 @@ impl CatalogEntry<Dependency> {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+/// One downloadable file and the recipe associated with it.
+///
+/// Dependency recipes are retained in the local index. Components are inspected
+/// after extraction and use the built-in recipe for their slot instead.
 pub(crate) struct CatalogArtifact {
     url: url::Url,
     #[serde(deserialize_with = "deserialize_non_empty_string")]

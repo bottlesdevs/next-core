@@ -1,4 +1,8 @@
-//! Rebuilds addon indexes from managed storage.
+//! Reconciles persisted addon indexes with managed storage.
+//!
+//! Component releases can be identified from their slot directory and contents,
+//! so their index is rebuilt from disk. Dependency identities and recipes cannot
+//! be reconstructed; rebuilding that family only validates persisted metadata.
 
 use std::{
     collections::HashMap,
@@ -31,6 +35,13 @@ impl AddonIndex<Component> {
         Ok(index)
     }
 
+    /// Reconciles indexed records with component directories.
+    ///
+    /// Matching slot/version records keep their catalog UUID. New directories
+    /// receive a deterministic path-derived UUID, and records missing from disk
+    /// are dropped. A retained record is rejected when its derived requirements
+    /// have changed, because silently keeping its catalog identity would attach
+    /// that identity to different contents.
     async fn rebuild(&mut self, directories: &Directories) -> Result<()> {
         let index_path = Component::index(directories);
         let root = async_fs::canonicalize(directories.components()).await?;
@@ -101,6 +112,7 @@ impl AddonIndex<Component> {
         Ok(async_fs::canonicalize(slot_root).await?.join(version))
     }
 
+    /// Validates the files that identify `slot` and derives requirements from them.
     pub(crate) async fn inspect_release(slot: Slot, path: &Path) -> Result<Vec<Requirement>> {
         let invalid = || AddonError::InvalidComponent(path.to_path_buf());
         match slot {
@@ -127,7 +139,11 @@ impl AddonIndex<Component> {
 }
 
 impl AddonIndex<Dependency> {
-    /// Loads the dependency index and removes records that are no longer complete.
+    /// Loads the dependency index and validates its persisted record structure.
+    ///
+    /// This does not discover dependencies or verify artifact files on disk;
+    /// neither dependency identity nor installation recipes can be reconstructed
+    /// from storage alone.
     pub(crate) async fn load(directories: &Directories) -> Result<Self> {
         let mut index = Self::open(directories).await?;
         let previous = index.addons.clone();
@@ -138,6 +154,7 @@ impl AddonIndex<Dependency> {
         Ok(index)
     }
 
+    /// Rejects records with mismatched UUIDs, no artifacts, or unsafe artifact paths.
     async fn rebuild(&mut self, directories: &Directories) -> Result<()> {
         let index_path = Dependency::index(directories);
         let mut addons = HashMap::new();

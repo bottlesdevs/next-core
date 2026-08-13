@@ -1,10 +1,9 @@
 //! Addon installation recipes and their executor.
 //!
-//! Component entries carry one recipe for their extracted directory; dependency
-//! artifacts each carry their own recipe. Bottle installation prepares those
-//! resources and calls [`execute`]; component removal calls [`uninstall`] with
-//! the persisted recipe. Components without a catalog recipe, including
-//! hand-placed components, use the built-in recipe for their [`super::Slot`].
+//! Downloaded dependency artifacts retain their catalog recipes in the local
+//! index. Components instead derive a built-in recipe from their [`super::Slot`],
+//! allowing a bottle to remove a selected component without consulting the
+//! catalog or local index.
 //!
 //! # Installation
 //!
@@ -55,7 +54,11 @@ use super::{Addon, Component, deserialize_non_empty_string};
 pub(crate) use engine::{execute, replay_environment, uninstall};
 pub(crate) use recipes::steps as recipe_steps;
 
-/// One local dependency artifact and its installation recipe.
+/// One local resource and the installation steps applied to it.
+///
+/// Persisted dependency index entries store a single-component relative path.
+/// Bottle installation resolves that path before passing the resource to the
+/// engine. Component resources are derived directly from their slot and version.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct Artifact {
     pub(crate) path: PathBuf,
@@ -142,14 +145,20 @@ pub(crate) enum InstallStep {
     SetEnvironment { name: String, value: String },
 }
 
+/// Bottle-specific services and mutable state used while applying a recipe.
 pub(crate) struct InstallInputs<'a> {
+    /// The prepared Wine prefix receiving recipe changes.
     pub(crate) prefix: &'a Path,
+    /// The runner used for Windows processes and prefix shutdown.
     pub(crate) runner: &'a dyn Runner,
+    /// The WineBridge executable selected by the bottle.
     pub(crate) winebridge: &'a Path,
+    /// The environment updated by `SetEnvironment` steps and passed to processes.
     pub(crate) environment: &'a mut Environment,
 }
 
 impl Addon<Component> {
+    /// Derives the component resource and built-in recipe from stored metadata.
     pub(crate) fn artifact(&self, directories: &Directories) -> Artifact {
         Artifact::new(self.path(directories), recipe_steps(self.slot()).to_vec())
     }
