@@ -31,7 +31,7 @@ impl<K> Catalog<K> {
     /// local addons remain usable and a later refresh can replace the cache.
     pub(crate) async fn load(directories: &Directories) -> Option<Arc<Self>>
     where
-        K: CatalogKind,
+        K: AddonFamily,
         Self: DeserializeOwned,
     {
         let catalog =
@@ -41,7 +41,7 @@ impl<K> Catalog<K> {
 
     pub(crate) async fn save(&self, directories: &Directories) -> Result<()>
     where
-        K: CatalogKind,
+        K: AddonFamily,
         Self: Serialize,
     {
         async_fs::write(K::catalog(directories), serde_json::to_vec(self)?).await?;
@@ -62,7 +62,7 @@ pub(crate) struct CatalogUrls {
     pub(crate) dependencies: Option<Url>,
 }
 
-pub(crate) trait CatalogKind {
+pub(crate) trait AddonFamily {
     const LABEL: &'static str;
 
     fn url(urls: &CatalogUrls) -> Option<Url>;
@@ -70,7 +70,7 @@ pub(crate) trait CatalogKind {
     fn index(directories: &Directories) -> PathBuf;
 }
 
-impl CatalogKind for Component {
+impl AddonFamily for Component {
     const LABEL: &'static str = "components";
 
     fn url(urls: &CatalogUrls) -> Option<Url> {
@@ -86,7 +86,7 @@ impl CatalogKind for Component {
     }
 }
 
-impl CatalogKind for Dependency {
+impl AddonFamily for Dependency {
     const LABEL: &'static str = "dependencies";
 
     fn url(urls: &CatalogUrls) -> Option<Url> {

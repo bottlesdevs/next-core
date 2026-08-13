@@ -17,8 +17,8 @@ use url::Url;
 use uuid::{NonNilUuid, Uuid};
 
 use super::{
-    Addon, AddonError, CatalogError, Component, Dependency, Slot, Target,
-    catalog::{Catalog, CatalogArtifact, CatalogEntry, CatalogKind, CatalogUrls},
+    AddonError, CatalogError, Component, Dependency, IndexEntry, Slot, Target,
+    catalog::{AddonFamily, Catalog, CatalogArtifact, CatalogEntry, CatalogUrls},
     index::AddonIndex,
     item::Artifact,
 };
@@ -84,22 +84,22 @@ impl Addons {
     }
 
     /// Returns downloaded and hand-placed components.
-    pub fn components(&self) -> Vec<Arc<Addon<Component>>> {
+    pub fn components(&self) -> Vec<Arc<IndexEntry<Component>>> {
         self.state().components.addons.values().cloned().collect()
     }
 
     /// Returns complete downloaded dependencies.
-    pub fn dependencies(&self) -> Vec<Arc<Addon<Dependency>>> {
+    pub fn dependencies(&self) -> Vec<Arc<IndexEntry<Dependency>>> {
         self.state().dependencies.addons.values().cloned().collect()
     }
 
     /// Returns the local component with this immutable release identifier.
-    pub fn component(&self, id: Uuid) -> Option<Arc<Addon<Component>>> {
+    pub fn component(&self, id: Uuid) -> Option<Arc<IndexEntry<Component>>> {
         self.state().components.addons.get(&id).cloned()
     }
 
     /// Returns the local dependency with this immutable release identifier.
-    pub fn dependency(&self, id: Uuid) -> Option<Arc<Addon<Dependency>>> {
+    pub fn dependency(&self, id: Uuid) -> Option<Arc<IndexEntry<Dependency>>> {
         self.state().dependencies.addons.get(&id).cloned()
     }
 
@@ -184,7 +184,7 @@ impl Addons {
 
     /// Downloads, extracts, validates, and atomically publishes the component
     /// identified by `id` in the current catalog.
-    pub fn fetch_component(&self, id: Uuid) -> Operation<Arc<Addon<Component>>> {
+    pub fn fetch_component(&self, id: Uuid) -> Operation<Arc<IndexEntry<Component>>> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let entry = addons
@@ -252,7 +252,7 @@ impl Addons {
                 if exists(&target).await? {
                     return Err(AddonError::TargetExists(target).into());
                 }
-                let component = Addon::new_component(
+                let component = IndexEntry::new_component(
                     NonNilUuid::new(entry.id()).expect("catalog UUID is non-nil"),
                     entry.name().to_owned(),
                     entry.version().to_owned(),
@@ -291,7 +291,7 @@ impl Addons {
 
     /// Downloads every platform artifact and atomically publishes the dependency
     /// identified by `id` in the current catalog.
-    pub fn fetch_dependency(&self, id: Uuid) -> Operation<Arc<Addon<Dependency>>> {
+    pub fn fetch_dependency(&self, id: Uuid) -> Operation<Arc<IndexEntry<Dependency>>> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let entry = addons
@@ -339,7 +339,7 @@ impl Addons {
                 if exists(&target).await? {
                     async_fs::remove_dir_all(&target).await?;
                 }
-                let dependency = Addon::new_dependency(
+                let dependency = IndexEntry::new_dependency(
                     NonNilUuid::new(entry.id()).expect("catalog UUID is non-nil"),
                     entry.name().to_owned(),
                     entry.version().to_owned(),
@@ -430,7 +430,7 @@ impl Addons {
         .await
     }
 
-    pub(crate) fn latest_component(&self, slot: Slot) -> Option<Arc<Addon<Component>>> {
+    pub(crate) fn latest_component(&self, slot: Slot) -> Option<Arc<IndexEntry<Component>>> {
         self.state()
             .components
             .addons
@@ -461,7 +461,7 @@ impl Addons {
         cancellation: &CancellationToken,
     ) -> Result<Arc<Catalog<K>>>
     where
-        K: CatalogKind,
+        K: AddonFamily,
         Catalog<K>: DeserializeOwned,
     {
         let url = K::url(&self.0.catalog_urls).ok_or(CatalogError::UrlNotConfigured(K::LABEL))?;

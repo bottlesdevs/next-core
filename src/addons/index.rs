@@ -23,12 +23,13 @@ use uuid::{NonNilUuid, Uuid};
 
 use super::{
     Addon, AddonError, Component, Dependency, Requirement, Slot,
-    catalog::{Catalog, CatalogKind},
+    catalog::{AddonFamily, Catalog},
+    item::Artifact,
 };
 use crate::{
     Directories,
     error::Result,
-    runner::{RunnerKind, detect_runner_kind},
+    runner::{Runner, RunnerKind, detect_runner_kind},
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -46,7 +47,7 @@ pub(crate) struct AddonIndex<K> {
     pub(crate) catalog: Option<Arc<Catalog<K>>>,
     /// Complete local releases keyed by immutable release UUID.
     #[serde(rename = "addon")]
-    pub(crate) addons: HashMap<Uuid, Arc<Addon<K>>>,
+    pub(crate) addons: HashMap<Uuid, Arc<IndexEntry<K>>>,
 }
 
 impl Config for AddonIndex<Component> {
@@ -65,7 +66,7 @@ impl<K> AddonIndex<K> {
     /// UUIDs and installation recipes.
     async fn open(directories: &Directories) -> Result<Self>
     where
-        K: CatalogKind,
+        K: AddonFamily,
         Self: Config,
     {
         let path = K::index(directories);
@@ -89,7 +90,7 @@ impl<K> AddonIndex<K> {
     /// Atomically replaces the category index while omitting the runtime catalog.
     pub(crate) async fn save(&self, directories: &Directories) -> Result<()>
     where
-        K: CatalogKind,
+        K: AddonFamily,
         Self: Config,
     {
         next_config::save(K::index(directories), self).await?;
@@ -158,7 +159,7 @@ impl AddonIndex<Component> {
                 } else {
                     let id =
                         Uuid::new_v5(&Uuid::NAMESPACE_URL, path.as_os_str().as_encoded_bytes());
-                    Arc::new(Addon::new_component(
+                    Arc::new(IndexEntry::new_component(
                         NonNilUuid::new(id).expect("v5 UUID is non-nil"),
                         version.clone(),
                         version,
@@ -253,6 +254,119 @@ impl AddonIndex<Dependency> {
     }
 }
 
+/// A complete downloaded or hand-placed addon snapshot.
+///
+/// `K` is either [`Component`] or [`Dependency`]. Values do not update after
+/// downloads, removals, or catalog refreshes; query [`crate::Addons`] again to
+/// observe later state. Local paths are derived from the active Bottles data
+/// directory.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(bound(serialize = "K: Serialize", deserialize = "K: Deserialize<'de>"))]
+pub struct IndexEntry<K> {
+    #[serde(flatten)]
+    addon: Addon<K>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    artifacts: Vec<Artifact>,
+}
+
+impl<K> IndexEntry<K> {
+    fn new(addon: Addon<K>, artifacts: Vec<Artifact>) -> Self {
+        Self { addon, artifacts }
+    }
+
+    /// Returns the artifact-free addon metadata stored in bottle state.
+    pub fn addon(&self) -> &Addon<K> {
+        &self.addon
+    }
+
+    /// Returns the immutable release identifier.
+    pub fn id(&self) -> Uuid {
+        self.addon.id()
+    }
+
+    /// Returns the catalog label, or version directory name for hand-placed components.
+    pub fn name(&self) -> &str {
+        self.addon.name()
+    }
+
+    /// Returns the downloaded catalog or hand-placed version string.
+    pub fn version(&self) -> &str {
+        self.addon.version()
+    }
+
+    /// Returns the requirements checked before a bottle mutation.
+    pub fn requirements(&self) -> &[Requirement] {
+        self.addon.requirements()
+    }
+}
+
+impl<K: Clone> From<&IndexEntry<K>> for Addon<K> {
+    fn from(entry: &IndexEntry<K>) -> Self {
+        entry.addon.clone()
+    }
+}
+
+impl IndexEntry<Component> {
+    pub(crate) fn new_component(
+        id: NonNilUuid,
+        name: String,
+        version: String,
+        slot: Slot,
+        requirements: Vec<Requirement>,
+    ) -> Self {
+        Self::new(
+            Addon::new(id, name, version, requirements, Component { slot }),
+            Vec::new(),
+        )
+    }
+
+    /// Returns the mutually exclusive role occupied by this component.
+    pub fn slot(&self) -> Slot {
+        self.addon.slot()
+    }
+
+    pub(crate) fn path(&self, directories: &Directories) -> PathBuf {
+        self.addon.path(directories)
+    }
+
+    pub(crate) fn artifact(&self, directories: &Directories) -> Artifact {
+        self.addon.artifact(directories)
+    }
+
+    pub(crate) async fn load_runner(
+        &self,
+        directories: &Directories,
+        umu: Option<&Self>,
+    ) -> Result<Box<dyn Runner>> {
+        self.addon
+            .load_runner(directories, umu.map(|entry| &entry.addon))
+            .await
+    }
+}
+
+impl IndexEntry<Dependency> {
+    pub(crate) fn new_dependency(
+        id: NonNilUuid,
+        name: String,
+        version: String,
+        requirements: Vec<Requirement>,
+        artifacts: Vec<Artifact>,
+    ) -> Self {
+        Self::new(
+            Addon::new(id, name, version, requirements, Dependency::default()),
+            artifacts,
+        )
+    }
+
+    pub(crate) fn artifacts(&self) -> &[Artifact] {
+        &self.artifacts
+    }
+
+    pub(crate) fn path(&self, directories: &Directories) -> PathBuf {
+        directories.dependencies().join(self.id().to_string())
+    }
+}
+
 fn single_path_component(value: impl AsRef<Path>) -> bool {
     let mut components = value.as_ref().components();
     matches!(components.next(), Some(PathComponent::Normal(_))) && components.next().is_none()
@@ -262,4 +376,86 @@ async fn regular_file(path: &Path) -> bool {
     async_fs::metadata(path)
         .await
         .is_ok_and(|entry| entry.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::*;
+
+    fn id() -> NonNilUuid {
+        NonNilUuid::new(Uuid::new_v4()).unwrap()
+    }
+
+    #[test]
+    fn index_entry_flattens_addon_and_rejects_unknown_fields() {
+        let entry = IndexEntry::new_dependency(
+            id(),
+            "dependency".into(),
+            "1.0.0".into(),
+            vec![Requirement::Slot(Slot::Runner)],
+            vec![Artifact::new(PathBuf::from("setup.exe"), Vec::new())],
+        );
+        let value = serde_json::to_value(&entry).unwrap();
+
+        assert!(value.get("addon").is_none());
+        assert_eq!(value["name"], "dependency");
+        assert_eq!(value["artifacts"][0]["path"], "setup.exe");
+        assert_eq!(
+            serde_json::from_value::<IndexEntry<Dependency>>(value.clone()).unwrap(),
+            entry
+        );
+
+        let addon = Addon::from(&entry);
+        let addon_value = serde_json::to_value(&addon).unwrap();
+        assert!(addon_value.get("artifacts").is_none());
+        assert_eq!(addon.id(), entry.id());
+        assert_eq!(addon.requirements(), entry.requirements());
+
+        let mut unknown_entry = value;
+        unknown_entry
+            .as_object_mut()
+            .unwrap()
+            .insert("unknown".into(), Value::Bool(true));
+        assert!(serde_json::from_value::<IndexEntry<Dependency>>(unknown_entry).is_err());
+
+        let mut unknown_addon = addon_value;
+        unknown_addon
+            .as_object_mut()
+            .unwrap()
+            .insert("unknown".into(), Value::Bool(true));
+        assert!(serde_json::from_value::<Addon<Dependency>>(unknown_addon).is_err());
+    }
+
+    #[test]
+    fn index_paths_use_active_directories() {
+        let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
+        let directories = Directories::from_path(&root).unwrap();
+        let component = IndexEntry::new_component(
+            id(),
+            "runner".into(),
+            "1.0.0".into(),
+            Slot::Runner,
+            Vec::new(),
+        );
+        let dependency = IndexEntry::new_dependency(
+            id(),
+            "dependency".into(),
+            "1.0.0".into(),
+            Vec::new(),
+            vec![Artifact::new(PathBuf::from("setup.exe"), Vec::new())],
+        );
+
+        assert_eq!(
+            component.path(&directories),
+            directories.components().join("runner/1.0.0")
+        );
+        assert_eq!(
+            dependency.path(&directories),
+            directories.dependencies().join(dependency.id().to_string())
+        );
+        let serialized = serde_json::to_string(&(component, dependency)).unwrap();
+        assert!(!serialized.contains(root.to_string_lossy().as_ref()));
+    }
 }

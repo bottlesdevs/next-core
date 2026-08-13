@@ -2,7 +2,7 @@
 //!
 //! Obtain the shared [`Addons`] manager from [`crate::Bottles::addons`]. The
 //! manager exposes typed Bottles-maintained [`CatalogEntry`] values separately
-//! from downloaded and hand-placed [`Addon`] values.
+//! from downloaded and hand-placed [`IndexEntry`] values.
 //!
 //! Fetching only places resources in library-managed storage. Bottles select
 //! components with [`crate::Bottle::set_component`] and install dependencies
@@ -19,6 +19,7 @@ mod manager;
 
 pub use catalog::CatalogEntry;
 pub use error::{AddonError, CatalogError, InstallerError};
+pub use index::IndexEntry;
 pub use item::{Addon, Component, Dependency, Requirement, Slot};
 pub use manager::Addons;
 
