@@ -83,11 +83,14 @@ pub enum Stage {
     },
     Extracting,
     CreatingPrefix,
+    #[cfg(feature = "fvs")]
     Checkpointing,
+    #[cfg(feature = "fvs")]
     Restoring,
     Rebuilding,
     Configuring,
     Removing,
+    #[cfg(feature = "fvs")]
     Committing,
 }
 
@@ -100,11 +103,14 @@ impl fmt::Display for Stage {
             Self::Verifying { file } => write!(formatter, "Verifying {file}"),
             Self::Extracting => formatter.write_str("Extracting"),
             Self::CreatingPrefix => formatter.write_str("Creating prefix"),
+            #[cfg(feature = "fvs")]
             Self::Checkpointing => formatter.write_str("Checkpointing"),
+            #[cfg(feature = "fvs")]
             Self::Restoring => formatter.write_str("Restoring"),
             Self::Rebuilding => formatter.write_str("Rebuilding"),
             Self::Configuring => formatter.write_str("Configuring"),
             Self::Removing => formatter.write_str("Removing"),
+            #[cfg(feature = "fvs")]
             Self::Committing => formatter.write_str("Committing"),
         }
     }

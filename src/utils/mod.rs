@@ -4,11 +4,11 @@ pub(crate) mod context;
 pub(crate) mod directories;
 pub(crate) mod environment;
 
-use std::{
-    io,
-    path::{Path, PathBuf},
-};
+#[cfg(feature = "fvs")]
+use std::path::PathBuf;
+use std::{io, path::Path};
 
+#[cfg(feature = "fvs")]
 pub fn absolute_path(path: PathBuf) -> crate::error::Result<PathBuf> {
     let path = if path.is_absolute() {
         path

@@ -1,5 +1,6 @@
 //! Bottle-specific errors exposed through the crate's top-level error type.
 
+#[cfg(feature = "fvs")]
 use std::path::PathBuf;
 
 use thiserror::Error;
@@ -68,6 +69,7 @@ pub enum BottleError {
 }
 
 /// Virgo-specific failures carried by [`crate::error::Error::Virgo`].
+#[cfg(feature = "fvs")]
 #[derive(Debug, Error)]
 pub enum VirgoError {
     /// A required FVS commit is missing from a repository.

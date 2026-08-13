@@ -3,18 +3,22 @@ name = "bottles-core"
 version = "0.1.0"
 edition.workspace = true
 
+[features]
+default = ["fvs"]
+fvs = ["dep:blocking", "dep:fvs-rs", "dep:regdiff-rs"]
+
 [dependencies]
 async-fs.workspace = true
 async-compression.workspace = true
 async-io.workspace = true
 async-process.workspace = true
 async-trait.workspace = true
-blocking.workspace = true
+blocking = { workspace = true, optional = true }
 download-manager.workspace = true
 http-client = { workspace = true, features = ["reqwest"] }
 next-config.workspace = true
 next-proto.workspace = true
-fvs-rs.workspace = true
+fvs-rs = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -30,7 +34,7 @@ futures-util.workspace = true
 smol-tar.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
 tokio-util = { workspace = true, features = ["rt"] }
-regdiff-rs.workspace = true
+regdiff-rs = { workspace = true, optional = true }
 semver.workspace = true
 strum.workspace = true
 url = { workspace = true, features = ["serde"] }

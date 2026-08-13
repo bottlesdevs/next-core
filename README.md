@@ -4,7 +4,17 @@ The application core for managing Bottles Next Wine and Proton environments.
 
 `bottles-core` discovers and installs managed components, persists bottles,
 executes Windows programs through WineBridge, and provides checkpointed prefix
-mutation and snapshots through FVS.
+mutation and snapshots through the default `fvs` feature.
+
+Disable FVS when only conventional, directly mutable prefixes are needed:
+
+```toml
+[dependencies]
+bottles-core = { version = "0.1", default-features = false }
+```
+
+Without `fvs`, snapshot APIs and Virgo storage are not compiled, and failed or
+cancelled addon recipes are not rolled back automatically.
 
 [Source] | [Issue tracker]
 

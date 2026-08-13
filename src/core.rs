@@ -1,4 +1,6 @@
-use std::{path::PathBuf, sync::Arc};
+#[cfg(feature = "fvs")]
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use download_manager::manager::{DownloadManager, DownloadManagerConfig};
 use http_client::ReqwestClient;
@@ -8,6 +10,7 @@ use crate::{Addons, BottleManager, Context, Directories, error::Result};
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
+    #[cfg(feature = "fvs")]
     pub fvs2d: Option<PathBuf>,
     pub component_catalog: Option<Url>,
     pub dependency_catalog: Option<Url>,
@@ -22,10 +25,13 @@ pub struct Bottles {
 impl Bottles {
     pub async fn open(config: Config) -> Result<Self> {
         let Config {
+            #[cfg(feature = "fvs")]
             fvs2d,
             component_catalog,
             dependency_catalog,
         } = config;
+        #[cfg(not(feature = "fvs"))]
+        let fvs2d = None;
         let directories = Directories::new().await?;
         let client = ReqwestClient::new().map_err(download_manager::error::Error::from)?;
         let downloader = Arc::new(DownloadManager::new(

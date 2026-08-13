@@ -15,9 +15,11 @@ pub use addons::{
 };
 pub use bottle::{
     Bottle, BottleEdit, BottleManager, BottleState, DllOverride, DllOverrideMode, GamescopeConfig,
-    GamescopeFilter, GamescopeScaler, MangoHudConfig, Process, Program, RegistryHive, Snapshot,
-    SnapshotSummary, Storage, Wrappers,
+    GamescopeFilter, GamescopeScaler, MangoHudConfig, Process, Program, RegistryHive, Storage,
+    Wrappers,
 };
+#[cfg(feature = "fvs")]
+pub use bottle::{Snapshot, SnapshotSummary};
 pub use core::{Bottles, Config};
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use utils::environment::Environment;

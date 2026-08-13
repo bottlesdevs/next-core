@@ -193,8 +193,8 @@ impl BottleState {
 
     /// Reports how the Wine prefix itself is stored.
     ///
-    /// Both strategies still use FVS for snapshot history and addon mutation
-    /// checkpoints.
+    /// With the default `fvs` feature, both strategies use FVS for snapshot
+    /// history and addon mutation checkpoints.
     pub fn storage(&self) -> Storage {
         self.storage.kind()
     }
@@ -304,6 +304,7 @@ impl Bottle {
         BottleEdit::new(self.clone())
     }
 
+    #[cfg(feature = "fvs")]
     pub(crate) fn ensure_exists(&self) -> Result<()> {
         if self.is_deleted() {
             Err(BottleError::Deleted(self.0.id).into())
@@ -312,6 +313,7 @@ impl Bottle {
         }
     }
 
+    #[cfg(feature = "fvs")]
     pub(crate) fn is_deleted(&self) -> bool {
         self.0.published.borrow().is_none()
     }
@@ -425,11 +427,12 @@ impl Program {
 pub enum Storage {
     /// Stores a conventional mutable prefix in the bottle directory.
     ///
-    /// FVS is still required for bottle snapshots and addon mutation
-    /// checkpoints.
+    /// With the default `fvs` feature, FVS also provides snapshots and addon
+    /// mutation checkpoints.
     Standard,
     /// Stores the prefix as composable FVS layers.
     ///
     /// Virgo is experimental and requires the configured FVS service.
+    #[cfg(feature = "fvs")]
     Virgo,
 }

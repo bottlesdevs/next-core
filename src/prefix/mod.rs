@@ -2,35 +2,38 @@
 //!
 //! [`Prefix`] is persisted as part of each bottle's state. Standard storage
 //! mutates a conventional prefix directly; Virgo stores an ordered FVS layer
-//! stack with a per-bottle writable upper directory. Addon installation and
-//! removal use the same FVS checkpoint-and-restore boundary for both backends.
+//! stack with a per-bottle writable upper directory. With the default `fvs`
+//! feature, addon installation and removal use an FVS rollback checkpoint.
 
 mod standard;
+#[cfg(feature = "fvs")]
 mod virgo;
 
 use std::{future::Future, path::Path};
 
-use futures_core::Stream;
-use futures_util::TryStreamExt;
-use fvs_rs::{
-    Commit, Layer, Progress as FvsProgress, Repository, RestoreResponse, error::Error as FvsError,
-};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-
-use crate::{
-    Context, Progress, Stage, Transfer,
-    bottle::Storage,
-    error::{Error, Result},
-    runner::Runner,
+#[cfg(feature = "fvs")]
+use {
+    crate::{Stage, Transfer, error::Error},
+    futures_core::Stream,
+    futures_util::TryStreamExt,
+    fvs_rs::{
+        Commit, Layer, Progress as FvsProgress, Repository, RestoreResponse,
+        error::Error as FvsError,
+    },
 };
+
+use crate::{Context, Progress, bottle::Storage, error::Result, runner::Runner};
 
 /// Identifies rollback checkpoints that must not appear as user snapshots.
 ///
 /// Snapshot filtering compares this persisted value exactly, so changing it
 /// would expose checkpoints created by older versions.
+#[cfg(feature = "fvs")]
 pub(crate) const AUTO_CHECKPOINT_MESSAGE: &str = "bottles-next:auto-checkpoint";
+#[cfg(feature = "fvs")]
 pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
 /// Backend-specific state persisted in [`crate::bottle::BottleState`].
@@ -38,6 +41,7 @@ pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 #[serde(tag = "kind")]
 pub(crate) enum Prefix {
     Standard,
+    #[cfg(feature = "fvs")]
     Virgo {
         /// Mount order: shared base, runner adapter, then installed addon layers.
         #[serde(default)]
@@ -45,6 +49,7 @@ pub(crate) enum Prefix {
     },
 }
 
+#[cfg(feature = "fvs")]
 impl From<&FvsProgress> for Transfer {
     fn from(progress: &FvsProgress) -> Self {
         // FVS uses negative counters when progress is unavailable. Core progress
@@ -64,11 +69,14 @@ impl Prefix {
         runner_key: &str,
         context: &Context,
     ) -> Result<Self> {
+        #[cfg(not(feature = "fvs"))]
+        let _ = (runner_key, context);
         match storage {
             Storage::Standard => {
                 standard::create(bottle_path, runner).await?;
                 Ok(Self::Standard)
             }
+            #[cfg(feature = "fvs")]
             Storage::Virgo => Ok(Self::Virgo {
                 layers: virgo::create(bottle_path, runner, runner_key, context).await?,
             }),
@@ -78,20 +86,25 @@ impl Prefix {
     pub(crate) fn kind(&self) -> Storage {
         match self {
             Self::Standard => Storage::Standard,
+            #[cfg(feature = "fvs")]
             Self::Virgo { .. } => Storage::Virgo,
         }
     }
 
     pub(crate) async fn prepare(&self, bottle_path: &Path, context: &Context) -> Result<()> {
+        let _ = (bottle_path, context);
         match self {
             Self::Standard => Ok(()),
+            #[cfg(feature = "fvs")]
             Self::Virgo { layers } => virgo::prepare(bottle_path, layers, context).await,
         }
     }
 
     pub(crate) async fn stop(&self, bottle_path: &Path, context: &Context) -> Result<()> {
+        let _ = (bottle_path, context);
         match self {
             Self::Standard => Ok(()),
+            #[cfg(feature = "fvs")]
             Self::Virgo { .. } => virgo::stop(bottle_path, context).await,
         }
     }
@@ -103,12 +116,18 @@ impl Prefix {
         installed: &[Uuid],
         context: &Context,
     ) -> Result<()> {
-        let Self::Virgo { layers } = self else {
-            return Ok(());
-        };
-        // Resolve the complete replacement before changing persisted state. A
-        // missing cached addon therefore leaves the old layer stack intact.
-        virgo::rebuild(layers, runner, runner_key, installed, context).await
+        match self {
+            Self::Standard => {
+                let _ = (runner, runner_key, installed, context);
+                Ok(())
+            }
+            #[cfg(feature = "fvs")]
+            Self::Virgo { layers } => {
+                // Resolve the complete replacement before changing persisted state. A
+                // missing cached addon therefore leaves the old layer stack intact.
+                virgo::rebuild(layers, runner, runner_key, installed, context).await
+            }
+        }
     }
 
     pub(crate) async fn install<F, P>(
@@ -125,9 +144,11 @@ impl Prefix {
         F: for<'a> std::ops::AsyncFnOnce(&'a Path) -> Result<()>,
         P: FnMut(Progress),
     {
+        let _ = (item_id, replaced_id);
         let work = async {
             match self {
                 Self::Standard => standard::install(bottle_path, execute).await,
+                #[cfg(feature = "fvs")]
                 Self::Virgo { layers } => {
                     virgo::install(bottle_path, layers, item_id, replaced_id, execute, context)
                         .await
@@ -150,9 +171,11 @@ impl Prefix {
         F: for<'a> std::ops::AsyncFnOnce(&'a Path, bool) -> Result<()>,
         P: FnMut(Progress),
     {
+        let _ = item_id;
         let work = async {
             match self {
                 Self::Standard => standard::uninstall(bottle_path, execute).await,
+                #[cfg(feature = "fvs")]
                 Self::Virgo { layers } => {
                     virgo::uninstall(bottle_path, layers, item_id, execute, context).await
                 }
@@ -169,6 +192,7 @@ impl Prefix {
 /// fails, the restore failure is logged and the original error is preserved.
 /// Dropping the surrounding [`crate::Operation`] abandons this future and does
 /// not drive the restore path.
+#[cfg(feature = "fvs")]
 async fn transact<F, T, P>(
     bottle_path: &Path,
     context: &Context,
@@ -235,7 +259,24 @@ where
     }
 }
 
+/// Runs a prefix mutation directly when FVS rollback support is not compiled in.
+#[cfg(not(feature = "fvs"))]
+async fn transact<F, T, P>(
+    _bottle_path: &Path,
+    _context: &Context,
+    work: F,
+    _cancellation: &CancellationToken,
+    _on_progress: P,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+    P: FnMut(Progress),
+{
+    work.await
+}
+
 /// Drains an FVS commit stream, forwarding every frame and requiring a terminal commit.
+#[cfg(feature = "fvs")]
 pub(crate) async fn finish_commit(
     stream: impl Stream<Item = std::result::Result<FvsProgress, FvsError>>,
     on_progress: impl FnMut(&FvsProgress),
@@ -250,6 +291,7 @@ pub(crate) async fn finish_commit(
 }
 
 /// Drains an FVS restore stream, forwarding every frame and requiring a terminal result.
+#[cfg(feature = "fvs")]
 pub(crate) async fn finish_restore(
     stream: impl Stream<Item = std::result::Result<FvsProgress, FvsError>>,
     on_progress: impl FnMut(&FvsProgress),
@@ -268,6 +310,7 @@ pub(crate) async fn finish_restore(
 /// Every frame, including the terminal frame, is forwarded to `on_progress`.
 /// End-of-stream or a terminal frame without the expected payload is a protocol
 /// error rather than successful completion.
+#[cfg(feature = "fvs")]
 async fn finish_stream<T>(
     stream: impl Stream<Item = std::result::Result<FvsProgress, FvsError>>,
     mut on_progress: impl FnMut(&FvsProgress),
@@ -284,8 +327,8 @@ async fn finish_stream<T>(
     Err(FvsError::MissingStreamResult(operation).into())
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(all(test, feature = "fvs"))]
+mod fvs_tests {
     use std::io;
 
     use futures_util::stream;
@@ -399,5 +442,39 @@ mod tests {
                     .unwrap();
                 std::fs::remove_dir_all(root).unwrap();
             });
+    }
+}
+
+#[cfg(all(test, not(feature = "fvs")))]
+mod no_fvs_tests {
+    use std::io;
+
+    use super::*;
+
+    #[test]
+    fn transaction_runs_directly_and_propagates_failure() {
+        futures_lite::future::block_on(async {
+            let directories = crate::Directories::from_path(
+                std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4())),
+            )
+            .unwrap();
+            let context = crate::Context::for_test(directories, None).unwrap();
+            let mut ran = false;
+
+            let result = transact(
+                Path::new("unused"),
+                &context,
+                async {
+                    ran = true;
+                    Err::<(), _>(io::Error::other("expected failure").into())
+                },
+                &CancellationToken::new(),
+                |_| panic!("direct mutation must not report FVS progress"),
+            )
+            .await;
+
+            assert!(ran);
+            assert!(matches!(result, Err(crate::error::Error::Io(_))));
+        });
     }
 }

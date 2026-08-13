@@ -1,17 +1,19 @@
-use crate::{
-    Directories,
-    error::{Error, Result},
-    utils::absolute_path,
-};
+use crate::{Directories, error::Result};
 use download_manager::manager::DownloadManager;
-use fvs_rs::Fvs2dClient;
 use std::{path::PathBuf, sync::Arc};
-use tokio::sync::OnceCell;
+#[cfg(feature = "fvs")]
+use {
+    crate::{error::Error, utils::absolute_path},
+    fvs_rs::Fvs2dClient,
+    tokio::sync::OnceCell,
+};
 
 struct ContextInner {
     directories: Directories,
     downloader: Arc<DownloadManager>,
+    #[cfg(feature = "fvs")]
     fvs2d_executable: Option<PathBuf>,
+    #[cfg(feature = "fvs")]
     fvs: OnceCell<Fvs2dClient>,
 }
 
@@ -24,10 +26,14 @@ impl Context {
         downloader: Arc<DownloadManager>,
         fvs2d_executable: Option<PathBuf>,
     ) -> Result<Self> {
+        #[cfg(not(feature = "fvs"))]
+        let _ = fvs2d_executable;
         Ok(Self(Arc::new(ContextInner {
             directories,
             downloader,
+            #[cfg(feature = "fvs")]
             fvs2d_executable: fvs2d_executable.map(absolute_path).transpose()?,
+            #[cfg(feature = "fvs")]
             fvs: OnceCell::new(),
         })))
     }
@@ -54,6 +60,7 @@ impl Context {
         &self.0.downloader
     }
 
+    #[cfg(feature = "fvs")]
     pub(crate) async fn fvs(&self) -> Result<&Fvs2dClient> {
         let executable = self
             .0

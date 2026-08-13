@@ -1,12 +1,15 @@
 use thiserror::Error;
 
+#[cfg(feature = "fvs")]
+pub use crate::bottle::error::VirgoError;
 pub use crate::{
     addons::{AddonError, CatalogError, InstallerError},
-    bottle::error::{BottleError, VirgoError},
+    bottle::error::BottleError,
     runner::RunnerError,
     utils::archive::ArchiveError,
     winebridge::BridgeError,
 };
+#[cfg(feature = "fvs")]
 use fvs_rs::error::Error as FvsError;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -27,14 +30,17 @@ pub enum Error {
     Bridge(#[from] BridgeError),
     #[error("Runner error: {0}")]
     Runner(#[from] RunnerError),
+    #[cfg(feature = "fvs")]
     #[error("FVS error: {0}")]
     Fvs(#[from] FvsError),
     #[error("Bottle error: {0}")]
     Bottle(#[from] BottleError),
+    #[cfg(feature = "fvs")]
     #[error("Virgo error: {0}")]
     Virgo(#[from] VirgoError),
     #[error("addon error: {0}")]
     Addon(#[from] AddonError),
+    #[cfg(feature = "fvs")]
     #[error("fvs2d executable is not configured")]
     Fvs2dNotConfigured,
     #[error("operation cancelled")]

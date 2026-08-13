@@ -9,11 +9,13 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
+#[cfg(feature = "fvs")]
+use crate::prefix::FVS_BLOCK_SIZE;
 use crate::{
     Context, Operation, Progress, Stage,
     addons::{Addon, Addons, Requirement, Slot},
     error::{Error, Result},
-    prefix::{FVS_BLOCK_SIZE, Prefix},
+    prefix::Prefix,
 };
 
 use super::{
@@ -127,8 +129,8 @@ impl BottleManager {
     /// The newest downloaded WineBridge is selected automatically. A runner
     /// requiring UMU also receives the newest downloaded UMU release. No addon
     /// is downloaded implicitly. The runner UUID must identify a downloaded
-    /// runner component. Creation requires the configured FVS service even for
-    /// [`Storage::Standard`]. Failures, and
+    /// runner component. With the default `fvs` feature, creation requires the
+    /// configured FVS service even for [`Storage::Standard`]. Failures, and
     /// cancellation observed while the operation remains polled, remove the
     /// partially-created bottle directory on a best-effort basis. Dropping a
     /// started operation or a cleanup failure can leave a directory that a
@@ -222,6 +224,7 @@ impl BottleManager {
                 )
                 .await?;
                 progress.send_replace(Some(Progress::new(Stage::Configuring)));
+                #[cfg(feature = "fvs")]
                 cx.fvs()
                     .await?
                     .new_repository(&bottle_path, FVS_BLOCK_SIZE)

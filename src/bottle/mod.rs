@@ -12,15 +12,16 @@
 //! reloading externally modified files. Component and dependency records are pinned in each
 //! persisted state until a bottle operation explicitly replaces them.
 //!
-//! Every bottle has an FVS repository, regardless of its [`Storage`] strategy.
-//! FVS provides caller-visible snapshots and the internal checkpoints used to
-//! recover from failed addon changes. Long-running mutations return lazy
+//! With the default `fvs` feature, every bottle has an FVS repository for
+//! caller-visible snapshots and rollback checkpoints around addon changes.
+//! Long-running mutations return lazy
 //! [`crate::Operation`] values and serialize with edits, stopping, snapshots,
 //! and deletion. WineBridge-backed requests may run concurrently.
 
 mod edit;
 pub(crate) mod error;
 mod manager;
+#[cfg(feature = "fvs")]
 mod snapshot;
 mod software;
 mod state;
@@ -38,7 +39,7 @@ pub use crate::wrapper::{
     mangohud::MangoHudConfig,
 };
 pub use edit::BottleEdit;
-pub use fvs_rs::Commit as Snapshot;
-pub use fvs_rs::CommitSummary as SnapshotSummary;
+#[cfg(feature = "fvs")]
+pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 pub use manager::BottleManager;
 pub use state::{Bottle, BottleState, Program, Storage};
