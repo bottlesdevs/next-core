@@ -4,6 +4,7 @@
 //! it for one prefix. [`RunnerCommand`] marks that this lowering has happened so
 //! host wrappers can be added without bypassing runner-specific environment.
 
+mod gptk;
 mod proton;
 mod wine;
 
@@ -12,6 +13,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::error::Result;
+pub(crate) use gptk::Gptk;
 pub(crate) use proton::Proton;
 pub(crate) use wine::Wine;
 
@@ -32,6 +34,9 @@ pub(crate) enum RunnerKind {
     Wine,
     /// A Proton layout launched through a separately managed UMU executable.
     Proton,
+    /// A Game Porting Toolkit layout selected by `bin/wine64`; server control
+    /// expects its sibling `wineserver`.
+    Gptk,
 }
 
 /// Failures while discovering or controlling a runner.
@@ -126,8 +131,9 @@ pub(crate) async fn shutdown_prefix(runner: &dyn Runner, prefix: &Path) -> Resul
 
 /// Classifies a component by its regular-file markers.
 ///
-/// `proton` takes precedence over `bin/wine` when both exist. Missing markers
-/// and marker metadata failures are reported as [`RunnerError::RunnerNotFound`].
+/// `proton` takes precedence over `bin/wine`, which takes precedence over
+/// `bin/wine64`, when more than one exists. Missing markers and marker
+/// metadata failures are reported as [`RunnerError::RunnerNotFound`].
 pub(crate) async fn detect_runner_kind(path: &Path) -> Result<RunnerKind> {
     if async_fs::metadata(path.join("proton"))
         .await
@@ -139,6 +145,11 @@ pub(crate) async fn detect_runner_kind(path: &Path) -> Result<RunnerKind> {
         .is_ok_and(|entry| entry.is_file())
     {
         Ok(RunnerKind::Wine)
+    } else if async_fs::metadata(path.join("bin/wine64"))
+        .await
+        .is_ok_and(|entry| entry.is_file())
+    {
+        Ok(RunnerKind::Gptk)
     } else {
         Err(RunnerError::RunnerNotFound(path.to_path_buf()).into())
     }

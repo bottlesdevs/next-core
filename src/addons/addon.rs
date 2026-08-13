@@ -9,7 +9,7 @@ use uuid::{NonNilUuid, Uuid};
 use crate::{
     Directories,
     error::Result,
-    runner::{Proton, Runner, RunnerError, RunnerKind, Wine, detect_runner_kind},
+    runner::{Gptk, Proton, Runner, RunnerError, RunnerKind, Wine, detect_runner_kind},
 };
 
 /// An addon selection persisted in a bottle.
@@ -103,6 +103,7 @@ impl Addon<Component> {
         let path = self.path(directories);
         match detect_runner_kind(&path).await? {
             RunnerKind::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
+            RunnerKind::Gptk => Ok(Box::new(Gptk::new(path.join("bin/wine64")))),
             RunnerKind::Proton => {
                 let umu = umu
                     .ok_or(RunnerError::UmuExecutableMissing)?

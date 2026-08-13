@@ -117,7 +117,7 @@ impl AddonIndex<Component> {
         let invalid = || AddonError::InvalidComponent(path.to_path_buf());
         match slot {
             Slot::Runner => Ok(match detect_runner_kind(path).await? {
-                RunnerKind::Wine => Vec::new(),
+                RunnerKind::Wine | RunnerKind::Gptk => Vec::new(),
                 RunnerKind::Proton => vec![Requirement::Slot(Slot::Umu)],
             }),
             Slot::WineBridge => {

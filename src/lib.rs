@@ -2,6 +2,8 @@ mod addons;
 mod bottle;
 mod core;
 pub mod error;
+#[cfg(target_os = "macos")]
+pub mod gptk_setup;
 mod operation;
 mod prefix;
 mod runner;
