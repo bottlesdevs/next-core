@@ -3,7 +3,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use async_compression::futures::bufread::GzipDecoder;
+use async_compression::futures::bufread::{GzipDecoder, XzDecoder};
 use futures_lite::{
     StreamExt,
     io::{AsyncRead, BufReader, copy},
@@ -33,6 +33,8 @@ pub(crate) async fn extract(archive: &Path, destination: &Path) -> Result<(), Ar
     let file = async_fs::File::open(archive).await?;
     if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
         unpack(GzipDecoder::new(BufReader::new(file)), destination).await
+    } else if name.ends_with(".tar.xz") || name.ends_with(".txz") {
+        unpack(XzDecoder::new(BufReader::new(file)), destination).await
     } else if name.ends_with(".tar") {
         unpack(file, destination).await
     } else {
@@ -65,6 +67,17 @@ async fn unpack(
                 async_fs::create_dir_all(&destination).await?;
                 directories.push((destination, directory.mode()));
             }
+            TarEntry::Symlink(symlink) => {
+                let path = safe_path(symlink.path())?;
+                let target = link_target(&path, symlink.link())?;
+                let destination = destination.join(&path);
+                if let Some(parent) = destination.parent() {
+                    async_fs::create_dir_all(parent).await?;
+                }
+                // Deliberately unlike files and directories, no mode is applied:
+                // `chmod` follows the link and would repermission its target.
+                create_symlink(&target, &destination).await?;
+            }
             entry => {
                 return Err(ArchiveError::UnsupportedEntry(PathBuf::from(entry.path())));
             }
@@ -88,6 +101,42 @@ fn safe_path(path: &str) -> Result<PathBuf, ArchiveError> {
         return Err(ArchiveError::EntryOutsideDestination(path.to_path_buf()));
     }
     Ok(path.to_path_buf())
+}
+
+/// Validates a symlink's stored target and returns it unchanged.
+///
+/// Targets stay relative and, resolved lexically from the link's own directory,
+/// stay inside the staging directory. Since every entry path is checked the same
+/// way, a link can only ever point at another staged entry.
+fn link_target(link: &Path, target: &str) -> Result<PathBuf, ArchiveError> {
+    let target = Path::new(target);
+    let mut resolved = link.parent().unwrap_or(Path::new("")).to_path_buf();
+    for component in target.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !resolved.pop() {
+                    return Err(ArchiveError::EntryOutsideDestination(target.to_path_buf()));
+                }
+            }
+            Component::Normal(name) => resolved.push(name),
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(ArchiveError::EntryOutsideDestination(target.to_path_buf()));
+            }
+        }
+    }
+    Ok(target.to_path_buf())
+}
+
+#[cfg(unix)]
+async fn create_symlink(target: &Path, path: &Path) -> Result<(), ArchiveError> {
+    async_fs::unix::symlink(target, path).await?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn create_symlink(_target: &Path, path: &Path) -> Result<(), ArchiveError> {
+    Err(ArchiveError::UnsupportedEntry(path.to_path_buf()))
 }
 
 #[cfg(unix)]
@@ -217,28 +266,102 @@ mod tests {
         });
     }
 
+    async fn tar_with_symlink(path: &str, target: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut archive = TarWriter::<_, &[u8]>::new(&mut bytes);
+            archive
+                .write(TarSymlink::new(path, target).into())
+                .await
+                .unwrap();
+            archive.finish().await.unwrap();
+        }
+        bytes
+    }
+
+    /// Component trees such as GPTK's Wine layout carry versioned dylib links,
+    /// including ones that traverse upwards but stay inside the component.
     #[test]
-    fn rejects_links() {
+    fn extracts_contained_links() {
         futures_lite::future::block_on(async {
             let root = temporary_directory();
             let archive_path = root.join("component.tar");
             let destination = root.join("output");
             async_fs::create_dir_all(&destination).await.unwrap();
-            let mut bytes = Vec::new();
-            {
-                let mut archive = TarWriter::<_, &[u8]>::new(&mut bytes);
-                archive
-                    .write(TarSymlink::new("component/link", "target").into())
+            async_fs::write(
+                &archive_path,
+                tar_with_symlink("component/lib/wine/link", "../../external/target").await,
+            )
+            .await
+            .unwrap();
+
+            extract(&archive_path, &destination).await.unwrap();
+
+            let link = destination.join("component/lib/wine/link");
+            assert_eq!(
+                async_fs::read_link(&link).await.unwrap(),
+                PathBuf::from("../../external/target")
+            );
+
+            async_fs::remove_dir_all(root).await.unwrap();
+        });
+    }
+
+    #[test]
+    fn rejects_links_outside_destination() {
+        futures_lite::future::block_on(async {
+            let root = temporary_directory();
+            let destination = root.join("output");
+            async_fs::create_dir_all(&destination).await.unwrap();
+
+            for (path, target) in [
+                ("component/link", "../../escaped"),
+                ("component/link", "/etc/passwd"),
+            ] {
+                let archive_path = root.join("component.tar");
+                async_fs::write(&archive_path, tar_with_symlink(path, target).await)
                     .await
                     .unwrap();
-                archive.finish().await.unwrap();
-            }
-            async_fs::write(&archive_path, bytes).await.unwrap();
 
-            assert!(matches!(
-                extract(&archive_path, &destination).await,
-                Err(ArchiveError::UnsupportedEntry(_))
-            ));
+                assert!(matches!(
+                    extract(&archive_path, &destination).await,
+                    Err(ArchiveError::EntryOutsideDestination(_))
+                ));
+                assert!(!destination.join("component/link").exists());
+            }
+
+            async_fs::remove_dir_all(root).await.unwrap();
+        });
+    }
+
+    #[test]
+    fn extracts_xz_archives() {
+        use async_compression::futures::write::XzEncoder;
+
+        futures_lite::future::block_on(async {
+            let root = temporary_directory();
+            let archive_path = root.join("component.tar.xz");
+            let destination = root.join("output");
+            async_fs::create_dir_all(&destination).await.unwrap();
+            let mut encoder = XzEncoder::new(Vec::new());
+            encoder
+                .write_all(&tar_with_file("component/bin/wine64", 0o755).await)
+                .await
+                .unwrap();
+            encoder.close().await.unwrap();
+            async_fs::write(&archive_path, encoder.into_inner())
+                .await
+                .unwrap();
+
+            extract(&archive_path, &destination).await.unwrap();
+
+            assert!(
+                destination
+                    .join("component/bin/wine64")
+                    .metadata()
+                    .unwrap()
+                    .is_file()
+            );
 
             async_fs::remove_dir_all(root).await.unwrap();
         });
