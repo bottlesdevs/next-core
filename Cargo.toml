@@ -1,7 +1,15 @@
 [package]
 name = "bottles-core"
-version = "0.1.0"
+description = "The application core for managing Bottles Next Wine and Proton environments."
+version.workspace = true
+authors.workspace = true
 edition.workspace = true
+license.workspace = true
+repository = "https://github.com/bottlesdevs/next-core/"
+homepage = ""
+categories = [""]
+keywords = [""]
+exclude = [""]
 
 [features]
 default = ["fvs"]
