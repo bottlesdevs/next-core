@@ -2,7 +2,6 @@ use thiserror::Error;
 
 #[cfg(feature = "fvs")]
 pub use crate::bottle::error::VirgoError;
-use crate::plugins::PluginError;
 pub use crate::{
     addons::{AddonError, CatalogError, InstallerError},
     bottle::error::BottleError,
@@ -44,8 +43,6 @@ pub enum Error {
     Addon(#[from] AddonError),
     #[error("credential error: {0}")]
     Credential(#[from] CredentialError),
-    #[error("plugin error: {0}")]
-    Plugin(#[from] PluginError),
     #[cfg(feature = "fvs")]
     #[error("fvs2d executable is not configured")]
     Fvs2dNotConfigured,
