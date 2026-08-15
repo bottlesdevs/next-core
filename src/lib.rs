@@ -1,10 +1,13 @@
 mod addons;
 mod bottle;
 mod core;
+pub mod credentials;
 pub mod error;
 mod operation;
 mod prefix;
+pub mod registry;
 mod runner;
+pub mod storefronts;
 mod utils;
 mod winebridge;
 mod wrapper;

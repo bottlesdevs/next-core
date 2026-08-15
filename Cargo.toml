@@ -47,6 +47,8 @@ semver.workspace = true
 strum.workspace = true
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde", "v5"] }
+keyring = "4.1.6"
+egs-api = "0.14.0"
 
 [dev-dependencies]
 async-executor.workspace = true
