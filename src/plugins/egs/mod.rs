@@ -10,10 +10,17 @@ use next_proto::bottles::{
     store::v1::{BrowserRedirectChallenge, LoginChallenge, LoginInputKind, login_challenge::Kind},
 };
 use tokio::sync::RwLock;
-use tonic::{Status, async_trait};
+use tonic::async_trait;
 use uuid::Uuid;
 
-use crate::{credentials::CredentialStore, storefronts::StorePlugin};
+use crate::{
+    credentials::CredentialStore,
+    error::CredentialError,
+    plugins::{PluginError, StorePlugin},
+};
+use error::EpicGamesError;
+
+pub mod error;
 
 struct PendingChallenge {
     created_at: Instant,
@@ -42,7 +49,7 @@ impl<C: CredentialStore + Send + Sync + 'static> StorePlugin for EpicGamesServic
         Storefront::EpicGames
     }
 
-    async fn begin_login(&self, _profile_id: &str) -> Result<LoginChallenge, Status> {
+    async fn begin_login(&self, _profile_id: &str) -> Result<LoginChallenge, PluginError> {
         let challenge_id = Uuid::new_v4().to_string();
 
         self.challenges.write().await.insert(
@@ -69,26 +76,26 @@ impl<C: CredentialStore + Send + Sync + 'static> StorePlugin for EpicGamesServic
         profile_id: &str,
         challenge_id: &str,
         user_input: &str,
-    ) -> Result<LinkedAccount, Status> {
+    ) -> Result<LinkedAccount, PluginError> {
         let challenge = self
             .challenges
             .write()
             .await
             .remove(challenge_id)
-            .ok_or_else(|| Status::not_found("Login challenge not found or already completed"))?;
+            .ok_or_else(|| EpicGamesError::LoginChallengeNotFound)?;
 
         if challenge.created_at.elapsed() > Duration::from_secs(300) {
-            return Err(Status::deadline_exceeded("Login challenge expired"));
+            return Err(EpicGamesError::LoginChallengeExpired.into());
         }
 
         if user_input.is_empty() {
-            return Err(Status::invalid_argument("Authorization code is required"));
+            return Err(EpicGamesError::AuthorizationCodeRequired.into());
         }
 
         let mut egs = EpicGames::new();
 
         if !egs.auth_code(None, Some(user_input.to_owned())).await {
-            return Err(Status::unauthenticated("Epic Games authorization failed"));
+            return Err(EpicGamesError::AuthorizationFailed.into());
         }
 
         let user = egs.user_details();
@@ -98,13 +105,12 @@ impl<C: CredentialStore + Send + Sync + 'static> StorePlugin for EpicGamesServic
             user.display_name.as_deref().unwrap_or("<unknown>")
         );
 
-        let credentials = serde_json::to_vec(&user)
-            .map_err(|e| Status::internal(format!("Failed to serialize Epic credentials: {e}")))?;
+        let credentials = serde_json::to_vec(&user).map_err(EpicGamesError::Json)?;
 
         self.credentials
             .save(profile_id, Storefront::EpicGames, &credentials)
             .await
-            .map_err(|e| Status::internal(format!("Failed to save Epic credentials: {e}")))?;
+            .map_err(EpicGamesError::Credentials)?;
 
         let account = egs.account_details().await;
 
@@ -137,25 +143,22 @@ impl<C: CredentialStore + Send + Sync + 'static> StorePlugin for EpicGamesServic
         })
     }
 
-    async fn refresh_session(&self, profile_id: &str) -> Result<LinkedAccount, Status> {
+    async fn refresh_session(&self, profile_id: &str) -> Result<LinkedAccount, PluginError> {
         let credentials = self
             .credentials
             .load(profile_id, Storefront::EpicGames)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?
-            .ok_or_else(|| Status::not_found("Epic Games credentials not found"))?;
+            .map_err(EpicGamesError::Credentials)?
+            .ok_or_else(|| EpicGamesError::Credentials(CredentialError::NotFound))?;
 
-        let user = serde_json::from_slice(&credentials)
-            .map_err(|e| Status::internal(format!("Invalid Epic Games credentials: {e}")))?;
+        let user = serde_json::from_slice(&credentials).map_err(EpicGamesError::Json)?;
 
         let mut egs = EpicGames::new();
 
         egs.set_user_details(user);
 
         if !egs.login().await {
-            return Err(Status::unauthenticated(
-                "Epic Games session is no longer valid",
-            ));
+            return Err(EpicGamesError::SessionInvalid.into());
         }
 
         let user = egs.user_details();
@@ -171,28 +174,25 @@ impl<C: CredentialStore + Send + Sync + 'static> StorePlugin for EpicGamesServic
         })
     }
 
-    async fn revoke_session(&self, _profile_id: &str) -> Result<(), Status> {
+    async fn revoke_session(&self, _profile_id: &str) -> Result<(), PluginError> {
         Ok(())
     }
 
-    async fn games(&self, profile_id: &str) -> Result<Vec<Game>, Status> {
+    async fn games(&self, profile_id: &str) -> Result<Vec<Game>, PluginError> {
         let credentials = self
             .credentials
             .load(profile_id, Storefront::EpicGames)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?
-            .ok_or_else(|| Status::not_found("Epic Games credentials not found"))?;
+            .map_err(|e| EpicGamesError::Credentials(e))?
+            .ok_or_else(|| EpicGamesError::Credentials(CredentialError::NotFound))?;
 
-        let user = serde_json::from_slice(&credentials)
-            .map_err(|e| Status::internal(format!("Invalid Epic Games credentials: {e}")))?;
+        let user = serde_json::from_slice(&credentials).map_err(EpicGamesError::Json)?;
 
         let mut egs = EpicGames::new();
         egs.set_user_details(user);
 
         if !egs.login().await {
-            return Err(Status::unauthenticated(
-                "Epic Games session is no longer valid",
-            ));
+            return Err(EpicGamesError::SessionInvalid.into());
         }
 
         let assets = egs.list_assets(None, None).await;

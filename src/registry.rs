@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use next_proto::bottles::common::v1::Storefront;
 
-use crate::storefronts::StorePlugin;
+use crate::plugins::StorePlugin;
 
 #[derive(Default, Clone)]
 pub struct StoreRegistry {

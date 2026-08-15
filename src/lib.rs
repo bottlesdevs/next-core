@@ -4,10 +4,10 @@ mod core;
 pub mod credentials;
 pub mod error;
 mod operation;
+pub mod plugins;
 mod prefix;
 pub mod registry;
 mod runner;
-pub mod storefronts;
 mod utils;
 mod winebridge;
 mod wrapper;
@@ -24,6 +24,7 @@ pub use bottle::{
 #[cfg(feature = "fvs")]
 pub use bottle::{Snapshot, SnapshotSummary};
 pub use core::{Bottles, Config};
+pub use error::Error;
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use utils::environment::Environment;
 
