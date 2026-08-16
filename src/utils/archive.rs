@@ -65,6 +65,7 @@ async fn unpack(
                 copy(&mut file, &mut output).await?;
                 set_mode(&destination, file.mode()).await?;
             }
+
             TarEntry::Directory(directory) => {
                 let path = safe_path(directory.path())?;
                 let destination = destination.join(path);
@@ -72,6 +73,22 @@ async fn unpack(
                 async_fs::create_dir_all(&destination).await?;
                 directories.push((destination, directory.mode()));
             }
+
+            TarEntry::Symlink(link) => {
+                let path = safe_path(link.path())?;
+                let target = link.link();
+
+                safe_symlink_target(&path, target)?;
+
+                let link_path = destination.join(&path);
+
+                if let Some(parent) = link_path.parent() {
+                    async_fs::create_dir_all(parent).await?;
+                }
+
+                create_symlink(Path::new(target), &link_path)?;
+            }
+
             entry => {
                 return Err(ArchiveError::UnsupportedEntry(PathBuf::from(entry.path())));
             }
@@ -88,16 +105,86 @@ async fn unpack(
 fn safe_path(path: &str) -> Result<PathBuf, ArchiveError> {
     let path = Path::new(path);
 
-    if path.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    }) {
+    if path
+        .components()
+        .any(|component| matches!(component, Component::RootDir | Component::Prefix(_)))
+    {
         return Err(ArchiveError::EntryOutsideDestination(path.to_path_buf()));
     }
 
-    Ok(path.to_path_buf())
+    let mut result = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(component) => result.push(component),
+            Component::ParentDir => {
+                if !result.pop() {
+                    return Err(ArchiveError::EntryOutsideDestination(path.to_path_buf()));
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => unreachable!(),
+        }
+    }
+
+    Ok(result)
+}
+
+fn safe_symlink_target(link: &Path, target: &str) -> Result<(), ArchiveError> {
+    let target = Path::new(target);
+
+    if target.is_absolute() {
+        return Err(ArchiveError::EntryOutsideDestination(target.to_path_buf()));
+    }
+
+    let mut path = PathBuf::new();
+
+    if let Some(parent) = link.parent() {
+        for component in parent.components() {
+            match component {
+                Component::Normal(component) => path.push(component),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if !path.pop() {
+                        return Err(ArchiveError::EntryOutsideDestination(target.to_path_buf()));
+                    }
+                }
+                Component::RootDir | Component::Prefix(_) => {
+                    return Err(ArchiveError::EntryOutsideDestination(target.to_path_buf()));
+                }
+            }
+        }
+    }
+
+    for component in target.components() {
+        match component {
+            Component::Normal(component) => path.push(component),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !path.pop() {
+                    return Err(ArchiveError::EntryOutsideDestination(target.to_path_buf()));
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(ArchiveError::EntryOutsideDestination(target.to_path_buf()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(not(unix))]
+fn create_symlink(_target: &Path, _link: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "symbolic links are not supported on this platform",
+    ))
 }
 
 #[cfg(unix)]
@@ -289,35 +376,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_links() {
-        futures_lite::future::block_on(async {
-            let root = temporary_directory();
-            let archive_path = root.join("component.tar");
-            let destination = root.join("output");
+    fn allows_relative_symlink_targets() {
+        assert_eq!(
+            safe_symlink_target(Path::new("component/bin/run"), "../lib/run",).unwrap(),
+            PathBuf::from("../lib/run"),
+        );
+    }
 
-            async_fs::create_dir_all(&destination).await.unwrap();
-
-            let mut bytes = Vec::new();
-
-            {
-                let mut archive = TarWriter::<_, &[u8]>::new(&mut bytes);
-
-                archive
-                    .write(TarSymlink::new("component/link", "target").into())
-                    .await
-                    .unwrap();
-
-                archive.finish().await.unwrap();
-            }
-
-            async_fs::write(&archive_path, bytes).await.unwrap();
-
-            assert!(matches!(
-                extract(&archive_path, &destination).await,
-                Err(ArchiveError::UnsupportedEntry(_))
-            ));
-
-            async_fs::remove_dir_all(root).await.unwrap();
-        });
+    #[test]
+    fn rejects_escaping_symlink_targets() {
+        assert!(matches!(
+            safe_symlink_target(Path::new("component/bin/run"), "../../../outside",),
+            Err(ArchiveError::EntryOutsideDestination(_))
+        ));
     }
 }
