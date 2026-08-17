@@ -20,7 +20,7 @@ cancelled addon recipes are not rolled back automatically.
 
 ## Overview
 
-The crate is centered around five types:
+The crate is centered around six types:
 
 - `Bottles` owns the download service and provides the addon and bottle managers.
 - `Addons` publishes live collections of runners and installable addons. Item
@@ -29,6 +29,7 @@ The crate is centered around five types:
   current immutable `BottleState` can be read or watched.
 - `Library` projects registered programs across bottles and provides one-shot
   local search.
+- `Profiles` persists named application identities and the current selection.
 - `Operation<T>` represents long-running work with progress and cooperative
   cancellation.
 
@@ -56,6 +57,11 @@ use futures_lite::StreamExt;
 async fn main() -> Result<(), bottles_core::error::Error> {
     let bottles = Bottles::open(Config::default()).await?;
 
+    if bottles.profiles().selected().is_none() {
+        let profile = bottles.profiles().create("Player").await?;
+        bottles.profiles().select(profile.id()).await?;
+    }
+
     for bottle in bottles.bottles().list() {
         let state = bottle.state()?;
         println!("{}\t{}", state.id(), state.name());
@@ -76,8 +82,8 @@ async fn main() -> Result<(), bottles_core::error::Error> {
     while let Some(entry) = search.next().await {
         println!("{}", entry.title());
         for action in entry.actions() {
-            if let SearchAction::Launch(program) = action {
-                println!("  launch from {}", program.bottle_name()?);
+            if let SearchAction::Launch(item) = action {
+                println!("  launch {}", item.program()?.name());
             }
         }
     }

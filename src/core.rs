@@ -6,10 +6,7 @@ use download_manager::manager::{DownloadManager, DownloadManagerConfig};
 use http_client::ReqwestClient;
 use url::Url;
 
-use crate::{
-    Addons, BottleManager, Context, Directories, Library, error::Result,
-    profile::ProfileManager,
-};
+use crate::{Addons, BottleManager, Context, Directories, Library, Profiles, error::Result};
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -23,8 +20,8 @@ pub struct Bottles {
     context: Context,
     bottles: BottleManager,
     addons: Addons,
-    profiles: ProfileManager,
     library: Library,
+    profiles: Profiles,
 }
 
 impl Bottles {
@@ -38,13 +35,13 @@ impl Bottles {
         #[cfg(not(feature = "fvs"))]
         let fvs2d = None;
         let directories = Directories::new().await?;
-        let profiles = ProfileManager::new(&directories).await?;
         let client = ReqwestClient::new().map_err(download_manager::error::Error::from)?;
         let downloader = Arc::new(DownloadManager::new(
             Arc::new(client),
             DownloadManagerConfig::default(),
         )?);
         let context = Context::new(directories, downloader.clone(), fvs2d)?;
+        let profiles = Profiles::load(context.clone()).await?;
         let addons = Addons::load(context.clone(), component_catalog, dependency_catalog).await?;
         let bottles = BottleManager::load(context.clone(), addons.clone()).await?;
         let library = Library::new(bottles.clone());
@@ -53,8 +50,8 @@ impl Bottles {
             context,
             bottles,
             addons,
-            profiles,
             library,
+            profiles,
         })
     }
 
@@ -71,12 +68,13 @@ impl Bottles {
         &self.addons
     }
 
-    pub fn profiles(&self) -> &ProfileManager {
-        &self.profiles
-    }
-
     /// Returns the aggregate installed-program library and search entry point.
     pub fn library(&self) -> &Library {
         &self.library
+    }
+
+    /// Returns the persisted application profiles.
+    pub fn profiles(&self) -> &Profiles {
+        &self.profiles
     }
 }

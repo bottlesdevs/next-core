@@ -7,7 +7,7 @@ pub use crate::{
     addons::{AddonError, CatalogError, InstallerError},
     bottle::BottleError,
     credentials::CredentialError,
-    profile::ProfileError,
+    profiles::ProfileError,
     runner::RunnerError,
     steam::SteamError,
     utils::archive::ArchiveError,

@@ -8,6 +8,7 @@ pub mod library;
 mod operation;
 mod prefix;
 pub mod profile;
+mod profiles;
 mod runner;
 pub mod steam;
 mod utils;
@@ -29,6 +30,7 @@ pub use core::{Bottles, Config};
 pub use error::Error;
 pub use library::{Library, LibraryItem, SearchAction, SearchEntry};
 pub use operation::{Operation, Progress, Stage, Transfer};
+pub use profiles::{Profile, ProfileError, Profiles};
 pub use utils::environment::Environment;
 
 pub(crate) use next_proto::winebridge as proto;
