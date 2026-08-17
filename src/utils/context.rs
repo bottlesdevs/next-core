@@ -2,17 +2,13 @@ use crate::{Directories, error::Result};
 use download_manager::manager::DownloadManager;
 use std::{path::PathBuf, sync::Arc};
 #[cfg(feature = "fvs")]
-use {
-    crate::{error::Error, utils::absolute_path},
-    fvs_rs::Fvs2dClient,
-    tokio::sync::OnceCell,
-};
+use {crate::utils::absolute_path, fvs_rs::Fvs2dClient, tokio::sync::OnceCell};
 
 struct ContextInner {
     directories: Directories,
     downloader: Arc<DownloadManager>,
     #[cfg(feature = "fvs")]
-    fvs2d_executable: Option<PathBuf>,
+    fvs2d_executable: PathBuf,
     #[cfg(feature = "fvs")]
     fvs: OnceCell<Fvs2dClient>,
 }
@@ -32,7 +28,10 @@ impl Context {
             directories,
             downloader,
             #[cfg(feature = "fvs")]
-            fvs2d_executable: fvs2d_executable.map(absolute_path).transpose()?,
+            fvs2d_executable: fvs2d_executable
+                .map(absolute_path)
+                .transpose()?
+                .unwrap_or_else(|| PathBuf::from("fvs2d")),
             #[cfg(feature = "fvs")]
             fvs: OnceCell::new(),
         })))
@@ -62,20 +61,32 @@ impl Context {
 
     #[cfg(feature = "fvs")]
     pub(crate) async fn fvs(&self) -> Result<&Fvs2dClient> {
-        let executable = self
-            .0
-            .fvs2d_executable
-            .as_ref()
-            .ok_or(Error::Fvs2dNotConfigured)?;
         self.0
             .fvs
             .get_or_try_init(|| async {
                 Ok(Fvs2dClient::connect_or_spawn(
-                    executable,
+                    &self.0.fvs2d_executable,
                     self.0.directories.runtime_dir().join("fvs2d.sock"),
                 )
                 .await?)
             })
             .await
+    }
+}
+
+#[cfg(all(test, feature = "fvs"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uses_path_lookup_when_fvs2d_is_not_configured() {
+        let root = std::env::temp_dir().join(format!("bottles-next-{}", uuid::Uuid::new_v4()));
+        let directories = Directories::from_path(&root).unwrap();
+        let context = Context::for_test(directories, None).unwrap();
+
+        assert_eq!(context.0.fvs2d_executable, PathBuf::from("fvs2d"));
+
+        drop(context);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

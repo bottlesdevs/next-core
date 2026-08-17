@@ -40,9 +40,6 @@ pub enum Error {
     Virgo(#[from] VirgoError),
     #[error("addon error: {0}")]
     Addon(#[from] AddonError),
-    #[cfg(feature = "fvs")]
-    #[error("fvs2d executable is not configured")]
-    Fvs2dNotConfigured,
     #[error("operation cancelled")]
     Cancelled,
 }
