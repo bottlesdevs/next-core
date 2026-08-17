@@ -57,10 +57,7 @@ use futures_lite::StreamExt;
 async fn main() -> Result<(), bottles_core::error::Error> {
     let bottles = Bottles::open(Config::default()).await?;
 
-    if bottles.profiles().selected().is_none() {
-        let profile = bottles.profiles().create("Player").await?;
-        bottles.profiles().select(profile.id()).await?;
-    }
+    println!("profile: {}", bottles.profiles().selected().name());
 
     for bottle in bottles.bottles().list() {
         let state = bottle.state()?;
