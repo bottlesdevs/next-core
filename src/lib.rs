@@ -2,6 +2,7 @@ mod addons;
 mod bottle;
 mod core;
 pub mod error;
+mod library;
 mod operation;
 mod prefix;
 mod runner;
@@ -21,6 +22,7 @@ pub use bottle::{
 #[cfg(feature = "fvs")]
 pub use bottle::{Snapshot, SnapshotSummary};
 pub use core::{Bottles, Config};
+pub use library::{Library, LibraryItem, SearchAction, SearchEntry};
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use utils::environment::Environment;
 

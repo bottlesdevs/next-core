@@ -6,7 +6,7 @@ use download_manager::manager::{DownloadManager, DownloadManagerConfig};
 use http_client::ReqwestClient;
 use url::Url;
 
-use crate::{Addons, BottleManager, Context, Directories, error::Result};
+use crate::{Addons, BottleManager, Context, Directories, Library, error::Result};
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -20,6 +20,7 @@ pub struct Bottles {
     context: Context,
     bottles: BottleManager,
     addons: Addons,
+    library: Library,
 }
 
 impl Bottles {
@@ -41,11 +42,13 @@ impl Bottles {
         let context = Context::new(directories, downloader.clone(), fvs2d)?;
         let addons = Addons::load(context.clone(), component_catalog, dependency_catalog).await?;
         let bottles = BottleManager::load(context.clone(), addons.clone()).await?;
+        let library = Library::new(bottles.clone());
 
         Ok(Self {
             context,
             bottles,
             addons,
+            library,
         })
     }
 
@@ -60,5 +63,10 @@ impl Bottles {
 
     pub fn addons(&self) -> &Addons {
         &self.addons
+    }
+
+    /// Returns the aggregate installed-program library and search entry point.
+    pub fn library(&self) -> &Library {
+        &self.library
     }
 }

@@ -20,13 +20,15 @@ cancelled addon recipes are not rolled back automatically.
 
 ## Overview
 
-The crate is centered around four types:
+The crate is centered around five types:
 
 - `Bottles` owns the download service and provides the addon and bottle managers.
 - `Addons` publishes live collections of runners and installable addons. Item
   values are snapshots; query the manager again after a publication.
 - `BottleManager` interns bottles by UUID. A `Bottle` is a shared handle whose
   current immutable `BottleState` can be read or watched.
+- `Library` projects registered programs across bottles and provides one-shot
+  local search.
 - `Operation<T>` represents long-running work with progress and cooperative
   cancellation.
 
@@ -41,12 +43,14 @@ Add `bottles-core` and an async runtime to your application:
 [dependencies]
 bottles-core = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+futures-lite = "2"
 ```
 
 Open the library, inspect the current bottles, and stop its download service:
 
 ```rust
-use bottles_core::{Bottles, Config};
+use bottles_core::{Bottles, Config, Program, SearchAction};
+use futures_lite::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<(), bottles_core::error::Error> {
@@ -55,6 +59,27 @@ async fn main() -> Result<(), bottles_core::error::Error> {
     for bottle in bottles.bottles().list() {
         let state = bottle.state()?;
         println!("{}\t{}", state.id(), state.name());
+    }
+
+    if let Some(bottle) = bottles.bottles().list().into_iter().next() {
+        let program = Program::new("Example", "C:/Games/example.exe")?;
+        let mut edit = bottle.edit();
+        edit.add_program(program.clone());
+        edit.commit().await?;
+        println!("registered {} as {}", program.name(), program.id());
+    }
+
+    let mut installed = Box::pin(bottles.library().watch());
+    println!("{} installed programs", installed.next().await.unwrap().len());
+
+    let mut search = Box::pin(bottles.library().search("example"));
+    while let Some(entry) = search.next().await {
+        println!("{}", entry.title());
+        for action in entry.actions() {
+            if let SearchAction::Launch(program) = action {
+                println!("  launch from {}", program.bottle_name()?);
+            }
+        }
     }
 
     bottles.close().await
