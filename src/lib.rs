@@ -31,7 +31,8 @@ pub use error::Error;
 pub use library::{Library, LibraryItem, SearchAction, SearchEntry};
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use profiles::{Profile, ProfileError, Profiles};
+pub use utils::directories::Directories;
 pub use utils::environment::Environment;
 
 pub(crate) use next_proto::winebridge as proto;
-pub(crate) use utils::{context::Context, directories::Directories};
+pub(crate) use utils::context::Context;
