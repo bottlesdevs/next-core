@@ -1,10 +1,16 @@
 //! Collection lifecycle and discovery for library-managed bottles.
 
-use std::{collections::HashMap, io, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    pin::Pin,
+    sync::Arc,
+};
 
 use async_fs as fs;
 use futures_core::Stream;
-use futures_lite::StreamExt;
+use futures_lite::{StreamExt, stream};
+use futures_util::stream::SelectAll;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
@@ -29,11 +35,12 @@ use super::{
 /// snapshots to manager watchers.
 struct BottleRegistry(watch::Sender<Arc<HashMap<Uuid, Bottle>>>);
 
-fn sorted_bottles(bottles: &HashMap<Uuid, Bottle>) -> Vec<Bottle> {
-    let mut bottles = bottles.values().cloned().collect::<Vec<_>>();
-    bottles.sort_unstable_by_key(|bottle| bottle.0.id);
-    bottles
+enum BottleManagerEvent {
+    Membership(Arc<HashMap<Uuid, Bottle>>),
+    BottleChanged,
 }
+
+type BottleManagerEventStream = Pin<Box<dyn Stream<Item = BottleManagerEvent> + Send>>;
 
 impl BottleRegistry {
     fn new() -> Self {
@@ -42,7 +49,7 @@ impl BottleRegistry {
     }
 
     fn list(&self) -> Vec<Bottle> {
-        sorted_bottles(&self.0.borrow())
+        self.0.borrow().values().cloned().collect()
     }
 
     fn get(&self, id: Uuid) -> Option<Bottle> {
@@ -323,17 +330,49 @@ impl BottleManager {
         self.registry.list()
     }
 
-    /// Watches additions and deletions in this manager.
+    /// Watches this manager and every bottle currently registered in it.
     ///
     /// The stream first yields the current list, then the latest list after
-    /// each observed membership change. Slow consumers may miss intermediate
-    /// lists. Bottle configuration edits do not produce manager updates; use
-    /// [`Bottle::watch`] to observe a bottle's state.
+    /// each observed membership or bottle-state change. New bottle streams are
+    /// added as membership changes, and deleted bottle streams end with their
+    /// bottle tombstones. Slow consumers may miss intermediate states.
     ///
     /// List order is unspecified. The stream ends when all manager handles for
     /// this context are dropped.
     pub fn watch(&self) -> impl Stream<Item = Vec<Bottle>> + Send + 'static {
-        WatchStream::new(self.registry.0.subscribe()).map(|bottles| sorted_bottles(&bottles))
+        let mut events = SelectAll::<BottleManagerEventStream>::new();
+        events.push(Box::pin(
+            WatchStream::new(self.registry.0.subscribe()).map(BottleManagerEvent::Membership),
+        ));
+
+        stream::unfold(
+            (self.clone(), events, HashSet::new()),
+            |(manager, mut events, mut subscribed)| async move {
+                match events.next().await? {
+                    BottleManagerEvent::Membership(bottles) => {
+                        subscribed.retain(|id| bottles.contains_key(id));
+                        for (id, bottle) in bottles.iter() {
+                            if subscribed.insert(*id) {
+                                let mut previous = bottle.state().ok();
+                                events.push(Box::pin(bottle.watch().filter_map(move |state| {
+                                    let changed = previous
+                                        .as_ref()
+                                        .is_none_or(|current| !Arc::ptr_eq(current, &state));
+                                    previous = Some(state);
+                                    changed.then_some(BottleManagerEvent::BottleChanged)
+                                })));
+                            }
+                        }
+                        let bottles = bottles.values().cloned().collect();
+                        Some((bottles, (manager, events, subscribed)))
+                    }
+                    BottleManagerEvent::BottleChanged => {
+                        let bottles = manager.list();
+                        Some((bottles, (manager, events, subscribed)))
+                    }
+                }
+            },
+        )
     }
 
     async fn load_bottles(&self) -> Result<Vec<Bottle>> {
