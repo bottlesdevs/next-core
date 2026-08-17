@@ -20,16 +20,30 @@ pub enum ProfileError {
     /// A profile name is empty after trimming surrounding whitespace.
     #[error("profile name must not be blank")]
     InvalidName,
+    /// The selected profile cannot be deleted.
+    #[error("selected profile {0} cannot be deleted")]
+    Selected(Uuid),
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, Config)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Config)]
 #[config(version = 1)]
 struct ProfilesConfig {
-    selected: Option<Uuid>,
+    selected: Uuid,
     profiles: Vec<Profile>,
 }
 
 impl ProfilesConfig {
+    fn player() -> Self {
+        let profile = Profile {
+            id: Uuid::new_v4(),
+            name: "Player".into(),
+        };
+        Self {
+            selected: profile.id,
+            profiles: vec![profile],
+        }
+    }
+
     fn profile(&self, id: Uuid) -> Option<&Profile> {
         self.profiles.iter().find(|profile| profile.id == id)
     }
@@ -47,15 +61,21 @@ pub struct Profiles(Arc<ProfilesInner>);
 
 impl Profiles {
     pub(crate) async fn load(context: Context) -> Result<Self> {
-        let state = match next_config::load(&context.directories().profiles()).await {
+        let path = context.directories().profiles();
+        let state = match next_config::load(&path).await {
             Ok(state) => state,
             Err(next_config::error::Error::Io(error))
                 if error.kind() == io::ErrorKind::NotFound =>
             {
-                ProfilesConfig::default()
+                let state = ProfilesConfig::player();
+                next_config::save(&path, &state).await?;
+                state
             }
             Err(error) => return Err(error.into()),
         };
+        if state.profile(state.selected).is_none() {
+            return Err(ProfileError::NotFound(state.selected).into());
+        }
         Ok(Self::new(context, state))
     }
 
@@ -73,10 +93,13 @@ impl Profiles {
         self.0.published.borrow().profiles.clone()
     }
 
-    /// Returns the selected profile, if the selection names an existing profile.
-    pub fn selected(&self) -> Option<Profile> {
+    /// Returns the selected profile.
+    pub fn selected(&self) -> Profile {
         let state = self.0.published.borrow();
-        state.selected.and_then(|id| state.profile(id).cloned())
+        state
+            .profile(state.selected)
+            .cloned()
+            .expect("selected profile was validated")
     }
 
     /// Watches the complete profile collection.
@@ -125,33 +148,24 @@ impl Profiles {
                 .profile(id)
                 .cloned()
                 .ok_or(ProfileError::NotFound(id))?;
-            state.selected = Some(id);
+            state.selected = id;
             Ok(profile)
         })
         .await
     }
 
-    /// Clears the current profile selection.
-    pub async fn clear_selection(&self) -> Result<()> {
-        self.update(|state| {
-            state.selected = None;
-            Ok(())
-        })
-        .await
-    }
-
-    /// Deletes an existing profile, clearing the selection when necessary.
+    /// Deletes an existing unselected profile.
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         self.update(move |state| {
+            if state.selected == id {
+                return Err(ProfileError::Selected(id).into());
+            }
             let index = state
                 .profiles
                 .iter()
                 .position(|profile| profile.id == id)
                 .ok_or(ProfileError::NotFound(id))?;
             state.profiles.remove(index);
-            if state.selected == Some(id) {
-                state.selected = None;
-            }
             Ok(())
         })
         .await
