@@ -28,9 +28,9 @@ pub enum BottleError {
         /// UUID found in the loaded metadata.
         actual: Uuid,
     },
-    /// A program has a blank display name or executable.
-    #[error("program name and executable must not be empty")]
-    InvalidProgram,
+    /// A program definition is malformed.
+    #[error("invalid program: {0}")]
+    InvalidProgram(String),
     /// An environment variable name is empty or contains `=` or NUL.
     #[error(
         "invalid environment variable name {0:?}: names must be non-empty and contain neither '=' nor NUL"

@@ -6,6 +6,8 @@
 //! snapshots that do not change when the bottle is edited or deleted.
 //! Configuration changes are queued with [`Bottle::edit`] and become visible
 //! only after [`BottleEdit::commit`] persists them.
+//! [`Program`] construction validates launch definitions before
+//! [`BottleEdit::add_program`] persists them.
 //!
 //! Bottle directories and their `bottle.toml` files are library-managed.
 //! Manager queries read an in-memory registry rather than rescanning or

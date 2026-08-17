@@ -77,18 +77,12 @@ impl BottleEdit {
     }
 
     /// Registers a program.
-    ///
-    /// At commit time, the name and executable must not be blank after
-    /// trimming, but their original whitespace is preserved. UUID uniqueness
-    /// is not enforced; lookup, removal, and launch methods use the first
-    /// match. Other launch-data validation is deferred until the program is
-    /// passed to WineBridge.
     pub fn add_program(&mut self, program: Program) -> &mut Self {
         self.changes.push(Change::AddProgram(program));
         self
     }
 
-    /// Removes the first program identified by `id`.
+    /// Removes the program identified by `id`.
     ///
     /// The edit fails to commit if the program is not registered.
     pub fn remove_program(&mut self, id: Uuid) -> &mut Self {
@@ -124,8 +118,8 @@ impl BottleEdit {
     ///
     /// # Errors
     ///
-    /// Returns an error for a deleted bottle, invalid program data, invalid
-    /// environment variable, or a persistence failure.
+    /// Returns an error for a deleted bottle, a missing program removal, an
+    /// invalid environment variable, or a persistence failure.
     pub async fn commit(self) -> Result<()> {
         let BottleEdit { bottle, changes } = self;
         bottle
@@ -149,20 +143,13 @@ impl BottleEdit {
                             state.environment.remove(&key);
                         }
                         Change::AddProgram(program) => {
-                            if program.name.trim().is_empty()
-                                || program.executable.trim().is_empty()
-                            {
-                                return Err(BottleError::InvalidProgram.into());
-                            }
-                            state.programs.push(program);
+                            state.programs.insert(program.id(), program);
                         }
                         Change::RemoveProgram(id) => {
-                            let index = state
+                            state
                                 .programs
-                                .iter()
-                                .position(|program| program.id == id)
+                                .remove(&id)
                                 .ok_or(BottleError::ProgramNotFound(id))?;
-                            state.programs.remove(index);
                         }
                         Change::SetGamescope(config) => state.wrappers.gamescope = config,
                         Change::SetMangoHud(config) => state.wrappers.mangohud = config,

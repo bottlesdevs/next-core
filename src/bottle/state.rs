@@ -33,7 +33,7 @@ pub struct BottleState {
     pub(crate) name: String,
     pub(crate) storage: Prefix,
     #[serde(default)]
-    pub(crate) programs: Vec<Program>,
+    pub(crate) programs: HashMap<Uuid, Program>,
 
     /// Runtime and prefix components pinned to exact releases.
     pub(crate) components: HashMap<Slot, Addon<Component>>,
@@ -178,17 +178,14 @@ impl BottleState {
         &self.wrappers
     }
 
-    /// Preserves registration order and may contain duplicate UUIDs.
-    pub fn programs(&self) -> &[Program] {
-        &self.programs
+    /// Iterates over registered programs in unspecified order.
+    pub fn programs(&self) -> impl Iterator<Item = &Program> {
+        self.programs.values()
     }
 
-    /// Returns the first registered program with identity `id`.
-    ///
-    /// Duplicate UUIDs are currently accepted, so callers that construct
-    /// [`Program`] values directly are responsible for keeping them unique.
+    /// Returns the registered program with identity `id`.
     pub fn program(&self, id: Uuid) -> Option<&Program> {
-        self.programs.iter().find(|program| program.id == id)
+        self.programs.get(&id)
     }
 
     /// Reports how the Wine prefix itself is stored.
@@ -245,7 +242,7 @@ impl Bottle {
             components,
             dependencies,
             storage,
-            programs: Vec::new(),
+            programs: HashMap::new(),
             wrappers: Wrappers::default(),
             environment: Environment::default(),
         };
@@ -375,50 +372,105 @@ impl Bottle {
     }
 }
 
-/// A persisted Windows launch definition registered with a bottle.
-///
-/// The UUID is the program's identity and is also used to group processes
-/// launched by [`Bottle::run`]. UUID uniqueness is not enforced when programs
-/// are added, and the public fields allow callers to replace a generated ID.
+/// A persisted, immutable Windows launch definition registered with a bottle.
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Program {
-    /// Identity used for lookup and process grouping.
-    pub id: Uuid,
-    /// Display name, preserved verbatim including surrounding whitespace.
-    pub name: String,
-    /// Windows path passed to `CreateProcessW` as the executable.
-    pub executable: String,
+    id: Uuid,
+    name: String,
+    executable: String,
     /// Command-line fragments joined with spaces before launch.
     ///
     /// Callers must include any Windows quoting needed for spaces or special
     /// characters inside an argument. An empty entry adds only a separator and
     /// does not produce an empty Windows argument.
     #[serde(default)]
-    pub args: Vec<String>,
+    args: Vec<String>,
     /// Windows working directory, or WineBridge's inherited directory when absent.
     #[serde(default)]
-    pub working_directory: Option<String>,
+    working_directory: Option<String>,
     /// Passed to WineBridge's `CREATE_NEW_CONSOLE` launch option.
     #[serde(default)]
-    pub new_console: bool,
+    new_console: bool,
 }
 
 impl Program {
     /// Creates a program with a new UUID and default launch options.
-    ///
-    /// Arguments are empty, the working directory is inherited, and no new
-    /// console is requested. The name and executable are stored without
-    /// validation; [`BottleEdit::commit`] validates them when the program is
-    /// registered.
-    pub fn new(name: impl Into<String>, executable: impl Into<String>) -> Self {
-        Self {
+    pub fn new(name: impl Into<String>, executable: impl Into<String>) -> Result<Self> {
+        let name = name.into();
+        let executable = executable.into();
+        if name.trim().is_empty() {
+            return Err(BottleError::InvalidProgram("name must not be blank".into()).into());
+        }
+        if executable.trim().is_empty() {
+            return Err(BottleError::InvalidProgram("executable must not be blank".into()).into());
+        }
+        Ok(Self {
             id: Uuid::new_v4(),
-            name: name.into(),
-            executable: executable.into(),
+            name,
+            executable,
             args: Vec::new(),
             working_directory: None,
             new_console: false,
+        })
+    }
+
+    /// Replaces the Windows command-line fragments passed at launch.
+    pub fn with_args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+        self
+    }
+
+    /// Sets the Windows working directory used at launch.
+    pub fn with_working_directory(mut self, working_directory: impl Into<String>) -> Result<Self> {
+        let working_directory = working_directory.into();
+        if working_directory.trim().is_empty() {
+            return Err(
+                BottleError::InvalidProgram("working directory must not be blank".into()).into(),
+            );
         }
+        self.working_directory = Some(working_directory);
+        Ok(self)
+    }
+
+    /// Controls WineBridge's `CREATE_NEW_CONSOLE` launch option.
+    pub fn with_new_console(mut self, new_console: bool) -> Self {
+        self.new_console = new_console;
+        self
+    }
+
+    /// Returns the bottle-scoped identity used for lookup and process grouping.
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+
+    /// Returns the display name preserved at registration.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the Windows executable path passed to WineBridge.
+    pub fn executable(&self) -> &str {
+        &self.executable
+    }
+
+    /// Returns the command-line fragments passed at launch.
+    pub fn args(&self) -> &[String] {
+        &self.args
+    }
+
+    /// Returns the configured Windows working directory, when present.
+    pub fn working_directory(&self) -> Option<&str> {
+        self.working_directory.as_deref()
+    }
+
+    /// Reports whether launch requests create a new console.
+    pub fn new_console(&self) -> bool {
+        self.new_console
     }
 }
 

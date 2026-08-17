@@ -98,28 +98,27 @@ impl Bottle {
     /// bottle access. A concurrent edit therefore does not change or cancel
     /// this launch. WineBridge starts on demand, and the returned ID identifies
     /// the initially launched Windows process. Repeated launches with the same
-    /// program UUID share the process group targeted by [`kill`](Self::kill).
+    /// program UUID share the process group targeted by
+    /// [`kill_program`](Self::kill_program).
     ///
     /// # Errors
     ///
     /// Returns [`BottleError::ProgramNotFound`] if `id` is not registered, or an
     /// error if the prefix cannot be prepared, WineBridge cannot start, or the
     /// process cannot be launched.
-    pub async fn run(&self, id: Uuid) -> Result<u32> {
+    pub async fn launch_program(&self, id: Uuid) -> Result<u32> {
         let program = self
             .state()?
             .program(id)
             .cloned()
             .ok_or(BottleError::ProgramNotFound(id))?;
+        let executable = program.executable().to_owned();
+        let arguments = program.args().to_vec();
+        let working_directory = program.working_directory().map(str::to_owned);
+        let new_console = program.new_console();
         self.with_bridge(move |bridge| async move {
             bridge
-                .launch_process(
-                    program.id,
-                    program.executable,
-                    program.args,
-                    program.working_directory,
-                    program.new_console,
-                )
+                .launch_process(id, executable, arguments, working_directory, new_console)
                 .await
         })
         .await
@@ -149,7 +148,7 @@ impl Bottle {
     ///
     /// Returns [`BottleError::ProgramNotFound`] if `id` is not registered, or an
     /// error if the prefix or bridge operation fails.
-    pub async fn kill(&self, id: Uuid) -> Result<()> {
+    pub async fn kill_program(&self, id: Uuid) -> Result<()> {
         if self.state()?.program(id).is_none() {
             return Err(BottleError::ProgramNotFound(id).into());
         }
