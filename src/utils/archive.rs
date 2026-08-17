@@ -30,9 +30,7 @@ pub(crate) async fn extract(archive: &Path, destination: &Path) -> Result<(), Ar
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| ArchiveError::InvalidName(archive.to_path_buf()))?;
-
     let file = async_fs::File::open(archive).await?;
-
     if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
         unpack(GzipDecoder::new(BufReader::new(file)), destination).await
     } else if name.ends_with(".tar.xz") || name.ends_with(".txz") {
@@ -56,11 +54,9 @@ async fn unpack(
             TarEntry::File(mut file) => {
                 let path = safe_path(file.path())?;
                 let destination = destination.join(&path);
-
                 if let Some(parent) = destination.parent() {
                     async_fs::create_dir_all(parent).await?;
                 }
-
                 let mut output = async_fs::File::create(&destination).await?;
                 copy(&mut file, &mut output).await?;
                 set_mode(&destination, file.mode()).await?;
@@ -69,7 +65,6 @@ async fn unpack(
             TarEntry::Directory(directory) => {
                 let path = safe_path(directory.path())?;
                 let destination = destination.join(path);
-
                 async_fs::create_dir_all(&destination).await?;
                 directories.push((destination, directory.mode()));
             }
@@ -77,16 +72,12 @@ async fn unpack(
             TarEntry::Symlink(link) => {
                 let path = safe_path(link.path())?;
                 let target = link.link();
-
                 safe_symlink_target(&path, target)?;
-
                 let link_path = destination.join(&path);
-
                 if let Some(parent) = link_path.parent() {
                     async_fs::create_dir_all(parent).await?;
                 }
-
-                create_symlink(Path::new(target), &link_path)?;
+                std::os::unix::fs::symlink(target, link_path)?;
             }
 
             entry => {
@@ -98,105 +89,34 @@ async fn unpack(
     for (path, mode) in directories.into_iter().rev() {
         set_mode(&path, mode).await?;
     }
-
     Ok(())
 }
 
-fn safe_path(path: &str) -> Result<PathBuf, ArchiveError> {
-    let path = Path::new(path);
-
-    if path
-        .components()
-        .any(|component| matches!(component, Component::RootDir | Component::Prefix(_)))
-    {
-        return Err(ArchiveError::EntryOutsideDestination(path.to_path_buf()));
-    }
-
+fn safe_path(path: impl AsRef<Path>) -> Result<PathBuf, ArchiveError> {
+    let path = path.as_ref();
     let mut result = PathBuf::new();
-
     for component in path.components() {
         match component {
             Component::CurDir => {}
             Component::Normal(component) => result.push(component),
-            Component::ParentDir => {
-                if !result.pop() {
-                    return Err(ArchiveError::EntryOutsideDestination(path.to_path_buf()));
-                }
+            Component::ParentDir if result.pop() => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(ArchiveError::EntryOutsideDestination(path.to_path_buf()));
             }
-            Component::RootDir | Component::Prefix(_) => unreachable!(),
         }
     }
-
     Ok(result)
 }
 
 fn safe_symlink_target(link: &Path, target: &str) -> Result<(), ArchiveError> {
-    let target = Path::new(target);
-
-    if target.is_absolute() {
-        return Err(ArchiveError::EntryOutsideDestination(target.to_path_buf()));
-    }
-
-    let mut path = PathBuf::new();
-
-    if let Some(parent) = link.parent() {
-        for component in parent.components() {
-            match component {
-                Component::Normal(component) => path.push(component),
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    if !path.pop() {
-                        return Err(ArchiveError::EntryOutsideDestination(target.to_path_buf()));
-                    }
-                }
-                Component::RootDir | Component::Prefix(_) => {
-                    return Err(ArchiveError::EntryOutsideDestination(target.to_path_buf()));
-                }
-            }
-        }
-    }
-
-    for component in target.components() {
-        match component {
-            Component::Normal(component) => path.push(component),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !path.pop() {
-                    return Err(ArchiveError::EntryOutsideDestination(target.to_path_buf()));
-                }
-            }
-            Component::RootDir | Component::Prefix(_) => {
-                return Err(ArchiveError::EntryOutsideDestination(target.to_path_buf()));
-            }
-        }
-    }
-
+    safe_path(link.parent().unwrap_or(Path::new("")).join(target))?;
     Ok(())
 }
 
-#[cfg(unix)]
-fn create_symlink(target: &Path, link: &Path) -> io::Result<()> {
-    std::os::unix::fs::symlink(target, link)
-}
-
-#[cfg(not(unix))]
-fn create_symlink(_target: &Path, _link: &Path) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "symbolic links are not supported on this platform",
-    ))
-}
-
-#[cfg(unix)]
 async fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     async_fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await
-}
-
-#[cfg(not(unix))]
-async fn set_mode(_path: &Path, _mode: u32) -> io::Result<()> {
-    Ok(())
 }
 
 pub(crate) async fn files(root: &Path) -> Result<Vec<PathBuf>, ArchiveError> {
@@ -205,11 +125,9 @@ pub(crate) async fn files(root: &Path) -> Result<Vec<PathBuf>, ArchiveError> {
 
     while let Some(directory) = directories.pop() {
         let mut entries = async_fs::read_dir(directory).await?;
-
         while let Some(entry) = entries.next().await {
             let entry = entry?;
             let file_type = entry.file_type().await?;
-
             if file_type.is_dir() {
                 directories.push(entry.path());
             } else if file_type.is_file() {
@@ -226,6 +144,8 @@ pub(crate) async fn files(root: &Path) -> Result<Vec<PathBuf>, ArchiveError> {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use async_compression::futures::write::{GzipEncoder, XzEncoder};
     use futures_lite::io::AsyncWriteExt;
     use smol_tar::{TarRegularFile, TarSymlink, TarWriter};
@@ -239,10 +159,8 @@ mod tests {
     async fn tar_with_file(path: &str, mode: u32) -> Vec<u8> {
         let mut bytes = Vec::new();
         let body = b"#!/bin/sh\n";
-
         {
             let mut archive = TarWriter::new(&mut bytes);
-
             archive
                 .write(
                     TarRegularFile::new(path, body.len() as u64, body.as_slice())
@@ -251,10 +169,8 @@ mod tests {
                 )
                 .await
                 .unwrap();
-
             archive.finish().await.unwrap();
         }
-
         bytes
     }
 
@@ -264,42 +180,30 @@ mod tests {
             let root = temporary_directory();
             let archive_path = root.join("component.tgz");
             let destination = root.join("output");
-
             async_fs::create_dir_all(&destination).await.unwrap();
-
             let mut archive =
                 GzipEncoder::new(async_fs::File::create(&archive_path).await.unwrap());
-
             archive
                 .write_all(&tar_with_file("component/run.sh", 0o755).await)
                 .await
                 .unwrap();
-
             archive.close().await.unwrap();
-
             extract(&archive_path, &destination).await.unwrap();
-
             assert_eq!(
                 async_fs::read(destination.join("component/run.sh"))
                     .await
                     .unwrap(),
                 b"#!/bin/sh\n"
             );
-
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-
-                assert_eq!(
-                    async_fs::metadata(destination.join("component/run.sh"))
-                        .await
-                        .unwrap()
-                        .permissions()
-                        .mode()
-                        & 0o777,
-                    0o755
-                );
-            }
+            assert_eq!(
+                async_fs::metadata(destination.join("component/run.sh"))
+                    .await
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755
+            );
 
             async_fs::remove_dir_all(root).await.unwrap();
         });
@@ -311,41 +215,29 @@ mod tests {
             let root = temporary_directory();
             let archive_path = root.join("component.tar.xz");
             let destination = root.join("output");
-
             async_fs::create_dir_all(&destination).await.unwrap();
-
             let mut archive = XzEncoder::new(async_fs::File::create(&archive_path).await.unwrap());
-
             archive
                 .write_all(&tar_with_file("component/run.sh", 0o755).await)
                 .await
                 .unwrap();
-
             archive.close().await.unwrap();
-
             extract(&archive_path, &destination).await.unwrap();
-
             assert_eq!(
                 async_fs::read(destination.join("component/run.sh"))
                     .await
                     .unwrap(),
                 b"#!/bin/sh\n"
             );
-
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-
-                assert_eq!(
-                    async_fs::metadata(destination.join("component/run.sh"))
-                        .await
-                        .unwrap()
-                        .permissions()
-                        .mode()
-                        & 0o777,
-                    0o755
-                );
-            }
+            assert_eq!(
+                async_fs::metadata(destination.join("component/run.sh"))
+                    .await
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755
+            );
 
             async_fs::remove_dir_all(root).await.unwrap();
         });
@@ -357,9 +249,7 @@ mod tests {
             let root = temporary_directory();
             let archive_path = root.join("component.tar");
             let destination = root.join("output");
-
             async_fs::create_dir_all(&destination).await.unwrap();
-
             async_fs::write(&archive_path, tar_with_file("../escaped", 0o644).await)
                 .await
                 .unwrap();
@@ -368,7 +258,6 @@ mod tests {
                 extract(&archive_path, &destination).await,
                 Err(ArchiveError::EntryOutsideDestination(_))
             ));
-
             assert!(!root.join("escaped").exists());
 
             async_fs::remove_dir_all(root).await.unwrap();
@@ -376,17 +265,39 @@ mod tests {
     }
 
     #[test]
-    fn allows_relative_symlink_targets() {
-        assert_eq!(
-            safe_symlink_target(Path::new("component/bin/run"), "../lib/run",).unwrap(),
-            PathBuf::from("../lib/run"),
-        );
+    fn extracts_relative_symlinks() {
+        futures_lite::future::block_on(async {
+            let root = temporary_directory();
+            let archive_path = root.join("component.tar");
+            let destination = root.join("output");
+            async_fs::create_dir_all(&destination).await.unwrap();
+            let mut bytes = Vec::new();
+            {
+                let mut archive = TarWriter::<_, &[u8]>::new(&mut bytes);
+                archive
+                    .write(TarSymlink::new("component/bin/run", "../lib/run").into())
+                    .await
+                    .unwrap();
+                archive.finish().await.unwrap();
+            }
+            async_fs::write(&archive_path, bytes).await.unwrap();
+
+            extract(&archive_path, &destination).await.unwrap();
+            assert_eq!(
+                async_fs::read_link(destination.join("component/bin/run"))
+                    .await
+                    .unwrap(),
+                PathBuf::from("../lib/run")
+            );
+
+            async_fs::remove_dir_all(root).await.unwrap();
+        });
     }
 
     #[test]
     fn rejects_escaping_symlink_targets() {
         assert!(matches!(
-            safe_symlink_target(Path::new("component/bin/run"), "../../../outside",),
+            safe_symlink_target(Path::new("component/bin/run"), "../../../outside"),
             Err(ArchiveError::EntryOutsideDestination(_))
         ));
     }
