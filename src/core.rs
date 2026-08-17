@@ -64,6 +64,10 @@ impl Bottles {
         &self.bottles
     }
 
+    pub fn directories(&self) -> &Directories {
+        self.context.directories()
+    }
+
     pub fn addons(&self) -> &Addons {
         &self.addons
     }

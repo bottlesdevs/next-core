@@ -10,7 +10,7 @@ use crate::{bottle::error::BottleError, error::Result};
 pub struct Directories(ProjectDirs);
 
 impl Directories {
-    pub(crate) async fn new() -> Result<Self> {
+    pub async fn new() -> Result<Self> {
         let directories = Self(
             ProjectDirs::from("com", "usebottles", "bottles-next")
                 .ok_or(BottleError::ProjectDirectoriesUnavailable)?,
@@ -37,8 +37,12 @@ impl Directories {
         self.0.config_dir()
     }
 
-    pub(crate) fn data_dir(&self) -> &Path {
+    pub fn data_dir(&self) -> &Path {
         self.0.data_local_dir()
+    }
+
+    pub fn cache_dir(&self) -> &Path {
+        self.0.cache_dir()
     }
 
     pub(crate) fn runtime_dir(&self) -> PathBuf {
