@@ -27,6 +27,7 @@ pub use bottle::{
 pub use bottle::{Snapshot, SnapshotSummary};
 pub use core::{Bottles, Config};
 pub use error::Error;
+pub use library::{Library, LibraryItem, SearchAction, SearchEntry};
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use utils::environment::Environment;
 
