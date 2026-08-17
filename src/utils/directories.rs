@@ -33,6 +33,10 @@ impl Directories {
         Ok(directories)
     }
 
+    pub(crate) fn config_dir(&self) -> &Path {
+        self.0.config_dir()
+    }
+
     pub(crate) fn data_dir(&self) -> &Path {
         self.0.data_local_dir()
     }
@@ -60,8 +64,13 @@ impl Directories {
         self.data_dir().join("dependencies")
     }
 
-    fn paths(&self) -> [PathBuf; 5] {
+    pub(crate) fn profiles(&self) -> PathBuf {
+        self.config_dir().join("profiles.toml")
+    }
+
+    fn paths(&self) -> [PathBuf; 6] {
         [
+            self.config_dir().to_path_buf(),
             self.data_dir().to_path_buf(),
             self.runtime_dir(),
             self.bottles(),

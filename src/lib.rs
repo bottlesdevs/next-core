@@ -5,6 +5,7 @@ pub mod error;
 mod library;
 mod operation;
 mod prefix;
+mod profiles;
 mod runner;
 mod utils;
 mod winebridge;
@@ -24,6 +25,7 @@ pub use bottle::{Snapshot, SnapshotSummary};
 pub use core::{Bottles, Config};
 pub use library::{Library, LibraryItem, SearchAction, SearchEntry};
 pub use operation::{Operation, Progress, Stage, Transfer};
+pub use profiles::{Profile, ProfileError, Profiles};
 pub use utils::environment::Environment;
 
 pub(crate) use next_proto::winebridge as proto;
