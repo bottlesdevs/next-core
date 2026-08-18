@@ -16,7 +16,7 @@ use crate::{
 
 pub mod install;
 
-pub use install::InstallRecord;
+pub use install::{InstallRecord, sanitize_relative_path};
 
 pub struct LibraryManager {
     path: PathBuf,
@@ -97,6 +97,12 @@ impl LibraryManager {
         if let Some(bottle) = bottle {
             let c_drive = bottle.c_drive_path();
             for relative_path in &record.relative_paths {
+                let Some(relative_path) = install::sanitize_relative_path(relative_path) else {
+                    tracing::warn!(
+                        "skipping uninstall of suspicious relative path {relative_path:?} for {game_id}"
+                    );
+                    continue;
+                };
                 let _ = tokio::fs::remove_file(c_drive.join(relative_path)).await;
             }
             if let Some(program_id) = record.program_id.as_deref()
