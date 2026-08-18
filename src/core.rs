@@ -32,6 +32,10 @@ impl Bottles {
         } = config;
         #[cfg(not(feature = "fvs"))]
         let fvs2d = None;
+        // An explicitly configured path always wins; otherwise fall back
+        // to resolving `fvs2d` from $PATH, same as a shell would.
+        #[cfg(feature = "fvs")]
+        let fvs2d = fvs2d.or_else(|| crate::utils::find_in_path("fvs2d"));
         let directories = Directories::new().await?;
         let client = ReqwestClient::new().map_err(download_manager::error::Error::from)?;
         let downloader = Arc::new(DownloadManager::new(
