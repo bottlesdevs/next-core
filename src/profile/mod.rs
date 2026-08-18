@@ -4,7 +4,7 @@ pub mod error;
 mod store;
 mod watcher;
 
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use futures_core::Stream;
 use next_proto::bottles::profiles::v1::{ProfileEvent, UserProfile, profile_event};
@@ -19,19 +19,12 @@ const EVENTS_CAPACITY: usize = 16;
 
 #[derive(Clone)]
 pub struct ProfileManager {
-    /// Resolved `profiles.toml` path, kept alongside `config` so `mutate`
-    /// and the file watcher always read/write the same location.
-    path: PathBuf,
+    directories: Directories,
     config: Arc<RwLock<ProfilesConfig>>,
     events: broadcast::Sender<ProfileEvent>,
 }
 
 impl ProfileManager {
-    /// Bootstraps a standalone `ProfileManager`, resolving its own
-    /// `Directories` — for callers with no [`crate::Bottles`] handle to
-    /// reuse one from (e.g. a UI that boots profile state in parallel
-    /// with, not after, opening `Bottles`). Prefer [`Self::new`] when a
-    /// `Directories` is already available, to avoid re-resolving it.
     pub async fn open() -> Result<Self> {
         Self::new(&Directories::new().await?).await
     }
@@ -44,7 +37,7 @@ impl ProfileManager {
         watcher::spawn(path.clone(), state.clone(), events.clone());
 
         Ok(Self {
-            path,
+            directories: directories.clone(),
             config: state,
             events,
         })
@@ -170,7 +163,7 @@ impl ProfileManager {
         let mut state = self.config.write().await;
         let before = state.clone();
         let value = op(&mut state)?;
-        store::persist(&self.path, &state).await?;
+        store::persist(&store::profiles_path(&self.directories), &state).await?;
         store::diff_and_emit(&self.events, &before, &state);
         Ok(value)
     }
