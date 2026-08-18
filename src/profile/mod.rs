@@ -1,62 +1,28 @@
-//! Profile lifecycle and configuration — persistence, local mutation, and
-//! change notification for user profiles.
-//!
-//! Deliberately doesn't dial storefront plugins (Store.RefreshSession,
-//! Store.CompleteLogin, Store.RevokeSession, ...) — that's a
-//! multi-process orchestration concern belonging to whatever holds the
-//! Registry connection (`next-server`'s `ProfileService`), not this
-//! local persistence layer. Methods here take the *result* of that work
-//! (a refreshed `LinkedAccount`, a completed login's account, etc.) and
-//! apply it.
+//! Persisted application profiles and selection.
 
 pub mod error;
+mod store;
+mod watcher;
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-    thread,
-};
+use std::{path::PathBuf, sync::Arc};
 
 use futures_core::Stream;
-use next_config::Config;
 use next_proto::bottles::{
     common::v1::LinkedAccount,
-    profiles::v1::{ProfileEvent, SteamLink, UserProfile, profile_event},
+    profiles::v1::{ProfileEvent, UserProfile, profile_event},
+    steam::v1::SteamLink,
 };
-use notify::{RecursiveMode, Watcher};
-use prost_wkt_types::Timestamp;
-use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast};
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use uuid::Uuid;
 
-use crate::{bottle::error::BottleError, error::Result};
+use crate::error::Result;
 use error::ProfileError;
+use store::ProfilesConfig;
 
 const EVENTS_CAPACITY: usize = 16;
-const PROFILES_FILE: &str = "profiles.toml";
 
-fn now() -> Timestamp {
-    Timestamp::from(std::time::SystemTime::now())
-}
-
-fn not_found(profile_id: &str) -> crate::error::Error {
-    ProfileError::NotFound(profile_id.to_string()).into()
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize, Config)]
-#[config(version = 1)]
-struct ProfilesConfig {
-    active_profile_id: Option<String>,
-    profiles: Vec<UserProfile>,
-}
-
-fn profiles_path() -> Result<PathBuf> {
-    directories::ProjectDirs::from("com", "usebottles", "bottles-next")
-        .map(|dirs| dirs.config_dir().join(PROFILES_FILE))
-        .ok_or_else(|| BottleError::ProjectDirectoriesUnavailable.into())
-}
-
+#[derive(Clone)]
 pub struct ProfileManager {
     path: PathBuf,
     state: Arc<RwLock<ProfilesConfig>>,
@@ -64,140 +30,18 @@ pub struct ProfileManager {
 }
 
 impl ProfileManager {
-    pub async fn load() -> Result<Self> {
-        let path = profiles_path()?;
-        let state = match next_config::load::<ProfilesConfig>(&path).await {
-            Ok(state) => state,
-            Err(next_config::error::Error::Io(err))
-                if err.kind() == std::io::ErrorKind::NotFound =>
-            {
-                ProfilesConfig::default()
-            }
-            Err(err) => return Err(err.into()),
-        };
+    pub async fn new() -> Result<Self> {
+        let path = store::profiles_path()?;
+        let state = Arc::new(RwLock::new(store::load(&path).await?));
         let (events, _) = broadcast::channel(EVENTS_CAPACITY);
-        let manager = Self {
+
+        watcher::spawn(path.clone(), state.clone(), events.clone());
+
+        Ok(Self {
             path,
-            state: Arc::new(RwLock::new(state)),
+            state,
             events,
-        };
-        manager.spawn_file_watcher();
-        Ok(manager)
-    }
-
-    /// Watches `profiles.toml` for changes made by another process sharing
-    /// the same file (e.g. `next-server`'s `ProfileService` handling an
-    /// RPC), reloading and re-diffing against in-memory state so this
-    /// process's `watch()` subscribers see external edits too. Runs on a
-    /// plain OS thread — this crate stays executor-agnostic, so the reload
-    /// future is driven with `futures_lite::future::block_on` rather than
-    /// assuming a Tokio runtime is available.
-    fn spawn_file_watcher(&self) {
-        let Some(watch_target) = self.path.parent().map(Path::to_path_buf) else {
-            return;
-        };
-        let path = self.path.clone();
-        let state = self.state.clone();
-        let events = self.events.clone();
-
-        thread::spawn(move || {
-            let (tx, rx) = std::sync::mpsc::channel::<()>();
-            let watched_path = path.clone();
-            let mut watcher =
-                match notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
-                    if let Ok(event) = result
-                        && event.paths.iter().any(|changed| changed == &watched_path)
-                    {
-                        let _ = tx.send(());
-                    }
-                }) {
-                    Ok(watcher) => watcher,
-                    Err(err) => {
-                        tracing::warn!("failed to start profiles.toml watcher: {err}");
-                        return;
-                    }
-                };
-
-            if let Err(err) = watcher.watch(&watch_target, RecursiveMode::NonRecursive) {
-                tracing::warn!("failed to watch {}: {err}", watch_target.display());
-                return;
-            }
-
-            for () in rx {
-                let (reloaded, old_profiles, old_active) = {
-                    let mut guard = futures_lite::future::block_on(state.write());
-                    let Ok(reloaded) =
-                        futures_lite::future::block_on(next_config::load::<ProfilesConfig>(&path))
-                    else {
-                        continue;
-                    };
-                    let old_profiles =
-                        std::mem::replace(&mut guard.profiles, reloaded.profiles.clone());
-                    let old_active = std::mem::replace(
-                        &mut guard.active_profile_id,
-                        reloaded.active_profile_id.clone(),
-                    );
-                    (reloaded, old_profiles, old_active)
-                };
-
-                for profile in &reloaded.profiles {
-                    let changed = old_profiles
-                        .iter()
-                        .find(|existing| existing.id == profile.id)
-                        .is_none_or(|existing| existing != profile);
-
-                    if changed {
-                        let _ = events.send(ProfileEvent {
-                            event: Some(profile_event::Event::Updated(profile.clone())),
-                        });
-                    }
-                }
-
-                for old in &old_profiles {
-                    if !reloaded.profiles.iter().any(|profile| profile.id == old.id) {
-                        let _ = events.send(ProfileEvent {
-                            event: Some(profile_event::Event::DeletedProfileId(old.id.clone())),
-                        });
-                    }
-                }
-
-                if reloaded.active_profile_id != old_active
-                    && let Some(active) = reloaded
-                        .active_profile_id
-                        .as_deref()
-                        .and_then(|id| reloaded.profiles.iter().find(|profile| profile.id == id))
-                {
-                    let _ = events.send(ProfileEvent {
-                        event: Some(profile_event::Event::Activated(active.clone())),
-                    });
-                }
-            }
-        });
-    }
-
-    async fn persist(&self, state: &ProfilesConfig) -> Result<()> {
-        next_config::save(&self.path, state).await?;
-        Ok(())
-    }
-
-    fn emit_updated(&self, profile: &UserProfile) {
-        let _ = self.events.send(ProfileEvent {
-            event: Some(profile_event::Event::Updated(profile.clone())),
-        });
-    }
-
-    fn emit_activated(&self, profile: &UserProfile) {
-        let _ = self.events.send(ProfileEvent {
-            event: Some(profile_event::Event::Activated(profile.clone())),
-        });
-    }
-
-    fn emit_deleted(&self, profile_id: &str) {
-        let _ = self.events.send(ProfileEvent {
-            event: Some(profile_event::Event::DeletedProfileId(
-                profile_id.to_string(),
-            )),
-        });
+        })
     }
 
     pub async fn list(&self) -> Vec<UserProfile> {
@@ -212,7 +56,219 @@ impl ProfileManager {
             .iter()
             .find(|profile| profile.id == profile_id)
             .cloned()
-            .ok_or_else(|| not_found(profile_id))
+            .ok_or_else(|| store::not_found(profile_id))
+    }
+
+    pub async fn create(&self, name: String, icon: String) -> Result<UserProfile> {
+        let profile = UserProfile {
+            id: Uuid::new_v4().to_string(),
+            name,
+            icon,
+            accounts: Vec::new(),
+            steam_link: None,
+            created_at: Some(store::now()),
+            last_activated_at: None,
+        };
+        let profile = self
+            .mutate(|state| {
+                state.profiles.push(profile.clone());
+                Ok(profile)
+            })
+            .await?;
+        store::emit_updated(&self.events, &profile);
+        Ok(profile)
+    }
+
+    pub async fn delete(&self, profile_id: &str) -> Result<()> {
+        self.mutate(|state| {
+            let len_before = state.profiles.len();
+            state.profiles.retain(|profile| profile.id != profile_id);
+            if state.profiles.len() == len_before {
+                return Err(store::not_found(profile_id));
+            }
+            if state.active_profile_id.as_deref() == Some(profile_id) {
+                state.active_profile_id = None;
+            }
+            Ok(())
+        })
+        .await?;
+        store::emit_deleted(&self.events, profile_id);
+        Ok(())
+    }
+
+    pub async fn rename(&self, profile_id: &str, name: String) -> Result<UserProfile> {
+        let profile = self
+            .mutate(|state| {
+                let profile = state
+                    .profiles
+                    .iter_mut()
+                    .find(|profile| profile.id == profile_id)
+                    .ok_or_else(|| store::not_found(profile_id))?;
+
+                profile.name = name;
+                Ok(profile.clone())
+            })
+            .await?;
+        store::emit_updated(&self.events, &profile);
+        Ok(profile)
+    }
+
+    pub async fn update(&self, profile: UserProfile) -> Result<()> {
+        let profile_id = &profile.id;
+        self.mutate(|state| {
+            let profile = state
+                .profiles
+                .iter_mut()
+                .find(|p| p.id == *profile_id)
+                .ok_or_else(|| store::not_found(profile_id))?;
+            *profile = profile.clone();
+            Ok(())
+        })
+        .await?;
+        store::emit_updated(&self.events, &profile);
+        Ok(())
+    }
+
+    pub async fn active(&self) -> Option<UserProfile> {
+        self.state.read().await.active()
+    }
+
+    /// Marks `profile_id` as the active profile and stamps
+    /// `last_activated_at`. Callers that need to refresh linked accounts
+    /// first should do so via [`Self::update`] before calling this.
+    pub async fn activate(&self, profile_id: &str) -> Result<UserProfile> {
+        let profile = self
+            .mutate(|state| {
+                let profile = state
+                    .profiles
+                    .iter_mut()
+                    .find(|profile| profile.id == profile_id)
+                    .ok_or_else(|| store::not_found(profile_id))?;
+
+                profile.last_activated_at = Some(store::now());
+                let profile = profile.clone();
+
+                state.active_profile_id = Some(profile_id.to_string());
+                Ok(profile)
+            })
+            .await?;
+        store::emit_activated(&self.events, &profile);
+        Ok(profile)
+    }
+
+    /// The current active profile (if any) as an initial `Activated`
+    /// event, then every subsequent mutation. Subscribes before reading
+    /// the initial state so no event lands in the gap between
+    /// snapshotting "current" and listening for "next".
+    pub fn watch_active_profile(&self) -> impl Stream<Item = ProfileEvent> + Send + 'static {
+        let receiver = self.events.subscribe();
+        let state = self.state.clone();
+
+        let initial = async move { state.read().await.active() };
+
+        let live = BroadcastStream::new(receiver).filter_map(|item| item.ok());
+
+        futures_util::stream::once(initial)
+            .filter_map(|profile| {
+                profile.map(|profile| ProfileEvent {
+                    event: Some(profile_event::Event::Activated(profile)),
+                })
+            })
+            .chain(live)
+    }
+
+    pub async fn unlink_account(&self, profile_id: &str, storefront: i32) -> Result<UserProfile> {
+        let profile = self
+            .mutate(|state| {
+                let profile = state
+                    .profiles
+                    .iter_mut()
+                    .find(|profile| profile.id == profile_id)
+                    .ok_or_else(|| store::not_found(profile_id))?;
+                profile
+                    .accounts
+                    .retain(|account| account.storefront != storefront);
+                Ok(profile.clone())
+            })
+            .await?;
+        store::emit_updated(&self.events, &profile);
+        Ok(profile)
+    }
+
+    /// Attaches `account` to the profile (replacing any existing account
+    /// for the same storefront), after a caller-completed login.
+    pub async fn link_account(
+        &self,
+        profile_id: &str,
+        account: LinkedAccount,
+    ) -> Result<UserProfile> {
+        let profile = self
+            .mutate(move |state| {
+                let profile = state
+                    .profiles
+                    .iter_mut()
+                    .find(|profile| profile.id == profile_id)
+                    .ok_or_else(|| store::not_found(profile_id))?;
+                profile
+                    .accounts
+                    .retain(|existing| existing.storefront != account.storefront);
+                profile.accounts.push(account);
+                Ok(profile.clone())
+            })
+            .await?;
+        store::emit_updated(&self.events, &profile);
+        Ok(profile)
+    }
+
+    /// Links `steam_link` to `profile_id`, refusing if that Steam account is
+    /// already linked to a *different* profile — a Steam account maps to
+    /// one real person, so it shouldn't be claimable by more than one local
+    /// profile at a time. Re-linking the same account to the same profile
+    /// (e.g. to refresh `account_name`) is allowed.
+    pub async fn link_steam(&self, profile_id: &str, steam_link: SteamLink) -> Result<UserProfile> {
+        let profile = self
+            .mutate(move |state| {
+                if let Some(existing) = state.profiles.iter().find(|profile| {
+                    profile.id != profile_id
+                        && profile
+                            .steam_link
+                            .as_ref()
+                            .is_some_and(|link| link.steam_id64 == steam_link.steam_id64)
+                }) {
+                    return Err(ProfileError::SteamAccountAlreadyLinked {
+                        steam_id64: steam_link.steam_id64,
+                        linked_profile_name: existing.name.clone(),
+                    }
+                    .into());
+                }
+
+                let profile = state
+                    .profiles
+                    .iter_mut()
+                    .find(|profile| profile.id == profile_id)
+                    .ok_or_else(|| store::not_found(profile_id))?;
+                profile.steam_link = Some(steam_link);
+                Ok(profile.clone())
+            })
+            .await?;
+        store::emit_updated(&self.events, &profile);
+        Ok(profile)
+    }
+
+    pub async fn unlink_steam(&self, profile_id: &str) -> Result<UserProfile> {
+        let profile = self
+            .mutate(|state| {
+                let profile = state
+                    .profiles
+                    .iter_mut()
+                    .find(|profile| profile.id == profile_id)
+                    .ok_or_else(|| store::not_found(profile_id))?;
+                profile.steam_link = None;
+                Ok(profile.clone())
+            })
+            .await?;
+        store::emit_updated(&self.events, &profile);
+        Ok(profile)
     }
 
     /// Fails fast if the profile doesn't exist, without cloning it.
@@ -229,245 +285,14 @@ impl ProfileManager {
         {
             Ok(())
         } else {
-            Err(not_found(profile_id))
+            Err(store::not_found(profile_id))
         }
     }
 
-    pub async fn create(&self, name: String, icon: String) -> Result<UserProfile> {
+    async fn mutate<T>(&self, op: impl FnOnce(&mut ProfilesConfig) -> Result<T>) -> Result<T> {
         let mut state = self.state.write().await;
-        let profile = UserProfile {
-            id: Uuid::new_v4().to_string(),
-            name,
-            icon,
-            accounts: Vec::new(),
-            steam_link: None,
-            created_at: Some(now()),
-            last_activated_at: None,
-        };
-        state.profiles.push(profile.clone());
-        self.persist(&state).await?;
-        self.emit_updated(&profile);
-        Ok(profile)
-    }
-
-    pub async fn delete(&self, profile_id: &str) -> Result<()> {
-        let mut state = self.state.write().await;
-        let len_before = state.profiles.len();
-        state.profiles.retain(|profile| profile.id != profile_id);
-        if state.profiles.len() == len_before {
-            return Err(not_found(profile_id));
-        }
-        if state.active_profile_id.as_deref() == Some(profile_id) {
-            state.active_profile_id = None;
-        }
-        self.persist(&state).await?;
-        self.emit_deleted(profile_id);
-        Ok(())
-    }
-
-    pub async fn rename(&self, profile_id: &str, name: String) -> Result<UserProfile> {
-        let mut state = self.state.write().await;
-        let profile = state
-            .profiles
-            .iter_mut()
-            .find(|profile| profile.id == profile_id)
-            .ok_or_else(|| not_found(profile_id))?;
-        profile.name = name;
-        let profile = profile.clone();
-        self.persist(&state).await?;
-        self.emit_updated(&profile);
-        Ok(profile)
-    }
-
-    pub async fn active(&self) -> Option<UserProfile> {
-        let state = self.state.read().await;
-        state.active_profile_id.as_deref().and_then(|id| {
-            state
-                .profiles
-                .iter()
-                .find(|profile| profile.id == id)
-                .cloned()
-        })
-    }
-
-    /// Every linked account eligible for activation, filtered to `only`
-    /// when non-empty. Callers refresh each of these against its owning
-    /// Store plugin, then report the outcomes to
-    /// [`apply_activation`](Self::apply_activation).
-    pub async fn accounts_for_activation(
-        &self,
-        profile_id: &str,
-        only: &[i32],
-    ) -> Result<Vec<LinkedAccount>> {
-        let state = self.state.read().await;
-        let profile = state
-            .profiles
-            .iter()
-            .find(|profile| profile.id == profile_id)
-            .ok_or_else(|| not_found(profile_id))?;
-        Ok(profile
-            .accounts
-            .iter()
-            .filter(|account| only.is_empty() || only.contains(&account.storefront))
-            .cloned()
-            .collect())
-    }
-
-    /// Applies the outcome of refreshing each targeted account (`Ok` to
-    /// replace it, `Err` to mark it stale in place), marks the profile
-    /// active, and stamps `last_activated_at`.
-    pub async fn apply_activation(
-        &self,
-        profile_id: &str,
-        updates: std::collections::HashMap<i32, std::result::Result<LinkedAccount, ()>>,
-    ) -> Result<UserProfile> {
-        let mut updates = updates;
-        let mut state = self.state.write().await;
-        let profile = state
-            .profiles
-            .iter_mut()
-            .find(|profile| profile.id == profile_id)
-            .ok_or_else(|| not_found(profile_id))?;
-
-        for account in &mut profile.accounts {
-            match updates.remove(&account.storefront) {
-                Some(Ok(refreshed)) => *account = refreshed,
-                Some(Err(())) => {
-                    account.auth_state = next_proto::bottles::common::v1::AuthState::Stale as i32;
-                }
-                None => {}
-            }
-        }
-        profile.last_activated_at = Some(now());
-        let profile = profile.clone();
-
-        state.active_profile_id = Some(profile_id.to_string());
-        self.persist(&state).await?;
-        self.emit_activated(&profile);
-        Ok(profile)
-    }
-
-    pub async fn unlink_account(&self, profile_id: &str, storefront: i32) -> Result<UserProfile> {
-        let mut state = self.state.write().await;
-        let profile = state
-            .profiles
-            .iter_mut()
-            .find(|profile| profile.id == profile_id)
-            .ok_or_else(|| not_found(profile_id))?;
-        profile
-            .accounts
-            .retain(|account| account.storefront != storefront);
-        let profile = profile.clone();
-        self.persist(&state).await?;
-        self.emit_updated(&profile);
-        Ok(profile)
-    }
-
-    /// Attaches `account` to the profile (replacing any existing account
-    /// for the same storefront), after a caller-completed login. Doesn't
-    /// perform the login itself — see the module docs.
-    pub async fn link_account(
-        &self,
-        profile_id: &str,
-        account: LinkedAccount,
-    ) -> Result<UserProfile> {
-        let mut state = self.state.write().await;
-        let profile = state
-            .profiles
-            .iter_mut()
-            .find(|profile| profile.id == profile_id)
-            .ok_or_else(|| not_found(profile_id))?;
-        profile
-            .accounts
-            .retain(|existing| existing.storefront != account.storefront);
-        profile.accounts.push(account);
-        let profile = profile.clone();
-        self.persist(&state).await?;
-        self.emit_updated(&profile);
-        Ok(profile)
-    }
-
-    /// Links `steam_link` to `profile_id`, refusing if that Steam account is
-    /// already linked to a *different* profile — a Steam account maps to
-    /// one real person, so it shouldn't be claimable by more than one local
-    /// profile at a time. Re-linking the same account to the same profile
-    /// (e.g. to refresh `account_name`) is allowed.
-    pub async fn link_steam(&self, profile_id: &str, steam_link: SteamLink) -> Result<UserProfile> {
-        let mut state = self.state.write().await;
-
-        if let Some(existing) = state.profiles.iter().find(|profile| {
-            profile.id != profile_id
-                && profile
-                    .steam_link
-                    .as_ref()
-                    .is_some_and(|link| link.steam_id64 == steam_link.steam_id64)
-        }) {
-            return Err(ProfileError::SteamAccountAlreadyLinked {
-                steam_id64: steam_link.steam_id64,
-                linked_profile_name: existing.name.clone(),
-            }
-            .into());
-        }
-
-        let profile = state
-            .profiles
-            .iter_mut()
-            .find(|profile| profile.id == profile_id)
-            .ok_or_else(|| not_found(profile_id))?;
-        profile.steam_link = Some(steam_link);
-        let profile = profile.clone();
-        self.persist(&state).await?;
-        self.emit_updated(&profile);
-        Ok(profile)
-    }
-
-    pub async fn unlink_steam(&self, profile_id: &str) -> Result<UserProfile> {
-        let mut state = self.state.write().await;
-        let profile = state
-            .profiles
-            .iter_mut()
-            .find(|profile| profile.id == profile_id)
-            .ok_or_else(|| not_found(profile_id))?;
-        profile.steam_link = None;
-        let profile = profile.clone();
-        self.persist(&state).await?;
-        self.emit_updated(&profile);
-        Ok(profile)
-    }
-
-    /// The current active profile (if any) as an initial `Activated`
-    /// event, then every subsequent mutation. Subscribes before reading
-    /// the initial state so no event lands in the gap between
-    /// snapshotting "current" and listening for "next".
-    pub fn watch(&self) -> impl Stream<Item = ProfileEvent> + Send + 'static {
-        // Subscribe before reading state so no event can land in the gap
-        // between snapshotting "current" and starting to listen for
-        // "next".
-        let receiver = self.events.subscribe();
-        let state = self.state.clone();
-
-        let initial = async move {
-            let state = state.read().await;
-            state.active_profile_id.as_deref().and_then(|id| {
-                state
-                    .profiles
-                    .iter()
-                    .find(|profile| profile.id == id)
-                    .cloned()
-            })
-        };
-
-        // A lagged receiver just means this subscriber missed some
-        // events under backpressure — skip the gap rather than erroring
-        // the whole stream out from under the caller.
-        let live = BroadcastStream::new(receiver).filter_map(|item| item.ok());
-
-        futures_util::stream::once(initial)
-            .filter_map(|profile| {
-                profile.map(|profile| ProfileEvent {
-                    event: Some(profile_event::Event::Activated(profile)),
-                })
-            })
-            .chain(live)
+        let value = op(&mut state)?;
+        store::persist(&self.path, &state).await?;
+        Ok(value)
     }
 }

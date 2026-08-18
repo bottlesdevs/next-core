@@ -2,7 +2,7 @@
 //!
 //! Pure local file parsing/watching — no network or proto types, same as
 //! every other module here. `next-server`'s `ProfileService` maps
-//! [`SteamUser`] to `bottles.profiles.v1.SteamSessionEvent` itself.
+//! [`SteamUser`] to `bottles.steam.v1.SteamSessionEvent` itself.
 
 use std::{
     path::{Path, PathBuf},
