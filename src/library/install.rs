@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::{BottleError, Result};
 use next_config::Config;
@@ -65,8 +65,7 @@ impl InstallsConfig {
     /// Replaces any existing record for the same (profile, storefront,
     /// game) with `record`.
     pub fn upsert(&mut self, record: InstallRecord) {
-        let storefront =
-            Storefront::try_from(record.storefront).unwrap_or(Storefront::Unspecified);
+        let storefront = Storefront::try_from(record.storefront).unwrap_or(Storefront::Unspecified);
         self.installs
             .retain(|existing| !existing.matches(&record.profile_id, storefront, &record.game_id));
         self.installs.push(record);
@@ -85,6 +84,22 @@ impl InstallsConfig {
             .position(|record| record.matches(profile_id, storefront, game_id))?;
         Some(self.installs.remove(index))
     }
+}
+
+/// Rejects anything that isn't made entirely of normal path segments:
+/// absolute paths, `..`, and Windows drive prefixes are all refused
+/// rather than silently stripped, since callers join the result directly
+/// onto a bottle's `C:` drive.
+pub fn sanitize_relative_path(path: &str) -> Option<PathBuf> {
+    let mut result = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(part) => result.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    (!result.as_os_str().is_empty()).then_some(result)
 }
 
 pub fn installs_path() -> Result<PathBuf> {
