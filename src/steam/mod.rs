@@ -2,7 +2,10 @@
 
 mod utils;
 
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -60,48 +63,84 @@ impl SteamIntegration {
             return Self { _watcher: None };
         };
 
-        let initial = active_user_at(&path);
-        if let Ok(Some(user)) = &initial {
-            select_profile(&profiles, user).await;
-        }
-        let mut last_active = initial.ok().flatten().map(|user| user.steam_id64);
-        let observed_path = path.clone();
-        let watched_profiles = profiles.clone();
-        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            if event.is_err() {
-                return;
-            }
-            let Ok(Some(user)) = active_user_at(&observed_path) else {
-                return;
-            };
-            if last_active.as_deref() == Some(user.steam_id64.as_str()) {
-                return;
-            }
-            last_active = Some(user.steam_id64.clone());
-            futures_lite::future::block_on(select_profile(&watched_profiles, &user));
-        })
-        .and_then(|mut watcher| {
-            watcher.watch(path.parent().unwrap_or(&path), RecursiveMode::NonRecursive)?;
-            Ok(watcher)
-        })
-        .inspect_err(|error| tracing::warn!("failed to observe Steam sessions: {error}"))
-        .ok();
+        let mut last_active = None;
+        handle_loginusers_change(&profiles, &path, &mut last_active).await;
+        let watcher = watch_loginusers(path, profiles, last_active)
+            .inspect_err(|error| tracing::warn!("failed to observe Steam sessions: {error}"))
+            .ok();
 
         Self { _watcher: watcher }
     }
 }
 
-fn active_user_at(path: &std::path::Path) -> std::io::Result<Option<SteamUser>> {
-    utils::parse_loginusers(path).map(|users| users.into_iter().find(|user| user.is_active))
+fn watch_loginusers(
+    path: PathBuf,
+    profiles: Profiles,
+    mut last_active: Option<String>,
+) -> notify::Result<RecommendedWatcher> {
+    let directory = path.parent().unwrap_or(path.as_path()).to_owned();
+    let observed_path = path.clone();
+    let mut watcher = notify::recommended_watcher(move |event| {
+        let event = match event {
+            Ok(event) => event,
+            Err(error) => {
+                tracing::warn!("failed to observe Steam sessions: {error}");
+                return;
+            }
+        };
+        if !event_targets_loginusers(&event, &observed_path) {
+            return;
+        }
+        futures_lite::future::block_on(handle_loginusers_change(
+            &profiles,
+            &observed_path,
+            &mut last_active,
+        ));
+    })?;
+    watcher.watch(&directory, RecursiveMode::NonRecursive)?;
+    Ok(watcher)
 }
 
-async fn select_profile(profiles: &Profiles, user: &SteamUser) {
-    if let Err(error) = profiles
+fn event_targets_loginusers(event: &notify::Event, path: &Path) -> bool {
+    event.need_rescan()
+        || event
+            .paths
+            .iter()
+            .any(|changed| changed == path || path.parent().is_some_and(|parent| changed == parent))
+}
+
+async fn handle_loginusers_change(
+    profiles: &Profiles,
+    path: &Path,
+    last_active: &mut Option<String>,
+) {
+    let user = match active_user_at(path) {
+        Ok(user) => user,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), "failed to read Steam sessions: {error}");
+            return;
+        }
+    };
+    let Some(user) = user else {
+        last_active.take();
+        return;
+    };
+    if last_active.as_deref() == Some(user.steam_id64.as_str()) {
+        return;
+    }
+    match profiles
         .select_account(provider_id(), &user.steam_id64)
         .await
     {
-        tracing::warn!(account_id = %user.steam_id64, "failed to select Steam profile: {error}");
+        Ok(_) => *last_active = Some(user.steam_id64),
+        Err(error) => {
+            tracing::warn!(account_id = %user.steam_id64, "failed to select Steam profile: {error}");
+        }
     }
+}
+
+fn active_user_at(path: &Path) -> std::io::Result<Option<SteamUser>> {
+    utils::parse_loginusers(path).map(|users| users.into_iter().find(|user| user.is_active))
 }
 
 fn display_name(user: &SteamUser) -> String {
