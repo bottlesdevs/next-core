@@ -11,7 +11,11 @@
 
 pub mod error;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    thread,
+};
 
 use futures_core::Stream;
 use next_config::Config;
@@ -19,6 +23,7 @@ use next_proto::bottles::{
     common::v1::LinkedAccount,
     profiles::v1::{ProfileEvent, SteamLink, UserProfile, profile_event},
 };
+use notify::{RecursiveMode, Watcher};
 use prost_wkt_types::Timestamp;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast};
@@ -63,17 +68,111 @@ impl ProfileManager {
         let path = profiles_path()?;
         let state = match next_config::load::<ProfilesConfig>(&path).await {
             Ok(state) => state,
-            Err(next_config::error::Error::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+            Err(next_config::error::Error::Io(err))
+                if err.kind() == std::io::ErrorKind::NotFound =>
+            {
                 ProfilesConfig::default()
             }
             Err(err) => return Err(err.into()),
         };
         let (events, _) = broadcast::channel(EVENTS_CAPACITY);
-        Ok(Self {
+        let manager = Self {
             path,
             state: Arc::new(RwLock::new(state)),
             events,
-        })
+        };
+        manager.spawn_file_watcher();
+        Ok(manager)
+    }
+
+    /// Watches `profiles.toml` for changes made by another process sharing
+    /// the same file (e.g. `next-server`'s `ProfileService` handling an
+    /// RPC), reloading and re-diffing against in-memory state so this
+    /// process's `watch()` subscribers see external edits too. Runs on a
+    /// plain OS thread — this crate stays executor-agnostic, so the reload
+    /// future is driven with `futures_lite::future::block_on` rather than
+    /// assuming a Tokio runtime is available.
+    fn spawn_file_watcher(&self) {
+        let Some(watch_target) = self.path.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        let path = self.path.clone();
+        let state = self.state.clone();
+        let events = self.events.clone();
+
+        thread::spawn(move || {
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let watched_path = path.clone();
+            let mut watcher =
+                match notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+                    if let Ok(event) = result
+                        && event.paths.iter().any(|changed| changed == &watched_path)
+                    {
+                        let _ = tx.send(());
+                    }
+                }) {
+                    Ok(watcher) => watcher,
+                    Err(err) => {
+                        tracing::warn!("failed to start profiles.toml watcher: {err}");
+                        return;
+                    }
+                };
+
+            if let Err(err) = watcher.watch(&watch_target, RecursiveMode::NonRecursive) {
+                tracing::warn!("failed to watch {}: {err}", watch_target.display());
+                return;
+            }
+
+            for () in rx {
+                let (reloaded, old_profiles, old_active) = {
+                    let mut guard = futures_lite::future::block_on(state.write());
+                    let Ok(reloaded) =
+                        futures_lite::future::block_on(next_config::load::<ProfilesConfig>(&path))
+                    else {
+                        continue;
+                    };
+                    let old_profiles =
+                        std::mem::replace(&mut guard.profiles, reloaded.profiles.clone());
+                    let old_active = std::mem::replace(
+                        &mut guard.active_profile_id,
+                        reloaded.active_profile_id.clone(),
+                    );
+                    (reloaded, old_profiles, old_active)
+                };
+
+                for profile in &reloaded.profiles {
+                    let changed = old_profiles
+                        .iter()
+                        .find(|existing| existing.id == profile.id)
+                        .is_none_or(|existing| existing != profile);
+
+                    if changed {
+                        let _ = events.send(ProfileEvent {
+                            event: Some(profile_event::Event::Updated(profile.clone())),
+                        });
+                    }
+                }
+
+                for old in &old_profiles {
+                    if !reloaded.profiles.iter().any(|profile| profile.id == old.id) {
+                        let _ = events.send(ProfileEvent {
+                            event: Some(profile_event::Event::DeletedProfileId(old.id.clone())),
+                        });
+                    }
+                }
+
+                if reloaded.active_profile_id != old_active
+                    && let Some(active) = reloaded
+                        .active_profile_id
+                        .as_deref()
+                        .and_then(|id| reloaded.profiles.iter().find(|profile| profile.id == id))
+                {
+                    let _ = events.send(ProfileEvent {
+                        event: Some(profile_event::Event::Activated(active.clone())),
+                    });
+                }
+            }
+        });
     }
 
     async fn persist(&self, state: &ProfilesConfig) -> Result<()> {
@@ -234,8 +333,7 @@ impl ProfileManager {
             match updates.remove(&account.storefront) {
                 Some(Ok(refreshed)) => *account = refreshed,
                 Some(Err(())) => {
-                    account.auth_state =
-                        next_proto::bottles::common::v1::AuthState::Stale as i32;
+                    account.auth_state = next_proto::bottles::common::v1::AuthState::Stale as i32;
                 }
                 None => {}
             }
@@ -268,7 +366,11 @@ impl ProfileManager {
     /// Attaches `account` to the profile (replacing any existing account
     /// for the same storefront), after a caller-completed login. Doesn't
     /// perform the login itself — see the module docs.
-    pub async fn link_account(&self, profile_id: &str, account: LinkedAccount) -> Result<UserProfile> {
+    pub async fn link_account(
+        &self,
+        profile_id: &str,
+        account: LinkedAccount,
+    ) -> Result<UserProfile> {
         let mut state = self.state.write().await;
         let profile = state
             .profiles
@@ -285,8 +387,28 @@ impl ProfileManager {
         Ok(profile)
     }
 
+    /// Links `steam_link` to `profile_id`, refusing if that Steam account is
+    /// already linked to a *different* profile — a Steam account maps to
+    /// one real person, so it shouldn't be claimable by more than one local
+    /// profile at a time. Re-linking the same account to the same profile
+    /// (e.g. to refresh `account_name`) is allowed.
     pub async fn link_steam(&self, profile_id: &str, steam_link: SteamLink) -> Result<UserProfile> {
         let mut state = self.state.write().await;
+
+        if let Some(existing) = state.profiles.iter().find(|profile| {
+            profile.id != profile_id
+                && profile
+                    .steam_link
+                    .as_ref()
+                    .is_some_and(|link| link.steam_id64 == steam_link.steam_id64)
+        }) {
+            return Err(ProfileError::SteamAccountAlreadyLinked {
+                steam_id64: steam_link.steam_id64,
+                linked_profile_name: existing.name.clone(),
+            }
+            .into());
+        }
+
         let profile = state
             .profiles
             .iter_mut()
