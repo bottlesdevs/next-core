@@ -13,7 +13,7 @@ exclude = [""]
 
 [features]
 default = ["fvs"]
-fvs = ["dep:blocking", "dep:fvs-rs", "dep:regdiff-rs"]
+fvs = ["dep:fvs-rs", "dep:regdiff-rs"]
 
 [dependencies]
 async-fs.workspace = true
@@ -21,7 +21,7 @@ async-compression.workspace = true
 async-io.workspace = true
 async-process.workspace = true
 async-trait.workspace = true
-blocking = { workspace = true, optional = true }
+blocking.workspace = true
 download-manager.workspace = true
 http-client = { workspace = true, features = ["reqwest"] }
 next-config.workspace = true
@@ -36,7 +36,7 @@ thiserror.workspace = true
 tracing.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
-tokio = { workspace = true, features = ["sync", "fs", "io-util", "rt"] }
+tokio = { workspace = true, features = ["sync"] }
 directories.workspace = true
 futures-core.workspace = true
 futures-lite.workspace = true
@@ -49,8 +49,7 @@ semver.workspace = true
 strum.workspace = true
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde", "v5"] }
-keyring = "4.1.6"
-prost-wkt-types = "0.7.1"
+keyring.workspace = true
 
 [dev-dependencies]
 async-executor.workspace = true

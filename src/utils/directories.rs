@@ -10,7 +10,7 @@ use crate::{bottle::error::BottleError, error::Result};
 pub struct Directories(ProjectDirs);
 
 impl Directories {
-    pub(crate) async fn new() -> Result<Self> {
+    pub async fn new() -> Result<Self> {
         let directories = Self(
             ProjectDirs::from("com", "usebottles", "bottles-next")
                 .ok_or(BottleError::ProjectDirectoriesUnavailable)?,
@@ -33,12 +33,16 @@ impl Directories {
         Ok(directories)
     }
 
-    pub(crate) fn data_dir(&self) -> &Path {
+    pub(crate) fn config_dir(&self) -> &Path {
+        self.0.config_dir()
+    }
+
+    pub fn data_dir(&self) -> &Path {
         self.0.data_local_dir()
     }
 
-    pub(crate) fn config_dir(&self) -> &Path {
-        self.0.config_dir()
+    pub fn cache_dir(&self) -> &Path {
+        self.0.cache_dir()
     }
 
     pub(crate) fn runtime_dir(&self) -> PathBuf {
@@ -64,8 +68,13 @@ impl Directories {
         self.data_dir().join("dependencies")
     }
 
-    fn paths(&self) -> [PathBuf; 5] {
+    pub(crate) fn profiles(&self) -> PathBuf {
+        self.config_dir().join("profiles.toml")
+    }
+
+    fn paths(&self) -> [PathBuf; 6] {
         [
+            self.config_dir().to_path_buf(),
             self.data_dir().to_path_buf(),
             self.runtime_dir(),
             self.bottles(),
