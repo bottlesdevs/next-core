@@ -5,9 +5,9 @@ pub use crate::bottle::error::VirgoError;
 pub use crate::{
     accounts::AccountError,
     addons::{AddonError, CatalogError, InstallerError},
-    bottle::error::BottleError,
+    bottle::BottleError,
     credentials::CredentialError,
-    profile::error::ProfileError,
+    profile::ProfileError,
     runner::RunnerError,
     steam::SteamError,
     utils::archive::ArchiveError,

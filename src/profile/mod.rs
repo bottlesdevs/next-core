@@ -3,6 +3,7 @@
 pub mod error;
 mod store;
 mod watcher;
+pub use error::ProfileError;
 
 use std::sync::Arc;
 

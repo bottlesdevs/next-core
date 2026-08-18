@@ -41,6 +41,7 @@ pub use crate::wrapper::{
     mangohud::MangoHudConfig,
 };
 pub use edit::BottleEdit;
+pub use error::BottleError;
 #[cfg(feature = "fvs")]
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 pub use manager::BottleManager;
