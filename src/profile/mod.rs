@@ -12,21 +12,32 @@ use tokio::sync::{RwLock, broadcast};
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use uuid::Uuid;
 
-use crate::error::Result;
+use crate::{Directories, error::Result};
 use store::ProfilesConfig;
 
 const EVENTS_CAPACITY: usize = 16;
 
 #[derive(Clone)]
 pub struct ProfileManager {
+    /// Resolved `profiles.toml` path, kept alongside `config` so `mutate`
+    /// and the file watcher always read/write the same location.
     path: PathBuf,
     config: Arc<RwLock<ProfilesConfig>>,
     events: broadcast::Sender<ProfileEvent>,
 }
 
 impl ProfileManager {
-    pub async fn new() -> Result<Self> {
-        let path = store::profiles_path()?;
+    /// Bootstraps a standalone `ProfileManager`, resolving its own
+    /// `Directories` — for callers with no [`crate::Bottles`] handle to
+    /// reuse one from (e.g. a UI that boots profile state in parallel
+    /// with, not after, opening `Bottles`). Prefer [`Self::new`] when a
+    /// `Directories` is already available, to avoid re-resolving it.
+    pub async fn open() -> Result<Self> {
+        Self::new(&Directories::new().await?).await
+    }
+
+    pub(crate) async fn new(directories: &Directories) -> Result<Self> {
+        let path = store::profiles_path(directories);
         let state = Arc::new(RwLock::new(store::load(&path).await?));
         let (events, _) = broadcast::channel(EVENTS_CAPACITY);
 

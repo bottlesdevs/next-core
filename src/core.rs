@@ -6,7 +6,7 @@ use download_manager::manager::{DownloadManager, DownloadManagerConfig};
 use http_client::ReqwestClient;
 use url::Url;
 
-use crate::{Addons, BottleManager, Context, Directories, error::Result};
+use crate::{Addons, BottleManager, Context, Directories, error::Result, profile::ProfileManager};
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -20,6 +20,7 @@ pub struct Bottles {
     context: Context,
     bottles: BottleManager,
     addons: Addons,
+    profiles: ProfileManager,
 }
 
 impl Bottles {
@@ -32,11 +33,8 @@ impl Bottles {
         } = config;
         #[cfg(not(feature = "fvs"))]
         let fvs2d = None;
-        // An explicitly configured path always wins; otherwise fall back
-        // to resolving `fvs2d` from $PATH, same as a shell would.
-        #[cfg(feature = "fvs")]
-        let fvs2d = fvs2d.or_else(|| crate::utils::find_in_path("fvs2d"));
         let directories = Directories::new().await?;
+        let profiles = ProfileManager::new(&directories).await?;
         let client = ReqwestClient::new().map_err(download_manager::error::Error::from)?;
         let downloader = Arc::new(DownloadManager::new(
             Arc::new(client),
@@ -50,6 +48,7 @@ impl Bottles {
             context,
             bottles,
             addons,
+            profiles,
         })
     }
 
@@ -64,5 +63,9 @@ impl Bottles {
 
     pub fn addons(&self) -> &Addons {
         &self.addons
+    }
+
+    pub fn profiles(&self) -> &ProfileManager {
+        &self.profiles
     }
 }
