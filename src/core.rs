@@ -6,7 +6,10 @@ use download_manager::manager::{DownloadManager, DownloadManagerConfig};
 use http_client::ReqwestClient;
 use url::Url;
 
-use crate::{Addons, BottleManager, Context, Directories, error::Result, profile::ProfileManager};
+use crate::{
+    Addons, BottleManager, Context, Directories, Library, Profiles,
+    credentials::KeyringCredentialStore, error::Result, steam::SteamIntegration,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -20,7 +23,9 @@ pub struct Bottles {
     context: Context,
     bottles: BottleManager,
     addons: Addons,
-    profiles: ProfileManager,
+    library: Library,
+    profiles: Profiles,
+    _steam: SteamIntegration,
 }
 
 impl Bottles {
@@ -34,7 +39,9 @@ impl Bottles {
         #[cfg(not(feature = "fvs"))]
         let fvs2d = None;
         let directories = Directories::new().await?;
-        let profiles = ProfileManager::new(&directories).await?;
+        let credentials = Arc::new(KeyringCredentialStore::new());
+        let profiles = Profiles::load(&directories, credentials).await?;
+        let steam = SteamIntegration::open(profiles.clone()).await;
         let client = ReqwestClient::new().map_err(download_manager::error::Error::from)?;
         let downloader = Arc::new(DownloadManager::new(
             Arc::new(client),
@@ -43,12 +50,15 @@ impl Bottles {
         let context = Context::new(directories, downloader.clone(), fvs2d)?;
         let addons = Addons::load(context.clone(), component_catalog, dependency_catalog).await?;
         let bottles = BottleManager::load(context.clone(), addons.clone()).await?;
+        let library = Library::new(bottles.clone());
 
         Ok(Self {
             context,
             bottles,
             addons,
+            library,
             profiles,
+            _steam: steam,
         })
     }
 
@@ -61,11 +71,21 @@ impl Bottles {
         &self.bottles
     }
 
+    pub fn directories(&self) -> &Directories {
+        self.context.directories()
+    }
+
     pub fn addons(&self) -> &Addons {
         &self.addons
     }
 
-    pub fn profiles(&self) -> &ProfileManager {
+    /// Returns the aggregate installed-program library and search entry point.
+    pub fn library(&self) -> &Library {
+        &self.library
+    }
+
+    /// Returns the persisted application profiles.
+    pub fn profiles(&self) -> &Profiles {
         &self.profiles
     }
 }

@@ -1,28 +1,32 @@
 mod error;
-pub mod os;
+mod os;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
-use next_proto::bottles::common::v1::Storefront;
-use tonic::async_trait;
+use async_trait::async_trait;
+use uuid::{NonNilUuid, Uuid};
 
-pub use crate::credentials::error::CredentialError;
+pub(crate) use error::CredentialError;
+pub(crate) use os::KeyringCredentialStore;
 
 #[async_trait]
-pub trait CredentialStore {
+pub(crate) trait CredentialStore: Send + Sync {
     async fn load(
         &self,
-        profile_id: &str,
-        storefront: Storefront,
+        provider_id: NonNilUuid,
+        profile_id: Uuid,
     ) -> Result<Option<Vec<u8>>, CredentialError>;
 
     async fn save(
         &self,
-        profile_id: &str,
-        storefront: Storefront,
-        credentials: &[u8],
+        provider_id: NonNilUuid,
+        profile_id: Uuid,
+        secret: &[u8],
     ) -> Result<(), CredentialError>;
 
-    async fn delete(&self, profile_id: &str, storefront: Storefront)
-    -> Result<(), CredentialError>;
+    async fn delete(
+        &self,
+        provider_id: NonNilUuid,
+        profile_id: Uuid,
+    ) -> Result<(), CredentialError>;
 }

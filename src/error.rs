@@ -3,13 +3,10 @@ use thiserror::Error;
 #[cfg(feature = "fvs")]
 pub use crate::bottle::error::VirgoError;
 pub use crate::{
-    accounts::AccountError,
     addons::{AddonError, CatalogError, InstallerError},
-    bottle::BottleError,
-    credentials::CredentialError,
-    profile::ProfileError,
+    bottle::error::BottleError,
+    profiles::ProfileError,
     runner::RunnerError,
-    steam::SteamError,
     utils::archive::ArchiveError,
     winebridge::BridgeError,
 };
@@ -44,17 +41,10 @@ pub enum Error {
     Virgo(#[from] VirgoError),
     #[error("addon error: {0}")]
     Addon(#[from] AddonError),
-    #[error("credential error: {0}")]
-    Credential(#[from] CredentialError),
     #[error("profile error: {0}")]
     Profile(#[from] ProfileError),
-    #[error("account error: {0}")]
-    Account(#[from] AccountError),
-    #[error("Steam error: {0}")]
-    Steam(#[from] SteamError),
-    #[cfg(feature = "fvs")]
-    #[error("fvs2d executable is not configured")]
-    Fvs2dNotConfigured,
+    #[error("credential error: {0}")]
+    Credential(String),
     #[error("operation cancelled")]
     Cancelled,
 }
@@ -106,11 +96,5 @@ impl<T, E: std::error::Error> ResultExt<T, E> for std::result::Result<T, E> {
 
     fn log_debug(self) -> Option<T> {
         self.inspect_err(|e| tracing::debug!("{e}")).ok()
-    }
-}
-
-impl From<Error> for tonic::Status {
-    fn from(err: Error) -> Self {
-        tonic::Status::internal(err.to_string())
     }
 }
