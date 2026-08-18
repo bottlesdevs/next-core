@@ -20,15 +20,7 @@ pub struct InstallRecord {
     pub game_id: String,
     pub version: String,
     pub install_size_bytes: Option<u64>,
-    /// Which bottle's `C:` drive these files were written into.
     pub bottle_id: String,
-    /// Paths installed relative to that bottle's `C:` drive, recorded
-    /// at install time so uninstalling removes exactly what was
-    /// written even if the manifest changes later.
-    pub relative_paths: Vec<String>,
-    /// The `Program` registered on the bottle for this install's launch
-    /// executable, if one was found — so uninstalling can remove it
-    /// too. Unset when no primary executable could be determined.
     pub program_id: Option<String>,
 }
 
@@ -108,16 +100,14 @@ pub fn installs_path() -> Result<PathBuf> {
         .ok_or_else(|| BottleError::ProjectDirectoriesUnavailable.into())
 }
 
-/// Where a game's files are written. Not part of `InstallsConfig` itself
-/// since it's derived, not persisted.
-pub fn install_dir(profile_id: &str, storefront: Storefront, game_id: &str) -> Result<PathBuf> {
-    directories::ProjectDirs::from("com", "usebottles", "bottles-next")
-        .map(|dirs| {
-            dirs.data_dir()
-                .join("installs")
-                .join(profile_id)
-                .join(storefront.as_str_name())
-                .join(game_id)
-        })
-        .ok_or_else(|| BottleError::ProjectDirectoriesUnavailable.into())
+/// Where a game's files are written, relative to its bottle's `C:` drive
+/// — `Program Files/<storefront>/<game_id>`.
+pub fn install_root_relative_path(storefront: Storefront, game_id: &str) -> Option<PathBuf> {
+    let game_id_path =
+        sanitize_relative_path(game_id).filter(|path| path.components().count() == 1)?;
+    Some(
+        PathBuf::from("Program Files")
+            .join(storefront.as_str_name())
+            .join(game_id_path),
+    )
 }
