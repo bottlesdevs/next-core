@@ -14,22 +14,9 @@ impl OsCredentialStore {
     }
 
     fn entry(profile_id: &str, storefront: Storefront) -> Result<Entry, CredentialError> {
-        let account = format!("profile/{profile_id}/{}", storefront_key(storefront),);
+        let account = format!("profile/{profile_id}/{}", storefront.as_str_name(),);
 
         Ok(Entry::new(KEYCHAIN_SERVICE, &account)?)
-    }
-}
-
-fn storefront_key(storefront: Storefront) -> &'static str {
-    match storefront {
-        Storefront::EpicGames => "epic-games",
-        Storefront::Gog => "gog",
-        Storefront::AmazonGames => "amazon-games",
-        Storefront::Steam => "steam",
-        Storefront::EaApp => "ea-app",
-        Storefront::UbisoftConnect => "ubisoft-connect",
-        Storefront::BattleNet => "battle-net",
-        Storefront::Unspecified => "unspecified",
     }
 }
 
