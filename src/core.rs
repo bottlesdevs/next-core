@@ -6,7 +6,10 @@ use download_manager::manager::{DownloadManager, DownloadManagerConfig};
 use http_client::ReqwestClient;
 use url::Url;
 
-use crate::{Addons, BottleManager, Context, Directories, Library, Profiles, error::Result};
+use crate::{
+    Addons, BottleManager, Context, Directories, Library, Profiles,
+    credentials::KeyringCredentialStore, error::Result, steam::SteamIntegration,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -22,6 +25,7 @@ pub struct Bottles {
     addons: Addons,
     library: Library,
     profiles: Profiles,
+    _steam: SteamIntegration,
 }
 
 impl Bottles {
@@ -35,13 +39,15 @@ impl Bottles {
         #[cfg(not(feature = "fvs"))]
         let fvs2d = None;
         let directories = Directories::new().await?;
+        let credentials = Arc::new(KeyringCredentialStore::new());
+        let profiles = Profiles::load(&directories, credentials).await?;
+        let steam = SteamIntegration::open(profiles.clone()).await;
         let client = ReqwestClient::new().map_err(download_manager::error::Error::from)?;
         let downloader = Arc::new(DownloadManager::new(
             Arc::new(client),
             DownloadManagerConfig::default(),
         )?);
         let context = Context::new(directories, downloader.clone(), fvs2d)?;
-        let profiles = Profiles::load(context.clone()).await?;
         let addons = Addons::load(context.clone(), component_catalog, dependency_catalog).await?;
         let bottles = BottleManager::load(context.clone(), addons.clone()).await?;
         let library = Library::new(bottles.clone());
@@ -52,6 +58,7 @@ impl Bottles {
             addons,
             library,
             profiles,
+            _steam: steam,
         })
     }
 
