@@ -1,4 +1,4 @@
-use keyring::Entry;
+use keyring::{KeyringEntry, set_global_service_name};
 use next_proto::bottles::common::v1::Storefront;
 use tonic::async_trait;
 
@@ -10,13 +10,13 @@ pub struct OsCredentialStore;
 
 impl OsCredentialStore {
     pub fn new() -> Self {
+        set_global_service_name(KEYCHAIN_SERVICE);
         Self
     }
 
-    fn entry(profile_id: &str, storefront: Storefront) -> Result<Entry, CredentialError> {
-        let account = format!("profile/{profile_id}/{}", storefront.as_str_name(),);
-
-        Ok(Entry::new(KEYCHAIN_SERVICE, &account)?)
+    fn entry(profile_id: &str, storefront: Storefront) -> Result<KeyringEntry, CredentialError> {
+        let account = format!("{profile_id}/{}", storefront.as_str_name(),);
+        Ok(KeyringEntry::try_new(account)?)
     }
 }
 
@@ -26,15 +26,13 @@ impl CredentialStore for OsCredentialStore {
         &self,
         profile_id: &str,
         storefront: Storefront,
-    ) -> Result<Option<Vec<u8>>, CredentialError> {
+    ) -> Result<Option<String>, CredentialError> {
         let entry = Self::entry(profile_id, storefront)?;
 
-        match entry.get_secret() {
-            Ok(secret) => Ok(Some(secret)),
-
-            Err(keyring::Error::NoEntry) => Ok(None),
-
-            Err(error) => Err(CredentialError::Store(error)),
+        match entry.find_secret().await {
+            Ok(Some(secret)) => Ok(Some(secret)),
+            Ok(None) => Ok(None),
+            Err(error) => Err(CredentialError::Store(error.into())),
         }
     }
 
@@ -42,11 +40,14 @@ impl CredentialStore for OsCredentialStore {
         &self,
         profile_id: &str,
         storefront: Storefront,
-        secret: &[u8],
+        secret: &str,
     ) -> Result<(), CredentialError> {
         let entry = Self::entry(profile_id, storefront)?;
 
-        entry.set_secret(secret)?;
+        entry
+            .set_secret(secret)
+            .await
+            .map_err(|error| CredentialError::Store(error.into()))?;
 
         Ok(())
     }
@@ -58,12 +59,9 @@ impl CredentialStore for OsCredentialStore {
     ) -> Result<(), CredentialError> {
         let entry = Self::entry(profile_id, storefront)?;
 
-        match entry.delete_credential() {
+        match entry.delete_secret().await {
             Ok(()) => Ok(()),
-
-            Err(keyring::Error::NoEntry) => Ok(()),
-
-            Err(error) => Err(CredentialError::Store(error)),
+            Err(error) => Err(CredentialError::Store(error.into())),
         }
     }
 }

@@ -14,13 +14,13 @@ pub trait CredentialStore {
         &self,
         profile_id: &str,
         storefront: Storefront,
-    ) -> Result<Option<Vec<u8>>, CredentialError>;
+    ) -> Result<Option<String>, CredentialError>;
 
     async fn save(
         &self,
         profile_id: &str,
         storefront: Storefront,
-        credentials: &[u8],
+        credentials: &str,
     ) -> Result<(), CredentialError>;
 
     async fn delete(&self, profile_id: &str, storefront: Storefront)

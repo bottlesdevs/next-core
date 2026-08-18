@@ -10,7 +10,7 @@ use crate::credentials::{CredentialError, CredentialStore};
 
 #[derive(Clone, Default)]
 pub struct MemoryCredentialStore {
-    credentials: Arc<Mutex<HashMap<(String, Storefront), Vec<u8>>>>,
+    credentials: Arc<Mutex<HashMap<(String, Storefront), String>>>,
 }
 
 impl MemoryCredentialStore {
@@ -25,7 +25,7 @@ impl CredentialStore for MemoryCredentialStore {
         &self,
         profile_id: &str,
         storefront: Storefront,
-    ) -> Result<Option<Vec<u8>>, CredentialError> {
+    ) -> Result<Option<String>, CredentialError> {
         Ok(self
             .credentials
             .lock()
@@ -38,12 +38,12 @@ impl CredentialStore for MemoryCredentialStore {
         &self,
         profile_id: &str,
         storefront: Storefront,
-        secret: &[u8],
+        secret: &str,
     ) -> Result<(), CredentialError> {
         self.credentials
             .lock()
             .unwrap()
-            .insert((profile_id.to_owned(), storefront), secret.to_vec());
+            .insert((profile_id.to_owned(), storefront), secret.to_string());
 
         Ok(())
     }
@@ -76,13 +76,13 @@ async fn save_then_load_round_trips() {
     let store = MemoryCredentialStore::new();
 
     store
-        .save("profile-1", Storefront::Steam, b"secret")
+        .save("profile-1", Storefront::Steam, "secret")
         .await
         .unwrap();
 
     let result = store.load("profile-1", Storefront::Steam).await.unwrap();
 
-    assert_eq!(result, Some(b"secret".to_vec()));
+    assert_eq!(result, Some("secret".to_string()));
 }
 
 #[tokio::test]
@@ -90,17 +90,17 @@ async fn save_overwrites_existing_entry() {
     let store = MemoryCredentialStore::new();
 
     store
-        .save("profile-1", Storefront::Steam, b"old")
+        .save("profile-1", Storefront::Steam, "old")
         .await
         .unwrap();
     store
-        .save("profile-1", Storefront::Steam, b"new")
+        .save("profile-1", Storefront::Steam, "new")
         .await
         .unwrap();
 
     let result = store.load("profile-1", Storefront::Steam).await.unwrap();
 
-    assert_eq!(result, Some(b"new".to_vec()));
+    assert_eq!(result, Some("new".to_string()));
 }
 
 #[tokio::test]
@@ -108,7 +108,7 @@ async fn delete_removes_entry() {
     let store = MemoryCredentialStore::new();
 
     store
-        .save("profile-1", Storefront::Steam, b"secret")
+        .save("profile-1", Storefront::Steam, "secret")
         .await
         .unwrap();
     store.delete("profile-1", Storefront::Steam).await.unwrap();
@@ -132,20 +132,20 @@ async fn different_storefronts_are_independent() {
     let store = MemoryCredentialStore::new();
 
     store
-        .save("profile-1", Storefront::Steam, b"steam-secret")
+        .save("profile-1", Storefront::Steam, "steam-secret")
         .await
         .unwrap();
     store
-        .save("profile-1", Storefront::Gog, b"gog-secret")
+        .save("profile-1", Storefront::Gog, "gog-secret")
         .await
         .unwrap();
 
     assert_eq!(
         store.load("profile-1", Storefront::Steam).await.unwrap(),
-        Some(b"steam-secret".to_vec())
+        Some("steam-secret".to_string())
     );
     assert_eq!(
         store.load("profile-1", Storefront::Gog).await.unwrap(),
-        Some(b"gog-secret".to_vec())
+        Some("gog-secret".to_string())
     );
 }
