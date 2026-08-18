@@ -36,7 +36,8 @@ thiserror.workspace = true
 tracing.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "fs", "io-util", "rt"] }
+flate2.workspace = true
 directories.workspace = true
 futures-core.workspace = true
 futures-lite.workspace = true
