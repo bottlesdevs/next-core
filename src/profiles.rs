@@ -1,7 +1,7 @@
 //! Persisted application profiles and selection.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io,
     path::PathBuf,
     sync::{Arc, RwLock},
@@ -79,6 +79,11 @@ pub struct AccountIdentity {
 pub trait StorefrontAccountProvider: Send + Sync {
     fn provider(&self) -> StorefrontProvider;
 
+    /// Distinguishes extension adapters from native providers for registry ownership.
+    fn is_extension(&self) -> bool {
+        false
+    }
+
     async fn link_account(&self, profile_id: Uuid) -> std::result::Result<AccountIdentity, String>;
 }
 
@@ -118,7 +123,34 @@ struct ProfilesInner {
 #[derive(Default)]
 struct AccountProviders {
     values: HashMap<NonNilUuid, Arc<dyn StorefrontAccountProvider>>,
-    built_in: HashSet<NonNilUuid>,
+}
+
+impl AccountProviders {
+    fn register(&mut self, provider: Arc<dyn StorefrontAccountProvider>) -> Result<()> {
+        let id = provider.provider().id;
+        if provider.is_extension()
+            && self
+                .values
+                .get(&id)
+                .is_some_and(|existing| !existing.is_extension())
+        {
+            return Err(ProfileError::ProviderBuiltIn(id).into());
+        }
+        self.values.insert(id, provider);
+        Ok(())
+    }
+
+    fn unregister(&mut self, id: NonNilUuid) -> Result<()> {
+        if self
+            .values
+            .get(&id)
+            .is_some_and(|provider| !provider.is_extension())
+        {
+            return Err(ProfileError::ProviderBuiltIn(id).into());
+        }
+        self.values.remove(&id);
+        Ok(())
+    }
 }
 
 /// The persisted collection of application profiles.
@@ -279,50 +311,25 @@ impl Profiles {
             .collect()
     }
 
-    /// Registers or replaces an extension-provided account provider.
+    /// Registers or replaces an account provider.
     pub fn register_account_provider(
         &self,
         provider: Arc<dyn StorefrontAccountProvider>,
     ) -> Result<()> {
-        let id = provider.provider().id;
-        let mut providers = self
-            .0
+        self.0
             .providers
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if providers.built_in.contains(&id) {
-            return Err(ProfileError::ProviderBuiltIn(id).into());
-        }
-        providers.values.insert(id, provider);
-        Ok(())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .register(provider)
     }
 
     /// Removes an available provider without changing persisted accounts.
     pub fn unregister_account_provider(&self, provider: NonNilUuid) -> Result<()> {
-        let mut providers = self
-            .0
+        self.0
             .providers
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if providers.built_in.contains(&provider) {
-            return Err(ProfileError::ProviderBuiltIn(provider).into());
-        }
-        providers.values.remove(&provider);
-        Ok(())
-    }
-
-    pub(crate) fn register_builtin_account_provider(
-        &self,
-        provider: Arc<dyn StorefrontAccountProvider>,
-    ) {
-        let id = provider.provider().id;
-        let mut providers = self
-            .0
-            .providers
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        providers.values.insert(id, provider);
-        providers.built_in.insert(id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unregister(provider)
     }
 
     /// Links one account through an available provider and persists its public metadata.
