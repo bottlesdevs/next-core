@@ -1,6 +1,7 @@
 mod error;
-pub mod memory;
 pub mod os;
+#[cfg(test)]
+mod tests;
 
 use next_proto::bottles::common::v1::Storefront;
 use tonic::async_trait;
