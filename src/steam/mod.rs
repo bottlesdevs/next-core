@@ -56,7 +56,9 @@ pub(crate) struct SteamIntegration {
 
 impl SteamIntegration {
     pub(crate) async fn open(profiles: Profiles) -> Self {
-        profiles.register_builtin_account_provider(Arc::new(SteamAccountProvider));
+        profiles
+            .register_account_provider(Arc::new(SteamAccountProvider))
+            .expect("native Steam provider registration cannot be rejected");
 
         let Some(path) = loginusers_vdf_path() else {
             tracing::debug!("Steam is not installed; session observation is disabled");
