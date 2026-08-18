@@ -74,15 +74,21 @@ fn run(
 /// events the reload implies — a changed or newly-created profile is
 /// `Updated`, a profile that disappeared is `DeletedProfileId`, and a
 /// changed `active_profile_id` is `Activated`.
-fn reconcile(path: &Path, state: &Arc<RwLock<ProfilesConfig>>, events: &broadcast::Sender<ProfileEvent>) {
+fn reconcile(
+    path: &Path,
+    state: &Arc<RwLock<ProfilesConfig>>,
+    events: &broadcast::Sender<ProfileEvent>,
+) {
     let (reloaded, old_profiles, old_active) = {
         let mut guard = futures_lite::future::block_on(state.write());
         let Ok(reloaded) = futures_lite::future::block_on(store::load(path)) else {
             return;
         };
         let old_profiles = std::mem::replace(&mut guard.profiles, reloaded.profiles.clone());
-        let old_active =
-            std::mem::replace(&mut guard.active_profile_id, reloaded.active_profile_id.clone());
+        let old_active = std::mem::replace(
+            &mut guard.active_profile_id,
+            reloaded.active_profile_id.clone(),
+        );
         (reloaded, old_profiles, old_active)
     };
 

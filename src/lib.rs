@@ -1,3 +1,4 @@
+pub mod accounts;
 mod addons;
 mod bottle;
 mod core;
@@ -5,8 +6,8 @@ pub mod credentials;
 pub mod error;
 pub mod library;
 mod operation;
-pub mod profile;
 mod prefix;
+pub mod profile;
 mod runner;
 pub mod steam;
 mod utils;

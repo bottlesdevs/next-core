@@ -1,9 +1,3 @@
-//! Reads Steam's local session state directly from `loginusers.vdf`.
-//!
-//! Pure local file parsing/watching — no network or proto types, same as
-//! every other module here. `next-server`'s `ProfileService` maps
-//! [`SteamUser`] to `bottles.steam.v1.SteamSessionEvent` itself.
-
 use std::{
     path::{Path, PathBuf},
     pin::Pin,

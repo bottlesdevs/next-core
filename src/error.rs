@@ -3,11 +3,14 @@ use thiserror::Error;
 #[cfg(feature = "fvs")]
 pub use crate::bottle::error::VirgoError;
 pub use crate::{
+    accounts::AccountError,
     addons::{AddonError, CatalogError, InstallerError},
     bottle::error::BottleError,
     credentials::CredentialError,
+    library::LibraryError,
     profile::error::ProfileError,
     runner::RunnerError,
+    steam::SteamError,
     utils::archive::ArchiveError,
     winebridge::BridgeError,
 };
@@ -46,6 +49,12 @@ pub enum Error {
     Credential(#[from] CredentialError),
     #[error("profile error: {0}")]
     Profile(#[from] ProfileError),
+    #[error("library error: {0}")]
+    Library(#[from] LibraryError),
+    #[error("account error: {0}")]
+    Account(#[from] AccountError),
+    #[error("Steam error: {0}")]
+    Steam(#[from] SteamError),
     #[cfg(feature = "fvs")]
     #[error("fvs2d executable is not configured")]
     Fvs2dNotConfigured,
