@@ -25,7 +25,10 @@ pub use bottle::{Snapshot, SnapshotSummary};
 pub use core::{Bottles, Config};
 pub use library::{Library, LibraryItem, SearchAction, SearchEntry};
 pub use operation::{Operation, Progress, Stage, Transfer};
-pub use profiles::{Profile, ProfileError, Profiles};
+pub use profiles::{
+    AccountIdentity, Profile, ProfileError, Profiles, StorefrontAccount, StorefrontAccountProvider,
+    StorefrontProvider,
+};
 pub use utils::directories::Directories;
 pub use utils::environment::Environment;
 
