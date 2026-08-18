@@ -71,47 +71,20 @@ fn run(
 }
 
 /// Reloads `path`, replaces the in-memory state, and emits whatever
-/// events the reload implies — a changed or newly-created profile is
-/// `Updated`, a profile that disappeared is `DeletedProfileId`, and a
-/// changed `active_profile_id` is `Activated`.
+/// events the reload implies via [`store::diff_and_emit`].
 fn reconcile(
     path: &Path,
     state: &Arc<RwLock<ProfilesConfig>>,
     events: &broadcast::Sender<ProfileEvent>,
 ) {
-    let (reloaded, old_profiles, old_active) = {
+    let (old, new) = {
         let mut guard = futures_lite::future::block_on(state.write());
         let Ok(reloaded) = futures_lite::future::block_on(store::load(path)) else {
             return;
         };
-        let old_profiles = std::mem::replace(&mut guard.profiles, reloaded.profiles.clone());
-        let old_active = std::mem::replace(
-            &mut guard.active_profile_id,
-            reloaded.active_profile_id.clone(),
-        );
-        (reloaded, old_profiles, old_active)
+        let old = std::mem::replace(&mut *guard, reloaded.clone());
+        (old, reloaded)
     };
 
-    for profile in &reloaded.profiles {
-        let changed = old_profiles
-            .iter()
-            .find(|existing| existing.id == profile.id)
-            .is_none_or(|existing| existing != profile);
-
-        if changed {
-            store::emit_updated(events, profile);
-        }
-    }
-
-    for old in &old_profiles {
-        if !reloaded.profiles.iter().any(|profile| profile.id == old.id) {
-            store::emit_deleted(events, &old.id);
-        }
-    }
-
-    if reloaded.active_profile_id != old_active
-        && let Some(active) = reloaded.active()
-    {
-        store::emit_activated(events, &active);
-    }
+    store::diff_and_emit(events, &old, &new);
 }
