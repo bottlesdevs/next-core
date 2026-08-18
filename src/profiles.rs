@@ -1,8 +1,9 @@
 //! Persisted application profiles and selection.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io,
+    path::PathBuf,
     sync::{Arc, RwLock},
 };
 
@@ -15,7 +16,11 @@ use tokio::sync::{Mutex, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
 use uuid::{NonNilUuid, Uuid};
 
-use crate::{Context, error::Result};
+use crate::{
+    Directories,
+    credentials::CredentialStore,
+    error::{Error, Result},
+};
 
 #[derive(Debug, Error)]
 pub enum ProfileError {
@@ -43,6 +48,16 @@ pub enum ProfileError {
         provider: NonNilUuid,
         message: String,
     },
+    /// Another profile already owns the same provider account.
+    #[error("account {account_id} from provider {provider} is already linked to profile {profile}")]
+    AccountIdentityAlreadyLinked {
+        profile: Uuid,
+        provider: NonNilUuid,
+        account_id: String,
+    },
+    /// Built-in providers cannot be replaced or removed by extensions.
+    #[error("storefront account provider {0} is built in")]
+    ProviderBuiltIn(NonNilUuid),
 }
 
 /// Static identity of one available storefront account provider.
@@ -93,10 +108,17 @@ impl ProfilesConfig {
 }
 
 struct ProfilesInner {
-    context: Context,
+    path: PathBuf,
+    credentials: Arc<dyn CredentialStore>,
     published: watch::Sender<Arc<ProfilesConfig>>,
     write_lock: Mutex<()>,
-    providers: RwLock<HashMap<NonNilUuid, Arc<dyn StorefrontAccountProvider>>>,
+    providers: RwLock<AccountProviders>,
+}
+
+#[derive(Default)]
+struct AccountProviders {
+    values: HashMap<NonNilUuid, Arc<dyn StorefrontAccountProvider>>,
+    built_in: HashSet<NonNilUuid>,
 }
 
 /// The persisted collection of application profiles.
@@ -104,8 +126,11 @@ struct ProfilesInner {
 pub struct Profiles(Arc<ProfilesInner>);
 
 impl Profiles {
-    pub(crate) async fn load(context: Context) -> Result<Self> {
-        let path = context.directories().profiles();
+    pub(crate) async fn load(
+        directories: &Directories,
+        credentials: Arc<dyn CredentialStore>,
+    ) -> Result<Self> {
+        let path = directories.profiles();
         let state = match next_config::load(&path).await {
             Ok(state) => state,
             Err(next_config::error::Error::Io(error))
@@ -120,16 +145,17 @@ impl Profiles {
         if state.profile(state.selected).is_none() {
             return Err(ProfileError::NotFound(state.selected).into());
         }
-        Ok(Self::new(context, state))
+        Ok(Self::new(path, credentials, state))
     }
 
-    fn new(context: Context, state: ProfilesConfig) -> Self {
+    fn new(path: PathBuf, credentials: Arc<dyn CredentialStore>, state: ProfilesConfig) -> Self {
         let (published, _) = watch::channel(Arc::new(state));
         Self(Arc::new(ProfilesInner {
-            context,
+            path,
+            credentials,
             published,
             write_lock: Mutex::new(()),
-            providers: RwLock::new(HashMap::new()),
+            providers: RwLock::new(AccountProviders::default()),
         }))
     }
 
@@ -155,6 +181,23 @@ impl Profiles {
     /// read the current selection.
     pub fn watch(&self) -> impl Stream<Item = Vec<Profile>> + Send + 'static {
         WatchStream::new(self.0.published.subscribe()).map(|state| state.profiles.clone())
+    }
+
+    /// Watches the selected profile, yielding its current snapshot first.
+    pub fn watch_selected(&self) -> impl Stream<Item = Profile> + Send + 'static {
+        let mut previous = None;
+        WatchStream::new(self.0.published.subscribe()).filter_map(move |state| {
+            let selected = state
+                .profile(state.selected)
+                .cloned()
+                .expect("selected profile was validated");
+            if previous.as_ref() == Some(&selected) {
+                None
+            } else {
+                previous = Some(selected.clone());
+                Some(selected)
+            }
+        })
     }
 
     /// Creates an unselected profile with a generated UUID.
@@ -202,19 +245,26 @@ impl Profiles {
 
     /// Deletes an existing unselected profile.
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        self.update(move |state| {
-            if state.selected == id {
-                return Err(ProfileError::Selected(id).into());
-            }
-            let index = state
-                .profiles
-                .iter()
-                .position(|profile| profile.id == id)
-                .ok_or(ProfileError::NotFound(id))?;
-            state.profiles.remove(index);
-            Ok(())
-        })
-        .await
+        let _write = self.0.write_lock.lock().await;
+        let current = self.0.published.borrow().clone();
+        if current.selected == id {
+            return Err(ProfileError::Selected(id).into());
+        }
+        let index = current
+            .profiles
+            .iter()
+            .position(|profile| profile.id == id)
+            .ok_or(ProfileError::NotFound(id))?;
+        for account in &current.profiles[index].accounts {
+            self.0
+                .credentials
+                .delete(account.provider.id, id)
+                .await
+                .map_err(|error| Error::Credential(error.to_string()))?;
+        }
+        let mut next = current.as_ref().clone();
+        next.profiles.remove(index);
+        self.persist(next).await
     }
 
     /// Returns the storefront providers available in this process.
@@ -223,28 +273,56 @@ impl Profiles {
             .providers
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values
             .values()
             .map(|provider| provider.provider())
             .collect()
     }
 
-    /// Registers or replaces the provider with the same stable identity.
-    pub fn register_account_provider(&self, provider: Arc<dyn StorefrontAccountProvider>) {
+    /// Registers or replaces an extension-provided account provider.
+    pub fn register_account_provider(
+        &self,
+        provider: Arc<dyn StorefrontAccountProvider>,
+    ) -> Result<()> {
         let id = provider.provider().id;
-        self.0
+        let mut providers = self
+            .0
             .providers
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, provider);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if providers.built_in.contains(&id) {
+            return Err(ProfileError::ProviderBuiltIn(id).into());
+        }
+        providers.values.insert(id, provider);
+        Ok(())
     }
 
     /// Removes an available provider without changing persisted accounts.
-    pub fn unregister_account_provider(&self, provider: NonNilUuid) {
-        self.0
+    pub fn unregister_account_provider(&self, provider: NonNilUuid) -> Result<()> {
+        let mut providers = self
+            .0
             .providers
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&provider);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if providers.built_in.contains(&provider) {
+            return Err(ProfileError::ProviderBuiltIn(provider).into());
+        }
+        providers.values.remove(&provider);
+        Ok(())
+    }
+
+    pub(crate) fn register_builtin_account_provider(
+        &self,
+        provider: Arc<dyn StorefrontAccountProvider>,
+    ) {
+        let id = provider.provider().id;
+        let mut providers = self
+            .0
+            .providers
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        providers.values.insert(id, provider);
+        providers.built_in.insert(id);
     }
 
     /// Links one account through an available provider and persists its public metadata.
@@ -272,6 +350,7 @@ impl Profiles {
             .providers
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values
             .get(&provider_id)
             .cloned()
             .ok_or(ProfileError::ProviderNotFound(provider_id))?;
@@ -286,12 +365,12 @@ impl Profiles {
                 })?;
 
         self.update(move |state| {
-            let profile = state
+            let profile_index = state
                 .profiles
-                .iter_mut()
-                .find(|profile| profile.id == profile_id)
+                .iter()
+                .position(|profile| profile.id == profile_id)
                 .ok_or(ProfileError::NotFound(profile_id))?;
-            if profile
+            if state.profiles[profile_index]
                 .accounts
                 .iter()
                 .any(|account| account.provider.id == provider_id)
@@ -302,6 +381,20 @@ impl Profiles {
                 }
                 .into());
             }
+            if let Some(owner) = state.profiles.iter().find(|profile| {
+                profile.accounts.iter().any(|account| {
+                    account.provider.id == provider_id
+                        && account.identity.account_id == identity.account_id
+                })
+            }) {
+                return Err(ProfileError::AccountIdentityAlreadyLinked {
+                    profile: owner.id,
+                    provider: provider_id,
+                    account_id: identity.account_id.clone(),
+                }
+                .into());
+            }
+            let profile = &mut state.profiles[profile_index];
             profile.accounts.push(StorefrontAccount {
                 provider: provider_info,
                 identity,
@@ -317,24 +410,54 @@ impl Profiles {
         profile_id: Uuid,
         provider_id: NonNilUuid,
     ) -> Result<Profile> {
-        self.update(move |state| {
-            let profile = state
-                .profiles
-                .iter_mut()
-                .find(|profile| profile.id == profile_id)
-                .ok_or(ProfileError::NotFound(profile_id))?;
-            let account = profile
-                .accounts
-                .iter()
-                .position(|account| account.provider.id == provider_id)
-                .ok_or(ProfileError::AccountNotLinked {
-                    profile: profile_id,
-                    provider: provider_id,
-                })?;
-            profile.accounts.remove(account);
-            Ok(profile.clone())
-        })
-        .await
+        let _write = self.0.write_lock.lock().await;
+        let current = self.0.published.borrow().clone();
+        let profile_index = current
+            .profiles
+            .iter()
+            .position(|profile| profile.id == profile_id)
+            .ok_or(ProfileError::NotFound(profile_id))?;
+        let account_index = current.profiles[profile_index]
+            .accounts
+            .iter()
+            .position(|account| account.provider.id == provider_id)
+            .ok_or(ProfileError::AccountNotLinked {
+                profile: profile_id,
+                provider: provider_id,
+            })?;
+        self.0
+            .credentials
+            .delete(provider_id, profile_id)
+            .await
+            .map_err(|error| Error::Credential(error.to_string()))?;
+        let mut next = current.as_ref().clone();
+        next.profiles[profile_index].accounts.remove(account_index);
+        let profile = next.profiles[profile_index].clone();
+        self.persist(next).await?;
+        Ok(profile)
+    }
+
+    pub(crate) async fn select_account(
+        &self,
+        provider_id: NonNilUuid,
+        account_id: &str,
+    ) -> Result<Option<Profile>> {
+        let profile_id = self
+            .0
+            .published
+            .borrow()
+            .profiles
+            .iter()
+            .find(|profile| {
+                profile.accounts.iter().any(|account| {
+                    account.provider.id == provider_id && account.identity.account_id == account_id
+                })
+            })
+            .map(|profile| profile.id);
+        match profile_id {
+            Some(profile_id) => self.select(profile_id).await.map(Some),
+            None => Ok(None),
+        }
     }
 
     async fn update<T>(
@@ -348,9 +471,14 @@ impl Profiles {
         if next == *current {
             return Ok(value);
         }
-        next_config::save(&self.0.context.directories().profiles(), &next).await?;
-        self.0.published.send_replace(Arc::new(next));
+        self.persist(next).await?;
         Ok(value)
+    }
+
+    async fn persist(&self, next: ProfilesConfig) -> Result<()> {
+        next_config::save(&self.0.path, &next).await?;
+        self.0.published.send_replace(Arc::new(next));
+        Ok(())
     }
 }
 
