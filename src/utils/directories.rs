@@ -37,6 +37,10 @@ impl Directories {
         self.0.data_local_dir()
     }
 
+    pub(crate) fn config_dir(&self) -> &Path {
+        self.0.config_dir()
+    }
+
     pub(crate) fn runtime_dir(&self) -> PathBuf {
         self.0
             .runtime_dir()

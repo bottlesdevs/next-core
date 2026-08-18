@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use super::error::ProfileError;
-use crate::{bottle::error::BottleError, error::Result};
+use crate::{Directories, error::Result};
 
 const PROFILES_FILE: &str = "profiles.toml";
 
@@ -44,10 +44,8 @@ impl ProfilesConfig {
     }
 }
 
-pub(super) fn profiles_path() -> Result<PathBuf> {
-    directories::ProjectDirs::from("com", "usebottles", "bottles-next")
-        .map(|dirs| dirs.config_dir().join(PROFILES_FILE))
-        .ok_or_else(|| BottleError::ProjectDirectoriesUnavailable.into())
+pub(super) fn profiles_path(directories: &Directories) -> PathBuf {
+    directories.config_dir().join(PROFILES_FILE)
 }
 
 pub(super) async fn load(path: &Path) -> Result<ProfilesConfig> {
