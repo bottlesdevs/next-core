@@ -37,7 +37,6 @@ tracing.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
 tokio = { workspace = true, features = ["sync", "fs", "io-util", "rt"] }
-flate2.workspace = true
 directories.workspace = true
 futures-core.workspace = true
 futures-lite.workspace = true
@@ -51,7 +50,6 @@ strum.workspace = true
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde", "v5"] }
 keyring = "4.1.6"
-egs-api = "0.14.0"
 prost-wkt-types = "0.7.1"
 
 [dev-dependencies]
