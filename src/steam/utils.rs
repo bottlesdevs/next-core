@@ -11,32 +11,33 @@ pub(crate) struct SteamUser {
 }
 
 /// Locates `loginusers.vdf` across the install layouts Steam is commonly
-/// found in (native and Flatpak on Linux, native on macOS). Returns the
-/// first path that actually exists.
+/// found in. Returns the first path that exists.
 pub(crate) fn loginusers_vdf_path() -> Option<PathBuf> {
     let home = directories::BaseDirs::new()?.home_dir().to_path_buf();
 
-    let candidates: &[PathBuf] = &if cfg!(target_os = "macos") {
-        vec![home.join("Library/Application Support/Steam/config/loginusers.vdf")]
-    } else {
-        vec![
-            home.join(".steam/steam/config/loginusers.vdf"),
-            home.join(".local/share/Steam/config/loginusers.vdf"),
-            home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam/config/loginusers.vdf"),
-        ]
-    };
+    #[cfg(target_os = "macos")]
+    let candidates = [home.join("Library/Application Support/Steam/config/loginusers.vdf")];
 
-    candidates.iter().find(|path| path.exists()).cloned()
+    #[cfg(target_os = "linux")]
+    let candidates = [
+        home.join(".steam/steam/config/loginusers.vdf"),
+        home.join(".local/share/Steam/config/loginusers.vdf"),
+        home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam/config/loginusers.vdf"),
+    ];
+
+    candidates.into_iter().find(|path| path.exists())
 }
 
 pub(crate) fn parse_loginusers(path: &Path) -> std::io::Result<Vec<SteamUser>> {
     let text = std::fs::read_to_string(path)?;
-    let Ok(vdf) = keyvalues_parser::parse(&text) else {
-        return Ok(Vec::new());
-    };
-    let Some(users) = vdf.value.get_obj() else {
-        return Ok(Vec::new());
-    };
+    let vdf = keyvalues_parser::parse(&text)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let users = vdf.value.get_obj().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "loginusers.vdf root is not an object",
+        )
+    })?;
 
     let mut out = Vec::new();
     for (steam_id64, values) in users.iter() {
