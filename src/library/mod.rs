@@ -16,7 +16,7 @@ use crate::{
 
 pub mod install;
 
-pub use install::{InstallRecord, sanitize_relative_path};
+pub use install::{InstallRecord, install_root_relative_path, sanitize_relative_path};
 
 pub struct LibraryManager {
     path: PathBuf,
@@ -62,7 +62,7 @@ impl LibraryManager {
     }
 
     /// Removes and returns the record, if any. Callers still need to
-    /// delete `install_dir(...)` themselves — this only updates the
+    /// delete the install directory themselves — this only updates the
     /// record.
     async fn remove(
         &self,
@@ -78,11 +78,10 @@ impl LibraryManager {
         Ok(Some(record))
     }
 
-    /// Removes exactly the files a prior install wrote (from its
-    /// [`InstallRecord`], not a directory sweep — the bottle's `C:`
-    /// drive is shared with every other game installed there) and the
-    /// registered launch `Program`, if any. A no-op if no such install
-    /// is on record.
+    /// Removes the install's whole directory (every game gets its own
+    /// exclusive `install::install_root_relative_path`, so this can't
+    /// touch any other game's files) and the registered launch
+    /// `Program`, if any. A no-op if no such install is on record.
     pub async fn uninstall(
         &self,
         profile_id: &str,
@@ -96,14 +95,13 @@ impl LibraryManager {
 
         if let Some(bottle) = bottle {
             let c_drive = bottle.c_drive_path();
-            for relative_path in &record.relative_paths {
-                let Some(relative_path) = install::sanitize_relative_path(relative_path) else {
-                    tracing::warn!(
-                        "skipping uninstall of suspicious relative path {relative_path:?} for {game_id}"
-                    );
-                    continue;
-                };
-                let _ = tokio::fs::remove_file(c_drive.join(relative_path)).await;
+            match install::install_root_relative_path(storefront, game_id) {
+                Some(install_root) => {
+                    let _ = tokio::fs::remove_dir_all(c_drive.join(install_root)).await;
+                }
+                None => {
+                    tracing::warn!("skipping uninstall of suspicious game_id {game_id:?}");
+                }
             }
             if let Some(program_id) = record.program_id.as_deref()
                 && let Ok(program_uuid) = uuid::Uuid::parse_str(program_id)
