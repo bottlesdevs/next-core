@@ -1,9 +1,7 @@
 //! The persisted config shape and the primitives shared by
 //! `ProfileManager`'s mutations and [`super::watcher`]'s external-file
-//! reconciliation: loading, saving, and emitting the [`ProfileEvent`]s
-//! subscribers see. Kept free of both the write-lock orchestration
-//! (`ProfileManager::mutate`) and the file-watching thread, so this file
-//! is just "what's in a profiles.toml and how do we persist/announce it."
+//! reconciliation: loading, saving, and diffing two [`ProfilesConfig`]
+//! snapshots into the [`ProfileEvent`]s subscribers see.
 
 use std::path::{Path, PathBuf};
 
@@ -63,22 +61,45 @@ pub(super) async fn persist(path: &Path, state: &ProfilesConfig) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn emit_updated(events: &broadcast::Sender<ProfileEvent>, profile: &UserProfile) {
-    let _ = events.send(ProfileEvent {
-        event: Some(profile_event::Event::Updated(profile.clone())),
-    });
-}
+/// Diffs `old` against `new` and emits whatever [`ProfileEvent`]s the difference implies.
+pub(super) fn diff_and_emit(
+    events: &broadcast::Sender<ProfileEvent>,
+    old: &ProfilesConfig,
+    new: &ProfilesConfig,
+) {
+    for profile in &new.profiles {
+        let changed = old
+            .profiles
+            .iter()
+            .find(|existing| existing.id == profile.id)
+            .is_none_or(|existing| existing != profile);
 
-pub(super) fn emit_activated(events: &broadcast::Sender<ProfileEvent>, profile: &UserProfile) {
-    let _ = events.send(ProfileEvent {
-        event: Some(profile_event::Event::Activated(profile.clone())),
-    });
-}
+        if changed {
+            let _ = events.send(ProfileEvent {
+                event: Some(profile_event::Event::Updated(profile.clone())),
+            });
+        }
+    }
 
-pub(super) fn emit_deleted(events: &broadcast::Sender<ProfileEvent>, profile_id: &str) {
-    let _ = events.send(ProfileEvent {
-        event: Some(profile_event::Event::DeletedProfileId(
-            profile_id.to_string(),
-        )),
-    });
+    for old_profile in &old.profiles {
+        if !new
+            .profiles
+            .iter()
+            .any(|profile| profile.id == old_profile.id)
+        {
+            let _ = events.send(ProfileEvent {
+                event: Some(profile_event::Event::DeletedProfileId(
+                    old_profile.id.to_string(),
+                )),
+            });
+        }
+    }
+
+    if new.active_profile_id != old.active_profile_id
+        && let Some(active) = new.active()
+    {
+        let _ = events.send(ProfileEvent {
+            event: Some(profile_event::Event::Activated(active.clone())),
+        });
+    }
 }

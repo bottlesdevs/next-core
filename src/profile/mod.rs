@@ -75,14 +75,11 @@ impl ProfileManager {
             created_at: Some(store::now()),
             last_activated_at: None,
         };
-        let profile = self
-            .mutate(|state| {
-                state.profiles.push(profile.clone());
-                Ok(profile)
-            })
-            .await?;
-        store::emit_updated(&self.events, &profile);
-        Ok(profile)
+        self.mutate(|state| {
+            state.profiles.push(profile.clone());
+            Ok(profile)
+        })
+        .await
     }
 
     pub async fn delete(&self, profile_id: &str) -> Result<()> {
@@ -97,62 +94,52 @@ impl ProfileManager {
             }
             Ok(())
         })
-        .await?;
-        store::emit_deleted(&self.events, profile_id);
-        Ok(())
+        .await
     }
 
     pub async fn rename(&self, profile_id: &str, name: String) -> Result<UserProfile> {
-        let profile = self
-            .mutate(|state| {
-                let profile = state
-                    .profiles
-                    .iter_mut()
-                    .find(|profile| profile.id == profile_id)
-                    .ok_or_else(|| store::not_found(profile_id))?;
-
-                profile.name = name;
-                Ok(profile.clone())
-            })
-            .await?;
-        store::emit_updated(&self.events, &profile);
-        Ok(profile)
-    }
-
-    pub async fn update(&self, profile: UserProfile) -> Result<()> {
-        let profile_id = &profile.id;
         self.mutate(|state| {
             let profile = state
                 .profiles
                 .iter_mut()
-                .find(|p| p.id == *profile_id)
+                .find(|profile| profile.id == profile_id)
                 .ok_or_else(|| store::not_found(profile_id))?;
-            *profile = profile.clone();
+
+            profile.name = name;
+            Ok(profile.clone())
+        })
+        .await
+    }
+
+    pub async fn update(&self, profile: UserProfile) -> Result<()> {
+        self.mutate(|state| {
+            let existing = state
+                .profiles
+                .iter_mut()
+                .find(|existing| existing.id == profile.id)
+                .ok_or_else(|| store::not_found(&profile.id))?;
+
+            *existing = profile.clone();
             Ok(())
         })
-        .await?;
-        store::emit_updated(&self.events, &profile);
-        Ok(())
+        .await
     }
 
     pub async fn activate(&self, profile_id: &str) -> Result<UserProfile> {
-        let profile = self
-            .mutate(|state| {
-                let profile = state
-                    .profiles
-                    .iter_mut()
-                    .find(|profile| profile.id == profile_id)
-                    .ok_or_else(|| store::not_found(profile_id))?;
+        self.mutate(|state| {
+            let profile = state
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == profile_id)
+                .ok_or_else(|| store::not_found(profile_id))?;
 
-                profile.last_activated_at = Some(store::now());
-                let profile = profile.clone();
+            profile.last_activated_at = Some(store::now());
+            let profile = profile.clone();
 
-                state.active_profile_id = Some(profile_id.to_string());
-                Ok(profile)
-            })
-            .await?;
-        store::emit_activated(&self.events, &profile);
-        Ok(profile)
+            state.active_profile_id = Some(profile_id.to_string());
+            Ok(profile)
+        })
+        .await
     }
 
     pub fn watch_active_profile(&self) -> impl Stream<Item = ProfileEvent> + Send + 'static {
@@ -176,10 +163,15 @@ impl ProfileManager {
         self.config.read().await.active()
     }
 
+    /// Runs `op` against the write-locked config, persists the result,
+    /// then diffs the before/after snapshots to emit whatever
+    /// [`ProfileEvent`]s the change implies.
     async fn mutate<T>(&self, op: impl FnOnce(&mut ProfilesConfig) -> Result<T>) -> Result<T> {
         let mut state = self.config.write().await;
+        let before = state.clone();
         let value = op(&mut state)?;
         store::persist(&self.path, &state).await?;
+        store::diff_and_emit(&self.events, &before, &state);
         Ok(value)
     }
 }
