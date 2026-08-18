@@ -317,11 +317,20 @@ async fn download_artifact(
 /// Requires a component archive to contain exactly one top-level directory.
 async fn top_level_directory(root: &Path) -> Result<PathBuf> {
     let mut entries = async_fs::read_dir(root).await?;
+
     let Some(entry) = entries.next().await.transpose()? else {
         return Err(AddonError::InvalidComponentArchive.into());
     };
-    if entries.next().await.transpose()?.is_some() || !entry.file_type().await?.is_dir() {
+
+    if entries.next().await.transpose()?.is_some() {
         return Err(AddonError::InvalidComponentArchive.into());
     }
-    Ok(entry.path())
+
+    if entry.file_type().await?.is_dir() {
+        Ok(entry.path())
+    } else if entry.file_type().await?.is_file() {
+        Ok(root.to_path_buf())
+    } else {
+        Err(AddonError::InvalidComponentArchive.into())
+    }
 }
