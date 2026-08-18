@@ -360,6 +360,15 @@ impl Bottle {
         self.bottle_path().join("prefix")
     }
 
+    /// Where this bottle's `C:` drive lives on the host filesystem —
+    /// e.g. for callers (Library's game installer) that need to write
+    /// files directly into the prefix without going through WineBridge.
+    /// Wine's own `drive_c` convention is intentionally encapsulated
+    /// here rather than left for callers to know.
+    pub fn c_drive_path(&self) -> PathBuf {
+        self.prefix_path().join("drive_c")
+    }
+
     async fn save(&self) -> Result<()> {
         let state = self.state()?;
         Self::save_state(&state, &self.0.cx).await

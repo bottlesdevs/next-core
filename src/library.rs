@@ -30,10 +30,16 @@ pub struct InstallRecord {
     pub game_id: String,
     pub version: String,
     pub install_size_bytes: Option<u64>,
-    /// Paths installed relative to this record's install directory,
-    /// recorded at install time so uninstalling cleans up exactly what
-    /// was written even if the manifest changes later.
+    /// Which bottle's `C:` drive these files were written into.
+    pub bottle_id: String,
+    /// Paths installed relative to that bottle's `C:` drive, recorded
+    /// at install time so uninstalling removes exactly what was
+    /// written even if the manifest changes later.
     pub relative_paths: Vec<String>,
+    /// The `Program` registered on the bottle for this install's launch
+    /// executable, if one was found — so uninstalling can remove it
+    /// too. Unset when no primary executable could be determined.
+    pub program_id: Option<String>,
 }
 
 impl InstallRecord {
@@ -46,7 +52,7 @@ impl InstallRecord {
     pub fn install_state(&self) -> InstallState {
         InstallState {
             installed: true,
-            bottle_id: None,
+            bottle_id: Some(self.bottle_id.clone()),
             installed_version: Some(self.version.clone()),
             install_size_bytes: self.install_size_bytes,
         }
