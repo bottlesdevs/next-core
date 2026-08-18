@@ -6,6 +6,7 @@ pub use crate::{
     addons::{AddonError, CatalogError, InstallerError},
     bottle::error::BottleError,
     credentials::CredentialError,
+    profile::error::ProfileError,
     runner::RunnerError,
     utils::archive::ArchiveError,
     winebridge::BridgeError,
@@ -43,6 +44,8 @@ pub enum Error {
     Addon(#[from] AddonError),
     #[error("credential error: {0}")]
     Credential(#[from] CredentialError),
+    #[error("profile error: {0}")]
+    Profile(#[from] ProfileError),
     #[cfg(feature = "fvs")]
     #[error("fvs2d executable is not configured")]
     Fvs2dNotConfigured,
@@ -97,5 +100,11 @@ impl<T, E: std::error::Error> ResultExt<T, E> for std::result::Result<T, E> {
 
     fn log_debug(self) -> Option<T> {
         self.inspect_err(|e| tracing::debug!("{e}")).ok()
+    }
+}
+
+impl From<Error> for tonic::Status {
+    fn from(err: Error) -> Self {
+        tonic::Status::internal(err.to_string())
     }
 }
