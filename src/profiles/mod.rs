@@ -21,11 +21,7 @@ use tokio::sync::{Mutex, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
 use uuid::{NonNilUuid, Uuid};
 
-use crate::{
-    Directories,
-    credentials::CredentialStore,
-    error::{Error, Result},
-};
+use crate::{Directories, credentials, error::Result};
 
 /// Static identity of one available storefront account provider.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -81,7 +77,6 @@ impl ProfilesConfig {
 
 struct ProfilesInner {
     path: PathBuf,
-    credentials: Arc<dyn CredentialStore>,
     published: watch::Sender<Arc<ProfilesConfig>>,
     write_lock: Mutex<()>,
     providers: RwLock<AccountProviders>,
@@ -202,10 +197,7 @@ pub struct Profiles {
 }
 
 impl Profiles {
-    pub(crate) async fn load(
-        directories: &Directories,
-        credentials: Arc<dyn CredentialStore>,
-    ) -> Result<Self> {
+    pub(crate) async fn load(directories: &Directories) -> Result<Self> {
         let path = directories.profiles();
         let state = match next_config::load(&path).await {
             Ok(state) => state,
@@ -224,7 +216,6 @@ impl Profiles {
         let (published, _) = watch::channel(Arc::new(state));
         let inner = Arc::new(ProfilesInner {
             path,
-            credentials,
             published,
             write_lock: Mutex::new(()),
             providers: RwLock::new(AccountProviders::default()),
@@ -327,11 +318,7 @@ impl Profiles {
             .position(|profile| profile.id == id)
             .ok_or(ProfileError::NotFound(id))?;
         for account in &current.profiles[index].accounts {
-            self.inner
-                .credentials
-                .delete(account.provider.id, id)
-                .await
-                .map_err(|error| Error::Credential(error.to_string()))?;
+            credentials::delete(account.provider.id, id).await?;
         }
         let mut next = current.as_ref().clone();
         next.profiles.remove(index);
@@ -464,11 +451,7 @@ impl Profiles {
                 profile: profile_id,
                 provider: provider_id,
             })?;
-        self.inner
-            .credentials
-            .delete(provider_id, profile_id)
-            .await
-            .map_err(|error| Error::Credential(error.to_string()))?;
+        credentials::delete(provider_id, profile_id).await?;
         let mut next = current.as_ref().clone();
         next.profiles[profile_index].accounts.remove(account_index);
         let profile = next.profiles[profile_index].clone();
