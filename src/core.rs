@@ -6,10 +6,7 @@ use download_manager::manager::{DownloadManager, DownloadManagerConfig};
 use http_client::ReqwestClient;
 use url::Url;
 
-use crate::{
-    Addons, BottleManager, Context, Directories, Library, Profiles,
-    credentials::KeyringCredentialStore, error::Result,
-};
+use crate::{Addons, BottleManager, Context, Directories, Library, Profiles, error::Result};
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -38,8 +35,7 @@ impl Bottles {
         #[cfg(not(feature = "fvs"))]
         let fvs2d = None;
         let directories = Directories::new().await?;
-        let credentials = Arc::new(KeyringCredentialStore::new());
-        let profiles = Profiles::load(&directories, credentials).await?;
+        let profiles = Profiles::load(&directories).await?;
         let client = ReqwestClient::new().map_err(download_manager::error::Error::from)?;
         let downloader = Arc::new(DownloadManager::new(
             Arc::new(client),
