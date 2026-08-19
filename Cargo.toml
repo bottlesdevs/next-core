@@ -54,4 +54,5 @@ keyring.workspace = true
 [dev-dependencies]
 async-executor.workspace = true
 http.workspace = true
+keyring-core.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "time"] }

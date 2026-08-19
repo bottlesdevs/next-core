@@ -44,7 +44,7 @@ pub enum Error {
     #[error("profile error: {0}")]
     Profile(#[from] ProfileError),
     #[error("credential error: {0}")]
-    Credential(String),
+    Credential(#[from] keyring::Error),
     #[error("operation cancelled")]
     Cancelled,
 }
