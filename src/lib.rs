@@ -8,7 +8,6 @@ mod operation;
 mod prefix;
 mod profiles;
 mod runner;
-mod steam;
 mod utils;
 mod winebridge;
 mod wrapper;
