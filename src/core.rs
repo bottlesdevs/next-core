@@ -8,7 +8,7 @@ use url::Url;
 
 use crate::{
     Addons, BottleManager, Context, Directories, Library, Profiles,
-    credentials::KeyringCredentialStore, error::Result, steam::SteamIntegration,
+    credentials::KeyringCredentialStore, error::Result,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -25,7 +25,6 @@ pub struct Bottles {
     addons: Addons,
     library: Library,
     profiles: Profiles,
-    _steam: SteamIntegration,
 }
 
 impl Bottles {
@@ -41,7 +40,6 @@ impl Bottles {
         let directories = Directories::new().await?;
         let credentials = Arc::new(KeyringCredentialStore::new());
         let profiles = Profiles::load(&directories, credentials).await?;
-        let steam = SteamIntegration::open(profiles.clone()).await;
         let client = ReqwestClient::new().map_err(download_manager::error::Error::from)?;
         let downloader = Arc::new(DownloadManager::new(
             Arc::new(client),
@@ -58,7 +56,6 @@ impl Bottles {
             addons,
             library,
             profiles,
-            _steam: steam,
         })
     }
 
