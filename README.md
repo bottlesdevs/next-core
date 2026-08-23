@@ -27,8 +27,8 @@ The crate is centered around six types:
   values are snapshots; query the manager again after a publication.
 - `BottleManager` interns bottles by UUID. A `Bottle` is a shared handle whose
   current immutable `BottleState` can be read or watched.
-- `Library` projects registered programs across bottles and provides one-shot
-  local search.
+- `Library` projects registered programs across bottles and searches them
+  alongside games owned through the selected profile's storefront plugins.
 - `Profiles` persists named application identities and the current selection.
 - `Operation<T>` represents long-running work with progress and cooperative
   cancellation.
@@ -50,7 +50,7 @@ futures-lite = "2"
 Open the library, inspect the current bottles, and stop its download service:
 
 ```rust
-use bottles_core::{Bottles, Config, Program, SearchAction};
+use bottles_core::{Bottles, Config, Program, SearchSource};
 use futures_lite::StreamExt;
 
 #[tokio::main]
@@ -75,13 +75,17 @@ async fn main() -> Result<(), bottles_core::error::Error> {
     let mut installed = Box::pin(bottles.library().watch());
     println!("{} installed programs", installed.next().await.unwrap().len());
 
-    let mut search = Box::pin(bottles.library().search("example"));
-    while let Some(entry) = search.next().await {
-        println!("{}", entry.title());
-        for action in entry.actions() {
-            if let SearchAction::Launch(item) = action {
+    let mut results = Box::pin(bottles.library().search("example"));
+    while let Some(entry) = results.next().await {
+        println!("{} ({})", entry.title(), entry.source_name());
+        match entry.source() {
+            SearchSource::Installed(item) => {
                 println!("  launch {}", item.program()?.name());
             }
+            SearchSource::Storefront { provider_id, .. } => {
+                println!("  owned through {provider_id}");
+            }
+            _ => {}
         }
     }
 
