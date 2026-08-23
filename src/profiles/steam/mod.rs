@@ -1,16 +1,21 @@
 //! Native Steam account discovery and profile selection.
 
-use std::{io, path::PathBuf, sync::Arc};
+use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use uuid::{NonNilUuid, Uuid};
 
-use super::{AccountIdentity, ProfilesInner, StorefrontAccountProvider, StorefrontProvider};
+use super::{
+    AccountIdentity, AccountLinkInteraction, LinkedAccount, ProfilesInner,
+    StorefrontAccountProvider, StorefrontProvider,
+};
+use crate::PluginId;
 
-const PROVIDER_ID: NonNilUuid =
-    NonNilUuid::new(uuid::uuid!("a6a63a3c-d671-581a-9007-6a8a9c9a7da8"))
-        .expect("Steam provider UUID is non-nil");
+pub(super) const PROVIDER_ID: PluginId = PluginId::new("steam");
+pub(super) const METADATA: StorefrontProvider = StorefrontProvider {
+    id: PROVIDER_ID,
+    name: Cow::Borrowed("Steam"),
+};
 
 #[cfg(target_os = "macos")]
 const LOGINUSERS_PATHS: &[&str] = &["Library/Application Support/Steam/config/loginusers.vdf"];
@@ -22,36 +27,13 @@ const LOGINUSERS_PATHS: &[&str] = &[
     ".var/app/com.valvesoftware.Steam/.local/share/Steam/config/loginusers.vdf",
 ];
 
-struct SteamAccountProvider;
-
-#[async_trait]
-impl StorefrontAccountProvider for SteamAccountProvider {
-    fn provider(&self) -> StorefrontProvider {
-        StorefrontProvider {
-            id: PROVIDER_ID,
-            name: "Steam".into(),
-        }
-    }
-
-    async fn link_account(&self, _profile_id: Uuid) -> Result<AccountIdentity, String> {
-        active_account()
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "Steam has no active local account".to_owned())
-    }
-}
-
-/// Keeps Steam's native provider and local-session watcher alive.
+/// Keeps Steam's local-session watcher alive.
 pub(super) struct SteamIntegration {
     _watcher: Option<RecommendedWatcher>,
 }
 
 impl SteamIntegration {
     pub(super) async fn open(profiles: Arc<ProfilesInner>) -> Self {
-        profiles
-            .register_account_provider(Arc::new(SteamAccountProvider))
-            .expect("native Steam provider registration cannot be rejected");
-
         let watcher = match loginusers_path() {
             Some(path) => {
                 let watcher = watch_loginusers(path, profiles.clone())
@@ -69,6 +51,27 @@ impl SteamIntegration {
         };
 
         Self { _watcher: watcher }
+    }
+}
+
+#[async_trait]
+impl StorefrontAccountProvider for SteamIntegration {
+    fn metadata(&self) -> StorefrontProvider {
+        METADATA
+    }
+
+    async fn link_account(
+        &self,
+        _interaction: Arc<dyn AccountLinkInteraction>,
+    ) -> Result<LinkedAccount, String> {
+        let identity = active_account()
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Steam has no active local account".to_owned())?;
+        Ok(LinkedAccount {
+            identity,
+            credential: None,
+        })
     }
 }
 
@@ -110,7 +113,7 @@ async fn select_active_profile(profiles: &ProfilesInner) {
         return;
     };
     if let Err(error) = profiles
-        .select_account(PROVIDER_ID, &account.account_id)
+        .select_account(&PROVIDER_ID, &account.account_id)
         .await
     {
         tracing::warn!(account_id = %account.account_id, "failed to select Steam profile: {error}");

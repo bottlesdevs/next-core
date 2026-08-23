@@ -68,11 +68,15 @@ impl Directories {
         self.data_dir().join("dependencies")
     }
 
+    pub(crate) fn plugins(&self) -> PathBuf {
+        self.data_dir().join("plugins")
+    }
+
     pub(crate) fn profiles(&self) -> PathBuf {
         self.config_dir().join("profiles.toml")
     }
 
-    fn paths(&self) -> [PathBuf; 6] {
+    fn paths(&self) -> [PathBuf; 7] {
         [
             self.config_dir().to_path_buf(),
             self.data_dir().to_path_buf(),
@@ -80,6 +84,7 @@ impl Directories {
             self.bottles(),
             self.components(),
             self.dependencies(),
+            self.plugins(),
         ]
     }
 }

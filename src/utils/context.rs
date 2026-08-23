@@ -1,11 +1,13 @@
 use crate::{Directories, error::Result};
-use download_manager::manager::DownloadManager;
+use download_manager::manager::{DownloadManager, DownloadManagerConfig};
+use http_client::HttpClient;
 use std::{path::PathBuf, sync::Arc};
 #[cfg(feature = "fvs")]
 use {crate::utils::absolute_path, fvs_rs::Fvs2dClient, tokio::sync::OnceCell};
 
 struct ContextInner {
     directories: Directories,
+    http_client: Arc<dyn HttpClient>,
     downloader: Arc<DownloadManager>,
     #[cfg(feature = "fvs")]
     fvs2d_executable: PathBuf,
@@ -19,13 +21,18 @@ pub(crate) struct Context(Arc<ContextInner>);
 impl Context {
     pub(crate) fn new(
         directories: Directories,
-        downloader: Arc<DownloadManager>,
+        http_client: Arc<dyn HttpClient>,
         fvs2d_executable: Option<PathBuf>,
     ) -> Result<Self> {
         #[cfg(not(feature = "fvs"))]
         let _ = fvs2d_executable;
+        let downloader = Arc::new(DownloadManager::new(
+            http_client.clone(),
+            DownloadManagerConfig::default(),
+        )?);
         Ok(Self(Arc::new(ContextInner {
             directories,
+            http_client,
             downloader,
             #[cfg(feature = "fvs")]
             fvs2d_executable: fvs2d_executable
@@ -42,13 +49,10 @@ impl Context {
         directories: Directories,
         fvs2d_executable: Option<PathBuf>,
     ) -> Result<Self> {
-        let client =
-            http_client::MockClient::new(|_| Ok(http::Response::new(http_client::body([]))));
-        let downloader = download_manager::manager::DownloadManager::new(
-            Arc::new(client),
-            download_manager::manager::DownloadManagerConfig::default(),
-        )?;
-        Self::new(directories, Arc::new(downloader), fvs2d_executable)
+        let client = Arc::new(http_client::MockClient::new(|_| {
+            Ok(http::Response::new(http_client::body([])))
+        }));
+        Self::new(directories, client, fvs2d_executable)
     }
 
     pub(crate) fn directories(&self) -> &Directories {
@@ -57,6 +61,10 @@ impl Context {
 
     pub(crate) fn downloader(&self) -> &DownloadManager {
         &self.0.downloader
+    }
+
+    pub(crate) fn http_client(&self) -> &Arc<dyn HttpClient> {
+        &self.0.http_client
     }
 
     #[cfg(feature = "fvs")]

@@ -1,5 +1,7 @@
 use thiserror::Error;
-use uuid::{NonNilUuid, Uuid};
+use uuid::Uuid;
+
+use crate::PluginId;
 
 #[derive(Debug, Error)]
 pub enum ProfileError {
@@ -12,29 +14,23 @@ pub enum ProfileError {
     /// The selected profile cannot be deleted.
     #[error("selected profile {0} cannot be deleted")]
     Selected(Uuid),
-    /// No loaded plugin provides accounts for this storefront.
-    #[error("storefront account provider {0:?} was not found")]
-    ProviderNotFound(NonNilUuid),
+    /// No available provider supplies accounts for this storefront.
+    #[error("storefront account provider {0} was not found")]
+    ProviderNotFound(PluginId),
     /// The profile already has an account from this provider.
-    #[error("profile {profile} already has an account from provider {provider:?}")]
-    AccountAlreadyLinked { profile: Uuid, provider: NonNilUuid },
+    #[error("profile {profile} already has an account from provider {provider}")]
+    AccountAlreadyLinked { profile: Uuid, provider: PluginId },
     /// The profile has no account from this provider.
-    #[error("profile {profile} has no account from provider {provider:?}")]
-    AccountNotLinked { profile: Uuid, provider: NonNilUuid },
+    #[error("profile {profile} has no account from provider {provider}")]
+    AccountNotLinked { profile: Uuid, provider: PluginId },
     /// The provider rejected or failed an account operation.
-    #[error("storefront account provider {provider:?}: {message}")]
-    Provider {
-        provider: NonNilUuid,
-        message: String,
-    },
+    #[error("storefront account provider {provider}: {message}")]
+    Provider { provider: PluginId, message: String },
     /// Another profile already owns the same provider account.
     #[error("account {account_id} from provider {provider} is already linked to profile {profile}")]
     AccountIdentityAlreadyLinked {
         profile: Uuid,
-        provider: NonNilUuid,
+        provider: PluginId,
         account_id: String,
     },
-    /// Built-in providers cannot be replaced or removed by extensions.
-    #[error("storefront account provider {0} is built in")]
-    ProviderBuiltIn(NonNilUuid),
 }
