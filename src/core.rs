@@ -2,11 +2,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use download_manager::manager::{DownloadManager, DownloadManagerConfig};
-use http_client::ReqwestClient;
+use http_client::{HttpClient, ReqwestClient};
 use url::Url;
 
-use crate::{Addons, BottleManager, Context, Directories, Library, Profiles, error::Result};
+use crate::{
+    Addons, BottleManager, Context, Directories, Library, Plugins, Profiles, error::Result,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -22,6 +23,7 @@ pub struct Bottles {
     addons: Addons,
     library: Library,
     profiles: Profiles,
+    plugins: Arc<Plugins>,
 }
 
 impl Bottles {
@@ -35,13 +37,11 @@ impl Bottles {
         #[cfg(not(feature = "fvs"))]
         let fvs2d = None;
         let directories = Directories::new().await?;
-        let profiles = Profiles::load(&directories).await?;
-        let client = ReqwestClient::new().map_err(download_manager::error::Error::from)?;
-        let downloader = Arc::new(DownloadManager::new(
-            Arc::new(client),
-            DownloadManagerConfig::default(),
-        )?);
-        let context = Context::new(directories, downloader.clone(), fvs2d)?;
+        let plugins = Arc::new(Plugins::open(&directories).await?);
+        let profiles = Profiles::load(&directories, plugins.clone()).await?;
+        let http_client: Arc<dyn HttpClient> =
+            Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
+        let context = Context::new(directories, http_client, fvs2d)?;
         let addons = Addons::load(context.clone(), component_catalog, dependency_catalog).await?;
         let bottles = BottleManager::load(context.clone(), addons.clone()).await?;
         let library = Library::new(bottles.clone());
@@ -52,6 +52,7 @@ impl Bottles {
             addons,
             library,
             profiles,
+            plugins,
         })
     }
 
@@ -80,5 +81,15 @@ impl Bottles {
     /// Returns the persisted application profiles.
     pub fn profiles(&self) -> &Profiles {
         &self.profiles
+    }
+
+    /// Returns installed plugin lifecycle management.
+    pub fn plugins(&self) -> &Plugins {
+        &self.plugins
+    }
+
+    /// Returns the HTTP transport shared by core services.
+    pub fn http_client(&self) -> &Arc<dyn HttpClient> {
+        self.context.http_client()
     }
 }

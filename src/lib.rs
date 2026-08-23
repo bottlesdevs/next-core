@@ -5,6 +5,7 @@ mod credentials;
 pub mod error;
 mod library;
 mod operation;
+mod plugins;
 mod prefix;
 mod profiles;
 mod runner;
@@ -26,8 +27,9 @@ pub use bottle::{Snapshot, SnapshotSummary};
 pub use core::{Bottles, Config};
 pub use library::{Library, LibraryItem, SearchAction, SearchEntry};
 pub use operation::{Operation, Progress, Stage, Transfer};
+pub use plugins::{PluginError, PluginId, PluginInfo, PluginKind, PluginManifest, Plugins};
 pub use profiles::{
-    AccountIdentity, Profile, ProfileError, Profiles, StorefrontAccount, StorefrontAccountProvider,
+    AccountIdentity, AccountLinkInteraction, Profile, ProfileError, Profiles, StorefrontAccount,
     StorefrontProvider,
 };
 pub use utils::directories::Directories;

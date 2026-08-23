@@ -22,6 +22,7 @@ async-io.workspace = true
 async-process.workspace = true
 async-trait.workspace = true
 blocking.workspace = true
+bottles-plugin-host.workspace = true
 download-manager.workspace = true
 http-client = { workspace = true, features = ["reqwest"] }
 next-config.workspace = true
@@ -33,6 +34,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+toml = "0.9.10"
 tracing.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true

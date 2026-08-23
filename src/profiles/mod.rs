@@ -1,17 +1,13 @@
 //! Persisted application profiles and selection.
 
 mod error;
+mod plugin;
 mod steam;
 
 pub use error::ProfileError;
 use steam::SteamIntegration;
 
-use std::{
-    collections::HashMap,
-    io,
-    path::PathBuf,
-    sync::{Arc, RwLock},
-};
+use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use futures_core::Stream;
@@ -19,15 +15,15 @@ use next_config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
-use uuid::{NonNilUuid, Uuid};
+use uuid::Uuid;
 
-use crate::{Directories, credentials, error::Result};
+use crate::{Directories, PluginId, PluginKind, Plugins, credentials, error::Result};
 
 /// Static identity of one available storefront account provider.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StorefrontProvider {
-    pub id: NonNilUuid,
-    pub name: String,
+    pub id: PluginId,
+    pub name: Cow<'static, str>,
 }
 
 /// Public account metadata returned by a storefront provider.
@@ -37,17 +33,31 @@ pub struct AccountIdentity {
     pub display_name: String,
 }
 
-/// Native extension point for linking one storefront account.
+/// Account metadata and credential produced by a successful provider link.
+struct LinkedAccount {
+    pub identity: AccountIdentity,
+    pub credential: Option<Vec<u8>>,
+}
+
+/// Supplies provider-directed interaction while an account is being linked.
 #[async_trait]
-pub trait StorefrontAccountProvider: Send + Sync {
-    fn provider(&self) -> StorefrontProvider;
+pub trait AccountLinkInteraction: Send + Sync {
+    async fn request_input(
+        &self,
+        url: url::Url,
+        instructions: String,
+    ) -> std::result::Result<String, String>;
+}
 
-    /// Distinguishes extension adapters from native providers for registry ownership.
-    fn is_extension(&self) -> bool {
-        false
-    }
+/// Links one storefront account through a native or Wasm provider.
+#[async_trait]
+trait StorefrontAccountProvider: Send + Sync {
+    fn metadata(&self) -> StorefrontProvider;
 
-    async fn link_account(&self, profile_id: Uuid) -> std::result::Result<AccountIdentity, String>;
+    async fn link_account(
+        &self,
+        interaction: Arc<dyn AccountLinkInteraction>,
+    ) -> std::result::Result<LinkedAccount, String>;
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Config)]
@@ -79,27 +89,9 @@ struct ProfilesInner {
     path: PathBuf,
     published: watch::Sender<Arc<ProfilesConfig>>,
     write_lock: Mutex<()>,
-    providers: RwLock<AccountProviders>,
 }
 
 impl ProfilesInner {
-    fn register_account_provider(
-        &self,
-        provider: Arc<dyn StorefrontAccountProvider>,
-    ) -> Result<()> {
-        self.providers
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .register(provider)
-    }
-
-    fn unregister_account_provider(&self, provider: NonNilUuid) -> Result<()> {
-        self.providers
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .unregister(provider)
-    }
-
     async fn select(&self, id: Uuid) -> Result<Profile> {
         self.update(move |state| {
             let profile = state
@@ -114,24 +106,22 @@ impl ProfilesInner {
 
     async fn select_account(
         &self,
-        provider_id: NonNilUuid,
+        provider_id: &PluginId,
         account_id: &str,
     ) -> Result<Option<Profile>> {
-        let profile_id = self
-            .published
-            .borrow()
-            .profiles
-            .iter()
-            .find(|profile| {
+        self.update(|state| {
+            let Some(profile) = state.profiles.iter().find(|profile| {
                 profile.accounts.iter().any(|account| {
-                    account.provider.id == provider_id && account.identity.account_id == account_id
+                    &account.provider.id == provider_id && account.identity.account_id == account_id
                 })
-            })
-            .map(|profile| profile.id);
-        match profile_id {
-            Some(profile_id) => self.select(profile_id).await.map(Some),
-            None => Ok(None),
-        }
+            }) else {
+                return Ok(None);
+            };
+            let profile = profile.clone();
+            state.selected = profile.id;
+            Ok(Some(profile))
+        })
+        .await
     }
 
     async fn update<T>(
@@ -156,48 +146,15 @@ impl ProfilesInner {
     }
 }
 
-#[derive(Default)]
-struct AccountProviders {
-    values: HashMap<NonNilUuid, Arc<dyn StorefrontAccountProvider>>,
-}
-
-impl AccountProviders {
-    fn register(&mut self, provider: Arc<dyn StorefrontAccountProvider>) -> Result<()> {
-        let id = provider.provider().id;
-        if provider.is_extension()
-            && self
-                .values
-                .get(&id)
-                .is_some_and(|existing| !existing.is_extension())
-        {
-            return Err(ProfileError::ProviderBuiltIn(id).into());
-        }
-        self.values.insert(id, provider);
-        Ok(())
-    }
-
-    fn unregister(&mut self, id: NonNilUuid) -> Result<()> {
-        if self
-            .values
-            .get(&id)
-            .is_some_and(|provider| !provider.is_extension())
-        {
-            return Err(ProfileError::ProviderBuiltIn(id).into());
-        }
-        self.values.remove(&id);
-        Ok(())
-    }
-}
-
 /// The persisted collection of application profiles.
-#[derive(Clone)]
 pub struct Profiles {
-    _steam: Arc<SteamIntegration>,
+    steam: SteamIntegration,
+    plugins: Arc<Plugins>,
     inner: Arc<ProfilesInner>,
 }
 
 impl Profiles {
-    pub(crate) async fn load(directories: &Directories) -> Result<Self> {
+    pub(crate) async fn load(directories: &Directories, plugins: Arc<Plugins>) -> Result<Self> {
         let path = directories.profiles();
         let state = match next_config::load(&path).await {
             Ok(state) => state,
@@ -218,11 +175,11 @@ impl Profiles {
             path,
             published,
             write_lock: Mutex::new(()),
-            providers: RwLock::new(AccountProviders::default()),
         });
-        let steam = Arc::new(SteamIntegration::open(inner.clone()).await);
+        let steam = SteamIntegration::open(inner.clone()).await;
         Ok(Self {
-            _steam: steam,
+            steam,
+            plugins,
             inner,
         })
     }
@@ -307,135 +264,72 @@ impl Profiles {
 
     /// Deletes an existing unselected profile.
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let _write = self.inner.write_lock.lock().await;
-        let current = self.inner.published.borrow().clone();
-        if current.selected == id {
-            return Err(ProfileError::Selected(id).into());
+        let profile = self
+            .inner
+            .update(|state| {
+                if state.selected == id {
+                    return Err(ProfileError::Selected(id).into());
+                }
+                let index = state
+                    .profiles
+                    .iter()
+                    .position(|profile| profile.id == id)
+                    .ok_or(ProfileError::NotFound(id))?;
+                Ok(state.profiles.remove(index))
+            })
+            .await?;
+        for account in profile.accounts {
+            if let Err(error) = credentials::delete(&account.provider.id, id).await {
+                tracing::warn!(
+                    provider = %account.provider.id,
+                    profile = %id,
+                    "failed to delete credential after profile deletion: {error}"
+                );
+            }
         }
-        let index = current
-            .profiles
-            .iter()
-            .position(|profile| profile.id == id)
-            .ok_or(ProfileError::NotFound(id))?;
-        for account in &current.profiles[index].accounts {
-            credentials::delete(account.provider.id, id).await?;
-        }
-        let mut next = current.as_ref().clone();
-        next.profiles.remove(index);
-        self.inner.persist(next).await
+        Ok(())
     }
 
     /// Returns the storefront providers available in this process.
     pub fn account_providers(&self) -> Vec<StorefrontProvider> {
-        self.inner
-            .providers
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values
-            .values()
-            .map(|provider| provider.provider())
-            .collect()
-    }
-
-    /// Registers or replaces an account provider.
-    pub fn register_account_provider(
-        &self,
-        provider: Arc<dyn StorefrontAccountProvider>,
-    ) -> Result<()> {
-        self.inner.register_account_provider(provider)
-    }
-
-    /// Removes an available provider without changing persisted accounts.
-    pub fn unregister_account_provider(&self, provider: NonNilUuid) -> Result<()> {
-        self.inner.unregister_account_provider(provider)
+        let plugins = self
+            .plugins
+            .contributions(PluginKind::StorefrontAccountProvider)
+            .into_iter()
+            .map(|provider| provider.metadata())
+            .collect();
+        merge_account_providers(plugins)
     }
 
     /// Links one account through an available provider and persists its public metadata.
-    pub async fn link_account(&self, profile_id: Uuid, provider_id: NonNilUuid) -> Result<Profile> {
-        let profile = self
-            .inner
-            .published
-            .borrow()
-            .profile(profile_id)
-            .cloned()
-            .ok_or(ProfileError::NotFound(profile_id))?;
-        if profile
-            .accounts
-            .iter()
-            .any(|account| account.provider.id == provider_id)
-        {
-            return Err(ProfileError::AccountAlreadyLinked {
-                profile: profile_id,
-                provider: provider_id,
-            }
-            .into());
+    pub async fn link_account(
+        &self,
+        profile_id: Uuid,
+        provider_id: PluginId,
+        interaction: Arc<dyn AccountLinkInteraction>,
+    ) -> Result<Profile> {
+        if provider_id == steam::PROVIDER_ID {
+            return self
+                .link_account_with(profile_id, &self.steam, interaction)
+                .await;
         }
-        let provider = self
-            .inner
-            .providers
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values
-            .get(&provider_id)
-            .cloned()
-            .ok_or(ProfileError::ProviderNotFound(provider_id))?;
-        let provider_info = provider.provider();
-        let identity =
-            provider
-                .link_account(profile_id)
-                .await
-                .map_err(|error| ProfileError::Provider {
-                    provider: provider_id,
-                    message: error,
-                })?;
 
-        self.inner
-            .update(move |state| {
-                let profile_index = state
-                    .profiles
-                    .iter()
-                    .position(|profile| profile.id == profile_id)
-                    .ok_or(ProfileError::NotFound(profile_id))?;
-                if state.profiles[profile_index]
-                    .accounts
-                    .iter()
-                    .any(|account| account.provider.id == provider_id)
-                {
-                    return Err(ProfileError::AccountAlreadyLinked {
-                        profile: profile_id,
-                        provider: provider_id,
-                    }
-                    .into());
-                }
-                if let Some(owner) = state.profiles.iter().find(|profile| {
-                    profile.accounts.iter().any(|account| {
-                        account.provider.id == provider_id
-                            && account.identity.account_id == identity.account_id
-                    })
-                }) {
-                    return Err(ProfileError::AccountIdentityAlreadyLinked {
-                        profile: owner.id,
-                        provider: provider_id,
-                        account_id: identity.account_id.clone(),
-                    }
-                    .into());
-                }
-                let profile = &mut state.profiles[profile_index];
-                profile.accounts.push(StorefrontAccount {
-                    provider: provider_info,
-                    identity,
-                });
-                Ok(profile.clone())
-            })
+        let provider = self
+            .plugins
+            .contribution(&provider_id, PluginKind::StorefrontAccountProvider)
+            .ok_or_else(|| ProfileError::ProviderNotFound(provider_id))?;
+        self.link_account_with(profile_id, &provider, interaction)
             .await
     }
 
-    /// Removes persisted account metadata without requiring its provider.
-    pub async fn unlink_account(
+    async fn link_account_with(
         &self,
         profile_id: Uuid,
-        provider_id: NonNilUuid,
+        provider: &impl StorefrontAccountProvider,
+        interaction: Arc<dyn AccountLinkInteraction>,
     ) -> Result<Profile> {
+        let metadata = provider.metadata();
+        let provider_id = metadata.id.clone();
         let _write = self.inner.write_lock.lock().await;
         let current = self.inner.published.borrow().clone();
         let profile_index = current
@@ -443,21 +337,95 @@ impl Profiles {
             .iter()
             .position(|profile| profile.id == profile_id)
             .ok_or(ProfileError::NotFound(profile_id))?;
-        let account_index = current.profiles[profile_index]
+        if current.profiles[profile_index]
             .accounts
             .iter()
-            .position(|account| account.provider.id == provider_id)
-            .ok_or(ProfileError::AccountNotLinked {
+            .any(|account| account.provider.id == provider_id)
+        {
+            return Err(ProfileError::AccountAlreadyLinked {
                 profile: profile_id,
-                provider: provider_id,
-            })?;
-        credentials::delete(provider_id, profile_id).await?;
+                provider: provider_id.clone(),
+            }
+            .into());
+        }
+        let linked =
+            provider
+                .link_account(interaction)
+                .await
+                .map_err(|error| ProfileError::Provider {
+                    provider: provider_id.clone(),
+                    message: error,
+                })?;
+        let LinkedAccount {
+            identity,
+            credential,
+        } = linked;
+
+        if let Some(owner) = current.profiles.iter().find(|profile| {
+            profile.accounts.iter().any(|account| {
+                account.provider.id == provider_id
+                    && account.identity.account_id == identity.account_id
+            })
+        }) {
+            return Err(ProfileError::AccountIdentityAlreadyLinked {
+                profile: owner.id,
+                provider: provider_id.clone(),
+                account_id: identity.account_id.clone(),
+            }
+            .into());
+        }
+
+        if let Some(secret) = credential.as_deref() {
+            credentials::save(&provider_id, profile_id, secret).await?;
+        }
         let mut next = current.as_ref().clone();
-        next.profiles[profile_index].accounts.remove(account_index);
-        let profile = next.profiles[profile_index].clone();
+        let profile = &mut next.profiles[profile_index];
+        profile.accounts.push(StorefrontAccount {
+            provider: metadata,
+            identity,
+        });
+        let profile = profile.clone();
         self.inner.persist(next).await?;
         Ok(profile)
     }
+
+    /// Removes persisted account metadata without requiring its provider.
+    pub async fn unlink_account(&self, profile_id: Uuid, provider_id: PluginId) -> Result<Profile> {
+        let profile = self
+            .inner
+            .update(|state| {
+                let profile = state
+                    .profiles
+                    .iter_mut()
+                    .find(|profile| profile.id == profile_id)
+                    .ok_or(ProfileError::NotFound(profile_id))?;
+                let account_index = profile
+                    .accounts
+                    .iter()
+                    .position(|account| account.provider.id == provider_id)
+                    .ok_or_else(|| ProfileError::AccountNotLinked {
+                        profile: profile_id,
+                        provider: provider_id.clone(),
+                    })?;
+                profile.accounts.remove(account_index);
+                Ok(profile.clone())
+            })
+            .await?;
+        if let Err(error) = credentials::delete(&provider_id, profile_id).await {
+            tracing::warn!(
+                provider = %provider_id,
+                profile = %profile_id,
+                "failed to delete credential after account unlinking: {error}"
+            );
+        }
+        Ok(profile)
+    }
+}
+
+fn merge_account_providers(mut plugins: Vec<StorefrontProvider>) -> Vec<StorefrontProvider> {
+    plugins.retain(|provider| provider.id != steam::PROVIDER_ID);
+    plugins.insert(0, steam::METADATA);
+    plugins
 }
 
 fn profile_name(name: impl Into<String>) -> Result<String> {

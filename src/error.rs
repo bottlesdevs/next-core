@@ -5,6 +5,7 @@ pub use crate::bottle::error::VirgoError;
 pub use crate::{
     addons::{AddonError, CatalogError, InstallerError},
     bottle::error::BottleError,
+    plugins::PluginError,
     profiles::ProfileError,
     runner::RunnerError,
     utils::archive::ArchiveError,
@@ -43,6 +44,8 @@ pub enum Error {
     Addon(#[from] AddonError),
     #[error("profile error: {0}")]
     Profile(#[from] ProfileError),
+    #[error("plugin error: {0}")]
+    Plugin(#[from] PluginError),
     #[error("credential error: {0}")]
     Credential(#[from] keyring::Error),
     #[error("operation cancelled")]
