@@ -2,6 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    hash::{Hash, Hasher},
     io,
     pin::Pin,
     sync::Arc,
@@ -104,11 +105,20 @@ impl BottleRegistry {
 /// handle to the same live bottle state. The registry is loaded once from
 /// library-managed storage and is updated by manager operations; it is not a
 /// live view of external filesystem changes.
+/// Hashing identifies that shared registry and remains stable as bottles change.
 #[derive(Clone)]
 pub struct BottleManager {
     pub(super) context: Context,
     pub(super) addons: Addons,
     registry: Arc<BottleRegistry>,
+}
+
+// Allows the live handle to key iced subscriptions directly: clones must hash
+// alike, while registry changes must not restart the subscription.
+impl Hash for BottleManager {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.registry).hash(state);
+    }
 }
 
 impl BottleManager {

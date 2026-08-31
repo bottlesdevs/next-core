@@ -1,6 +1,12 @@
 //! Persisted bottle state and the shared bottle handle.
 
-use std::{collections::HashMap, ops::AsyncFnOnce, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    ops::AsyncFnOnce,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use futures_core::Stream;
 use next_config::Config;
@@ -216,6 +222,8 @@ pub(crate) struct BottleInner {
 /// Clones refer to the same bottle and publish the same immutable state
 /// snapshots. A bottle's UUID is its identity; its display name may change and
 /// may be shared by other bottles.
+/// Hashing identifies the shared live handle and remains stable across state
+/// publications and deletion.
 ///
 /// Methods that access WineBridge start it on demand. Once it is running,
 /// requests may run concurrently. As a current limitation, callers must
@@ -223,6 +231,14 @@ pub(crate) struct BottleInner {
 /// avoid racing two WineBridge starts.
 #[derive(Clone)]
 pub struct Bottle(pub(crate) Arc<BottleInner>);
+
+// Allows the live handle to key iced subscriptions directly: clones must hash
+// alike, while state publications and deletion must not change its identity.
+impl Hash for Bottle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
 
 impl Bottle {
     /// Creates and persists the initial state before the handle is published by
@@ -263,6 +279,11 @@ impl Bottle {
             cx,
             addons,
         })))
+    }
+
+    /// Returns this bottle's stable identity, including after deletion.
+    pub fn id(&self) -> Uuid {
+        self.0.id
     }
 
     /// Returns the latest published state.
