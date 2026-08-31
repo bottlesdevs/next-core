@@ -5,7 +5,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use futures_lite::future;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -297,13 +296,9 @@ async fn wait_for_child(
     mut child: async_process::Child,
     cancellation: &CancellationToken,
 ) -> Result<std::process::ExitStatus> {
-    let status = future::or(async { child.status().await.map(Some) }, async {
-        cancellation.cancelled().await;
-        Ok::<_, io::Error>(None)
-    })
-    .await?;
+    let status = cancellation.run_until_cancelled(child.status()).await;
     if let Some(status) = status {
-        return Ok(status);
+        return Ok(status?);
     }
     if let Err(error) = child.kill()
         && error.kind() != io::ErrorKind::InvalidInput
@@ -393,7 +388,10 @@ async fn extract_into(
         .join(Uuid::new_v4().to_string());
     async_fs::create_dir_all(&stage).await?;
     let work = async {
-        archive::extract(archive, &stage).await?;
+        cancellation
+            .run_until_cancelled(archive::extract(archive, &stage))
+            .await
+            .ok_or(Error::Cancelled)??;
         for source in archive::files(&stage).await? {
             check_cancellation(cancellation)?;
             let relative = destination.join(source.strip_prefix(&stage).map_err(|_| {
@@ -404,13 +402,10 @@ async fn extract_into(
             })?);
             install_file(&source, prefix, &relative).await?;
         }
+        check_cancellation(cancellation)?;
         Ok::<_, Error>(())
     };
-    let result = future::or(work, async {
-        cancellation.cancelled().await;
-        Err(Error::Cancelled)
-    })
-    .await;
+    let result = work.await;
     let _ = async_fs::remove_dir_all(stage).await;
     result
 }
@@ -439,6 +434,36 @@ mod tests {
                 wait_for_child(child, &cancellation).await,
                 Err(Error::Cancelled)
             ));
+        });
+    }
+
+    #[test]
+    fn cancelled_extraction_skips_archive_and_removes_stage() {
+        futures_lite::future::block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("bottles-next-installer-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let cancellation = CancellationToken::new();
+            cancellation.cancel();
+
+            assert!(matches!(
+                extract_into(
+                    &root.join("missing.tar"),
+                    &root.join("prefix"),
+                    Path::new("drive_c"),
+                    &cancellation,
+                )
+                .await,
+                Err(Error::Cancelled)
+            ));
+            assert!(
+                std::fs::read_dir(root.join(".staging"))
+                    .unwrap()
+                    .next()
+                    .is_none()
+            );
+
+            std::fs::remove_dir_all(root).unwrap();
         });
     }
 }
