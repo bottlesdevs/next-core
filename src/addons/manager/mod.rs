@@ -152,7 +152,7 @@ impl Addons {
     ///
     /// The stream yields immediately and may coalesce publications for slow
     /// consumers. Each value is a live manager handle; query it for current data.
-    pub fn watch(&self) -> impl Stream<Item = Self> + Send + 'static {
+    pub fn watch(&self) -> impl Stream<Item = Self> + Send + 'static + use<> {
         let addons = self.clone();
         tokio_stream::StreamExt::map(WatchStream::new(self.0.published.subscribe()), move |_| {
             addons.clone()
