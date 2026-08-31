@@ -11,9 +11,9 @@ pub enum ProfileError {
     /// A profile name is empty after trimming surrounding whitespace.
     #[error("profile name must not be blank")]
     InvalidName,
-    /// The selected profile cannot be deleted.
-    #[error("selected profile {0} cannot be deleted")]
-    Selected(Uuid),
+    /// The only remaining profile cannot be deleted.
+    #[error("the last profile {0} cannot be deleted")]
+    LastProfile(Uuid),
     /// No available provider supplies accounts for this storefront.
     #[error("storefront account provider {0} was not found")]
     ProviderNotFound(PluginId),
