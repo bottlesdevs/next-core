@@ -150,7 +150,13 @@ impl<T> Operation<T> {
         let (progress, progress_rx) = watch::channel(None);
         let cancellation = CancellationToken::new();
         let work_cancellation = cancellation.clone();
-        let future = Box::pin(async move { work(progress, work_cancellation).await });
+        let future = Box::pin(async move {
+            if work_cancellation.is_cancelled() {
+                Err(crate::error::Error::Cancelled)
+            } else {
+                work(progress, work_cancellation).await
+            }
+        });
 
         Self {
             future,
@@ -299,14 +305,36 @@ mod tests {
     #[test]
     fn explicit_cancellation_waits_for_the_terminal_result() {
         futures_lite::future::block_on(async {
-            let operation: Operation<()> = Operation::new(|_progress, cancellation| async move {
-                cancellation.cancelled().await;
-                Err(Error::Cancelled)
-            });
+            let mut operation: Operation<()> =
+                Operation::new(|_progress, cancellation| async move {
+                    cancellation.cancelled().await;
+                    Err(Error::Cancelled)
+                });
             let mut progress = Box::pin(operation.progress());
 
+            assert!(
+                futures_lite::future::poll_once(&mut operation)
+                    .await
+                    .is_none()
+            );
             assert!(matches!(operation.cancel().await, Err(Error::Cancelled)));
             assert_eq!(progress.next().await, None);
+        });
+    }
+
+    #[test]
+    fn cancellation_before_first_poll_does_not_invoke_work() {
+        futures_lite::future::block_on(async {
+            let invoked = Arc::new(AtomicBool::new(false));
+            let work_invoked = invoked.clone();
+            let operation: Operation<()> = Operation::new(move |_, _| {
+                work_invoked.store(true, Ordering::Relaxed);
+                async { Ok(()) }
+            });
+            operation.cancellation_token().cancel();
+
+            assert!(matches!(operation.await, Err(Error::Cancelled)));
+            assert!(!invoked.load(Ordering::Relaxed));
         });
     }
 
