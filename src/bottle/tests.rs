@@ -1,12 +1,89 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+use tokio::sync::{RwLock, watch};
+use tokio_util::sync::CancellationToken;
+
+use super::state::BottleInner;
 use crate::{
     Context, Directories,
     addons::{AddonError, Addons, CatalogError, Requirement, Slot},
-    bottle::{BottleManager, Storage, error::BottleError},
+    bottle::{Bottle, BottleManager, Storage, error::BottleError},
     error::Error,
 };
 fn test_directories() -> Directories {
     let root = std::env::temp_dir().join(format!("bottles-next-{}", uuid::Uuid::new_v4()));
     Directories::from_path(root).unwrap()
+}
+
+async fn deleted_bottle() -> (Bottle, Directories) {
+    let directories = test_directories();
+    let context = Context::for_test(
+        directories.clone(),
+        Some(directories.data_dir().join("fvs2d")),
+    )
+    .unwrap();
+    let addons = Addons::load(context.clone(), None, None).await.unwrap();
+    let (published, _) = watch::channel(None);
+    let bottle = Bottle(Arc::new(BottleInner {
+        published,
+        write_lock: RwLock::new(()),
+        id: uuid::Uuid::new_v4(),
+        cx: context,
+        addons,
+    }));
+    (bottle, directories)
+}
+
+#[test]
+fn bottle_update_cancels_while_waiting_for_write_lock() {
+    futures_lite::future::block_on(async {
+        let (bottle, directories) = deleted_bottle().await;
+        let write = bottle.0.write_lock.write().await;
+        let cancellation = CancellationToken::new();
+        let ran = Arc::new(AtomicBool::new(false));
+        let work_ran = ran.clone();
+        let mut update = Box::pin(bottle.update(Some(&cancellation), async move |_, _| {
+            work_ran.store(true, Ordering::Relaxed);
+            Ok(())
+        }));
+
+        assert!(futures_lite::future::poll_once(&mut update).await.is_none());
+        cancellation.cancel();
+
+        assert!(matches!(
+            futures_lite::future::poll_once(&mut update).await,
+            Some(Err(Error::Cancelled))
+        ));
+        assert!(!ran.load(Ordering::Relaxed));
+        drop(write);
+        std::fs::remove_dir_all(directories.data_dir()).unwrap();
+    });
+}
+
+#[test]
+fn bottle_update_rechecks_cancellation_when_lock_becomes_available() {
+    futures_lite::future::block_on(async {
+        let (bottle, directories) = deleted_bottle().await;
+        let write = bottle.0.write_lock.write().await;
+        let cancellation = CancellationToken::new();
+        let ran = Arc::new(AtomicBool::new(false));
+        let work_ran = ran.clone();
+        let mut update = Box::pin(bottle.update(Some(&cancellation), async move |_, _| {
+            work_ran.store(true, Ordering::Relaxed);
+            Ok(())
+        }));
+
+        assert!(futures_lite::future::poll_once(&mut update).await.is_none());
+        cancellation.cancel();
+        drop(write);
+
+        assert!(matches!(update.await, Err(Error::Cancelled)));
+        assert!(!ran.load(Ordering::Relaxed));
+        std::fs::remove_dir_all(directories.data_dir()).unwrap();
+    });
 }
 
 #[test]
