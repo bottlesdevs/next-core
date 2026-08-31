@@ -81,9 +81,17 @@ impl Library {
             .iter()
             .filter_map(|account| {
                 let provider_id = account.provider.id.clone();
-                let plugin = self
+                let Some(plugin) = self
                     .plugins
-                    .contribution(&provider_id, PluginKind::StorefrontLibraryProvider)?;
+                    .contribution(&provider_id, PluginKind::StorefrontLibraryProvider)
+                else {
+                    tracing::warn!(
+                        provider = %provider_id,
+                        profile = %profile_id,
+                        "storefront library provider is unavailable"
+                    );
+                    return None;
+                };
                 let account_id = account.identity.account_id.clone();
                 let source_name = plugin.manifest.name.clone();
                 let query = query.clone();
