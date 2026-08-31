@@ -40,7 +40,13 @@ impl Bottle {
         let cx = self.0.cx.clone();
         let message = message.into();
         Operation::new(move |progress, cancellation| async move {
-            let _write = bottle.0.write_lock.write().await;
+            let _write = cancellation
+                .run_until_cancelled(bottle.0.write_lock.write())
+                .await
+                .ok_or(Error::Cancelled)?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
             let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
             Bottle::stop_state(&state, &cx).await?;
@@ -117,7 +123,13 @@ impl Bottle {
         let cx = self.0.cx.clone();
         let state_id_or_prefix = state_id_or_prefix.to_owned();
         Operation::new(move |progress, cancellation| async move {
-            let _write = bottle.0.write_lock.write().await;
+            let _write = cancellation
+                .run_until_cancelled(bottle.0.write_lock.write())
+                .await
+                .ok_or(Error::Cancelled)?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
             let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
             Bottle::stop_state(&state, &cx).await?;
