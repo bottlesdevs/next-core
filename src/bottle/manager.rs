@@ -349,7 +349,7 @@ impl BottleManager {
     ///
     /// List order is unspecified. The stream ends when all manager handles for
     /// this context are dropped.
-    pub fn watch(&self) -> impl Stream<Item = Vec<Bottle>> + Send + 'static {
+    pub fn watch(&self) -> impl Stream<Item = Vec<Bottle>> + Send + 'static + use<> {
         let mut events = SelectAll::<BottleManagerEventStream>::new();
         events.push(Box::pin(
             WatchStream::new(self.registry.0.subscribe()).map(BottleManagerEvent::Membership),

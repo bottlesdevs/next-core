@@ -56,7 +56,7 @@ impl Library {
     ///
     /// The stream yields the current snapshot first. Slow consumers may miss
     /// intermediate generations and receive only the latest aggregate state.
-    pub fn watch(&self) -> impl Stream<Item = Vec<LibraryItem>> + Send + 'static {
+    pub fn watch(&self) -> impl Stream<Item = Vec<LibraryItem>> + Send + 'static + use<> {
         let library = self.clone();
         self.bottles.watch().map(move |_| library.list())
     }

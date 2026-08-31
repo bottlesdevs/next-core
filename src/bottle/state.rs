@@ -309,7 +309,7 @@ impl Bottle {
     /// Equal states are not republished. The stream ends when the bottle is
     /// deleted or all live handles are dropped. Snapshots already yielded
     /// remain usable afterward.
-    pub fn watch(&self) -> impl Stream<Item = Arc<BottleState>> + Send + 'static {
+    pub fn watch(&self) -> impl Stream<Item = Arc<BottleState>> + Send + 'static + use<> {
         WatchStream::new(self.0.published.subscribe())
             .take_while(Option::is_some)
             .filter_map(|state| state)
