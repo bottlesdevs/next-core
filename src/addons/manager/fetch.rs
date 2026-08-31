@@ -7,7 +7,6 @@ use std::{
 
 use download_manager::manager::DownloadManager;
 use futures_lite::StreamExt;
-use futures_util::FutureExt;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use uuid::{NonNilUuid, Uuid};
@@ -89,17 +88,17 @@ impl Addons {
                 .await?;
                 let extracted = stage.join("extracted");
                 async_fs::create_dir_all(&extracted).await?;
-                let extraction = archive::extract(&file, &extracted).fuse();
-                let cancelled = cancellation.cancelled().fuse();
-                futures_util::pin_mut!(extraction, cancelled);
-                futures_util::select_biased! {
-                    result = extraction => result?,
-                    _ = cancelled => return Err(Error::Cancelled),
-                }
+                cancellation
+                    .run_until_cancelled(archive::extract(&file, &extracted))
+                    .await
+                    .ok_or(Error::Cancelled)??;
                 let release = top_level_directory(&extracted).await?;
                 let slot = entry.slot();
                 let requirements = AddonIndex::<Component>::inspect_release(slot, &release).await?;
-                let _write = addons.0.write.lock().await;
+                let _write = cancellation
+                    .run_until_cancelled(addons.0.write.lock())
+                    .await
+                    .ok_or(Error::Cancelled)?;
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
@@ -207,7 +206,10 @@ impl Addons {
                     .await?;
                 }
 
-                let _write = addons.0.write.lock().await;
+                let _write = cancellation
+                    .run_until_cancelled(addons.0.write.lock())
+                    .await
+                    .ok_or(Error::Cancelled)?;
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
