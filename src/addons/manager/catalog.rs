@@ -37,14 +37,20 @@ impl Addons {
             let component = addons
                 .download_catalog::<Component>(progress.clone(), &cancellation)
                 .await;
-            let dependency = addons
-                .download_catalog::<Dependency>(progress, &cancellation)
-                .await;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
+            let dependency = addons
+                .download_catalog::<Dependency>(progress, &cancellation)
+                .await;
 
-            let _write = addons.0.write.lock().await;
+            let _write = cancellation
+                .run_until_cancelled(addons.0.write.lock())
+                .await
+                .ok_or(Error::Cancelled)?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
             let current = addons.state();
             let component_catalog = match &component {
                 Ok(catalog) => {
@@ -113,5 +119,34 @@ impl Addons {
         .await;
         let _ = async_fs::remove_file(downloaded).await;
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Context, Directories};
+
+    #[test]
+    fn cancelled_refresh_does_not_wait_for_publication_lock() {
+        futures_lite::future::block_on(async {
+            let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
+            let directories = Directories::from_path(&root).unwrap();
+            let context = Context::for_test(directories, None).unwrap();
+            let addons = Addons::load(context, None, None).await.unwrap();
+            let write = addons.0.write.lock().await;
+            let mut refresh = addons.refresh();
+
+            assert!(
+                futures_lite::future::poll_once(&mut refresh)
+                    .await
+                    .is_none()
+            );
+            refresh.cancellation_token().cancel();
+            assert!(matches!(refresh.await, Err(Error::Cancelled)));
+
+            drop(write);
+            std::fs::remove_dir_all(root).unwrap();
+        });
     }
 }
