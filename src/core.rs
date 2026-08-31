@@ -22,7 +22,7 @@ pub struct Bottles {
     bottles: BottleManager,
     addons: Addons,
     library: Library,
-    profiles: Arc<Profiles>,
+    profiles: Profiles,
     plugins: Arc<Plugins>,
 }
 
@@ -38,7 +38,7 @@ impl Bottles {
         let fvs2d = None;
         let directories = Directories::new().await?;
         let plugins = Arc::new(Plugins::open(&directories).await?);
-        let profiles = Arc::new(Profiles::load(&directories, plugins.clone()).await?);
+        let profiles = Profiles::load(&directories, plugins.clone()).await?;
         let http_client: Arc<dyn HttpClient> =
             Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
         let context = Context::new(directories, http_client, fvs2d)?;

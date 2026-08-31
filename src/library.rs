@@ -18,16 +18,12 @@ use crate::{
 #[derive(Clone)]
 pub struct Library {
     bottles: BottleManager,
-    profiles: Arc<Profiles>,
+    profiles: Profiles,
     plugins: Arc<Plugins>,
 }
 
 impl Library {
-    pub(crate) fn new(
-        bottles: BottleManager,
-        profiles: Arc<Profiles>,
-        plugins: Arc<Plugins>,
-    ) -> Self {
+    pub(crate) fn new(bottles: BottleManager, profiles: Profiles, plugins: Arc<Plugins>) -> Self {
         Self {
             bottles,
             profiles,
