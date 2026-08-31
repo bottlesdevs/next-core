@@ -4,6 +4,7 @@ use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use tokio_util::sync::CancellationToken;
 
 use super::{
     AccountIdentity, AccountLinkInteraction, LinkedAccount, ProfilesInner,
@@ -63,9 +64,12 @@ impl StorefrontAccountProvider for SteamIntegration {
     async fn link_account(
         &self,
         _interaction: Arc<dyn AccountLinkInteraction>,
+        cancellation: &CancellationToken,
     ) -> Result<LinkedAccount, String> {
-        let identity = active_account()
+        let identity = cancellation
+            .run_until_cancelled(active_account())
             .await
+            .ok_or_else(|| "account linking cancelled".to_owned())?
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Steam has no active local account".to_owned())?;
         Ok(LinkedAccount {

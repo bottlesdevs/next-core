@@ -15,9 +15,10 @@ use next_config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{Directories, PluginId, PluginKind, Plugins, credentials, error::Result};
+use crate::{Directories, Operation, PluginId, PluginKind, Plugins, credentials, error::Result};
 
 /// Static identity of one available storefront account provider.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -57,6 +58,7 @@ trait StorefrontAccountProvider: Send + Sync {
     async fn link_account(
         &self,
         interaction: Arc<dyn AccountLinkInteraction>,
+        cancellation: &CancellationToken,
     ) -> std::result::Result<LinkedAccount, String>;
 }
 
@@ -147,8 +149,11 @@ impl ProfilesInner {
 }
 
 /// The persisted collection of application profiles.
+///
+/// Clones share one live collection.
+#[derive(Clone)]
 pub struct Profiles {
-    steam: SteamIntegration,
+    steam: Arc<SteamIntegration>,
     plugins: Arc<Plugins>,
     inner: Arc<ProfilesInner>,
 }
@@ -176,7 +181,7 @@ impl Profiles {
             published,
             write_lock: Mutex::new(()),
         });
-        let steam = SteamIntegration::open(inner.clone()).await;
+        let steam = Arc::new(SteamIntegration::open(inner.clone()).await);
         Ok(Self {
             steam,
             plugins,
@@ -301,25 +306,38 @@ impl Profiles {
         merge_account_providers(plugins)
     }
 
-    /// Links one account through an available provider and persists its public metadata.
-    pub async fn link_account(
+    /// Links one account through an available provider.
+    ///
+    /// Provider authentication and caller interaction happen without holding
+    /// the profile write lock. Cancellation is observed during authentication
+    /// and while waiting for that lock. Once the lock is acquired, the provider
+    /// and profile are revalidated before a non-cancellable persistence step.
+    pub fn link_account(
         &self,
         profile_id: Uuid,
         provider_id: PluginId,
         interaction: Arc<dyn AccountLinkInteraction>,
-    ) -> Result<Profile> {
-        if provider_id == steam::PROVIDER_ID {
-            return self
-                .link_account_with(profile_id, &self.steam, interaction)
-                .await;
-        }
+    ) -> Operation<Profile> {
+        let profiles = self.clone();
+        Operation::new(move |_progress, cancellation| async move {
+            if cancellation.is_cancelled() {
+                return Err(crate::error::Error::Cancelled);
+            }
+            if provider_id == steam::PROVIDER_ID {
+                let provider = profiles.steam.clone();
+                return profiles
+                    .link_account_with(profile_id, provider.as_ref(), interaction, &cancellation)
+                    .await;
+            }
 
-        let provider = self
-            .plugins
-            .contribution(&provider_id, PluginKind::StorefrontAccountProvider)
-            .ok_or_else(|| ProfileError::ProviderNotFound(provider_id))?;
-        self.link_account_with(profile_id, &provider, interaction)
-            .await
+            let provider = profiles
+                .plugins
+                .contribution(&provider_id, PluginKind::StorefrontAccountProvider)
+                .ok_or_else(|| ProfileError::ProviderNotFound(provider_id))?;
+            profiles
+                .link_account_with(profile_id, &provider, interaction, &cancellation)
+                .await
+        })
     }
 
     async fn link_account_with(
@@ -327,40 +345,49 @@ impl Profiles {
         profile_id: Uuid,
         provider: &impl StorefrontAccountProvider,
         interaction: Arc<dyn AccountLinkInteraction>,
+        cancellation: &CancellationToken,
     ) -> Result<Profile> {
+        if cancellation.is_cancelled() {
+            return Err(crate::error::Error::Cancelled);
+        }
         let metadata = provider.metadata();
         let provider_id = metadata.id.clone();
-        let _write = self.inner.write_lock.lock().await;
-        let current = self.inner.published.borrow().clone();
-        let profile_index = current
-            .profiles
-            .iter()
-            .position(|profile| profile.id == profile_id)
-            .ok_or(ProfileError::NotFound(profile_id))?;
-        if current.profiles[profile_index]
-            .accounts
-            .iter()
-            .any(|account| account.provider.id == provider_id)
-        {
-            return Err(ProfileError::AccountAlreadyLinked {
-                profile: profile_id,
-                provider: provider_id.clone(),
-            }
-            .into());
+        validate_account_link(
+            self.inner.published.borrow().as_ref(),
+            profile_id,
+            &provider_id,
+        )?;
+
+        let linked = provider.link_account(interaction, cancellation).await;
+        if cancellation.is_cancelled() {
+            return Err(crate::error::Error::Cancelled);
         }
-        let linked =
-            provider
-                .link_account(interaction)
-                .await
-                .map_err(|error| ProfileError::Provider {
-                    provider: provider_id.clone(),
-                    message: error,
-                })?;
+        let linked = linked.map_err(|error| ProfileError::Provider {
+            provider: provider_id.clone(),
+            message: error,
+        })?;
         let LinkedAccount {
             identity,
             credential,
         } = linked;
 
+        let _write = cancellation
+            .run_until_cancelled(self.inner.write_lock.lock())
+            .await
+            .ok_or(crate::error::Error::Cancelled)?;
+        if cancellation.is_cancelled() {
+            return Err(crate::error::Error::Cancelled);
+        }
+        let current = self.inner.published.borrow().clone();
+        let profile_index = validate_account_link(&current, profile_id, &provider_id)?;
+        let metadata = if provider_id == steam::PROVIDER_ID {
+            metadata
+        } else {
+            self.plugins
+                .contribution(&provider_id, PluginKind::StorefrontAccountProvider)
+                .ok_or_else(|| ProfileError::ProviderNotFound(provider_id.clone()))?
+                .metadata()
+        };
         if let Some(owner) = current.profiles.iter().find(|profile| {
             profile.accounts.iter().any(|account| {
                 account.provider.id == provider_id
@@ -420,6 +447,30 @@ impl Profiles {
         }
         Ok(profile)
     }
+}
+
+fn validate_account_link(
+    state: &ProfilesConfig,
+    profile_id: Uuid,
+    provider_id: &PluginId,
+) -> Result<usize> {
+    let profile_index = state
+        .profiles
+        .iter()
+        .position(|profile| profile.id == profile_id)
+        .ok_or(ProfileError::NotFound(profile_id))?;
+    if state.profiles[profile_index]
+        .accounts
+        .iter()
+        .any(|account| &account.provider.id == provider_id)
+    {
+        return Err(ProfileError::AccountAlreadyLinked {
+            profile: profile_id,
+            provider: provider_id.clone(),
+        }
+        .into());
+    }
+    Ok(profile_index)
 }
 
 fn merge_account_providers(mut plugins: Vec<StorefrontProvider>) -> Vec<StorefrontProvider> {

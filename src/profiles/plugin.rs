@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 use super::{
     AccountIdentity, AccountLinkInteraction, LinkedAccount, StorefrontAccountProvider,
@@ -20,10 +21,14 @@ impl StorefrontAccountProvider for Plugin {
     async fn link_account(
         &self,
         interaction: Arc<dyn AccountLinkInteraction>,
+        cancellation: &CancellationToken,
     ) -> Result<LinkedAccount, String> {
         let linked = self
             .runtime
-            .link_account(Arc::new(HostAccountLinkInteraction(interaction)))
+            .link_account(
+                Arc::new(HostAccountLinkInteraction(interaction)),
+                cancellation,
+            )
             .await?;
         Ok(LinkedAccount {
             identity: AccountIdentity {
