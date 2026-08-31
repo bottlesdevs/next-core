@@ -182,7 +182,7 @@ impl Bottle {
         let addons = self.0.addons.clone();
         Operation::new(move |progress, cancellation| async move {
             bottle
-                .update(async |state, cx| {
+                .update(Some(&cancellation), async |state, cx| {
                     let component = addons
                         .component(id)
                         .ok_or(crate::AddonError::NotFound(id))?;
@@ -277,7 +277,7 @@ impl Bottle {
         let bottle = self.clone();
         Operation::new(move |progress, cancellation| async move {
             bottle
-                .update(async |state, cx| {
+                .update(Some(&cancellation), async |state, cx| {
                     let component = state
                         .component(slot)
                         .cloned()
@@ -349,7 +349,7 @@ impl Bottle {
         let addons = self.0.addons.clone();
         Operation::new(move |progress, cancellation| async move {
             bottle
-                .update(async |state, cx| {
+                .update(Some(&cancellation), async |state, cx| {
                     let dependency = addons
                         .dependency(id)
                         .ok_or(crate::AddonError::NotFound(id))?;

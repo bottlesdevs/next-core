@@ -123,7 +123,7 @@ impl BottleEdit {
     pub async fn commit(self) -> Result<()> {
         let BottleEdit { bottle, changes } = self;
         bottle
-            .update(async move |state, _| {
+            .update(None, async move |state, _| {
                 for change in changes {
                     match change {
                         Change::Rename(name) => state.name = name,

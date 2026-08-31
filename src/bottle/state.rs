@@ -13,13 +13,14 @@ use next_config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{edit::BottleEdit, error::BottleError};
 use crate::{
     Context,
     addons::{Addon, Addons, Component, Dependency, Requirement, Slot},
-    error::Result,
+    error::{Error, Result},
     prefix::Prefix,
     utils::environment::Environment,
     wrapper::Wrappers,
@@ -347,11 +348,24 @@ impl Bottle {
     ///
     /// The operation may perform external prefix work before `save_state`; such
     /// side effects are not automatically reversed if persistence then fails.
-    pub(super) async fn update<F, R>(&self, operation: F) -> Result<R>
+    pub(super) async fn update<F, R>(
+        &self,
+        cancellation: Option<&CancellationToken>,
+        operation: F,
+    ) -> Result<R>
     where
         F: for<'a> AsyncFnOnce(&'a mut BottleState, Context) -> Result<R>,
     {
-        let _write = self.0.write_lock.write().await;
+        let _write = match cancellation {
+            Some(cancellation) => cancellation
+                .run_until_cancelled(self.0.write_lock.write())
+                .await
+                .ok_or(Error::Cancelled)?,
+            None => self.0.write_lock.write().await,
+        };
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(Error::Cancelled);
+        }
         let mut draft = self.state()?.as_ref().clone();
         let value = operation(&mut draft, self.0.cx.clone()).await?;
         Self::save_state(&draft, &self.0.cx).await?;
