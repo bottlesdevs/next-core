@@ -14,7 +14,7 @@ use futures_core::Stream;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
-use tokio_stream::{StreamExt, wrappers::WatchStream};
+use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -62,9 +62,12 @@ trait StorefrontAccountProvider: Send + Sync {
     ) -> std::result::Result<LinkedAccount, String>;
 }
 
+/// One coherent persisted snapshot of every profile and the selected profile.
+///
+/// The selected profile is guaranteed to be present in [`profiles`](Self::profiles).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Config)]
 #[config(version = 1)]
-struct ProfilesConfig {
+pub struct ProfilesConfig {
     selected: Uuid,
     profiles: Vec<Profile>,
 }
@@ -84,6 +87,17 @@ impl ProfilesConfig {
 
     fn profile(&self, id: Uuid) -> Option<&Profile> {
         self.profiles.iter().find(|profile| profile.id == id)
+    }
+
+    /// Returns every profile in persisted order.
+    pub fn profiles(&self) -> &[Profile] {
+        &self.profiles
+    }
+
+    /// Returns the selected profile from this same snapshot generation.
+    pub fn selected(&self) -> &Profile {
+        self.profile(self.selected)
+            .expect("selected profile was validated")
     }
 }
 
@@ -189,45 +203,27 @@ impl Profiles {
         })
     }
 
-    /// Returns every profile in unspecified order.
+    /// Returns the current profile collection and selection atomically.
+    pub fn snapshot(&self) -> Arc<ProfilesConfig> {
+        self.inner.published.borrow().clone()
+    }
+
+    /// Returns every profile in persisted order.
     pub fn list(&self) -> Vec<Profile> {
-        self.inner.published.borrow().profiles.clone()
+        self.snapshot().profiles().to_vec()
     }
 
     /// Returns the selected profile.
     pub fn selected(&self) -> Profile {
-        let state = self.inner.published.borrow();
-        state
-            .profile(state.selected)
-            .cloned()
-            .expect("selected profile was validated")
+        self.snapshot().selected().clone()
     }
 
-    /// Watches the complete profile collection.
+    /// Watches coherent profile collection and selection snapshots.
     ///
-    /// The stream yields the current collection first. Slow consumers may miss
-    /// intermediate changes and receive only the latest snapshot. Ordering is
-    /// unspecified. Selection changes also emit; use [`Profiles::selected`] to
-    /// read the current selection.
-    pub fn watch(&self) -> impl Stream<Item = Vec<Profile>> + Send + 'static {
-        WatchStream::new(self.inner.published.subscribe()).map(|state| state.profiles.clone())
-    }
-
-    /// Watches the selected profile, yielding its current snapshot first.
-    pub fn watch_selected(&self) -> impl Stream<Item = Profile> + Send + 'static {
-        let mut previous = None;
-        WatchStream::new(self.inner.published.subscribe()).filter_map(move |state| {
-            let selected = state
-                .profile(state.selected)
-                .cloned()
-                .expect("selected profile was validated");
-            if previous.as_ref() == Some(&selected) {
-                None
-            } else {
-                previous = Some(selected.clone());
-                Some(selected)
-            }
-        })
+    /// The stream yields the current snapshot first. Slow consumers may miss
+    /// intermediate changes and receive only the latest coherent snapshot.
+    pub fn watch(&self) -> impl Stream<Item = Arc<ProfilesConfig>> + Send + 'static + use<> {
+        WatchStream::new(self.inner.published.subscribe())
     }
 
     /// Creates an unselected profile with a generated UUID.

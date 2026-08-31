@@ -29,8 +29,8 @@ pub use library::{Library, LibraryItem, SearchEntry, SearchSource};
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use plugins::{PluginError, PluginId, PluginInfo, PluginKind, PluginManifest, Plugins};
 pub use profiles::{
-    AccountIdentity, AccountLinkInteraction, Profile, ProfileError, Profiles, StorefrontAccount,
-    StorefrontProvider,
+    AccountIdentity, AccountLinkInteraction, Profile, ProfileError, Profiles, ProfilesConfig,
+    StorefrontAccount, StorefrontProvider,
 };
 pub use utils::directories::Directories;
 pub use utils::environment::Environment;
