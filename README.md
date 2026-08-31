@@ -89,7 +89,7 @@ async fn main() -> Result<(), bottles_core::error::Error> {
         }
     }
 
-    bottles.close().await
+    bottles.shutdown().await
 }
 ```
 

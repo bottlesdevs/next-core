@@ -56,7 +56,10 @@ impl Bottles {
         })
     }
 
-    pub async fn close(self) -> Result<()> {
+    /// Gracefully stops background services.
+    ///
+    /// Calling this method more than once is safe.
+    pub async fn shutdown(&self) -> Result<()> {
         self.context.downloader().shutdown().await;
         Ok(())
     }
