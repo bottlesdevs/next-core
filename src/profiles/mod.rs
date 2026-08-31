@@ -226,7 +226,7 @@ impl Profiles {
         WatchStream::new(self.inner.published.subscribe())
     }
 
-    /// Creates an unselected profile with a generated UUID.
+    /// Creates and selects a profile with a generated UUID in one publication.
     pub async fn create(&self, name: impl Into<String>) -> Result<Profile> {
         let name = profile_name(name)?;
         self.inner
@@ -237,6 +237,7 @@ impl Profiles {
                     accounts: Vec::new(),
                 };
                 state.profiles.push(profile.clone());
+                state.selected = profile.id;
                 Ok(profile)
             })
             .await
@@ -263,20 +264,27 @@ impl Profiles {
         self.inner.select(id).await
     }
 
-    /// Deletes an existing unselected profile.
+    /// Deletes an existing profile.
+    ///
+    /// Deleting the selected profile selects the first remaining profile in the
+    /// same persisted update. The only remaining profile cannot be deleted.
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         let profile = self
             .inner
             .update(|state| {
-                if state.selected == id {
-                    return Err(ProfileError::Selected(id).into());
-                }
                 let index = state
                     .profiles
                     .iter()
                     .position(|profile| profile.id == id)
                     .ok_or(ProfileError::NotFound(id))?;
-                Ok(state.profiles.remove(index))
+                if state.profiles.len() == 1 {
+                    return Err(ProfileError::LastProfile(id).into());
+                }
+                let removed = state.profiles.remove(index);
+                if state.selected == id {
+                    state.selected = state.profiles[0].id;
+                }
+                Ok(removed)
             })
             .await?;
         for account in profile.accounts {
