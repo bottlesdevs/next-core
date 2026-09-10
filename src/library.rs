@@ -10,7 +10,7 @@ use futures_util::{
 use uuid::Uuid;
 
 use crate::{
-    Bottle, BottleManager, PluginId, PluginKind, Plugins, Profiles, Program,
+    Bottle, BottleManager, PluginId, PluginKind, Plugins, Profiles, ProgramSpec,
     bottle::error::BottleError, credentials, error::Result,
 };
 
@@ -194,7 +194,7 @@ pub struct LibraryItem {
 
 impl LibraryItem {
     /// Returns the current launch definition.
-    pub fn program(&self) -> Result<Program> {
+    pub fn program(&self) -> Result<ProgramSpec> {
         self.bottle
             .state()?
             .program(self.program_id)

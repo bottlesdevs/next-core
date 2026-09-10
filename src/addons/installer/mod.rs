@@ -46,12 +46,12 @@ use crate::{
     Directories,
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
     runner::Runner,
-    utils::environment::Environment,
+    utils::env_vars::EnvVars,
 };
 
 use super::{Addon, Component, deserialize_non_empty_string};
 
-pub(crate) use engine::{execute, replay_environment, uninstall};
+pub(crate) use engine::{execute, replay_env_vars, uninstall};
 pub(crate) use recipes::steps as recipe_steps;
 
 /// One local resource and the installation steps applied to it.
@@ -154,7 +154,7 @@ pub(crate) struct InstallInputs<'a> {
     /// The WineBridge executable selected by the bottle.
     pub(crate) winebridge: &'a Path,
     /// The environment updated by `SetEnvironment` steps and passed to processes.
-    pub(crate) environment: &'a mut Environment,
+    pub(crate) env_vars: &'a mut EnvVars,
 }
 
 impl Addon<Component> {
