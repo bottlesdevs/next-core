@@ -148,7 +148,7 @@ impl WineBridgeClient {
             }))
     }
 
-    fn port_file(prefix: &Path) -> PathBuf {
+    pub(crate) fn port_file(prefix: &Path) -> PathBuf {
         prefix.join("drive_c/windows/temp").join(PORT_FILE_NAME)
     }
 

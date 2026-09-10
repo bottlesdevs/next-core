@@ -96,7 +96,9 @@ mod tests {
                 .status()
                 .await
                 .unwrap();
-            runner.wineserver(&prefix, "-k").await.unwrap();
+            crate::runner::shutdown_prefix(&runner, &prefix)
+                .await
+                .unwrap();
             assert!(matches!(
                 runner.wineboot(&prefix, "--fail").await,
                 Err(crate::error::Error::Runner(RunnerError::WinebootFailed(_)))
@@ -117,6 +119,10 @@ mod tests {
                     format!("{environment}<game.exe><--flag>\n"),
                     format!(
                         "{wineserver_environment}<{}><-k>\n",
+                        proton_path.join("files/bin/wineserver").display()
+                    ),
+                    format!(
+                        "{wineserver_environment}<{}><-w>\n",
                         proton_path.join("files/bin/wineserver").display()
                     ),
                     format!("{environment}<wineboot><--fail>\n"),

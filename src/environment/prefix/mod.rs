@@ -98,6 +98,29 @@ pub(crate) async fn prepare(storage: &Storage, root: &Path, context: &Context) -
     }
 }
 
+pub(crate) async fn is_mounted(storage: &Storage, root: &Path, context: &Context) -> Result<bool> {
+    let _ = (root, context);
+    match storage {
+        Storage::Standard => Ok(false),
+        #[cfg(feature = "fvs")]
+        Storage::Virgo { .. } => {
+            let mountpoint = root.join("prefix").display().to_string();
+            Ok(context
+                .fvs()
+                .await?
+                .list_mounts()
+                .await?
+                .iter()
+                .any(|mount| {
+                    mount
+                        .spec
+                        .as_ref()
+                        .is_some_and(|spec| spec.mount_point == mountpoint)
+                }))
+        }
+    }
+}
+
 pub(crate) async fn stop(storage: &Storage, root: &Path, context: &Context) -> Result<()> {
     let _ = (root, context);
     match storage {

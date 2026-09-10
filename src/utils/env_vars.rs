@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 pub struct EnvVars<T: Eq + Hash = String>(HashMap<T, T>);
 
 impl<T: Eq + Hash> EnvVars<T> {
-    pub(crate) fn insert(&mut self, name: T, value: T) -> Option<T> {
+    pub fn insert(&mut self, name: T, value: T) -> Option<T> {
         self.0.insert(name, value)
     }
 
-    pub(crate) fn remove<Q>(&mut self, name: &Q) -> Option<T>
+    pub fn remove<Q>(&mut self, name: &Q) -> Option<T>
     where
         T: Borrow<Q>,
         Q: Eq + Hash + ?Sized,

@@ -42,6 +42,19 @@ impl Environment {
         }
     }
 
+    /// A retained runner or bridge, discovery file, or live mount requires an
+    /// explicit stop. A stale discovery file is ambiguous, not proof of shutdown.
+    pub(crate) async fn ensure_stopped(&self) -> Result<()> {
+        if self.runner.is_some()
+            || self.bridge.is_some()
+            || crate::utils::exists(&WineBridgeClient::port_file(&self.root.join("prefix"))).await?
+            || prefix::is_mounted(&self.config.storage, &self.root, &self.cx).await?
+        {
+            return Err(EnvironmentError::MustBeStopped.into());
+        }
+        Ok(())
+    }
+
     async fn load_runner(&mut self) -> Result<()> {
         if self.runner.is_none() {
             self.runner = Some(
@@ -126,7 +139,7 @@ impl Environment {
         }
     }
 
-    /// Attempts every cleanup action, retaining the first error for explicit retry.
+    /// Attempts bridge and runner shutdown; storage is released only after success.
     pub(crate) async fn stop(&mut self) -> Result<()> {
         let prefix = self.root.join("prefix");
         let runner_loaded = self.load_runner().await;
@@ -155,10 +168,15 @@ impl Environment {
                 first_error.get_or_insert(error);
             }
         }
-        if let Err(error) = prefix::stop(&self.config.storage, &self.root, &self.cx).await {
-            first_error.get_or_insert(error);
-        }
         first_error.map_or(Ok(()), Err)?;
+        // A failed bridge can leave discovery behind. Only discard that evidence
+        // after Wine has stopped, while a Virgo prefix is still mounted.
+        match async_fs::remove_file(WineBridgeClient::port_file(&prefix)).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        prefix::stop(&self.config.storage, &self.root, &self.cx).await?;
         self.bridge = None;
         self.runner = None;
         Ok(())

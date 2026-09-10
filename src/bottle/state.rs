@@ -18,7 +18,7 @@ use tokio_stream::{StreamExt, wrappers::WatchStream};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::{edit::BottleEdit, error::BottleError};
+use super::error::BottleError;
 use crate::{
     Context, EnvironmentConfig,
     addons::Addons,
@@ -37,10 +37,10 @@ use crate::{
 #[config(version = 1)]
 pub struct BottleState {
     pub(crate) id: Uuid,
-    pub(crate) name: String,
-    pub(crate) environment: EnvironmentConfig,
+    pub name: String,
+    pub environment: EnvironmentConfig,
     #[serde(default)]
-    pub(crate) programs: HashMap<Uuid, ProgramSpec>,
+    pub programs: HashMap<Uuid, ProgramSpec>,
 }
 
 impl BottleState {
@@ -177,13 +177,6 @@ impl Bottle {
             .filter_map(|state| state)
     }
 
-    /// Starts a batch of configuration changes.
-    ///
-    /// No changes are made until [`BottleEdit::commit`] is awaited.
-    pub fn edit(&self) -> BottleEdit {
-        BottleEdit::new(self.clone())
-    }
-
     #[cfg(feature = "fvs")]
     pub(crate) fn ensure_exists(&self) -> Result<()> {
         if self.is_deleted() {
@@ -236,14 +229,6 @@ impl Bottle {
         if let Err(error) = Self::save_state(&draft, &self.0.cx).await {
             *environment = None;
             return Err(error);
-        }
-        // Configuration edits apply at the next runtime start. Detaching leaves
-        // an already-running Wine instance available for sequential reconnect.
-        if environment
-            .as_ref()
-            .is_some_and(|runtime| runtime.config != draft.environment)
-        {
-            *environment = None;
         }
         self.publish(draft);
         Ok(value)
@@ -303,24 +288,39 @@ pub struct ProgramSpec {
 }
 
 impl ProgramSpec {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() {
+            return Err(BottleError::InvalidProgram("name must not be blank".into()).into());
+        }
+        if self.executable.trim().is_empty() {
+            return Err(BottleError::InvalidProgram("executable must not be blank".into()).into());
+        }
+        if self
+            .working_directory
+            .as_ref()
+            .is_some_and(|path| path.trim().is_empty())
+        {
+            return Err(
+                BottleError::InvalidProgram("working directory must not be blank".into()).into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Creates a program with a new UUID and default launch options.
     pub fn new(name: impl Into<String>, executable: impl Into<String>) -> Result<Self> {
         let name = name.into();
         let executable = executable.into();
-        if name.trim().is_empty() {
-            return Err(BottleError::InvalidProgram("name must not be blank".into()).into());
-        }
-        if executable.trim().is_empty() {
-            return Err(BottleError::InvalidProgram("executable must not be blank".into()).into());
-        }
-        Ok(Self {
+        let program = Self {
             id: Uuid::new_v4(),
             name,
             executable,
             args: Vec::new(),
             working_directory: None,
             new_console: false,
-        })
+        };
+        program.validate()?;
+        Ok(program)
     }
 
     /// Replaces the Windows command-line fragments passed at launch.

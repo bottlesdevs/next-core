@@ -98,73 +98,80 @@ impl Bottle {
     }
 
     /// Stops WineBridge, wineserver and storage, then clears the cached environment.
-    /// Cleanup attempts every action and returns the first error.
+    /// Storage is released only after shutdown succeeds.
     pub async fn stop(&self) -> Result<()> {
         let mut environment = self.0.environment.lock().await;
         let state = self.state()?;
         Self::stop_state(&state, &self.0.cx, &mut environment).await
     }
 
-    /// Selects a downloaded component after validating the complete configuration.
-    /// Runtime changes stop the environment before changing prefix storage.
+    /// Selects a downloaded component in a stopped environment.
+    /// A runner requiring UMU selects the latest downloaded UMU if necessary.
     pub fn set_component(&self, id: Uuid) -> Operation<()> {
-        let bottle = self.clone();
         let addons = self.0.addons.clone();
-        Operation::new(move |progress, cancellation| async move {
-            bottle
-                .update_environment(&cancellation, async |environment| {
-                    environment
-                        .set_component(id, &addons, &progress, &cancellation)
-                        .await
-                })
-                .await
-        })
-    }
-
-    /// Removes a component unless another selected addon requires it.
-    pub fn remove_component(&self, slot: Slot) -> Operation<()> {
-        let bottle = self.clone();
-        Operation::new(move |progress, cancellation| async move {
-            bottle
-                .update_environment(&cancellation, async |environment| {
-                    environment
-                        .remove_component(slot, &progress, &cancellation)
-                        .await
-                })
-                .await
-        })
-    }
-
-    /// Permanently installs a downloaded dependency. Reinstalling its UUID is a no-op.
-    pub fn install(&self, id: Uuid) -> Operation<()> {
-        let bottle = self.clone();
-        let addons = self.0.addons.clone();
-        Operation::new(move |progress, cancellation| async move {
-            bottle
-                .update_environment(&cancellation, async |environment| {
-                    environment
-                        .install(id, &addons, &progress, &cancellation)
-                        .await
-                })
-                .await
-        })
-    }
-
-    async fn update_environment<F>(&self, cancellation: &CancellationToken, work: F) -> Result<()>
-    where
-        F: for<'a> AsyncFnOnce(&'a mut Environment) -> Result<()>,
-    {
-        self.update(Some(cancellation), async |state, cx, cached| {
-            // A failed mutation must not leave its candidate configuration cached.
-            let mut environment = cached
-                .take()
-                .unwrap_or_else(|| Self::new_environment(state, &cx));
-            work(&mut environment).await?;
-            state.environment = environment.config.clone();
-            *cached = Some(environment);
+        self.edit(move |state| {
+            let component = addons
+                .component(id)
+                .ok_or(crate::AddonError::NotFound(id))?;
+            let config = &mut state.environment;
+            if config
+                .component(component.slot())
+                .is_some_and(|old| old.id() == id)
+            {
+                return Ok(());
+            }
+            let needs_umu = component
+                .requirements()
+                .contains(&crate::Requirement::Slot(Slot::Umu));
+            if needs_umu && config.umu().is_none() {
+                let umu = addons.latest_component(Slot::Umu).ok_or_else(|| {
+                    crate::EnvironmentError::RequiresAddon {
+                        required_by: Some(id),
+                        requirements: vec![crate::Requirement::Slot(Slot::Umu)],
+                    }
+                })?;
+                config
+                    .components
+                    .insert(Slot::Umu, crate::Addon::from(umu.as_ref()));
+            }
+            config
+                .components
+                .insert(component.slot(), crate::Addon::from(component.as_ref()));
+            if component.slot() == Slot::Runner && !needs_umu {
+                config.components.remove(&Slot::Umu);
+            }
             Ok(())
         })
-        .await
+    }
+
+    /// Removes a component from a stopped environment unless another addon requires it.
+    pub fn remove_component(&self, slot: Slot) -> Operation<()> {
+        self.edit(move |state| {
+            state
+                .environment
+                .components
+                .remove(&slot)
+                .ok_or(crate::EnvironmentError::ComponentNotInstalled(slot))?;
+            Ok(())
+        })
+    }
+
+    /// Permanently installs a downloaded dependency in a stopped environment.
+    /// Reinstalling its UUID is a no-op.
+    pub fn install(&self, id: Uuid) -> Operation<()> {
+        let addons = self.0.addons.clone();
+        self.edit(move |state| {
+            if state.environment.dependency(id).is_none() {
+                let dependency = addons
+                    .dependency(id)
+                    .ok_or(crate::AddonError::NotFound(id))?;
+                state
+                    .environment
+                    .dependencies
+                    .push(crate::Addon::from(dependency.as_ref()));
+            }
+            Ok(())
+        })
     }
 
     pub(super) async fn stop_state(
