@@ -217,7 +217,8 @@ pub(crate) async fn reconcile(
     Ok(())
 }
 
-/// Coordinates one addon mutation. Owner configuration is saved separately.
+/// Coordinates one addon mutation. Only Virgo uses automatic checkpoints;
+/// Standard keeps direct writes. Owner configuration is saved separately.
 /// Failed shutdown/unmount returns before any rollback can touch live storage.
 async fn transact(
     storage: &mut Storage,
@@ -234,19 +235,23 @@ async fn transact(
         block_size: prefix::FVS_BLOCK_SIZE,
     };
     #[cfg(feature = "fvs")]
-    let checkpoint = {
+    let checkpoint = if matches!(storage, Storage::Virgo { .. }) {
         let stream = cx
             .fvs()
             .await?
             .commit_stream(&repository, prefix::AUTO_CHECKPOINT_MESSAGE.into())
             .await?;
-        prefix::finish_commit(stream, |event| {
-            progress.send_replace(Some(Progress::transferring(
-                Stage::Checkpointing,
-                event.into(),
-            )));
-        })
-        .await?
+        Some(
+            prefix::finish_commit(stream, |event| {
+                progress.send_replace(Some(Progress::transferring(
+                    Stage::Checkpointing,
+                    event.into(),
+                )));
+            })
+            .await?,
+        )
+    } else {
+        None
     };
     let _ = progress;
     if cancellation.is_cancelled() {
@@ -261,7 +266,7 @@ async fn transact(
         result
     };
     #[cfg(feature = "fvs")]
-    if let Err(error) = &result {
+    if let (Err(error), Some(checkpoint)) = (&result, checkpoint) {
         let restored = async {
             let stream = cx
                 .fvs()

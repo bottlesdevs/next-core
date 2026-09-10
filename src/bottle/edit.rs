@@ -16,6 +16,7 @@ impl Bottle {
     /// Metadata can change while running. Environment changes require an explicit
     /// stop first. Storage and existing dependency order cannot be changed; new
     /// dependencies may be appended. Addon selections must be downloaded.
+    /// Standard mutations write directly; failed recipes can leave partial effects.
     /// Prefix effects are not yet rolled back as a batch if reconciliation or
     /// persistence fails; no candidate configuration is published on failure.
     pub fn edit(

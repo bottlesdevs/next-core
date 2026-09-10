@@ -1,8 +1,8 @@
 //! Prefix storage backends and FVS history primitives.
 //!
 //! Standard storage mutates a conventional prefix directly; Virgo stores an
-//! ordered FVS layer stack with a private writable upper directory. With the default `fvs`
-//! feature, addon installation and removal use an FVS rollback checkpoint.
+//! ordered FVS layer stack with a private writable upper directory. Virgo addon
+//! changes use rollback checkpoints; Standard uses FVS only for explicit snapshots.
 
 mod standard;
 #[cfg(feature = "fvs")]
@@ -39,8 +39,7 @@ pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 pub enum Storage {
     /// Stores a conventional mutable prefix in the owner directory.
     ///
-    /// With the default `fvs` feature, FVS also provides snapshots and addon
-    /// mutation checkpoints.
+    /// Explicit snapshots may use FVS; ordinary mutations use direct writes.
     Standard,
     /// Stores the prefix as composable FVS layers.
     ///
