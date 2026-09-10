@@ -13,13 +13,13 @@ use std::{
 };
 
 use futures_lite::StreamExt;
-use fvs_rs::{Layer, Mount, Repository, UnmountMode};
+use fvs_rs::{Layer, Repository, UnmountMode};
 use uuid::Uuid;
 
 use crate::{
     Context,
     error::{Error, Result},
-    runner::{Runner, initialize_and_shutdown_prefix},
+    runner::Runner,
 };
 
 use super::FVS_BLOCK_SIZE;
@@ -44,6 +44,10 @@ pub enum VirgoError {
     /// Virgo cannot mount a prefix over a nonempty mountpoint.
     #[error("mountpoint is not empty: {0}")]
     DirtyMountpoint(PathBuf),
+    #[error(
+        "mounted layers or writable upper differ from saved configuration at {0}; call stop() and retry"
+    )]
+    MountMismatch(PathBuf),
     /// A cached layer required to construct the prefix is missing.
     #[error("cached Virgo layer was not found: {0}")]
     CachedLayerNotFound(PathBuf),
@@ -64,11 +68,54 @@ pub(super) async fn create(
 }
 
 pub(super) async fn prepare(root: &Path, layers: &[Layer], context: &Context) -> Result<()> {
-    mount_layers(root, layers.to_vec(), context).await
+    if !existing_mount(root, layers, context).await? {
+        let prefix = root.join("prefix");
+        ensure_empty_dir(&prefix).await?;
+        context
+            .fvs()
+            .await?
+            .mount(&prefix, layers.to_vec(), Some(root.join("upper")))
+            .await?;
+    }
+    Ok(())
+}
+
+async fn existing_mount(root: &Path, layers: &[Layer], context: &Context) -> Result<bool> {
+    let prefix = root.join("prefix");
+    let mounts = context.fvs().await?.list_mounts().await?;
+    let Some(spec) = mounts
+        .into_iter()
+        .filter_map(|mount| mount.spec)
+        .find(|spec| spec.mount_point == prefix.to_string_lossy())
+    else {
+        return Ok(false);
+    };
+    if spec.layers != layers
+        || spec.upper_path.as_deref() != Some(root.join("upper").to_string_lossy().as_ref())
+    {
+        return Err(VirgoError::MountMismatch(prefix).into());
+    }
+    Ok(true)
 }
 
 pub(super) async fn stop(root: &Path, context: &Context) -> Result<()> {
-    unmount_prefix(root, context).await
+    let prefix = root.join("prefix");
+    let client = context.fvs().await?;
+    if let Some(mount) = client.list_mounts().await?.into_iter().find(|mount| {
+        mount
+            .spec
+            .as_ref()
+            .is_some_and(|spec| spec.mount_point == prefix.to_string_lossy())
+    }) {
+        client
+            .unmount(&mount, UnmountMode::Normal)
+            .await
+            .map_err(|source| crate::EnvironmentError::Cleanup {
+                prefix,
+                source: Box::new(source.into()),
+            })?;
+    }
+    Ok(())
 }
 
 pub(super) async fn rebuild(
@@ -92,6 +139,7 @@ pub(super) async fn install<F>(
     root: &Path,
     layers: &mut Vec<Layer>,
     item_id: Uuid,
+    runner: &dyn Runner,
     replaced_id: Option<Uuid>,
     execute: F,
     context: &Context,
@@ -102,7 +150,7 @@ where
     // A cache hit deliberately skips the recipe. The cached filesystem layer and
     // registry patch must therefore capture every prefix effect of installation.
     if !cache::exists(item_id, context).await? {
-        cache::install(layers.clone(), item_id, execute, context).await?;
+        cache::install(layers.clone(), item_id, runner, execute, context).await?;
     }
 
     let cached = cache::layer(item_id, context).await?;
@@ -127,83 +175,9 @@ where
     // Removing the layer reveals the previous filesystem contents, so the recipe
     // must not restore overwritten files into the writable upper directory.
     cache::remove(layers, item_id, context);
-    let prefix = root.join("prefix");
-    let upper = root.join("upper");
-    with_mount(&prefix, layers.clone(), Some(&upper), context, async |_| {
-        execute(&prefix, false).await
-    })
-    .await
-}
-
-/// Mounts for the duration of `work` and always attempts a normal unmount.
-///
-/// An unmount failure becomes the result only when `work` succeeded. If both
-/// fail, the work error is preserved and the unmount failure is logged.
-async fn with_mount<F, T>(
-    mountpoint: &Path,
-    layers: Vec<Layer>,
-    upper: Option<&Path>,
-    context: &Context,
-    work: F,
-) -> Result<T>
-where
-    F: for<'a> AsyncFnOnce(&'a Mount) -> Result<T>,
-{
-    ensure_empty_dir(mountpoint).await?;
-    let client = context.fvs().await?;
-    let mount = client.mount(mountpoint, layers, upper).await?;
-    let result = work(&mount).await;
-    let unmounted = client.unmount(&mount, UnmountMode::Normal).await;
-
-    match result {
-        Ok(value) => {
-            unmounted?;
-            Ok(value)
-        }
-        Err(error) => {
-            if let Err(failed) = unmounted {
-                tracing::error!(%failed, "unmount failed after {error}");
-            }
-            Err(error)
-        }
-    }
-}
-
-/// Prepares an owner's long-lived Virgo mount.
-///
-/// An existing mount at the same path is trusted without comparing its layer
-/// specification. Callers must stop the owner before changing persisted layers.
-async fn mount_layers(root: &Path, layers: Vec<Layer>, context: &Context) -> Result<()> {
-    let prefix = root.join("prefix");
-    let mountpoint = prefix.display().to_string();
-    let client = context.fvs().await?;
-    if client.list_mounts().await?.into_iter().any(|mount| {
-        mount
-            .spec
-            .as_ref()
-            .is_some_and(|spec| spec.mount_point == mountpoint)
-    }) {
-        return Ok(());
-    }
-    ensure_empty_dir(&prefix).await?;
-    client
-        .mount(&prefix, layers, Some(root.join("upper")))
-        .await?;
-    Ok(())
-}
-
-async fn unmount_prefix(root: &Path, context: &Context) -> Result<()> {
-    let mountpoint = root.join("prefix").display().to_string();
-    let client = context.fvs().await?;
-    if let Some(mount) = client.list_mounts().await?.into_iter().find(|mount| {
-        mount
-            .spec
-            .as_ref()
-            .is_some_and(|spec| spec.mount_point == mountpoint)
-    }) {
-        client.unmount(&mount, UnmountMode::Normal).await?;
-    }
-    Ok(())
+    prepare(root, layers, context).await?;
+    // The enclosing transaction shuts Wine down and unmounts before rollback.
+    execute(&root.join("prefix"), false).await
 }
 
 async fn base_layers(
@@ -254,7 +228,9 @@ async fn ensure_base(runner: &dyn Runner, context: &Context) -> Result<Layer> {
         return Ok(Layer::from_summary(&repository, Some(&commit)));
     }
 
-    if let Err(error) = initialize_and_shutdown_prefix(runner, &repository_path).await {
+    let initialized = runner.wineboot(&repository_path, "--init").await;
+    crate::environment::shutdown_wine(runner, &repository_path).await?;
+    if let Err(error) = initialized {
         remove_dir(base_path).await;
         return Err(error);
     }
@@ -312,15 +288,21 @@ async fn ensure_adapter(
     async_fs::create_dir_all(&upper).await?;
     async_fs::create_dir_all(&mountpoint).await?;
 
-    let build = async {
-        with_mount(
-            &mountpoint,
-            vec![base.clone()],
-            Some(&upper),
-            context,
-            async |_| initialize_and_shutdown_prefix(runner, &mountpoint).await,
-        )
+    let client = context.fvs().await?;
+    let mount = client
+        .mount(&mountpoint, vec![base.clone()], Some(&upper))
         .await?;
+    let initialized = runner.wineboot(&mountpoint, "--init").await;
+    crate::environment::shutdown_wine(runner, &mountpoint).await?;
+    client
+        .unmount(&mount, UnmountMode::Normal)
+        .await
+        .map_err(|source| crate::EnvironmentError::Cleanup {
+            prefix: mountpoint.clone(),
+            source: Box::new(source.into()),
+        })?;
+    let build = async {
+        initialized?;
 
         let client = context.fvs().await?;
         let repository = client.new_repository(&upper, FVS_BLOCK_SIZE).await?;

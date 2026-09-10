@@ -1,4 +1,4 @@
-//! Shared execution configuration and the private runtime retained by an owner.
+//! Shared execution configuration and temporary connections to a running environment.
 
 mod config;
 mod error;
@@ -15,7 +15,7 @@ use crate::{
     Context, ProgramSpec,
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
-    runner::{Runner, shutdown_prefix},
+    runner::Runner,
     winebridge::WineBridgeClient,
 };
 
@@ -23,32 +23,39 @@ pub use config::EnvironmentConfig;
 pub use error::EnvironmentError;
 pub use prefix::Storage;
 
-/// A private owner-cached live runtime. Construction connects WineBridge.
+/// A private connection to a live runtime for one control operation.
 /// Dropping it only releases local resources.
 /// Owners serialize access and persist configuration, including storage metadata.
 pub(crate) struct Environment {
-    // Retain the resolved runner with the live handle; shutdown uses saved settings.
-    #[allow(dead_code)]
-    runner: Box<dyn Runner>,
     bridge: WineBridgeClient,
 }
 
 impl Environment {
+    /// Stops Wine and unmounts storage without requiring a live handle or bridge.
+    pub(crate) async fn stop(config: &EnvironmentConfig, root: &Path, cx: &Context) -> Result<()> {
+        let runner = config
+            .runner()
+            .load_runner(cx.directories(), config.umu())
+            .await?;
+        shutdown_wine(runner.as_ref(), &root.join("prefix")).await?;
+        prefix::stop(&config.storage, root, cx).await
+    }
+
     /// Connects to an existing runtime or prepares and starts one.
     pub(crate) async fn attach_or_start(
         config: &EnvironmentConfig,
         root: PathBuf,
         cx: Context,
     ) -> Result<Self> {
+        if let Some(environment) = Self::try_attach(&root).await? {
+            return Ok(environment);
+        }
         let runner = config
             .runner()
             .load_runner(cx.directories(), config.umu())
             .await?;
-        let prefix = root.join("prefix");
-        if let Some(bridge) = WineBridgeClient::try_connect(&prefix).await? {
-            return Ok(Self { runner, bridge });
-        }
         prefix::prepare(&config.storage, &root, &cx).await?;
+        let prefix = root.join("prefix");
         let command = config.wrappers.apply(
             WineBridgeClient::command(
                 runner.as_ref(),
@@ -57,8 +64,15 @@ impl Environment {
             )
             .envs(config.env_vars.iter()),
         );
-        let bridge = WineBridgeClient::connect_or_spawn(&prefix, command).await?;
-        Ok(Self { runner, bridge })
+        let bridge = match WineBridgeClient::connect_or_spawn(&prefix, command).await {
+            Ok(bridge) => bridge,
+            Err(error) => {
+                shutdown_wine(runner.as_ref(), &prefix).await?;
+                prefix::stop(&config.storage, &root, &cx).await?;
+                return Err(error);
+            }
+        };
+        Ok(Self { bridge })
     }
 
     pub(crate) async fn launch_program(
@@ -78,6 +92,14 @@ impl Environment {
                 program.new_console(),
             )
             .await
+    }
+
+    /// Attaches without starting Wine or mounting storage.
+    pub(crate) async fn try_attach(root: &Path) -> Result<Option<Self>> {
+        let Some(bridge) = WineBridgeClient::try_connect(&root.join("prefix")).await? else {
+            return Ok(None);
+        };
+        Ok(Some(Self { bridge }))
     }
 
     pub(crate) async fn processes(&self) -> Result<Vec<Process>> {
@@ -106,26 +128,24 @@ impl Environment {
             result => result,
         }
     }
+}
 
-    /// Stops Wine and releases storage without requiring a live handle or bridge.
-    pub(crate) async fn stop(config: &EnvironmentConfig, root: &Path, cx: &Context) -> Result<()> {
-        let runner = config
-            .runner()
-            .load_runner(cx.directories(), config.umu())
-            .await?;
-        let prefix = root.join("prefix");
-        match WineBridgeClient::try_connect(&prefix).await {
-            Ok(Some(bridge)) => {
-                if let Err(error) = bridge.shutdown().await {
-                    tracing::debug!(%error, "WineBridge shutdown failed; stopping wineserver");
-                }
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::debug!(%error, "WineBridge discovery failed; stopping wineserver");
-            }
-        }
-        shutdown_prefix(runner.as_ref(), &prefix).await?;
-        prefix::stop(&config.storage, root, cx).await
+/// Stops WineBridge and waits for wineserver; the caller owns storage cleanup.
+async fn shutdown_wine(runner: &dyn Runner, prefix: &Path) -> Result<()> {
+    if let Err(error) = WineBridgeClient::shutdown_existing(prefix).await {
+        tracing::debug!(%error, "WineBridge shutdown failed; stopping wineserver");
     }
+    for argument in ["-k", "-w"] {
+        runner
+            .wineserver(prefix, argument)
+            .await
+            .map_err(|source| EnvironmentError::Cleanup {
+                prefix: prefix.to_path_buf(),
+                source: Box::new(source),
+            })?;
+    }
+    if let Err(error) = WineBridgeClient::clear_discovery(prefix).await {
+        tracing::warn!(%error, "could not remove WineBridge discovery after shutdown");
+    }
+    Ok(())
 }

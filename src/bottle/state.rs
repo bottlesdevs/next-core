@@ -3,7 +3,6 @@
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
-    ops::AsyncFnOnce,
     sync::Arc,
 };
 
@@ -15,16 +14,10 @@ use next_config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::error::BottleError;
-use crate::{
-    Context, EnvironmentConfig,
-    addons::Addons,
-    environment::Environment,
-    error::{Error, Result},
-};
+use crate::{Context, EnvironmentConfig, addons::Addons, error::Result};
 
 /// An immutable snapshot of a bottle's published configuration.
 ///
@@ -76,8 +69,8 @@ impl BottleState {
 pub(crate) struct BottleInner {
     /// Latest state; `None` is the tombstone published when the bottle is deleted.
     pub(crate) published: watch::Sender<Option<Arc<BottleState>>>,
-    /// Serializes control operations and retains the lazily created runtime.
-    pub(crate) environment: Mutex<Option<Environment>>,
+    /// Serializes control operations across cloned handles.
+    pub(crate) control: Mutex<()>,
     /// Retained after deletion so stale handles report which bottle was deleted.
     pub(crate) id: Uuid,
     /// Shared services and storage locations scoped to the owning manager.
@@ -94,7 +87,7 @@ pub(crate) struct BottleInner {
 /// Hashing identifies the shared live handle and remains stable across state
 /// publications and deletion.
 ///
-/// Runtime operations share a lazily created private environment. Control calls
+/// Runtime operations attach to WineBridge for each control call. Calls
 /// serialize within this core instance; the lock is released after launch, not
 /// when the guest process exits. Dropping handles does not stop Wine.
 #[derive(Clone)]
@@ -137,7 +130,7 @@ impl Bottle {
         Ok(Self(Arc::new(BottleInner {
             id,
             published,
-            environment: Mutex::new(None),
+            control: Mutex::new(()),
             cx,
             addons,
         })))
@@ -197,43 +190,6 @@ impl Bottle {
         self.0.published.send_replace(None);
     }
 
-    /// Serializes a mutation against the latest state and publishes only after
-    /// persistence succeeds.
-    ///
-    /// The operation may perform external prefix work before `save_state`; such
-    /// side effects are not automatically reversed if persistence then fails.
-    pub(super) async fn update<F, R>(
-        &self,
-        cancellation: Option<&CancellationToken>,
-        operation: F,
-    ) -> Result<R>
-    where
-        F: for<'a, 'b> AsyncFnOnce(
-            &'a mut BottleState,
-            Context,
-            &'b mut Option<Environment>,
-        ) -> Result<R>,
-    {
-        let mut environment = match cancellation {
-            Some(cancellation) => cancellation
-                .run_until_cancelled(self.0.environment.lock())
-                .await
-                .ok_or(Error::Cancelled)?,
-            None => self.0.environment.lock().await,
-        };
-        if cancellation.is_some_and(CancellationToken::is_cancelled) {
-            return Err(Error::Cancelled);
-        }
-        let mut draft = self.state()?.as_ref().clone();
-        let value = operation(&mut draft, self.0.cx.clone(), &mut environment).await?;
-        if let Err(error) = Self::save_state(&draft, &self.0.cx).await {
-            *environment = None;
-            return Err(error);
-        }
-        self.publish(draft);
-        Ok(value)
-    }
-
     /// Publishes only observable state changes; an equal state does not wake
     /// watchers.
     pub(crate) fn publish(&self, state: BottleState) {
@@ -258,7 +214,7 @@ impl Bottle {
         Self::save_state(&state, &self.0.cx).await
     }
 
-    async fn save_state(state: &BottleState, cx: &Context) -> Result<()> {
+    pub(super) async fn save_state(state: &BottleState, cx: &Context) -> Result<()> {
         let path = cx.directories().bottle(state.id).join("bottle.toml");
         next_config::save(path, state).await?;
         Ok(())

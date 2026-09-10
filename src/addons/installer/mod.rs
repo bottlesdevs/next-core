@@ -27,8 +27,8 @@
 //! Cancellation is cooperative. It is checked between steps and during
 //! supported long-running work. Running child processes are killed and reaped
 //! when possible; WineBridge calls already in flight are not interrupted.
-//! Installation always attempts to stop WineBridge and the prefix runner before
-//! returning.
+//! The enclosing prefix scope stops WineBridge and the prefix runner before
+//! releasing storage.
 //!
 //! # Path handling
 //!
@@ -145,13 +145,13 @@ pub(crate) enum InstallStep {
     SetEnvironment { name: String, value: String },
 }
 
-/// Bottle-specific services and mutable state used while applying a recipe.
+/// Execution inputs for a recipe in an owner prefix or shared build.
 pub(crate) struct InstallInputs<'a> {
     /// The prepared Wine prefix receiving recipe changes.
     pub(crate) prefix: &'a Path,
-    /// The runner used for Windows processes and prefix shutdown.
+    /// The runner used for Windows processes. The execution workflow owns shutdown.
     pub(crate) runner: &'a dyn Runner,
-    /// The WineBridge executable selected by the bottle.
+    /// The WineBridge executable selected by the execution workflow.
     pub(crate) winebridge: &'a Path,
     /// The environment updated by `SetEnvironment` steps and passed to processes.
     pub(crate) env_vars: &'a mut EnvVars,

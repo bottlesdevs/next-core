@@ -4,7 +4,6 @@ use std::sync::{
 };
 
 use tokio::sync::{Mutex, watch};
-use tokio_util::sync::CancellationToken;
 
 use super::state::BottleInner;
 use crate::{
@@ -29,7 +28,7 @@ async fn deleted_bottle() -> (Bottle, Directories) {
     let (published, _) = watch::channel(None);
     let bottle = Bottle(Arc::new(BottleInner {
         published,
-        environment: Mutex::new(None),
+        control: Mutex::new(()),
         id: uuid::Uuid::new_v4(),
         cx: context,
         addons,
@@ -38,17 +37,17 @@ async fn deleted_bottle() -> (Bottle, Directories) {
 }
 
 #[test]
-fn bottle_update_cancels_while_waiting_for_write_lock() {
+fn bottle_edit_cancels_while_waiting_for_write_lock() {
     futures_lite::future::block_on(async {
         let (bottle, directories) = deleted_bottle().await;
-        let write = bottle.0.environment.lock().await;
-        let cancellation = CancellationToken::new();
+        let write = bottle.0.control.lock().await;
         let ran = Arc::new(AtomicBool::new(false));
         let work_ran = ran.clone();
-        let mut update = Box::pin(bottle.update(Some(&cancellation), async move |_, _, _| {
+        let mut update = Box::pin(bottle.edit(move |_| {
             work_ran.store(true, Ordering::Relaxed);
             Ok(())
         }));
+        let cancellation = update.cancellation_token();
 
         assert!(futures_lite::future::poll_once(&mut update).await.is_none());
         cancellation.cancel();
@@ -64,17 +63,17 @@ fn bottle_update_cancels_while_waiting_for_write_lock() {
 }
 
 #[test]
-fn bottle_update_rechecks_cancellation_when_lock_becomes_available() {
+fn bottle_edit_rechecks_cancellation_when_lock_becomes_available() {
     futures_lite::future::block_on(async {
         let (bottle, directories) = deleted_bottle().await;
-        let write = bottle.0.environment.lock().await;
-        let cancellation = CancellationToken::new();
+        let write = bottle.0.control.lock().await;
         let ran = Arc::new(AtomicBool::new(false));
         let work_ran = ran.clone();
-        let mut update = Box::pin(bottle.update(Some(&cancellation), async move |_, _, _| {
+        let mut update = Box::pin(bottle.edit(move |_| {
             work_ran.store(true, Ordering::Relaxed);
             Ok(())
         }));
+        let cancellation = update.cancellation_token();
 
         assert!(futures_lite::future::poll_once(&mut update).await.is_none());
         cancellation.cancel();

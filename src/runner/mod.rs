@@ -106,25 +106,6 @@ pub(crate) trait Runner: Send + Sync {
     async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()>;
 }
 
-/// Initializes a prefix and then attempts to stop its server.
-///
-/// Shutdown is attempted even when initialization fails. If both fail, the
-/// initialization error takes precedence.
-pub(crate) async fn initialize_and_shutdown_prefix(
-    runner: &dyn Runner,
-    prefix: &Path,
-) -> Result<()> {
-    let initialized = runner.wineboot(prefix, "--init").await;
-    let stopped = shutdown_prefix(runner, prefix).await;
-    initialized?;
-    stopped
-}
-
-pub(crate) async fn shutdown_prefix(runner: &dyn Runner, prefix: &Path) -> Result<()> {
-    runner.wineserver(prefix, "-k").await?;
-    runner.wineserver(prefix, "-w").await
-}
-
 /// Classifies a component by its regular-file markers.
 ///
 /// `proton` takes precedence over `bin/wine` when both exist. Missing markers

@@ -33,21 +33,23 @@ The crate is centered around six types:
 - `Operation<T>` represents long-running work with progress and cooperative
   cancellation.
 
-Execution settings live in `BottleState::environment()` as an
-`EnvironmentConfig`. Each bottle retains a private environment on first runtime
-use; clones share it. Creating the private environment resolves the runner,
-prepares the prefix, and connects or starts WineBridge. Attach-only operations
-connect without starting Wine or mounting storage. Its runner and bridge are
-always present; configuration remains in the owner. Registered programs
-use the bottle's settings. Use
-`Bottle::launch(ProgramSpec)` to run an unregistered executable and
-`Bottle::launch_program(uuid)` to run a registration. Both return `Operation<u32>`
-with the initial Windows process ID. Dropping the bottle only detaches; call
-`stop()` to stop its runtime. Shutdown uses the saved runner and storage settings,
-with or without a cached environment. It requests bridge shutdown when reachable,
-then terminates and waits for wineserver before unmounting. Bridge discovery or
-shutdown failure does not skip wineserver shutdown; the cached environment is
-cleared only after shutdown and unmounting succeed.
+Execution settings live in `BottleState::environment()` as an `EnvironmentConfig`.
+Cloned bottle handles share an operation mutex. Each runtime call attaches through
+a temporary environment connection; registered programs use the bottle's settings. `Bottle::launch(ProgramSpec)` runs an
+unregistered executable; `Bottle::launch_program(uuid)` runs a registration.
+Both return `Operation<u32>` with the initial Windows process ID.
+
+Process inspection and group kill attach to an existing runtime without starting
+Wine or inspecting FVS mounts. Startup still checks existing Virgo mounts against
+saved layers and the private upper when preparing storage. Dropping handles leaves
+Wine running. Explicit `stop()` waits
+for wineserver before unmounting, even when WineBridge cannot be reached.
+Unreachable discovery and mismatched mounts require `stop()` before retrying.
+
+Initialization and recipes run without game wrappers. Cancellation finishes cleanup
+before returning; failed shutdown retains storage. Temporary cache failures can
+require manual cleanup of the reported prefix. Automatic recovery and concurrent
+independent clients are deferred.
 
 `Bottle::edit(|state| { /* changes */ Ok(()) })` returns an `Operation<()>`.
 The callback receives a draft of the latest state under the owner lock. Edit
@@ -57,6 +59,11 @@ settings, including through `set_component`, `remove_component`, or `install`.
 Storage is fixed at creation; existing dependencies remain in installation order.
 New dependency selections can be appended. Prefix changes run before publication;
 batch rollback of those effects remains part of the later composition work.
+Settings-only edits save the draft without preparing or mutating the prefix.
+
+Standard no-FVS operation, pinned Soda builds, and managed registry-baseline
+composition remain separate later steps. Existing per-addon layer and checkpoint
+behavior remains in place for now.
 
 Bottle configuration requires execution settings under `environment`, with
 resolved FVS layers retained inside `environment.storage` for Virgo. Old

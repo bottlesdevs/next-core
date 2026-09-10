@@ -6,11 +6,12 @@ use strum::IntoEnumIterator;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::{EnvironmentConfig, EnvironmentError, prefix};
+use super::{EnvironmentConfig, EnvironmentError, Storage, prefix};
 use crate::{
     Addon, AddonError, Addons, Context, Progress, Slot, Stage,
     addons::{Artifact, InstallInputs, execute, replay_env_vars, uninstall},
     error::{Error, Result},
+    runner::Runner,
 };
 
 /// Called while the owner is coordinated and stopped. The owner publishes
@@ -107,6 +108,7 @@ pub(crate) async fn reconcile(
     if !runner_changed && removals.is_empty() && installations.is_empty() {
         return Ok(());
     }
+    super::Environment::stop(previous, root, cx).await?;
     let runner = candidate
         .runner()
         .load_runner(cx.directories(), candidate.umu())
@@ -115,32 +117,39 @@ pub(crate) async fn reconcile(
     let env_vars = &mut candidate.env_vars;
 
     for (id, resources) in &removals {
-        prefix::uninstall(
+        transact(
             &mut candidate.storage,
             root,
-            *id,
-            async |prefix, restore_files| {
-                uninstall(
-                    InstallInputs {
-                        prefix,
-                        runner: runner.as_ref(),
-                        winebridge: &winebridge,
-                        env_vars,
-                    },
-                    resources,
-                    restore_files,
-                    *id,
-                    cancellation,
-                    |_| {
-                        progress.send_replace(Some(Progress::new(Stage::Removing)));
-                    },
-                )
-                .await
-            },
+            runner.as_ref(),
             cx,
             cancellation,
-            |event| {
-                progress.send_replace(Some(event));
+            progress,
+            async |storage| {
+                prefix::uninstall(
+                    storage,
+                    root,
+                    *id,
+                    async |prefix, restore_files| {
+                        uninstall(
+                            InstallInputs {
+                                prefix,
+                                runner: runner.as_ref(),
+                                winebridge: &winebridge,
+                                env_vars,
+                            },
+                            resources,
+                            restore_files,
+                            *id,
+                            cancellation,
+                            |_| {
+                                progress.send_replace(Some(Progress::new(Stage::Removing)));
+                            },
+                        )
+                        .await
+                    },
+                    cx,
+                )
+                .await
             },
         )
         .await?;
@@ -167,35 +176,113 @@ pub(crate) async fn reconcile(
         .await?;
     }
     for (id, replaced, resources) in installations {
-        prefix::install(
+        transact(
             &mut candidate.storage,
             root,
-            id,
-            replaced,
-            async |prefix| {
-                execute(
-                    InstallInputs {
-                        prefix,
-                        runner: runner.as_ref(),
-                        winebridge: &winebridge,
-                        env_vars,
-                    },
-                    &resources,
-                    cancellation,
-                    |_| {
-                        progress.send_replace(Some(Progress::new(Stage::Configuring)));
-                    },
-                )
-                .await
-            },
+            runner.as_ref(),
             cx,
             cancellation,
-            |event| {
-                progress.send_replace(Some(event));
+            progress,
+            async |storage| {
+                prefix::install(
+                    storage,
+                    root,
+                    id,
+                    runner.as_ref(),
+                    replaced,
+                    async |prefix| {
+                        execute(
+                            InstallInputs {
+                                prefix,
+                                runner: runner.as_ref(),
+                                winebridge: &winebridge,
+                                env_vars,
+                            },
+                            &resources,
+                            cancellation,
+                            |_| {
+                                progress.send_replace(Some(Progress::new(Stage::Configuring)));
+                            },
+                        )
+                        .await
+                    },
+                    cx,
+                )
+                .await
             },
         )
         .await?;
         replay_env_vars(env_vars, &resources);
     }
     Ok(())
+}
+
+/// Coordinates one addon mutation. Owner configuration is saved separately.
+/// Failed shutdown/unmount returns before any rollback can touch live storage.
+async fn transact(
+    storage: &mut Storage,
+    root: &Path,
+    runner: &dyn Runner,
+    cx: &Context,
+    cancellation: &CancellationToken,
+    progress: &watch::Sender<Option<Progress>>,
+    work: impl for<'a> std::ops::AsyncFnOnce(&'a mut Storage) -> Result<()>,
+) -> Result<()> {
+    #[cfg(feature = "fvs")]
+    let repository = fvs_rs::Repository {
+        repository_path: root.display().to_string(),
+        block_size: prefix::FVS_BLOCK_SIZE,
+    };
+    #[cfg(feature = "fvs")]
+    let checkpoint = {
+        let stream = cx
+            .fvs()
+            .await?
+            .commit_stream(&repository, prefix::AUTO_CHECKPOINT_MESSAGE.into())
+            .await?;
+        prefix::finish_commit(stream, |event| {
+            progress.send_replace(Some(Progress::transferring(
+                Stage::Checkpointing,
+                event.into(),
+            )));
+        })
+        .await?
+    };
+    let _ = progress;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    let result = work(storage).await;
+    super::shutdown_wine(runner, &root.join("prefix")).await?;
+    prefix::stop(storage, root, cx).await?;
+    let result = if result.is_ok() && cancellation.is_cancelled() {
+        Err(Error::Cancelled)
+    } else {
+        result
+    };
+    #[cfg(feature = "fvs")]
+    if let Err(error) = &result {
+        let restored = async {
+            let stream = cx
+                .fvs()
+                .await?
+                .restore_stream(
+                    &repository,
+                    &checkpoint.state_id,
+                    None::<&Path>,
+                    true,
+                    false,
+                )
+                .await?;
+            prefix::finish_restore(stream, |event| {
+                progress.send_replace(Some(Progress::transferring(Stage::Restoring, event.into())));
+            })
+            .await
+        }
+        .await;
+        if let Err(failed) = restored {
+            tracing::error!(%failed, "prefix rollback failed after {error}");
+        }
+    }
+    result
 }

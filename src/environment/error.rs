@@ -5,6 +5,15 @@ use uuid::Uuid;
 /// Failures in shared execution configuration and operations.
 #[derive(Debug, Error)]
 pub enum EnvironmentError {
+    /// Cleanup could not finish; the prefix remains available for explicit shutdown.
+    #[error(
+        "cleanup failed at {prefix}; stop Wine and unmount this prefix before retrying: {source}"
+    )]
+    Cleanup {
+        prefix: std::path::PathBuf,
+        #[source]
+        source: Box<crate::error::Error>,
+    },
     #[error("stop the environment before changing its settings")]
     MustBeStopped,
     #[error("invalid environment edit: {0}")]

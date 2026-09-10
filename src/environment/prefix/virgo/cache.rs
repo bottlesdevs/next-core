@@ -10,19 +10,20 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fvs_rs::Layer;
+use fvs_rs::{Layer, UnmountMode};
 use regdiff_rs::prelude::{Diff, Hive, Registry, apply_files};
 use uuid::Uuid;
 
 use crate::{
     Context,
     error::{Error, Result},
+    runner::Runner,
 };
 
 use super::super::FVS_BLOCK_SIZE;
-use super::{VirgoError, with_mount};
+use super::VirgoError;
 
-/// Removes references from one owner's stack without deleting the shared cache.
+/// Removes references without deleting a shared cache.
 pub(super) fn remove(layers: &mut Vec<Layer>, id: Uuid, context: &Context) {
     let repository = layer_path(id, context).display().to_string();
     layers.retain(|layer| layer.repository_path != repository);
@@ -50,6 +51,7 @@ pub(super) async fn exists(id: Uuid, context: &Context) -> Result<bool> {
 pub(super) async fn install<F>(
     layers: Vec<Layer>,
     item_id: Uuid,
+    runner: &dyn Runner,
     execute: F,
     context: &Context,
 ) -> Result<()>
@@ -84,34 +86,47 @@ where
         return Err(error);
     }
 
-    let result = async {
-        with_mount(&prefix, layers, Some(&upper), context, async |mount| {
-            for (file, _) in registry_files() {
-                async_fs::copy(prefix.join(file), before.join(file)).await?;
+    let client = context.fvs().await?;
+    let mount = client.mount(&prefix, layers, Some(&upper)).await?;
+    let installed = async {
+        for (file, _) in registry_files() {
+            async_fs::copy(prefix.join(file), before.join(file)).await?;
+        }
+        execute(&prefix).await
+    }
+    .await;
+    crate::environment::shutdown_wine(runner, &prefix).await?;
+    let diffed: Result<()> = async {
+        installed?;
+        let diff_before = before.clone();
+        let diff_prefix = prefix.clone();
+        let diff_patches = patches.clone();
+        blocking::unblock(move || {
+            for (file, hive) in registry_files() {
+                write_forward(
+                    &diff_before.join(file),
+                    &diff_prefix.join(file),
+                    &diff_patches.join(file),
+                    hive,
+                )?;
             }
-
-            execute(&prefix).await?;
-
-            let diff_before = before.clone();
-            let diff_prefix = prefix.clone();
-            let diff_patches = patches.clone();
-            blocking::unblock(move || {
-                for (file, hive) in registry_files() {
-                    write_forward(
-                        &diff_before.join(file),
-                        &diff_prefix.join(file),
-                        &diff_patches.join(file),
-                        hive,
-                    )?;
-                }
-                Ok::<_, Error>(())
-            })
-            .await?;
-            context.fvs().await?.diff_mount(mount, true).await?;
-            Ok(())
+            Ok::<_, Error>(())
         })
         .await?;
+        client.diff_mount(&mount, true).await?;
+        Ok(())
+    }
+    .await;
+    client
+        .unmount(&mount, UnmountMode::Normal)
+        .await
+        .map_err(|source| crate::EnvironmentError::Cleanup {
+            prefix: prefix.clone(),
+            source: Box::new(source.into()),
+        })?;
 
+    let result: Result<()> = async {
+        diffed?;
         for (file, _) in registry_files() {
             remove_file(&upper.join(file)).await?;
         }
@@ -150,39 +165,30 @@ pub(super) async fn apply_registry(
         return Ok(());
     }
 
+    super::prepare(root, layers, context).await?;
     let prefix = root.join("prefix");
-    let upper = root.join("upper");
-    with_mount(
-        &prefix,
-        layers.to_vec(),
-        Some(&upper),
-        context,
-        async |_| {
-            let apply_prefix = prefix.clone();
-            let stage = prefix.join(format!(".bottles-next-registry-{}", Uuid::new_v4()));
-            blocking::unblock(move || {
-                fs::create_dir_all(&stage)?;
-                let result = (|| {
-                    for (file, hive) in registry_files() {
-                        apply_files(
-                            apply_prefix.join(file),
-                            patches.join(file),
-                            stage.join(file),
-                            hive,
-                        )
-                        .map_err(|error| VirgoError::Registry(error.to_string()))?;
-                    }
-                    for (file, _) in registry_files() {
-                        fs::rename(stage.join(file), apply_prefix.join(file))?;
-                    }
-                    Ok::<_, Error>(())
-                })();
-                let _ = fs::remove_dir_all(stage);
-                result
-            })
-            .await
-        },
-    )
+    let apply_prefix = prefix.clone();
+    let stage = prefix.join(format!(".bottles-next-registry-{}", Uuid::new_v4()));
+    blocking::unblock(move || {
+        fs::create_dir_all(&stage)?;
+        let result = (|| {
+            for (file, hive) in registry_files() {
+                apply_files(
+                    apply_prefix.join(file),
+                    patches.join(file),
+                    stage.join(file),
+                    hive,
+                )
+                .map_err(|error| VirgoError::Registry(error.to_string()))?;
+            }
+            for (file, _) in registry_files() {
+                fs::rename(stage.join(file), apply_prefix.join(file))?;
+            }
+            Ok::<_, Error>(())
+        })();
+        let _ = fs::remove_dir_all(stage);
+        result
+    })
     .await
 }
 

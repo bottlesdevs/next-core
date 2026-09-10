@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::{
     addons::InstallerError,
     error::{Error, Result, ResultExt},
-    runner::{Command, Spawnable, shutdown_prefix},
+    runner::{Command, Runner, Spawnable},
     utils::{archive, env_vars::EnvVars, exists},
     winebridge::WineBridgeClient,
 };
@@ -22,14 +22,8 @@ use super::{Artifact, InstallInputs, InstallStep};
 ///
 /// Cancellation is checked before the first step, after every step, while waiting for child
 /// processes, between per-DLL operations, and during extraction. Cancellation attempts to kill
-/// and reap a running child; a kill failure is returned. Before returning, this function always
-/// attempts to stop WineBridge and then the prefix runner.
-///
-/// # Errors
-///
-/// Returns the recipe error in preference to cleanup errors. When the recipe succeeds, a
-/// WineBridge shutdown error takes precedence over a runner shutdown error, although both
-/// shutdowns are attempted.
+/// and reap a running child; a kill failure is returned. The enclosing prefix scope stops Wine
+/// before diffing, unmounting, or restoring storage.
 pub(crate) async fn execute(
     inputs: InstallInputs<'_>,
     resources: &[Artifact],
@@ -42,43 +36,34 @@ pub(crate) async fn execute(
         winebridge,
         env_vars,
     } = inputs;
-    let result = async {
-        check_cancellation(cancellation)?;
-        for resource in resources {
-            for step in &resource.steps {
-                on_step(step);
-                execute_step(
-                    InstallInputs {
-                        prefix,
-                        runner,
-                        winebridge,
-                        env_vars: &mut *env_vars,
-                    },
-                    resource,
-                    step,
-                    cancellation,
-                )
-                .await?;
-                check_cancellation(cancellation)?;
-            }
+    check_cancellation(cancellation)?;
+    for resource in resources {
+        for step in &resource.steps {
+            on_step(step);
+            execute_step(
+                InstallInputs {
+                    prefix,
+                    runner,
+                    winebridge,
+                    env_vars: &mut *env_vars,
+                },
+                resource,
+                step,
+                cancellation,
+            )
+            .await?;
+            check_cancellation(cancellation)?;
         }
-        Ok::<_, Error>(())
     }
-    .await;
-
-    let bridge_stopped = shutdown_bridge(prefix).await;
-    let runner_stopped = shutdown_prefix(runner, prefix).await;
-    result?;
-    bridge_stopped?;
-    runner_stopped
+    Ok(())
 }
 
 /// Attempts to undo a recipe in reverse resource and step order.
 ///
 /// File copies are restored or removed only when `restore_files` is true. Environment entries are
 /// removed and DLL overrides are deleted. Other step kinds have no inverse and are skipped with a
-/// warning. File, bridge, override, and final process-cleanup failures are also logged and ignored;
-/// cancellation and other control-flow errors are returned.
+/// warning. File, bridge and override failures are logged and ignored; cancellation is returned.
+/// The enclosing prefix scope owns Wine shutdown.
 pub(crate) async fn uninstall(
     inputs: InstallInputs<'_>,
     resources: &[Artifact],
@@ -94,34 +79,27 @@ pub(crate) async fn uninstall(
         env_vars,
     } = inputs;
 
-    let result = async {
-        check_cancellation(cancellation)?;
-        for resource in resources.iter().rev() {
-            for step in resource.steps.iter().rev() {
-                on_step(step);
-                uninstall_step(
-                    InstallInputs {
-                        prefix,
-                        runner,
-                        winebridge,
-                        env_vars: &mut *env_vars,
-                    },
-                    step,
-                    restore_files,
-                    item_id,
-                    cancellation,
-                )
-                .await?;
-                check_cancellation(cancellation)?;
-            }
+    check_cancellation(cancellation)?;
+    for resource in resources.iter().rev() {
+        for step in resource.steps.iter().rev() {
+            on_step(step);
+            uninstall_step(
+                InstallInputs {
+                    prefix,
+                    runner,
+                    winebridge,
+                    env_vars: &mut *env_vars,
+                },
+                step,
+                restore_files,
+                item_id,
+                cancellation,
+            )
+            .await?;
+            check_cancellation(cancellation)?;
         }
-        Ok(())
     }
-    .await;
-
-    shutdown_bridge(prefix).await.log_warn();
-    shutdown_prefix(runner, prefix).await.log_warn();
-    result
+    Ok(())
 }
 
 /// Ensures environment changes are applied when prefix storage reuses an existing addon layer.
@@ -136,6 +114,16 @@ pub(crate) fn replay_env_vars(env_vars: &mut EnvVars, resources: &[Artifact]) {
             env_vars.insert(name.clone(), value.clone());
         }
     }
+}
+
+async fn maintenance_bridge(
+    runner: &dyn Runner,
+    prefix: &Path,
+    executable: &Path,
+    env_vars: &EnvVars,
+) -> Result<WineBridgeClient> {
+    let command = WineBridgeClient::command(runner, prefix, executable).envs(env_vars.iter());
+    WineBridgeClient::connect_or_spawn(prefix, command).await
 }
 
 async fn execute_step(
@@ -199,18 +187,14 @@ async fn execute_step(
             name,
             value,
         } => {
-            let command =
-                WineBridgeClient::command(runner, prefix, winebridge).envs(env_vars.iter());
-            let bridge = WineBridgeClient::connect_or_spawn(prefix, command).await?;
+            let bridge = maintenance_bridge(runner, prefix, winebridge, env_vars).await?;
             check_cancellation(cancellation)?;
             bridge
                 .set_registry_value(*hive, key.clone(), name.clone(), value.clone())
                 .await?;
         }
         InstallStep::SetDllOverrides { dlls, mode } => {
-            let command =
-                WineBridgeClient::command(runner, prefix, winebridge).envs(env_vars.iter());
-            let bridge = WineBridgeClient::connect_or_spawn(prefix, command).await?;
+            let bridge = maintenance_bridge(runner, prefix, winebridge, env_vars).await?;
             for dll in dlls {
                 check_cancellation(cancellation)?;
                 bridge.set_dll_override(dll.clone(), *mode).await?;
@@ -218,7 +202,7 @@ async fn execute_step(
         }
         InstallStep::SetEnvironment { name, value } => {
             env_vars.insert(name.clone(), value.clone());
-            shutdown_bridge(prefix).await?;
+            WineBridgeClient::shutdown_existing(prefix).await?;
         }
     }
     Ok(())
@@ -246,12 +230,10 @@ async fn uninstall_step(
         InstallStep::Copy { .. } => {}
         InstallStep::SetEnvironment { name, .. } => {
             env_vars.remove(name);
-            shutdown_bridge(prefix).await.log_warn();
+            WineBridgeClient::shutdown_existing(prefix).await.log_warn();
         }
         InstallStep::SetDllOverrides { dlls, .. } => {
-            let command =
-                WineBridgeClient::command(runner, prefix, winebridge).envs(env_vars.iter());
-            let bridge = match WineBridgeClient::connect_or_spawn(prefix, command).await {
+            let bridge = match maintenance_bridge(runner, prefix, winebridge, env_vars).await {
                 Ok(bridge) => bridge,
                 Err(error) => {
                     tracing::warn!(%error);
@@ -311,13 +293,6 @@ async fn wait_for_child(
 
 fn is_not_found(error: &Error) -> bool {
     matches!(error, Error::Status(status) if status.code() == tonic::Code::NotFound)
-}
-
-async fn shutdown_bridge(prefix: &Path) -> Result<()> {
-    if let Some(bridge) = WineBridgeClient::try_connect(prefix).await? {
-        bridge.shutdown().await?;
-    }
-    Ok(())
 }
 
 /// Copies a file into a prefix, preserving the first displaced regular file as a backup.
