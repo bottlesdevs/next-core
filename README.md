@@ -3,8 +3,9 @@
 The application core for managing Bottles Next Wine and Proton environments.
 
 `bottles-core` discovers and installs managed components, persists bottles,
-executes Windows programs through WineBridge, and provides checkpointed prefix
-mutation and snapshots through the default `fvs` feature.
+executes Windows programs through WineBridge, and provides Virgo storage and
+snapshots through the default `fvs` feature. Standard creation, launch, and addon
+changes work without FVS even when that feature is compiled in.
 
 Disable FVS when only conventional, directly mutable prefixes are needed:
 
@@ -13,8 +14,9 @@ Disable FVS when only conventional, directly mutable prefixes are needed:
 bottles-core = { version = "0.1", default-features = false }
 ```
 
-Without `fvs`, snapshot APIs and Virgo storage are not compiled, and failed or
-cancelled addon recipes are not rolled back automatically.
+Without `fvs`, snapshot APIs and Virgo storage are not compiled. Standard addon
+changes always use direct writes; failed or cancelled recipes can leave partial
+prefix changes. Explicit Standard snapshots initialize FVS history on demand.
 
 [Source] | [Issue tracker]
 
@@ -61,9 +63,8 @@ New dependency selections can be appended. Prefix changes run before publication
 batch rollback of those effects remains part of the later composition work.
 Settings-only edits save the draft without preparing or mutating the prefix.
 
-Standard no-FVS operation, pinned Soda builds, and managed registry-baseline
-composition remain separate later steps. Existing per-addon layer and checkpoint
-behavior remains in place for now.
+Pinned Soda builds and managed registry-baseline composition remain later steps.
+Virgo retains its existing per-addon layer and checkpoint behavior.
 
 Bottle configuration requires execution settings under `environment`, with
 resolved FVS layers retained inside `environment.storage` for Virgo. Old

@@ -17,7 +17,7 @@ impl Bottle {
     ///
     /// The operation takes exclusive bottle access and stops the bottle before
     /// inspecting the complete library-managed bottle directory, including
-    /// `bottle.toml`.
+    /// `bottle.toml`. Standard history is initialized on the first snapshot.
     ///
     /// If the tree has not changed, no history entry is created. The returned
     /// [`Snapshot`] then has `created == false`, and its state ID, message, and
@@ -53,7 +53,13 @@ impl Bottle {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            let stream = cx.fvs().await?.commit_stream(&repository, message).await?;
+            let client = cx.fvs().await?;
+            if !crate::utils::exists(&bottle.bottle_path().join(".fvs2")).await? {
+                client
+                    .new_repository(bottle.bottle_path(), FVS_BLOCK_SIZE)
+                    .await?;
+            }
+            let stream = client.commit_stream(&repository, message).await?;
             finish_commit(stream, |update| {
                 progress.send_replace(Some(Progress::transferring(
                     Stage::Committing,
@@ -71,6 +77,7 @@ impl Bottle {
     /// for internal mutation checkpoints.
     ///
     /// Listing serializes with runtime control, edits and deletion.
+    /// A bottle without history returns an empty list without contacting FVS.
     ///
     /// # Errors
     ///
@@ -79,6 +86,9 @@ impl Bottle {
     pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
         let _read = self.0.control.lock().await;
         self.ensure_exists()?;
+        if !crate::utils::exists(&self.bottle_path().join(".fvs2")).await? {
+            return Ok(Vec::new());
+        }
         let repository = self.snapshot_repository();
         Ok(self
             .0
@@ -163,8 +173,7 @@ impl Bottle {
         })
     }
 
-    /// Addresses the history repository that every bottle owns independently
-    /// of its prefix storage strategy.
+    /// Addresses owner history, created on demand for Standard snapshots.
     fn snapshot_repository(&self) -> Repository {
         Repository {
             repository_path: self.bottle_path().display().to_string(),

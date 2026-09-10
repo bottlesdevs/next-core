@@ -13,8 +13,8 @@
 //! reloading externally modified files. Component and dependency records are pinned in each
 //! persisted state until a bottle operation explicitly replaces them.
 //!
-//! With the default `fvs` feature, every bottle has an FVS repository for
-//! caller-visible snapshots and rollback checkpoints around addon changes.
+//! With the default `fvs` feature, bottles support caller-visible snapshots.
+//! Standard history is created on demand; Virgo also checkpoints addon changes.
 //! Long-running mutations return lazy
 //! [`crate::Operation`] values and serialize with edits, stopping, snapshots,
 //! and deletion. WineBridge-backed control calls share that coordination.
