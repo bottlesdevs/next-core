@@ -5,6 +5,7 @@ pub use crate::environment::prefix::VirgoError;
 pub use crate::{
     addons::{AddonError, CatalogError, InstallerError},
     bottle::error::BottleError,
+    environment::EnvironmentError,
     plugins::PluginError,
     profiles::ProfileError,
     runner::RunnerError,
@@ -37,6 +38,8 @@ pub enum Error {
     Fvs(#[from] FvsError),
     #[error("Bottle error: {0}")]
     Bottle(#[from] BottleError),
+    #[error("Environment error: {0}")]
+    Environment(#[from] EnvironmentError),
     #[cfg(feature = "fvs")]
     #[error("Virgo error: {0}")]
     Virgo(#[from] VirgoError),

@@ -2,7 +2,7 @@
 //!
 //! A mounted prefix combines a shared base, a runner-specific adapter, cached
 //! addon layers, and the owner's writable `upper` directory. Layer order is
-//! persisted in [`super::Prefix`] and must be changed only while the owner is
+//! persisted by the owner and must be changed only while the owner is
 //! stopped.
 
 mod cache;

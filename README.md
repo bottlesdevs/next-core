@@ -33,6 +33,19 @@ The crate is centered around six types:
 - `Operation<T>` represents long-running work with progress and cooperative
   cancellation.
 
+Execution settings live in `BottleState::environment()` as an
+`EnvironmentConfig`. Each bottle retains a private environment on first runtime
+use; clones share it. Registered programs use the bottle's settings. Use
+`Bottle::launch(ProgramSpec)` to run an unregistered executable and
+`Bottle::launch_program(uuid)` to run a registration. Both return `Operation<u32>`
+with the initial Windows process ID. Dropping the bottle only detaches; call
+`stop()` to stop its runtime.
+
+Bottle configuration requires execution settings under `environment`, with
+resolved FVS layers retained inside `environment.storage` for Virgo. Old
+configurations are rejected during deserialization and left untouched; recreate
+those bottles to use the new format. Completed addon caches remain reusable.
+
 Operations are lazy. Await them, call `cancel().await`, or spawn them and
 explicitly detach the task; dropping an operation abandons it.
 

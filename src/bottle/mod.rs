@@ -18,7 +18,7 @@
 //! caller-visible snapshots and rollback checkpoints around addon changes.
 //! Long-running mutations return lazy
 //! [`crate::Operation`] values and serialize with edits, stopping, snapshots,
-//! and deletion. WineBridge-backed requests may run concurrently.
+//! and deletion. WineBridge-backed control calls share that coordination.
 
 mod edit;
 pub(crate) mod error;

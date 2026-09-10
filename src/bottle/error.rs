@@ -3,8 +3,6 @@
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{Requirement, Slot};
-
 /// Bottle-specific failures carried by [`crate::error::Error::Bottle`].
 #[derive(Debug, Error)]
 pub enum BottleError {
@@ -28,39 +26,7 @@ pub enum BottleError {
     /// A program definition is malformed.
     #[error("invalid program: {0}")]
     InvalidProgram(String),
-    /// An environment variable name is empty or contains `=` or NUL.
-    #[error(
-        "invalid environment variable name {0:?}: names must be non-empty and contain neither '=' nor NUL"
-    )]
-    InvalidEnvironmentName(String),
-    /// An environment variable value contains NUL.
-    #[error("environment variable {0:?} contains NUL in its value")]
-    InvalidEnvironmentValue(String),
-    /// A DLL name is empty or contains NUL.
-    ///
-    /// This variant is reserved for local validation. The current DLL override
-    /// methods delegate validation to WineBridge and return
-    /// [`crate::error::Error::Status`] instead.
-    #[error("DLL name {0:?} must be non-empty and contain no NUL bytes")]
-    InvalidDllName(String),
-    /// [`crate::DllOverrideMode::Unspecified`] was passed as an override mode.
-    #[error("DLL override mode is required")]
-    DllOverrideModeRequired,
     /// No program is registered with the requested UUID.
     #[error("program {0} was not found")]
     ProgramNotFound(Uuid),
-    /// No selected component occupies the requested slot.
-    #[error("component slot {0:?} is not installed")]
-    ComponentNotInstalled(Slot),
-    /// One or more dependencies must be downloaded or installed before the operation.
-    #[error("addon requirements are not satisfied: {requirements:?}")]
-    RequiresAddon {
-        /// Release requesting the dependencies, or `None` for bottle creation.
-        required_by: Option<Uuid>,
-        /// Every currently unsatisfied requirement.
-        requirements: Vec<Requirement>,
-    },
-    /// A bottle operation received a component for a different role.
-    #[error("component {component} must occupy slot {required:?}")]
-    InvalidComponentSlot { component: Uuid, required: Slot },
 }

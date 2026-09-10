@@ -25,7 +25,7 @@ pub use bottle::{
 #[cfg(feature = "fvs")]
 pub use bottle::{Snapshot, SnapshotSummary};
 pub use core::{Bottles, Config};
-pub use environment::Storage;
+pub use environment::{EnvironmentConfig, EnvironmentError, Storage};
 pub use library::{Library, LibraryItem, SearchEntry, SearchSource};
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use plugins::{PluginError, PluginId, PluginInfo, PluginKind, PluginManifest, Plugins};

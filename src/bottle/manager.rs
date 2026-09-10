@@ -19,9 +19,9 @@ use uuid::Uuid;
 #[cfg(feature = "fvs")]
 use crate::environment::prefix::FVS_BLOCK_SIZE;
 use crate::{
-    Context, Operation, Progress, Stage, Storage,
+    Context, EnvironmentConfig, EnvironmentError, Operation, Progress, Stage, Storage,
     addons::{Addon, Addons, Requirement, Slot},
-    environment::prefix::Prefix,
+    environment::prefix,
     error::{Error, Result},
 };
 
@@ -155,13 +155,13 @@ impl BottleManager {
     ///
     /// # Errors
     ///
-    /// Returns [`BottleError::RequiresAddon`] with every missing runtime
+    /// Returns [`EnvironmentError::RequiresAddon`] with every missing runtime
     /// requirement before creating any files. Other service, I/O, and prefix
     /// creation failures are returned directly.
     pub fn create(
         &self,
         name: impl Into<String>,
-        storage: Storage,
+        mut storage: Storage,
         runner: Uuid,
     ) -> Operation<Bottle> {
         let name = name.into();
@@ -174,7 +174,7 @@ impl BottleManager {
                 .component(runner)
                 .ok_or(crate::AddonError::NotFound(runner))?;
             if runner_component.slot() != Slot::Runner {
-                return Err(BottleError::InvalidComponentSlot {
+                return Err(EnvironmentError::InvalidComponentSlot {
                     component: runner_component.id(),
                     required: Slot::Runner,
                 }
@@ -195,7 +195,7 @@ impl BottleManager {
                 missing.push(Requirement::Slot(Slot::Umu));
             }
             if !missing.is_empty() {
-                return Err(BottleError::RequiresAddon {
+                return Err(EnvironmentError::RequiresAddon {
                     required_by: None,
                     requirements: missing,
                 }
@@ -211,8 +211,8 @@ impl BottleManager {
 
             let result = async {
                 progress.send_replace(Some(Progress::new(Stage::CreatingPrefix)));
-                let storage = Prefix::create(
-                    storage,
+                prefix::create(
+                    &mut storage,
                     &bottle_path,
                     loaded_runner.as_ref(),
                     &runner_component.id().to_string(),
@@ -233,9 +233,13 @@ impl BottleManager {
                 let bottle = Bottle::new(
                     id,
                     name,
-                    components,
-                    Vec::new(),
-                    storage,
+                    EnvironmentConfig {
+                        storage,
+                        components,
+                        dependencies: Vec::new(),
+                        env_vars: Default::default(),
+                        wrappers: Default::default(),
+                    },
                     cx.clone(),
                     addons.clone(),
                 )
@@ -279,8 +283,8 @@ impl BottleManager {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let bottle = manager.open(id).await?;
-            let _write = cancellation
-                .run_until_cancelled(bottle.0.write_lock.write())
+            let mut environment = cancellation
+                .run_until_cancelled(bottle.0.environment.lock())
                 .await
                 .ok_or(Error::Cancelled)?;
             if cancellation.is_cancelled() {
@@ -288,7 +292,7 @@ impl BottleManager {
             }
             let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            Bottle::stop_state(&state, &bottle.0.cx).await?;
+            Bottle::stop_state(&state, &bottle.0.cx, &mut environment).await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }

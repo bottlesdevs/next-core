@@ -40,8 +40,8 @@ impl Bottle {
         let cx = self.0.cx.clone();
         let message = message.into();
         Operation::new(move |progress, cancellation| async move {
-            let _write = cancellation
-                .run_until_cancelled(bottle.0.write_lock.write())
+            let mut environment = cancellation
+                .run_until_cancelled(bottle.0.environment.lock())
                 .await
                 .ok_or(Error::Cancelled)?;
             if cancellation.is_cancelled() {
@@ -49,7 +49,7 @@ impl Bottle {
             }
             let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            Bottle::stop_state(&state, &cx).await?;
+            Bottle::stop_state(&state, &cx, &mut environment).await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
@@ -70,15 +70,14 @@ impl Bottle {
     /// `bottles-next:auto-checkpoint` is excluded because that value is reserved
     /// for internal mutation checkpoints.
     ///
-    /// Listing holds shared bottle access: WineBridge requests may continue,
-    /// while edits, stop, snapshot mutation, and deletion wait.
+    /// Listing serializes with runtime control, edits and deletion.
     ///
     /// # Errors
     ///
     /// Returns an error if the bottle was deleted, the FVS service is
     /// unavailable, or its snapshot history cannot be read.
     pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
-        let _read = self.0.write_lock.read().await;
+        let _read = self.0.environment.lock().await;
         self.ensure_exists()?;
         let repository = self.snapshot_repository();
         Ok(self
@@ -123,8 +122,8 @@ impl Bottle {
         let cx = self.0.cx.clone();
         let state_id_or_prefix = state_id_or_prefix.to_owned();
         Operation::new(move |progress, cancellation| async move {
-            let _write = cancellation
-                .run_until_cancelled(bottle.0.write_lock.write())
+            let mut environment = cancellation
+                .run_until_cancelled(bottle.0.environment.lock())
                 .await
                 .ok_or(Error::Cancelled)?;
             if cancellation.is_cancelled() {
@@ -132,7 +131,7 @@ impl Bottle {
             }
             let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            Bottle::stop_state(&state, &cx).await?;
+            Bottle::stop_state(&state, &cx, &mut environment).await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
