@@ -207,18 +207,22 @@ impl BottleManager {
                 .await?;
             let id = Uuid::new_v4();
             let bottle_path = cx.directories().bottle(id);
-            fs::create_dir_all(&bottle_path).await?;
 
+            progress.send_replace(Some(Progress::new(Stage::CreatingPrefix)));
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            fs::create_dir_all(&bottle_path).await?;
+            // Creation may retain live storage on failure; keep it outside the removal path.
+            prefix::create(
+                &mut storage,
+                &bottle_path,
+                loaded_runner.as_ref(),
+                &runner_component.id().to_string(),
+                &cx,
+            )
+            .await?;
             let result = async {
-                progress.send_replace(Some(Progress::new(Stage::CreatingPrefix)));
-                prefix::create(
-                    &mut storage,
-                    &bottle_path,
-                    loaded_runner.as_ref(),
-                    &runner_component.id().to_string(),
-                    &cx,
-                )
-                .await?;
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
@@ -283,8 +287,8 @@ impl BottleManager {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let bottle = manager.open(id).await?;
-            let mut environment = cancellation
-                .run_until_cancelled(bottle.0.environment.lock())
+            let _control = cancellation
+                .run_until_cancelled(bottle.0.control.lock())
                 .await
                 .ok_or(Error::Cancelled)?;
             if cancellation.is_cancelled() {
@@ -292,7 +296,7 @@ impl BottleManager {
             }
             let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            Bottle::stop_state(&state, &bottle.0.cx, &mut environment).await?;
+            Bottle::stop_state(&state, &bottle.0.cx).await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }

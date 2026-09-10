@@ -40,8 +40,8 @@ impl Bottle {
         let cx = self.0.cx.clone();
         let message = message.into();
         Operation::new(move |progress, cancellation| async move {
-            let mut environment = cancellation
-                .run_until_cancelled(bottle.0.environment.lock())
+            let _control = cancellation
+                .run_until_cancelled(bottle.0.control.lock())
                 .await
                 .ok_or(Error::Cancelled)?;
             if cancellation.is_cancelled() {
@@ -49,7 +49,7 @@ impl Bottle {
             }
             let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            Bottle::stop_state(&state, &cx, &mut environment).await?;
+            Bottle::stop_state(&state, &cx).await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
@@ -77,7 +77,7 @@ impl Bottle {
     /// Returns an error if the bottle was deleted, the FVS service is
     /// unavailable, or its snapshot history cannot be read.
     pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
-        let _read = self.0.environment.lock().await;
+        let _read = self.0.control.lock().await;
         self.ensure_exists()?;
         let repository = self.snapshot_repository();
         Ok(self
@@ -122,8 +122,8 @@ impl Bottle {
         let cx = self.0.cx.clone();
         let state_id_or_prefix = state_id_or_prefix.to_owned();
         Operation::new(move |progress, cancellation| async move {
-            let mut environment = cancellation
-                .run_until_cancelled(bottle.0.environment.lock())
+            let _control = cancellation
+                .run_until_cancelled(bottle.0.control.lock())
                 .await
                 .ok_or(Error::Cancelled)?;
             if cancellation.is_cancelled() {
@@ -131,7 +131,7 @@ impl Bottle {
             }
             let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            Bottle::stop_state(&state, &cx, &mut environment).await?;
+            Bottle::stop_state(&state, &cx).await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }

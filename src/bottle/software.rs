@@ -1,4 +1,4 @@
-//! Public bottle operations coordinated around a private cached environment.
+//! Public bottle operations serialized around temporary environment connections.
 
 use std::ops::AsyncFnOnce;
 
@@ -68,8 +68,8 @@ impl Bottle {
         let bottle = self.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            let mut cached = cancellation
-                .run_until_cancelled(bottle.0.environment.lock())
+            let _control = cancellation
+                .run_until_cancelled(bottle.0.control.lock())
                 .await
                 .ok_or(Error::Cancelled)?;
             if cancellation.is_cancelled() {
@@ -77,37 +77,48 @@ impl Bottle {
             }
             let state = bottle.state()?;
             let program = resolve(&state)?;
-            let environment = Self::environment(&mut cached, &state, &bottle.0.cx).await?;
+            let environment = Environment::attach_or_start(
+                &state.environment,
+                bottle.0.cx.directories().bottle(state.id),
+                bottle.0.cx.clone(),
+            )
+            .await?;
             environment.launch_program(&program, &cancellation).await
         })
     }
 
-    /// Returns Windows processes, starting the environment if necessary.
+    /// Returns Windows processes without starting a stopped environment.
     pub async fn processes(&self) -> Result<Vec<Process>> {
-        self.with_environment(async |environment| environment.processes().await)
-            .await
+        let _control = self.0.control.lock().await;
+        let state = self.state()?;
+        match Environment::try_attach(&self.0.cx.directories().bottle(state.id)).await? {
+            Some(environment) => environment.processes().await,
+            None => Ok(Vec::new()),
+        }
     }
 
     /// Terminates a registered program's UUID-keyed process group.
-    /// This starts the environment if necessary and leaves it available afterward.
+    /// A stopped environment is left stopped; a running environment remains available.
     pub async fn kill_program(&self, id: Uuid) -> Result<()> {
-        let mut cached = self.0.environment.lock().await;
+        let _control = self.0.control.lock().await;
         let state = self.state()?;
         if state.program(id).is_none() {
             return Err(BottleError::ProgramNotFound(id).into());
         }
-        Self::environment(&mut cached, &state, &self.0.cx)
-            .await?
-            .kill(id)
-            .await
+        if let Some(environment) =
+            Environment::try_attach(&self.0.cx.directories().bottle(state.id)).await?
+        {
+            environment.kill(id).await?;
+        }
+        Ok(())
     }
 
-    /// Stops WineBridge, wineserver and storage, then clears the cached environment.
+    /// Stops WineBridge, wineserver and storage without requiring attachment.
     /// Storage is released only after shutdown succeeds.
     pub async fn stop(&self) -> Result<()> {
-        let mut environment = self.0.environment.lock().await;
+        let _control = self.0.control.lock().await;
         let state = self.state()?;
-        Self::stop_state(&state, &self.0.cx, &mut environment).await
+        Self::stop_state(&state, &self.0.cx).await
     }
 
     /// Selects a downloaded component in a stopped environment.
@@ -179,41 +190,22 @@ impl Bottle {
         })
     }
 
-    pub(super) async fn stop_state(
-        state: &BottleState,
-        cx: &Context,
-        cached: &mut Option<Environment>,
-    ) -> Result<()> {
-        Environment::stop(&state.environment, &cx.directories().bottle(state.id), cx).await?;
-        *cached = None;
-        Ok(())
-    }
-
-    async fn environment<'a>(
-        cached: &'a mut Option<Environment>,
-        state: &BottleState,
-        cx: &Context,
-    ) -> Result<&'a Environment> {
-        if cached.is_none() {
-            *cached = Some(
-                Environment::attach_or_start(
-                    &state.environment,
-                    cx.directories().bottle(state.id),
-                    cx.clone(),
-                )
-                .await?,
-            );
-        }
-        Ok(cached.as_ref().expect("environment initialized"))
+    pub(super) async fn stop_state(state: &BottleState, cx: &Context) -> Result<()> {
+        Environment::stop(&state.environment, &cx.directories().bottle(state.id), cx).await
     }
 
     async fn with_environment<F, T>(&self, work: F) -> Result<T>
     where
         F: for<'a> AsyncFnOnce(&'a Environment) -> Result<T>,
     {
-        let mut cached = self.0.environment.lock().await;
+        let _control = self.0.control.lock().await;
         let state = self.state()?;
-        let environment = Self::environment(&mut cached, &state, &self.0.cx).await?;
-        work(environment).await
+        let environment = Environment::attach_or_start(
+            &state.environment,
+            self.0.cx.directories().bottle(state.id),
+            self.0.cx.clone(),
+        )
+        .await?;
+        work(&environment).await
     }
 }

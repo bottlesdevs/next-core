@@ -96,9 +96,8 @@ mod tests {
                 .status()
                 .await
                 .unwrap();
-            crate::runner::shutdown_prefix(&runner, &prefix)
-                .await
-                .unwrap();
+            runner.wineserver(&prefix, "-k").await.unwrap();
+            runner.wineserver(&prefix, "-w").await.unwrap();
             assert!(matches!(
                 runner.wineboot(&prefix, "--fail").await,
                 Err(crate::error::Error::Runner(RunnerError::WinebootFailed(_)))
