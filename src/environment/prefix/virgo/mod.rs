@@ -1,8 +1,8 @@
 //! Layered Virgo prefix storage.
 //!
-//! A mounted bottle combines a shared base, a runner-specific adapter, cached
-//! addon layers, and the bottle's writable `upper` directory. Layer order is
-//! persisted in [`super::Prefix`] and must be changed only while the bottle is
+//! A mounted prefix combines a shared base, a runner-specific adapter, cached
+//! addon layers, and the owner's writable `upper` directory. Layer order is
+//! persisted in [`super::Prefix`] and must be changed only while the owner is
 //! stopped.
 
 mod cache;
@@ -23,25 +23,52 @@ use crate::{
 };
 
 use super::FVS_BLOCK_SIZE;
-use crate::bottle::error::VirgoError;
+
+/// Virgo-specific failures carried by [`crate::error::Error::Virgo`].
+#[derive(Debug, thiserror::Error)]
+pub enum VirgoError {
+    /// A required FVS commit is missing from a repository.
+    #[error("FVS repository {repository} has no commit {state}")]
+    MissingCommit {
+        /// Repository whose history was searched.
+        repository: PathBuf,
+        /// Requested full or abbreviated state ID.
+        state: String,
+    },
+    /// An existing Virgo base repository has no commits to use as a layer.
+    #[error("Virgo base exists but has no commits")]
+    EmptyBase,
+    /// Virgo cannot initialize a base over an existing nonempty directory.
+    #[error("refusing to initialize non-empty Virgo base at {0}")]
+    DirtyBase(PathBuf),
+    /// Virgo cannot mount a prefix over a nonempty mountpoint.
+    #[error("mountpoint is not empty: {0}")]
+    DirtyMountpoint(PathBuf),
+    /// A cached layer required to construct the prefix is missing.
+    #[error("cached Virgo layer was not found: {0}")]
+    CachedLayerNotFound(PathBuf),
+    /// Registry data could not be converted while building a Virgo layer.
+    #[error("failed to process Virgo registry data: {0}")]
+    Registry(String),
+}
 
 pub(super) async fn create(
-    bottle_path: &Path,
+    root: &Path,
     runner: &dyn Runner,
     runner_key: &str,
     context: &Context,
 ) -> Result<Vec<Layer>> {
-    let upper = bottle_path.join("upper");
+    let upper = root.join("upper");
     async_fs::create_dir_all(upper).await?;
     base_layers(runner, runner_key, context).await
 }
 
-pub(super) async fn prepare(bottle_path: &Path, layers: &[Layer], context: &Context) -> Result<()> {
-    mount_layers(bottle_path, layers.to_vec(), context).await
+pub(super) async fn prepare(root: &Path, layers: &[Layer], context: &Context) -> Result<()> {
+    mount_layers(root, layers.to_vec(), context).await
 }
 
-pub(super) async fn stop(bottle_path: &Path, context: &Context) -> Result<()> {
-    unmount_prefix(bottle_path, context).await
+pub(super) async fn stop(root: &Path, context: &Context) -> Result<()> {
+    unmount_prefix(root, context).await
 }
 
 pub(super) async fn rebuild(
@@ -52,7 +79,7 @@ pub(super) async fn rebuild(
     context: &Context,
 ) -> Result<()> {
     // Build separately so failure to resolve any cached addon does not partially
-    // replace the bottle's persisted layer order.
+    // replace the owner's persisted layer order.
     let mut rebuilt = base_layers(runner, runner_key, context).await?;
     for id in installed {
         rebuilt.push(cache::layer(*id, context).await?);
@@ -62,7 +89,7 @@ pub(super) async fn rebuild(
 }
 
 pub(super) async fn install<F>(
-    bottle_path: &Path,
+    root: &Path,
     layers: &mut Vec<Layer>,
     item_id: Uuid,
     replaced_id: Option<Uuid>,
@@ -84,11 +111,11 @@ where
     }
     cache::remove(layers, item_id, context);
     layers.push(cached);
-    cache::apply_registry(bottle_path, layers, item_id, context).await
+    cache::apply_registry(root, layers, item_id, context).await
 }
 
 pub(super) async fn uninstall<F>(
-    bottle_path: &Path,
+    root: &Path,
     layers: &mut Vec<Layer>,
     item_id: Uuid,
     execute: F,
@@ -100,8 +127,8 @@ where
     // Removing the layer reveals the previous filesystem contents, so the recipe
     // must not restore overwritten files into the writable upper directory.
     cache::remove(layers, item_id, context);
-    let prefix = bottle_path.join("prefix");
-    let upper = bottle_path.join("upper");
+    let prefix = root.join("prefix");
+    let upper = root.join("upper");
     with_mount(&prefix, layers.clone(), Some(&upper), context, async |_| {
         execute(&prefix, false).await
     })
@@ -142,12 +169,12 @@ where
     }
 }
 
-/// Prepares a bottle's long-lived Virgo mount.
+/// Prepares an owner's long-lived Virgo mount.
 ///
 /// An existing mount at the same path is trusted without comparing its layer
-/// specification. Callers must stop the bottle before changing persisted layers.
-async fn mount_layers(bottle_path: &Path, layers: Vec<Layer>, context: &Context) -> Result<()> {
-    let prefix = bottle_path.join("prefix");
+/// specification. Callers must stop the owner before changing persisted layers.
+async fn mount_layers(root: &Path, layers: Vec<Layer>, context: &Context) -> Result<()> {
+    let prefix = root.join("prefix");
     let mountpoint = prefix.display().to_string();
     let client = context.fvs().await?;
     if client.list_mounts().await?.into_iter().any(|mount| {
@@ -160,13 +187,13 @@ async fn mount_layers(bottle_path: &Path, layers: Vec<Layer>, context: &Context)
     }
     ensure_empty_dir(&prefix).await?;
     client
-        .mount(&prefix, layers, Some(bottle_path.join("upper")))
+        .mount(&prefix, layers, Some(root.join("upper")))
         .await?;
     Ok(())
 }
 
-async fn unmount_prefix(bottle_path: &Path, context: &Context) -> Result<()> {
-    let mountpoint = bottle_path.join("prefix").display().to_string();
+async fn unmount_prefix(root: &Path, context: &Context) -> Result<()> {
+    let mountpoint = root.join("prefix").display().to_string();
     let client = context.fvs().await?;
     if let Some(mount) = client.list_mounts().await?.into_iter().find(|mount| {
         mount
@@ -189,7 +216,7 @@ async fn base_layers(
     Ok(vec![base, adapter])
 }
 
-/// Loads or creates the single base shared by every Virgo bottle.
+/// Loads or creates the single base shared by every Virgo owner.
 ///
 /// Once the base repository exists, `runner` is not used. A nonempty directory
 /// without an FVS repository is rejected rather than overwritten.

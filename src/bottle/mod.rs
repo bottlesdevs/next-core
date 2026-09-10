@@ -45,4 +45,4 @@ pub use error::BottleError;
 #[cfg(feature = "fvs")]
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 pub use manager::BottleManager;
-pub use state::{Bottle, BottleState, ProgramSpec, Storage};
+pub use state::{Bottle, BottleState, ProgramSpec};

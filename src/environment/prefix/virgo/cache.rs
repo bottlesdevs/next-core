@@ -2,7 +2,7 @@
 //!
 //! Each addon UUID owns an FVS filesystem layer and a separate set of forward
 //! registry patches. Registry hives are excluded from the layer so their changes
-//! can be merged into each bottle's writable upper directory.
+//! can be merged into each owner's writable upper directory.
 
 use std::{
     fs,
@@ -16,14 +16,13 @@ use uuid::Uuid;
 
 use crate::{
     Context,
-    bottle::error::VirgoError,
     error::{Error, Result},
-    prefix::FVS_BLOCK_SIZE,
 };
 
-use super::with_mount;
+use super::super::FVS_BLOCK_SIZE;
+use super::{VirgoError, with_mount};
 
-/// Removes references from one bottle's stack without deleting the shared cache.
+/// Removes references from one owner's stack without deleting the shared cache.
 pub(super) fn remove(layers: &mut Vec<Layer>, id: Uuid, context: &Context) {
     let repository = layer_path(id, context).display().to_string();
     layers.retain(|layer| layer.repository_path != repository);
@@ -131,14 +130,14 @@ where
     result
 }
 
-/// Merges a cached addon's registry patches into a bottle's writable upper.
+/// Merges a cached addon's registry patches into an owner's writable upper.
 ///
 /// A missing patch directory means the addon has no recorded registry effects.
 /// Both replacement hives are prepared in a scratch directory before either is
 /// installed, but the final renames are not atomic as a pair. Scratch cleanup is
 /// best-effort.
 pub(super) async fn apply_registry(
-    bottle_path: &Path,
+    root: &Path,
     layers: &[Layer],
     id: Uuid,
     context: &Context,
@@ -151,8 +150,8 @@ pub(super) async fn apply_registry(
         return Ok(());
     }
 
-    let prefix = bottle_path.join("prefix");
-    let upper = bottle_path.join("upper");
+    let prefix = root.join("prefix");
+    let upper = root.join("upper");
     with_mount(
         &prefix,
         layers.to_vec(),

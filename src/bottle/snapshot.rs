@@ -6,8 +6,8 @@ use fvs_rs::{Repository, RestoreResponse};
 
 use crate::{
     Operation, Progress, Stage, Transfer,
+    environment::prefix::{AUTO_CHECKPOINT_MESSAGE, FVS_BLOCK_SIZE, finish_commit, finish_restore},
     error::{Error, Result},
-    prefix::{AUTO_CHECKPOINT_MESSAGE, FVS_BLOCK_SIZE, finish_commit, finish_restore},
 };
 
 use super::{Bottle, Snapshot, SnapshotSummary, error::BottleError, state::BottleState};
