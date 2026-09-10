@@ -7,6 +7,7 @@ use super::{
     state::{Bottle, ProgramSpec},
 };
 use crate::{
+    EnvironmentError,
     error::Result,
     wrapper::{gamescope::GamescopeConfig, mangohud::MangoHudConfig},
 };
@@ -123,24 +124,24 @@ impl BottleEdit {
     pub async fn commit(self) -> Result<()> {
         let BottleEdit { bottle, changes } = self;
         bottle
-            .update(None, async move |state, _| {
+            .update(None, async move |state, _, _| {
                 for change in changes {
                     match change {
                         Change::Rename(name) => state.name = name,
                         Change::SetEnv(key, value) => {
                             if key.is_empty() || key.contains('=') || key.contains('\0') {
-                                return Err(BottleError::InvalidEnvironmentName(key).into());
+                                return Err(EnvironmentError::InvalidEnvironmentName(key).into());
                             }
                             if value.contains('\0') {
-                                return Err(BottleError::InvalidEnvironmentValue(key).into());
+                                return Err(EnvironmentError::InvalidEnvironmentValue(key).into());
                             }
-                            state.env_vars.insert(key, value);
+                            state.environment.env_vars.insert(key, value);
                         }
                         Change::UnsetEnv(key) => {
                             if key.is_empty() || key.contains('=') || key.contains('\0') {
-                                return Err(BottleError::InvalidEnvironmentName(key).into());
+                                return Err(EnvironmentError::InvalidEnvironmentName(key).into());
                             }
-                            state.env_vars.remove(&key);
+                            state.environment.env_vars.remove(&key);
                         }
                         Change::AddProgram(program) => {
                             state.programs.insert(program.id(), program);
@@ -151,8 +152,10 @@ impl BottleEdit {
                                 .remove(&id)
                                 .ok_or(BottleError::ProgramNotFound(id))?;
                         }
-                        Change::SetGamescope(config) => state.wrappers.gamescope = config,
-                        Change::SetMangoHud(config) => state.wrappers.mangohud = config,
+                        Change::SetGamescope(config) => {
+                            state.environment.wrappers.gamescope = config
+                        }
+                        Change::SetMangoHud(config) => state.environment.wrappers.mangohud = config,
                     }
                 }
                 Ok(())

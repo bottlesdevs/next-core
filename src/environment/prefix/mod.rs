@@ -1,8 +1,7 @@
 //! Prefix storage backends and checkpointed addon mutation.
 //!
-//! [`Prefix`] is persisted as part of its owner's state. Standard storage
-//! mutates a conventional prefix directly; Virgo stores an ordered FVS layer
-//! stack with a private writable upper directory. With the default `fvs`
+//! Standard storage mutates a conventional prefix directly; Virgo stores an
+//! ordered FVS layer stack with a private writable upper directory. With the default `fvs`
 //! feature, addon installation and removal use an FVS rollback checkpoint.
 
 mod standard;
@@ -40,7 +39,7 @@ pub(crate) const AUTO_CHECKPOINT_MESSAGE: &str = "bottles-next:auto-checkpoint";
 pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
 /// Selects conventional mutable storage or FVS composition.
-#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 pub enum Storage {
     /// Stores a conventional mutable prefix in the owner directory.
     ///
@@ -51,19 +50,11 @@ pub enum Storage {
     ///
     /// Virgo is experimental and requires the configured FVS service.
     #[cfg(feature = "fvs")]
-    Virgo,
-}
-
-/// Persisted storage selection and resolved immutable layer references.
-///
-/// This record owns no processes, mounts, or connections.
-#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
-pub(crate) struct Prefix {
-    kind: Storage,
-    /// Mount order: shared base, runner adapter, then installed addon layers.
-    #[cfg(feature = "fvs")]
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    layers: Vec<Layer>,
+    Virgo {
+        /// Resolved layer order retained until composition is derived from settings.
+        #[serde(default)]
+        layers: Vec<Layer>,
+    },
 }
 
 #[cfg(feature = "fvs")]
@@ -78,136 +69,114 @@ impl From<&FvsProgress> for Transfer {
     }
 }
 
-impl Prefix {
-    pub(crate) async fn create(
-        storage: Storage,
-        root: &Path,
-        runner: &dyn Runner,
-        runner_key: &str,
-        context: &Context,
-    ) -> Result<Self> {
-        #[cfg(not(feature = "fvs"))]
-        let _ = (runner_key, context);
+/// Creates storage at an explicit owner location.
+pub(crate) async fn create(
+    storage: &mut Storage,
+    root: &Path,
+    runner: &dyn Runner,
+    runner_key: &str,
+    context: &Context,
+) -> Result<()> {
+    #[cfg(not(feature = "fvs"))]
+    let _ = (runner_key, context);
+    match storage {
+        Storage::Standard => standard::create(&root.join("prefix"), runner).await,
+        #[cfg(feature = "fvs")]
+        Storage::Virgo { layers } => {
+            *layers = virgo::create(root, runner, runner_key, context).await?;
+            Ok(())
+        }
+    }
+}
+
+pub(crate) async fn prepare(storage: &Storage, root: &Path, context: &Context) -> Result<()> {
+    let _ = (root, context);
+    match storage {
+        Storage::Standard => Ok(()),
+        #[cfg(feature = "fvs")]
+        Storage::Virgo { layers } => virgo::prepare(root, layers, context).await,
+    }
+}
+
+pub(crate) async fn stop(storage: &Storage, root: &Path, context: &Context) -> Result<()> {
+    let _ = (root, context);
+    match storage {
+        Storage::Standard => Ok(()),
+        #[cfg(feature = "fvs")]
+        Storage::Virgo { .. } => virgo::stop(root, context).await,
+    }
+}
+
+pub(crate) async fn rebuild(
+    storage: &mut Storage,
+    runner: &dyn Runner,
+    runner_key: &str,
+    installed: &[Uuid],
+    context: &Context,
+) -> Result<()> {
+    match storage {
+        Storage::Standard => {
+            let _ = (runner, runner_key, installed, context);
+            Ok(())
+        }
+        #[cfg(feature = "fvs")]
+        Storage::Virgo { layers } => {
+            virgo::rebuild(layers, runner, runner_key, installed, context).await
+        }
+    }
+}
+
+pub(crate) async fn install<F, P>(
+    storage: &mut Storage,
+    root: &Path,
+    item_id: Uuid,
+    replaced_id: Option<Uuid>,
+    execute: F,
+    context: &Context,
+    cancellation: &CancellationToken,
+    on_progress: P,
+) -> Result<()>
+where
+    F: for<'a> std::ops::AsyncFnOnce(&'a Path) -> Result<()>,
+    P: FnMut(Progress),
+{
+    let _ = (item_id, replaced_id);
+    let work = async {
         match storage {
-            Storage::Standard => {
-                standard::create(&root.join("prefix"), runner).await?;
-                Ok(Self {
-                    kind: storage,
-                    #[cfg(feature = "fvs")]
-                    layers: Vec::new(),
-                })
-            }
+            Storage::Standard => standard::install(&root.join("prefix"), execute).await,
             #[cfg(feature = "fvs")]
-            Storage::Virgo => Ok(Self {
-                kind: storage,
-                layers: virgo::create(root, runner, runner_key, context).await?,
-            }),
-        }
-    }
-
-    pub(crate) fn kind(&self) -> Storage {
-        self.kind
-    }
-
-    pub(crate) async fn prepare(&self, root: &Path, context: &Context) -> Result<()> {
-        let _ = (root, context);
-        match self.kind {
-            Storage::Standard => Ok(()),
-            #[cfg(feature = "fvs")]
-            Storage::Virgo => virgo::prepare(root, &self.layers, context).await,
-        }
-    }
-
-    pub(crate) async fn stop(&self, root: &Path, context: &Context) -> Result<()> {
-        let _ = (root, context);
-        match self.kind {
-            Storage::Standard => Ok(()),
-            #[cfg(feature = "fvs")]
-            Storage::Virgo => virgo::stop(root, context).await,
-        }
-    }
-
-    pub(crate) async fn rebuild(
-        &mut self,
-        runner: &dyn Runner,
-        runner_key: &str,
-        installed: &[Uuid],
-        context: &Context,
-    ) -> Result<()> {
-        match self.kind {
-            Storage::Standard => {
-                let _ = (runner, runner_key, installed, context);
-                Ok(())
-            }
-            #[cfg(feature = "fvs")]
-            Storage::Virgo => {
-                // Resolve the complete replacement before changing persisted state. A
-                // missing cached addon therefore leaves the old layer stack intact.
-                virgo::rebuild(&mut self.layers, runner, runner_key, installed, context).await
+            Storage::Virgo { layers } => {
+                virgo::install(root, layers, item_id, replaced_id, execute, context).await
             }
         }
-    }
+    };
+    transact(root, context, work, cancellation, on_progress).await
+}
 
-    pub(crate) async fn install<F, P>(
-        &mut self,
-        root: &Path,
-        item_id: Uuid,
-        replaced_id: Option<Uuid>,
-        execute: F,
-        context: &Context,
-        cancellation: &CancellationToken,
-        on_progress: P,
-    ) -> Result<()>
-    where
-        F: for<'a> std::ops::AsyncFnOnce(&'a Path) -> Result<()>,
-        P: FnMut(Progress),
-    {
-        let _ = (item_id, replaced_id);
-        let work = async {
-            match self.kind {
-                Storage::Standard => standard::install(&root.join("prefix"), execute).await,
-                #[cfg(feature = "fvs")]
-                Storage::Virgo => {
-                    virgo::install(
-                        root,
-                        &mut self.layers,
-                        item_id,
-                        replaced_id,
-                        execute,
-                        context,
-                    )
-                    .await
-                }
+pub(crate) async fn uninstall<F, P>(
+    storage: &mut Storage,
+    root: &Path,
+    item_id: Uuid,
+    execute: F,
+    context: &Context,
+    cancellation: &CancellationToken,
+    on_progress: P,
+) -> Result<()>
+where
+    F: for<'a> std::ops::AsyncFnOnce(&'a Path, bool) -> Result<()>,
+    P: FnMut(Progress),
+{
+    let _ = item_id;
+    let work = async {
+        match storage {
+            Storage::Standard => standard::uninstall(&root.join("prefix"), execute).await,
+            #[cfg(feature = "fvs")]
+            Storage::Virgo { layers } => {
+                virgo::uninstall(root, layers, item_id, execute, context).await
             }
-        };
-        transact(root, context, work, cancellation, on_progress).await
-    }
-
-    pub(crate) async fn uninstall<F, P>(
-        &mut self,
-        root: &Path,
-        item_id: Uuid,
-        execute: F,
-        context: &Context,
-        cancellation: &CancellationToken,
-        on_progress: P,
-    ) -> Result<()>
-    where
-        F: for<'a> std::ops::AsyncFnOnce(&'a Path, bool) -> Result<()>,
-        P: FnMut(Progress),
-    {
-        let _ = item_id;
-        let work = async {
-            match self.kind {
-                Storage::Standard => standard::uninstall(&root.join("prefix"), execute).await,
-                #[cfg(feature = "fvs")]
-                Storage::Virgo => {
-                    virgo::uninstall(root, &mut self.layers, item_id, execute, context).await
-                }
-            }
-        };
-        transact(root, context, work, cancellation, on_progress).await
-    }
+        }
+    };
+    transact(root, context, work, cancellation, on_progress).await
 }
 
 /// Runs a prefix mutation behind a rollback checkpoint.
