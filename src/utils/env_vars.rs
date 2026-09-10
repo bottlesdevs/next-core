@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
-pub struct Environment<T: Eq + Hash = String>(HashMap<T, T>);
+pub struct EnvVars<T: Eq + Hash = String>(HashMap<T, T>);
 
-impl<T: Eq + Hash> Environment<T> {
+impl<T: Eq + Hash> EnvVars<T> {
     pub(crate) fn insert(&mut self, name: T, value: T) -> Option<T> {
         self.0.insert(name, value)
     }
@@ -19,12 +19,12 @@ impl<T: Eq + Hash> Environment<T> {
         self.0.remove(name)
     }
 
-    pub(crate) fn extend(&mut self, environment: impl IntoIterator<Item = (T, T)>) {
-        self.0.extend(environment);
+    pub(crate) fn extend(&mut self, env_vars: impl IntoIterator<Item = (T, T)>) {
+        self.0.extend(env_vars);
     }
 }
 
-impl Environment<String> {
+impl EnvVars<String> {
     pub fn get(&self, name: &str) -> Option<&str> {
         self.0.get(name).map(String::as_str)
     }
@@ -40,7 +40,7 @@ impl Environment<String> {
     }
 }
 
-impl<T: Eq + Hash> IntoIterator for Environment<T> {
+impl<T: Eq + Hash> IntoIterator for EnvVars<T> {
     type Item = (T, T);
     type IntoIter = std::collections::hash_map::IntoIter<T, T>;
 

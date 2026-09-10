@@ -6,7 +6,7 @@
 //! snapshots that do not change when the bottle is edited or deleted.
 //! Configuration changes are queued with [`Bottle::edit`] and become visible
 //! only after [`BottleEdit::commit`] persists them.
-//! [`Program`] construction validates launch definitions before
+//! [`ProgramSpec`] construction validates launch definitions before
 //! [`BottleEdit::add_program`] persists them.
 //!
 //! Bottle directories and their `bottle.toml` files are library-managed.
@@ -45,4 +45,4 @@ pub use error::BottleError;
 #[cfg(feature = "fvs")]
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 pub use manager::BottleManager;
-pub use state::{Bottle, BottleState, Program, Storage};
+pub use state::{Bottle, BottleState, ProgramSpec, Storage};

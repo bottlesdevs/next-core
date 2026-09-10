@@ -50,7 +50,7 @@ futures-lite = "2"
 Open the library, inspect the current bottles, and stop its download service:
 
 ```rust
-use bottles_core::{Bottles, Config, Program, SearchSource};
+use bottles_core::{Bottles, Config, ProgramSpec, SearchSource};
 use futures_lite::StreamExt;
 
 #[tokio::main]
@@ -65,7 +65,7 @@ async fn main() -> Result<(), bottles_core::error::Error> {
     }
 
     if let Some(bottle) = bottles.bottles().list().into_iter().next() {
-        let program = Program::new("Example", "C:/Games/example.exe")?;
+        let program = ProgramSpec::new("Example", "C:/Games/example.exe")?;
         let mut edit = bottle.edit();
         edit.add_program(program.clone());
         edit.commit().await?;

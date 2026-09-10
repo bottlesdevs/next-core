@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use super::{
     error::BottleError,
-    state::{Bottle, Program},
+    state::{Bottle, ProgramSpec},
 };
 use crate::{
     error::Result,
@@ -29,7 +29,7 @@ enum Change {
     Rename(String),
     SetEnv(String, String),
     UnsetEnv(String),
-    AddProgram(Program),
+    AddProgram(ProgramSpec),
     RemoveProgram(Uuid),
     SetGamescope(GamescopeConfig),
     SetMangoHud(MangoHudConfig),
@@ -77,7 +77,7 @@ impl BottleEdit {
     }
 
     /// Registers a program.
-    pub fn add_program(&mut self, program: Program) -> &mut Self {
+    pub fn add_program(&mut self, program: ProgramSpec) -> &mut Self {
         self.changes.push(Change::AddProgram(program));
         self
     }
@@ -134,13 +134,13 @@ impl BottleEdit {
                             if value.contains('\0') {
                                 return Err(BottleError::InvalidEnvironmentValue(key).into());
                             }
-                            state.environment.insert(key, value);
+                            state.env_vars.insert(key, value);
                         }
                         Change::UnsetEnv(key) => {
                             if key.is_empty() || key.contains('=') || key.contains('\0') {
                                 return Err(BottleError::InvalidEnvironmentName(key).into());
                             }
-                            state.environment.remove(&key);
+                            state.env_vars.remove(&key);
                         }
                         Change::AddProgram(program) => {
                             state.programs.insert(program.id(), program);

@@ -5,7 +5,7 @@ use async_process::{Child, Command as AsyncCommand};
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
 
-use crate::{runner::RunnerCommand, utils::environment::Environment};
+use crate::{runner::RunnerCommand, utils::env_vars::EnvVars};
 
 use self::{
     gamescope::{Gamescope, GamescopeConfig},
@@ -58,7 +58,7 @@ pub(crate) trait Spawnable: Into<Command> + Sized {
         let command = self.into();
         AsyncCommand::new(command.executable)
             .args(command.args)
-            .envs(command.envs)
+            .envs(command.env_vars)
             .spawn()
     }
 }
@@ -69,7 +69,7 @@ impl<O: Wrapper, I: Spawnable> Spawnable for Wrapped<O, I> {}
 pub(crate) struct Command {
     executable: OsString,
     args: Vec<OsString>,
-    envs: Environment<OsString>,
+    env_vars: EnvVars<OsString>,
 }
 
 impl Wrapper for Command {}
@@ -79,7 +79,7 @@ impl Command {
         Self {
             executable: executable.as_ref().to_os_string(),
             args: Vec::new(),
-            envs: Environment::default(),
+            env_vars: EnvVars::default(),
         }
     }
 
@@ -95,7 +95,7 @@ impl Command {
     }
 
     pub(crate) fn env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
-        self.envs
+        self.env_vars
             .insert(key.as_ref().to_os_string(), value.as_ref().to_os_string());
         self
     }
@@ -104,7 +104,7 @@ impl Command {
         mut self,
         envs: impl IntoIterator<Item = (K, V)>,
     ) -> Self {
-        self.envs.extend(
+        self.env_vars.extend(
             envs.into_iter()
                 .map(|(key, value)| (key.as_ref().to_os_string(), value.as_ref().to_os_string())),
         );
@@ -114,7 +114,7 @@ impl Command {
     fn append(mut self, inner: Command) -> Command {
         self.args.push(inner.executable);
         self.args.extend(inner.args);
-        self.envs.extend(inner.envs);
+        self.env_vars.extend(inner.env_vars);
         self
     }
 }

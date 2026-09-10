@@ -12,7 +12,7 @@ use crate::{
     addons::InstallerError,
     error::{Error, Result, ResultExt},
     runner::{Command, Spawnable, shutdown_prefix},
-    utils::{archive, environment::Environment, exists},
+    utils::{archive, env_vars::EnvVars, exists},
     winebridge::WineBridgeClient,
 };
 
@@ -40,7 +40,7 @@ pub(crate) async fn execute(
         prefix,
         runner,
         winebridge,
-        environment,
+        env_vars,
     } = inputs;
     let result = async {
         check_cancellation(cancellation)?;
@@ -52,7 +52,7 @@ pub(crate) async fn execute(
                         prefix,
                         runner,
                         winebridge,
-                        environment: &mut *environment,
+                        env_vars: &mut *env_vars,
                     },
                     resource,
                     step,
@@ -91,7 +91,7 @@ pub(crate) async fn uninstall(
         prefix,
         runner,
         winebridge,
-        environment,
+        env_vars,
     } = inputs;
 
     let result = async {
@@ -104,7 +104,7 @@ pub(crate) async fn uninstall(
                         prefix,
                         runner,
                         winebridge,
-                        environment: &mut *environment,
+                        env_vars: &mut *env_vars,
                     },
                     step,
                     restore_files,
@@ -130,10 +130,10 @@ pub(crate) async fn uninstall(
 /// so its [`InstallStep::SetEnvironment`] steps would otherwise be absent from
 /// the bottle's in-memory state. Replaying is idempotent when the recipe did run;
 /// later entries with the same name overwrite earlier ones.
-pub(crate) fn replay_environment(environment: &mut Environment, resources: &[Artifact]) {
+pub(crate) fn replay_env_vars(env_vars: &mut EnvVars, resources: &[Artifact]) {
     for step in resources.iter().flat_map(|resource| &resource.steps) {
         if let InstallStep::SetEnvironment { name, value } = step {
-            environment.insert(name.clone(), value.clone());
+            env_vars.insert(name.clone(), value.clone());
         }
     }
 }
@@ -148,7 +148,7 @@ async fn execute_step(
         prefix,
         runner,
         winebridge,
-        environment,
+        env_vars,
     } = inputs;
     match step {
         InstallStep::Copy {
@@ -170,7 +170,7 @@ async fn execute_step(
             for argument in arguments {
                 command = command.arg(argument);
             }
-            for (name, value) in environment.iter() {
+            for (name, value) in env_vars.iter() {
                 command = command.env(name, value);
             }
             let status =
@@ -183,7 +183,7 @@ async fn execute_step(
             for dll in dlls {
                 check_cancellation(cancellation)?;
                 let mut command = Command::new("regsvr32").arg("/s").arg(prefix.join(dll));
-                for (name, value) in environment.iter() {
+                for (name, value) in env_vars.iter() {
                     command = command.env(name, value);
                 }
                 let status =
@@ -200,7 +200,7 @@ async fn execute_step(
             value,
         } => {
             let command =
-                WineBridgeClient::command(runner, prefix, winebridge).envs(environment.iter());
+                WineBridgeClient::command(runner, prefix, winebridge).envs(env_vars.iter());
             let bridge = WineBridgeClient::connect_or_spawn(prefix, command).await?;
             check_cancellation(cancellation)?;
             bridge
@@ -209,7 +209,7 @@ async fn execute_step(
         }
         InstallStep::SetDllOverrides { dlls, mode } => {
             let command =
-                WineBridgeClient::command(runner, prefix, winebridge).envs(environment.iter());
+                WineBridgeClient::command(runner, prefix, winebridge).envs(env_vars.iter());
             let bridge = WineBridgeClient::connect_or_spawn(prefix, command).await?;
             for dll in dlls {
                 check_cancellation(cancellation)?;
@@ -217,7 +217,7 @@ async fn execute_step(
             }
         }
         InstallStep::SetEnvironment { name, value } => {
-            environment.insert(name.clone(), value.clone());
+            env_vars.insert(name.clone(), value.clone());
             shutdown_bridge(prefix).await?;
         }
     }
@@ -235,7 +235,7 @@ async fn uninstall_step(
         prefix,
         runner,
         winebridge,
-        environment,
+        env_vars,
     } = inputs;
     match step {
         InstallStep::Copy { destination, .. } if restore_files => {
@@ -245,12 +245,12 @@ async fn uninstall_step(
         }
         InstallStep::Copy { .. } => {}
         InstallStep::SetEnvironment { name, .. } => {
-            environment.remove(name);
+            env_vars.remove(name);
             shutdown_bridge(prefix).await.log_warn();
         }
         InstallStep::SetDllOverrides { dlls, .. } => {
             let command =
-                WineBridgeClient::command(runner, prefix, winebridge).envs(environment.iter());
+                WineBridgeClient::command(runner, prefix, winebridge).envs(env_vars.iter());
             let bridge = match WineBridgeClient::connect_or_spawn(prefix, command).await {
                 Ok(bridge) => bridge,
                 Err(error) => {

@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::{
     Context, Operation, Progress, Stage,
     addons::{
-        Addon, Artifact, InstallInputs, Requirement, Slot, execute, replay_environment, uninstall,
+        Addon, Artifact, InstallInputs, Requirement, Slot, execute, replay_env_vars, uninstall,
     },
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
@@ -126,7 +126,7 @@ impl Bottle {
 
     /// Returns a snapshot of Windows processes visible in the bottle.
     ///
-    /// This includes processes not launched from a registered [`crate::Program`].
+    /// This includes processes not launched from a registered [`crate::ProgramSpec`].
     /// WineBridge starts if necessary, and no ordering guarantee is made.
     ///
     /// # Errors
@@ -301,9 +301,7 @@ impl Bottle {
                     let bottle_path = cx.directories().bottle(state.id);
                     let context = cx.clone();
                     let BottleState {
-                        storage,
-                        environment,
-                        ..
+                        storage, env_vars, ..
                     } = state;
                     storage
                         .uninstall(
@@ -315,7 +313,7 @@ impl Bottle {
                                         prefix,
                                         runner: runner.as_ref(),
                                         winebridge: &winebridge,
-                                        environment,
+                                        env_vars,
                                     },
                                     &resources,
                                     restore_files,
@@ -423,9 +421,7 @@ impl Bottle {
         let bottle_path = cx.directories().bottle(state.id);
         let context = cx.clone();
         let BottleState {
-            storage,
-            environment,
-            ..
+            storage, env_vars, ..
         } = state;
         let step_progress = progress.clone();
         storage
@@ -439,7 +435,7 @@ impl Bottle {
                             prefix,
                             runner: runner.as_ref(),
                             winebridge: &winebridge,
-                            environment,
+                            env_vars,
                         },
                         &resources,
                         cancellation,
@@ -456,7 +452,7 @@ impl Bottle {
                 },
             )
             .await?;
-        replay_environment(environment, &resources);
+        replay_env_vars(env_vars, &resources);
         Ok(())
     }
 
@@ -531,7 +527,7 @@ impl Bottle {
                 &prefix,
                 state.winebridge().path(self.0.cx.directories()),
             )
-            .envs(state.environment.iter()),
+            .envs(state.env_vars.iter()),
         );
         storage.prepare(&bottle_path, &cx).await?;
         work(WineBridgeClient::connect_or_spawn(&prefix, command).await?).await

@@ -22,7 +22,7 @@ use crate::{
     addons::{Addon, Addons, Component, Dependency, Requirement, Slot},
     error::{Error, Result},
     prefix::Prefix,
-    utils::environment::Environment,
+    utils::env_vars::EnvVars,
     wrapper::Wrappers,
 };
 
@@ -40,14 +40,14 @@ pub struct BottleState {
     pub(crate) name: String,
     pub(crate) storage: Prefix,
     #[serde(default)]
-    pub(crate) programs: HashMap<Uuid, Program>,
+    pub(crate) programs: HashMap<Uuid, ProgramSpec>,
 
     /// Runtime and prefix components pinned to exact releases.
     pub(crate) components: HashMap<Slot, Addon<Component>>,
     /// Installed dependency releases.
     pub(crate) dependencies: Vec<Addon<Dependency>>,
-    #[serde(default, skip_serializing_if = "Environment::is_empty")]
-    pub(crate) environment: Environment,
+    #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
+    pub(crate) env_vars: EnvVars,
 
     #[serde(flatten)]
     pub(crate) wrappers: Wrappers,
@@ -172,8 +172,8 @@ impl BottleState {
     /// Changes do not affect an already-running WineBridge. Call
     /// [`Bottle::stop`] before the next bridge-backed operation to apply them
     /// immediately.
-    pub fn environment(&self) -> &Environment {
-        &self.environment
+    pub fn env_vars(&self) -> &EnvVars {
+        &self.env_vars
     }
 
     /// Returns the wrapper configuration applied when WineBridge is started.
@@ -186,12 +186,12 @@ impl BottleState {
     }
 
     /// Iterates over registered programs in unspecified order.
-    pub fn programs(&self) -> impl Iterator<Item = &Program> {
+    pub fn programs(&self) -> impl Iterator<Item = &ProgramSpec> {
         self.programs.values()
     }
 
     /// Returns the registered program with identity `id`.
-    pub fn program(&self, id: Uuid) -> Option<&Program> {
+    pub fn program(&self, id: Uuid) -> Option<&ProgramSpec> {
         self.programs.get(&id)
     }
 
@@ -261,7 +261,7 @@ impl Bottle {
             storage,
             programs: HashMap::new(),
             wrappers: Wrappers::default(),
-            environment: Environment::default(),
+            env_vars: EnvVars::default(),
         };
         let bottle = Self::from_state(state, context, addons)?;
         bottle.save().await?;
@@ -410,7 +410,7 @@ impl Bottle {
 /// A persisted, immutable Windows launch definition registered with a bottle.
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Program {
+pub struct ProgramSpec {
     id: Uuid,
     name: String,
     executable: String,
@@ -429,7 +429,7 @@ pub struct Program {
     new_console: bool,
 }
 
-impl Program {
+impl ProgramSpec {
     /// Creates a program with a new UUID and default launch options.
     pub fn new(name: impl Into<String>, executable: impl Into<String>) -> Result<Self> {
         let name = name.into();
