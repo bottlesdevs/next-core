@@ -148,7 +148,7 @@ impl WineBridgeClient {
             }))
     }
 
-    pub(crate) fn port_file(prefix: &Path) -> PathBuf {
+    fn port_file(prefix: &Path) -> PathBuf {
         prefix.join("drive_c/windows/temp").join(PORT_FILE_NAME)
     }
 
@@ -650,19 +650,17 @@ impl WineBridgeClient {
 
     /// Requests the managed WineBridge server to shut down.
     ///
-    /// This consumes the wrapper so callers cannot issue more RPCs after shutdown.
+    /// The owner releases the connection after its complete shutdown succeeds.
     ///
     /// # Errors
     ///
     /// Returns an error if the shutdown RPC fails.
-    pub async fn shutdown(self) -> Result<()> {
+    pub async fn shutdown(&self) -> Result<()> {
         let mut client = self.client.clone();
         client.shutdown(()).await?;
         drop(client);
-        let port_file = self.port_file.clone();
-        drop(self);
         for _ in 0..50 {
-            if !exists(&port_file).await? {
+            if !exists(&self.port_file).await? {
                 return Ok(());
             }
             Timer::after(Duration::from_millis(100)).await;

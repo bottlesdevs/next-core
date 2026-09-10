@@ -5,7 +5,9 @@ mod error;
 pub(crate) mod prefix;
 mod software;
 
-use std::path::PathBuf;
+pub(crate) use software::reconcile;
+
+use std::path::{Path, PathBuf};
 
 use tokio_util::sync::CancellationToken;
 
@@ -21,80 +23,53 @@ pub use config::EnvironmentConfig;
 pub use error::EnvironmentError;
 pub use prefix::Storage;
 
-/// A private owner-cached handle. Dropping it only releases local resources.
+/// A private owner-cached live runtime. Construction connects WineBridge.
+/// Dropping it only releases local resources.
 /// Owners serialize access and persist configuration, including storage metadata.
 pub(crate) struct Environment {
-    pub(crate) config: EnvironmentConfig,
-    root: PathBuf,
-    cx: Context,
-    runner: Option<Box<dyn Runner>>,
-    bridge: Option<WineBridgeClient>,
+    // Retain the resolved runner with the live handle; shutdown uses saved settings.
+    #[allow(dead_code)]
+    runner: Box<dyn Runner>,
+    bridge: WineBridgeClient,
 }
 
 impl Environment {
-    pub(crate) fn new(config: EnvironmentConfig, root: PathBuf, cx: Context) -> Self {
-        Self {
-            config,
-            root,
-            cx,
-            runner: None,
-            bridge: None,
+    /// Connects to an existing runtime or prepares and starts one.
+    pub(crate) async fn attach_or_start(
+        config: &EnvironmentConfig,
+        root: PathBuf,
+        cx: Context,
+    ) -> Result<Self> {
+        let runner = config
+            .runner()
+            .load_runner(cx.directories(), config.umu())
+            .await?;
+        let prefix = root.join("prefix");
+        if let Some(bridge) = WineBridgeClient::try_connect(&prefix).await? {
+            return Ok(Self { runner, bridge });
         }
+        prefix::prepare(&config.storage, &root, &cx).await?;
+        let command = config.wrappers.apply(
+            WineBridgeClient::command(
+                runner.as_ref(),
+                &prefix,
+                config.winebridge().path(cx.directories()),
+            )
+            .envs(config.env_vars.iter()),
+        );
+        let bridge = WineBridgeClient::connect_or_spawn(&prefix, command).await?;
+        Ok(Self { runner, bridge })
     }
 
-    /// A retained runner or bridge, discovery file, or live mount requires an
-    /// explicit stop. A stale discovery file is ambiguous, not proof of shutdown.
-    pub(crate) async fn ensure_stopped(&self) -> Result<()> {
-        if self.runner.is_some()
-            || self.bridge.is_some()
-            || crate::utils::exists(&WineBridgeClient::port_file(&self.root.join("prefix"))).await?
-            || prefix::is_mounted(&self.config.storage, &self.root, &self.cx).await?
-        {
-            return Err(EnvironmentError::MustBeStopped.into());
-        }
-        Ok(())
-    }
-
-    async fn load_runner(&mut self) -> Result<()> {
-        if self.runner.is_none() {
-            self.runner = Some(
-                self.config
-                    .runner()
-                    .load_runner(self.cx.directories(), self.config.umu())
-                    .await?,
-            );
-        }
-        Ok(())
-    }
-
-    async fn bridge(&mut self) -> Result<&WineBridgeClient> {
-        if self.bridge.is_none() {
-            self.load_runner().await?;
-            prefix::prepare(&self.config.storage, &self.root, &self.cx).await?;
-            let prefix = self.root.join("prefix");
-            let command = self.config.wrappers.apply(
-                WineBridgeClient::command(
-                    self.runner.as_deref().expect("runner loaded"),
-                    &prefix,
-                    self.config.winebridge().path(self.cx.directories()),
-                )
-                .envs(self.config.env_vars.iter()),
-            );
-            self.bridge = Some(WineBridgeClient::connect_or_spawn(&prefix, command).await?);
-        }
-        Ok(self.bridge.as_ref().expect("bridge connected"))
-    }
-
-    pub(crate) async fn launch(
-        &mut self,
+    pub(crate) async fn launch_program(
+        &self,
         program: &ProgramSpec,
         cancellation: &CancellationToken,
     ) -> Result<u32> {
-        let bridge = self.bridge().await?;
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        bridge
+        self.bridge
             .launch_process(
                 program.id(),
                 program.executable().to_owned(),
@@ -105,80 +80,52 @@ impl Environment {
             .await
     }
 
-    pub(crate) async fn processes(&mut self) -> Result<Vec<Process>> {
-        self.bridge().await?.list_processes().await
+    pub(crate) async fn processes(&self) -> Result<Vec<Process>> {
+        self.bridge.list_processes().await
     }
 
-    pub(crate) async fn kill(&mut self, id: uuid::Uuid) -> Result<()> {
-        self.bridge().await?.kill_process(id).await
+    pub(crate) async fn kill(&self, id: uuid::Uuid) -> Result<()> {
+        self.bridge.kill_process(id).await
     }
 
-    pub(crate) async fn dll_overrides(&mut self) -> Result<Vec<DllOverride>> {
-        match self.bridge().await?.list_dll_overrides().await {
+    pub(crate) async fn dll_overrides(&self) -> Result<Vec<DllOverride>> {
+        match self.bridge.list_dll_overrides().await {
             Ok(overrides) => Ok(overrides),
             Err(Error::Status(status)) if status.code() == tonic::Code::NotFound => Ok(Vec::new()),
             Err(error) => Err(error),
         }
     }
 
-    pub(crate) async fn set_dll_override(
-        &mut self,
-        dll: String,
-        mode: DllOverrideMode,
-    ) -> Result<()> {
-        if mode == DllOverrideMode::Unspecified {
-            return Err(EnvironmentError::DllOverrideModeRequired.into());
-        }
-        self.bridge().await?.set_dll_override(dll, mode).await
+    pub(crate) async fn set_dll_override(&self, dll: String, mode: DllOverrideMode) -> Result<()> {
+        self.bridge.set_dll_override(dll, mode).await
     }
 
-    pub(crate) async fn unset_dll_override(&mut self, dll: String) -> Result<()> {
-        match self.bridge().await?.delete_dll_override(dll).await {
+    pub(crate) async fn unset_dll_override(&self, dll: String) -> Result<()> {
+        match self.bridge.delete_dll_override(dll).await {
             Err(Error::Status(status)) if status.code() == tonic::Code::NotFound => Ok(()),
             result => result,
         }
     }
 
-    /// Attempts bridge and runner shutdown; storage is released only after success.
-    pub(crate) async fn stop(&mut self) -> Result<()> {
-        let prefix = self.root.join("prefix");
-        let runner_loaded = self.load_runner().await;
-        let mut first_error = None;
-        // Discovery also supports stopping a runtime left by a previous client.
+    /// Stops Wine and releases storage without requiring a live handle or bridge.
+    pub(crate) async fn stop(config: &EnvironmentConfig, root: &Path, cx: &Context) -> Result<()> {
+        let runner = config
+            .runner()
+            .load_runner(cx.directories(), config.umu())
+            .await?;
+        let prefix = root.join("prefix");
         match WineBridgeClient::try_connect(&prefix).await {
             Ok(Some(bridge)) => {
                 if let Err(error) = bridge.shutdown().await {
-                    first_error.get_or_insert(error);
+                    tracing::debug!(%error, "WineBridge shutdown failed; stopping wineserver");
                 }
             }
             Ok(None) => {}
             Err(error) => {
-                first_error.get_or_insert(error);
+                tracing::debug!(%error, "WineBridge discovery failed; stopping wineserver");
             }
         }
-        match runner_loaded {
-            Ok(()) => {
-                if let Err(error) =
-                    shutdown_prefix(self.runner.as_deref().expect("runner loaded"), &prefix).await
-                {
-                    first_error.get_or_insert(error);
-                }
-            }
-            Err(error) => {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)?;
-        // A failed bridge can leave discovery behind. Only discard that evidence
-        // after Wine has stopped, while a Virgo prefix is still mounted.
-        match async_fs::remove_file(WineBridgeClient::port_file(&prefix)).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        prefix::stop(&self.config.storage, &self.root, &self.cx).await?;
-        self.bridge = None;
-        self.runner = None;
-        Ok(())
+        shutdown_prefix(runner.as_ref(), &prefix).await?;
+        prefix::stop(&config.storage, root, cx).await
     }
 }
