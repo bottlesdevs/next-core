@@ -5,6 +5,12 @@ use uuid::Uuid;
 /// Failures in shared execution configuration and operations.
 #[derive(Debug, Error)]
 pub enum EnvironmentError {
+    #[error(
+        "stop the environment before changing its settings; if a previous operation failed, call stop() and retry"
+    )]
+    MustBeStopped,
+    #[error("invalid environment edit: {0}")]
+    InvalidEdit(&'static str),
     /// An environment variable name is empty or contains `=` or NUL.
     #[error(
         "invalid environment variable name {0:?}: names must be non-empty and contain neither '=' nor NUL"

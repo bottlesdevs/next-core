@@ -1,165 +1,85 @@
-//! Batched edits to persisted bottle configuration.
+//! Coordinated edits to the latest persisted bottle configuration.
 
-use uuid::Uuid;
-
-use super::{
-    error::BottleError,
-    state::{Bottle, ProgramSpec},
-};
+use super::{Bottle, BottleError, BottleState};
 use crate::{
-    EnvironmentError,
-    error::Result,
-    wrapper::{gamescope::GamescopeConfig, mangohud::MangoHudConfig},
+    Operation, Progress, Stage,
+    error::{Error, Result},
 };
 
-#[must_use = "edits do nothing unless committed"]
-/// A pending batch of configuration changes for a [`Bottle`].
-///
-/// Builder methods only queue changes. [`commit`](Self::commit) applies them in
-/// order to a draft of the latest state available when the commit acquires
-/// exclusive access; it does not capture the state that existed when
-/// [`Bottle::edit`] was called. The draft is published only after it has been
-/// persisted. Dropping an edit without committing it has no effect.
-pub struct BottleEdit {
-    bottle: Bottle,
-    changes: Vec<Change>,
-}
-
-/// One mutation queued by [`BottleEdit`]; vector order is commit order.
-enum Change {
-    Rename(String),
-    SetEnv(String, String),
-    UnsetEnv(String),
-    AddProgram(ProgramSpec),
-    RemoveProgram(Uuid),
-    SetGamescope(GamescopeConfig),
-    SetMangoHud(MangoHudConfig),
-}
-
-impl BottleEdit {
-    pub(super) fn new(bottle: Bottle) -> Self {
-        Self {
-            bottle,
-            changes: Vec::new(),
-        }
-    }
-
-    /// Changes the bottle's display name.
+impl Bottle {
+    /// Applies a callback to a draft of the latest state when this operation runs.
     ///
-    /// Names are stored verbatim, may be empty, and need not be unique.
-    pub fn rename(&mut self, name: impl Into<String>) -> &mut Self {
-        self.changes.push(Change::Rename(name.into()));
-        self
-    }
-
-    /// Sets an environment variable for future WineBridge starts.
+    /// Edit `name`, `programs`, and `environment` directly. Returning an error
+    /// discards the draft. Valid changes are reconciled, persisted, then published
+    /// together; cloned handles serialize edits against the latest state.
     ///
-    /// This does not change an already-running WineBridge. Call [`Bottle::stop`]
-    /// before the next bridge-backed operation to apply it immediately.
-    /// Values stored here are applied after runner-provided variables, so they
-    /// can override values such as `WINEPREFIX`, `WINEARCH`, and `PROTONPATH`.
-    ///
-    /// At commit time, names must be nonempty and contain neither `=` nor NUL;
-    /// values must not contain NUL. Case and whitespace are preserved, and
-    /// lookup is case-sensitive.
-    pub fn set_env(&mut self, key: &str, value: &str) -> &mut Self {
-        self.changes
-            .push(Change::SetEnv(key.to_owned(), value.to_owned()));
-        self
-    }
-
-    /// Removes an environment variable for future WineBridge starts.
-    ///
-    /// Removing a missing variable succeeds. Names have the same validation
-    /// and case-sensitive matching rules as [`set_env`](Self::set_env).
-    pub fn unset_env(&mut self, key: &str) -> &mut Self {
-        self.changes.push(Change::UnsetEnv(key.to_owned()));
-        self
-    }
-
-    /// Registers a program.
-    pub fn add_program(&mut self, program: ProgramSpec) -> &mut Self {
-        self.changes.push(Change::AddProgram(program));
-        self
-    }
-
-    /// Removes the program identified by `id`.
-    ///
-    /// The edit fails to commit if the program is not registered.
-    pub fn remove_program(&mut self, id: Uuid) -> &mut Self {
-        self.changes.push(Change::RemoveProgram(id));
-        self
-    }
-
-    /// Replaces the Gamescope configuration used for future WineBridge starts.
-    ///
-    /// If WineBridge is already running, stop the bottle after committing so
-    /// that the next bridge-backed operation starts it with the new wrapper.
-    pub fn set_gamescope(&mut self, config: GamescopeConfig) -> &mut Self {
-        self.changes.push(Change::SetGamescope(config));
-        self
-    }
-
-    /// Replaces the MangoHud configuration used for future WineBridge starts.
-    ///
-    /// If WineBridge is already running, stop the bottle after committing so
-    /// that the next bridge-backed operation starts it with the new wrapper.
-    pub fn set_mangohud(&mut self, config: MangoHudConfig) -> &mut Self {
-        self.changes.push(Change::SetMangoHud(config));
-        self
-    }
-
-    /// Validates, persists, and publishes all queued changes.
-    ///
-    /// Changes are applied in call order, so a later change may supersede an
-    /// earlier one. Concurrent commits serialize and each starts from the
-    /// latest persisted state. If validation or persistence fails, no new
-    /// state snapshot is published. An empty edit is still persisted, but an
-    /// unchanged state does not notify [`Bottle::watch`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a deleted bottle, a missing program removal, an
-    /// invalid environment variable, or a persistence failure.
-    pub async fn commit(self) -> Result<()> {
-        let BottleEdit { bottle, changes } = self;
-        bottle
-            .update(None, async move |state, _, _| {
-                for change in changes {
-                    match change {
-                        Change::Rename(name) => state.name = name,
-                        Change::SetEnv(key, value) => {
-                            if key.is_empty() || key.contains('=') || key.contains('\0') {
-                                return Err(EnvironmentError::InvalidEnvironmentName(key).into());
-                            }
-                            if value.contains('\0') {
-                                return Err(EnvironmentError::InvalidEnvironmentValue(key).into());
-                            }
-                            state.environment.env_vars.insert(key, value);
+    /// Metadata can change while running. Environment changes require an explicit
+    /// stop first. Storage and existing dependency order cannot be changed; new
+    /// dependencies may be appended. Addon selections must be downloaded.
+    /// Prefix effects are not yet rolled back as a batch if reconciliation or
+    /// persistence fails; no candidate configuration is published on failure.
+    pub fn edit(
+        &self,
+        callback: impl FnOnce(&mut BottleState) -> Result<()> + Send + 'static,
+    ) -> Operation<()> {
+        let bottle = self.clone();
+        Operation::new(move |progress, cancellation| async move {
+            progress.send_replace(Some(Progress::new(Stage::Preparing)));
+            bottle
+                .update(Some(&cancellation), async |draft, cx, cached| {
+                    let previous = draft.environment.clone();
+                    callback(draft)?;
+                    if draft.id != bottle.id() {
+                        return Err(BottleError::IdMismatch {
+                            expected: bottle.id(),
+                            actual: draft.id,
                         }
-                        Change::UnsetEnv(key) => {
-                            if key.is_empty() || key.contains('=') || key.contains('\0') {
-                                return Err(EnvironmentError::InvalidEnvironmentName(key).into());
-                            }
-                            state.environment.env_vars.remove(&key);
-                        }
-                        Change::AddProgram(program) => {
-                            state.programs.insert(program.id(), program);
-                        }
-                        Change::RemoveProgram(id) => {
-                            state
-                                .programs
-                                .remove(&id)
-                                .ok_or(BottleError::ProgramNotFound(id))?;
-                        }
-                        Change::SetGamescope(config) => {
-                            state.environment.wrappers.gamescope = config
-                        }
-                        Change::SetMangoHud(config) => state.environment.wrappers.mangohud = config,
+                        .into());
                     }
-                }
-                Ok(())
-            })
-            .await
+                    for (id, program) in &draft.programs {
+                        if *id != program.id() {
+                            return Err(BottleError::InvalidProgram(
+                                "registration key must match the program ID".into(),
+                            )
+                            .into());
+                        }
+                        program.validate()?;
+                    }
+                    draft.environment.validate_requirements()?;
+                    if cancellation.is_cancelled() {
+                        return Err(Error::Cancelled);
+                    }
+                    if draft.environment != previous {
+                        let environment = cached.get_or_insert_with(|| {
+                            crate::environment::Environment::new(
+                                previous,
+                                cx.directories().bottle(draft.id),
+                                cx,
+                            )
+                        });
+                        environment.ensure_stopped().await?;
+                        if cancellation.is_cancelled() {
+                            return Err(Error::Cancelled);
+                        }
+                        // Failed reconciliation must not retain its candidate configuration.
+                        let mut environment = cached.take().expect("environment initialized");
+                        environment
+                            .reconcile(
+                                draft.environment.clone(),
+                                &bottle.0.addons,
+                                &progress,
+                                &cancellation,
+                            )
+                            .await?;
+                        if cancellation.is_cancelled() {
+                            return Err(Error::Cancelled);
+                        }
+                        draft.environment = environment.config.clone();
+                        *cached = Some(environment);
+                    }
+                    Ok(())
+                })
+                .await
+        })
     }
 }

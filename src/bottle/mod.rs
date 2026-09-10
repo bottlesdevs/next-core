@@ -4,10 +4,9 @@
 //! context. Its [`Bottle`] handles are live, cloneable references to shared
 //! state; [`BottleState`] values returned by those handles are immutable
 //! snapshots that do not change when the bottle is edited or deleted.
-//! Configuration changes are queued with [`Bottle::edit`] and become visible
-//! only after [`BottleEdit::commit`] persists them.
-//! [`ProgramSpec`] construction validates launch definitions before
-//! [`BottleEdit::add_program`] persists them.
+//! [`Bottle::edit`] applies a callback to the latest state and publishes it after
+//! validation, prefix reconciliation and persistence. [`ProgramSpec`] defines
+//! programs registered through that callback.
 //!
 //! Bottle directories and their `bottle.toml` files are library-managed.
 //! Manager queries read an in-memory registry rather than rescanning or
@@ -40,7 +39,6 @@ pub use crate::wrapper::{
     gamescope::{Filter as GamescopeFilter, GamescopeConfig, Scaler as GamescopeScaler},
     mangohud::MangoHudConfig,
 };
-pub use edit::BottleEdit;
 pub use error::BottleError;
 #[cfg(feature = "fvs")]
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};

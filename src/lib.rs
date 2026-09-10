@@ -18,9 +18,8 @@ pub use addons::{
     InstallerError, Requirement, Slot,
 };
 pub use bottle::{
-    Bottle, BottleEdit, BottleError, BottleManager, BottleState, DllOverride, DllOverrideMode,
-    GamescopeConfig, GamescopeFilter, GamescopeScaler, MangoHudConfig, Process, ProgramSpec,
-    RegistryHive, Wrappers,
+    Bottle, BottleError, BottleManager, BottleState, DllOverride, DllOverrideMode, GamescopeConfig,
+    GamescopeFilter, GamescopeScaler, MangoHudConfig, Process, ProgramSpec, RegistryHive, Wrappers,
 };
 #[cfg(feature = "fvs")]
 pub use bottle::{Snapshot, SnapshotSummary};

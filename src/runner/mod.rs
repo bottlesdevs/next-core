@@ -121,7 +121,8 @@ pub(crate) async fn initialize_and_shutdown_prefix(
 }
 
 pub(crate) async fn shutdown_prefix(runner: &dyn Runner, prefix: &Path) -> Result<()> {
-    runner.wineserver(prefix, "-k").await
+    runner.wineserver(prefix, "-k").await?;
+    runner.wineserver(prefix, "-w").await
 }
 
 /// Classifies a component by its regular-file markers.

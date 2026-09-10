@@ -41,6 +41,15 @@ use; clones share it. Registered programs use the bottle's settings. Use
 with the initial Windows process ID. Dropping the bottle only detaches; call
 `stop()` to stop its runtime.
 
+`Bottle::edit(|state| { /* changes */ Ok(()) })` returns an `Operation<()>`.
+The callback receives a draft of the latest state under the owner lock. Edit
+`name`, `programs`, and `environment` directly; errors discard the whole draft.
+Metadata edits work while running. Call `stop()` before changing environment
+settings, including through `set_component`, `remove_component`, or `install`.
+Storage is fixed at creation; existing dependencies remain in installation order.
+New dependency selections can be appended. Prefix changes run before publication;
+batch rollback of those effects remains part of the later composition work.
+
 Bottle configuration requires execution settings under `environment`, with
 resolved FVS layers retained inside `environment.storage` for Virgo. Old
 configurations are rejected during deserialization and left untouched; recreate
@@ -79,10 +88,12 @@ async fn main() -> Result<(), bottles_core::error::Error> {
 
     if let Some(bottle) = bottles.bottles().list().into_iter().next() {
         let program = ProgramSpec::new("Example", "C:/Games/example.exe")?;
-        let mut edit = bottle.edit();
-        edit.add_program(program.clone());
-        edit.commit().await?;
-        println!("registered {} as {}", program.name(), program.id());
+        let id = program.id();
+        bottle.edit(move |state| {
+            state.programs.insert(program.id(), program);
+            Ok(())
+        }).await?;
+        println!("registered {id}");
     }
 
     let mut installed = Box::pin(bottles.library().watch());
