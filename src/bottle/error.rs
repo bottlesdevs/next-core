@@ -1,8 +1,5 @@
 //! Bottle-specific errors exposed through the crate's top-level error type.
 
-#[cfg(feature = "fvs")]
-use std::path::PathBuf;
-
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -66,33 +63,4 @@ pub enum BottleError {
     /// A bottle operation received a component for a different role.
     #[error("component {component} must occupy slot {required:?}")]
     InvalidComponentSlot { component: Uuid, required: Slot },
-}
-
-/// Virgo-specific failures carried by [`crate::error::Error::Virgo`].
-#[cfg(feature = "fvs")]
-#[derive(Debug, Error)]
-pub enum VirgoError {
-    /// A required FVS commit is missing from a repository.
-    #[error("FVS repository {repository} has no commit {state}")]
-    MissingCommit {
-        /// Repository whose history was searched.
-        repository: PathBuf,
-        /// Requested full or abbreviated state ID.
-        state: String,
-    },
-    /// An existing Virgo base repository has no commits to use as a layer.
-    #[error("Virgo base exists but has no commits")]
-    EmptyBase,
-    /// Virgo cannot initialize a base over an existing nonempty directory.
-    #[error("refusing to initialize non-empty Virgo base at {0}")]
-    DirtyBase(PathBuf),
-    /// Virgo cannot mount a prefix over a nonempty mountpoint.
-    #[error("mountpoint is not empty: {0}")]
-    DirtyMountpoint(PathBuf),
-    /// A cached layer required to construct the prefix is missing.
-    #[error("cached Virgo layer was not found: {0}")]
-    CachedLayerNotFound(PathBuf),
-    /// Registry data could not be converted while building a Virgo layer.
-    #[error("failed to process Virgo registry data: {0}")]
-    Registry(String),
 }

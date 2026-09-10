@@ -17,17 +17,17 @@ use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
 #[cfg(feature = "fvs")]
-use crate::prefix::FVS_BLOCK_SIZE;
+use crate::environment::prefix::FVS_BLOCK_SIZE;
 use crate::{
-    Context, Operation, Progress, Stage,
+    Context, Operation, Progress, Stage, Storage,
     addons::{Addon, Addons, Requirement, Slot},
+    environment::prefix::Prefix,
     error::{Error, Result},
-    prefix::Prefix,
 };
 
 use super::{
     error::BottleError,
-    state::{Bottle, BottleState, Storage},
+    state::{Bottle, BottleState},
 };
 
 /// The shared membership registry behind [`BottleManager`] clones.

@@ -8,9 +8,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::state::BottleInner;
 use crate::{
-    Context, Directories,
+    Context, Directories, Storage,
     addons::{AddonError, Addons, CatalogError, Requirement, Slot},
-    bottle::{Bottle, BottleManager, Storage, error::BottleError},
+    bottle::{Bottle, BottleManager, error::BottleError},
     error::Error,
 };
 fn test_directories() -> Directories {

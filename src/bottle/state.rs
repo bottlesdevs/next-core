@@ -18,10 +18,10 @@ use uuid::Uuid;
 
 use super::{edit::BottleEdit, error::BottleError};
 use crate::{
-    Context,
+    Context, Storage,
     addons::{Addon, Addons, Component, Dependency, Requirement, Slot},
+    environment::prefix::Prefix,
     error::{Error, Result},
-    prefix::Prefix,
     utils::env_vars::EnvVars,
     wrapper::Wrappers,
 };
@@ -507,19 +507,4 @@ impl ProgramSpec {
     pub fn new_console(&self) -> bool {
         self.new_console
     }
-}
-
-/// The prefix-storage strategy persisted in [`BottleState`].
-#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
-pub enum Storage {
-    /// Stores a conventional mutable prefix in the bottle directory.
-    ///
-    /// With the default `fvs` feature, FVS also provides snapshots and addon
-    /// mutation checkpoints.
-    Standard,
-    /// Stores the prefix as composable FVS layers.
-    ///
-    /// Virgo is experimental and requires the configured FVS service.
-    #[cfg(feature = "fvs")]
-    Virgo,
 }

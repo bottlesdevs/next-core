@@ -1,8 +1,8 @@
 //! Prefix storage backends and checkpointed addon mutation.
 //!
-//! [`Prefix`] is persisted as part of each bottle's state. Standard storage
+//! [`Prefix`] is persisted as part of its owner's state. Standard storage
 //! mutates a conventional prefix directly; Virgo stores an ordered FVS layer
-//! stack with a per-bottle writable upper directory. With the default `fvs`
+//! stack with a private writable upper directory. With the default `fvs`
 //! feature, addon installation and removal use an FVS rollback checkpoint.
 
 mod standard;
@@ -10,6 +10,9 @@ mod standard;
 mod virgo;
 
 use std::{future::Future, path::Path};
+
+#[cfg(feature = "fvs")]
+pub use virgo::VirgoError;
 
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -25,7 +28,7 @@ use {
     },
 };
 
-use crate::{Context, Progress, bottle::Storage, error::Result, runner::Runner};
+use crate::{Context, Progress, error::Result, runner::Runner};
 
 /// Identifies rollback checkpoints that must not appear as user snapshots.
 ///
@@ -36,17 +39,31 @@ pub(crate) const AUTO_CHECKPOINT_MESSAGE: &str = "bottles-next:auto-checkpoint";
 #[cfg(feature = "fvs")]
 pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
-/// Backend-specific state persisted in [`crate::bottle::BottleState`].
-#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "kind")]
-pub(crate) enum Prefix {
+/// Selects conventional mutable storage or FVS composition.
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+pub enum Storage {
+    /// Stores a conventional mutable prefix in the owner directory.
+    ///
+    /// With the default `fvs` feature, FVS also provides snapshots and addon
+    /// mutation checkpoints.
     Standard,
+    /// Stores the prefix as composable FVS layers.
+    ///
+    /// Virgo is experimental and requires the configured FVS service.
     #[cfg(feature = "fvs")]
-    Virgo {
-        /// Mount order: shared base, runner adapter, then installed addon layers.
-        #[serde(default)]
-        layers: Vec<Layer>,
-    },
+    Virgo,
+}
+
+/// Persisted storage selection and resolved immutable layer references.
+///
+/// This record owns no processes, mounts, or connections.
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+pub(crate) struct Prefix {
+    kind: Storage,
+    /// Mount order: shared base, runner adapter, then installed addon layers.
+    #[cfg(feature = "fvs")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    layers: Vec<Layer>,
 }
 
 #[cfg(feature = "fvs")]
@@ -64,7 +81,7 @@ impl From<&FvsProgress> for Transfer {
 impl Prefix {
     pub(crate) async fn create(
         storage: Storage,
-        bottle_path: &Path,
+        root: &Path,
         runner: &dyn Runner,
         runner_key: &str,
         context: &Context,
@@ -73,39 +90,40 @@ impl Prefix {
         let _ = (runner_key, context);
         match storage {
             Storage::Standard => {
-                standard::create(bottle_path, runner).await?;
-                Ok(Self::Standard)
+                standard::create(&root.join("prefix"), runner).await?;
+                Ok(Self {
+                    kind: storage,
+                    #[cfg(feature = "fvs")]
+                    layers: Vec::new(),
+                })
             }
             #[cfg(feature = "fvs")]
-            Storage::Virgo => Ok(Self::Virgo {
-                layers: virgo::create(bottle_path, runner, runner_key, context).await?,
+            Storage::Virgo => Ok(Self {
+                kind: storage,
+                layers: virgo::create(root, runner, runner_key, context).await?,
             }),
         }
     }
 
     pub(crate) fn kind(&self) -> Storage {
-        match self {
-            Self::Standard => Storage::Standard,
+        self.kind
+    }
+
+    pub(crate) async fn prepare(&self, root: &Path, context: &Context) -> Result<()> {
+        let _ = (root, context);
+        match self.kind {
+            Storage::Standard => Ok(()),
             #[cfg(feature = "fvs")]
-            Self::Virgo { .. } => Storage::Virgo,
+            Storage::Virgo => virgo::prepare(root, &self.layers, context).await,
         }
     }
 
-    pub(crate) async fn prepare(&self, bottle_path: &Path, context: &Context) -> Result<()> {
-        let _ = (bottle_path, context);
-        match self {
-            Self::Standard => Ok(()),
+    pub(crate) async fn stop(&self, root: &Path, context: &Context) -> Result<()> {
+        let _ = (root, context);
+        match self.kind {
+            Storage::Standard => Ok(()),
             #[cfg(feature = "fvs")]
-            Self::Virgo { layers } => virgo::prepare(bottle_path, layers, context).await,
-        }
-    }
-
-    pub(crate) async fn stop(&self, bottle_path: &Path, context: &Context) -> Result<()> {
-        let _ = (bottle_path, context);
-        match self {
-            Self::Standard => Ok(()),
-            #[cfg(feature = "fvs")]
-            Self::Virgo { .. } => virgo::stop(bottle_path, context).await,
+            Storage::Virgo => virgo::stop(root, context).await,
         }
     }
 
@@ -116,23 +134,23 @@ impl Prefix {
         installed: &[Uuid],
         context: &Context,
     ) -> Result<()> {
-        match self {
-            Self::Standard => {
+        match self.kind {
+            Storage::Standard => {
                 let _ = (runner, runner_key, installed, context);
                 Ok(())
             }
             #[cfg(feature = "fvs")]
-            Self::Virgo { layers } => {
+            Storage::Virgo => {
                 // Resolve the complete replacement before changing persisted state. A
                 // missing cached addon therefore leaves the old layer stack intact.
-                virgo::rebuild(layers, runner, runner_key, installed, context).await
+                virgo::rebuild(&mut self.layers, runner, runner_key, installed, context).await
             }
         }
     }
 
     pub(crate) async fn install<F, P>(
         &mut self,
-        bottle_path: &Path,
+        root: &Path,
         item_id: Uuid,
         replaced_id: Option<Uuid>,
         execute: F,
@@ -146,21 +164,28 @@ impl Prefix {
     {
         let _ = (item_id, replaced_id);
         let work = async {
-            match self {
-                Self::Standard => standard::install(bottle_path, execute).await,
+            match self.kind {
+                Storage::Standard => standard::install(&root.join("prefix"), execute).await,
                 #[cfg(feature = "fvs")]
-                Self::Virgo { layers } => {
-                    virgo::install(bottle_path, layers, item_id, replaced_id, execute, context)
-                        .await
+                Storage::Virgo => {
+                    virgo::install(
+                        root,
+                        &mut self.layers,
+                        item_id,
+                        replaced_id,
+                        execute,
+                        context,
+                    )
+                    .await
                 }
             }
         };
-        transact(bottle_path, context, work, cancellation, on_progress).await
+        transact(root, context, work, cancellation, on_progress).await
     }
 
     pub(crate) async fn uninstall<F, P>(
         &mut self,
-        bottle_path: &Path,
+        root: &Path,
         item_id: Uuid,
         execute: F,
         context: &Context,
@@ -173,15 +198,15 @@ impl Prefix {
     {
         let _ = item_id;
         let work = async {
-            match self {
-                Self::Standard => standard::uninstall(bottle_path, execute).await,
+            match self.kind {
+                Storage::Standard => standard::uninstall(&root.join("prefix"), execute).await,
                 #[cfg(feature = "fvs")]
-                Self::Virgo { layers } => {
-                    virgo::uninstall(bottle_path, layers, item_id, execute, context).await
+                Storage::Virgo => {
+                    virgo::uninstall(root, &mut self.layers, item_id, execute, context).await
                 }
             }
         };
-        transact(bottle_path, context, work, cancellation, on_progress).await
+        transact(root, context, work, cancellation, on_progress).await
     }
 }
 
@@ -194,7 +219,7 @@ impl Prefix {
 /// not drive the restore path.
 #[cfg(feature = "fvs")]
 async fn transact<F, T, P>(
-    bottle_path: &Path,
+    root: &Path,
     context: &Context,
     work: F,
     cancellation: &CancellationToken,
@@ -205,7 +230,7 @@ where
     P: FnMut(Progress),
 {
     let repository = Repository {
-        repository_path: bottle_path.display().to_string(),
+        repository_path: root.display().to_string(),
         block_size: FVS_BLOCK_SIZE,
     };
     let stream = context
@@ -262,7 +287,7 @@ where
 /// Runs a prefix mutation directly when FVS rollback support is not compiled in.
 #[cfg(not(feature = "fvs"))]
 async fn transact<F, T, P>(
-    _bottle_path: &Path,
+    _root: &Path,
     _context: &Context,
     work: F,
     _cancellation: &CancellationToken,
@@ -407,21 +432,21 @@ mod fvs_tests {
                 let socket = directories.runtime_dir().join("fvs2d.sock");
                 let context =
                     crate::Context::for_test(directories.clone(), Some(executable.into())).unwrap();
-                let bottle_path = directories.bottle(Uuid::new_v4());
-                std::fs::create_dir_all(&bottle_path).unwrap();
+                let owner_path = directories.data_dir().join("owner");
+                std::fs::create_dir_all(&owner_path).unwrap();
                 context
                     .fvs()
                     .await
                     .unwrap()
-                    .new_repository(&bottle_path, FVS_BLOCK_SIZE)
+                    .new_repository(&owner_path, FVS_BLOCK_SIZE)
                     .await
                     .unwrap();
-                let file = bottle_path.join("value");
+                let file = owner_path.join("value");
                 async_fs::write(&file, "before").await.unwrap();
 
                 let changed = file.clone();
                 let result = transact(
-                    &bottle_path,
+                    &owner_path,
                     &context,
                     async move {
                         async_fs::write(changed, "after").await?;
