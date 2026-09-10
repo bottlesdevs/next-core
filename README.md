@@ -35,11 +35,19 @@ The crate is centered around six types:
 
 Execution settings live in `BottleState::environment()` as an
 `EnvironmentConfig`. Each bottle retains a private environment on first runtime
-use; clones share it. Registered programs use the bottle's settings. Use
+use; clones share it. Creating the private environment resolves the runner,
+prepares the prefix, and connects or starts WineBridge. Attach-only operations
+connect without starting Wine or mounting storage. Its runner and bridge are
+always present; configuration remains in the owner. Registered programs
+use the bottle's settings. Use
 `Bottle::launch(ProgramSpec)` to run an unregistered executable and
 `Bottle::launch_program(uuid)` to run a registration. Both return `Operation<u32>`
 with the initial Windows process ID. Dropping the bottle only detaches; call
-`stop()` to stop its runtime.
+`stop()` to stop its runtime. Shutdown uses the saved runner and storage settings,
+with or without a cached environment. It requests bridge shutdown when reachable,
+then terminates and waits for wineserver before unmounting. Bridge discovery or
+shutdown failure does not skip wineserver shutdown; the cached environment is
+cleared only after shutdown and unmounting succeed.
 
 `Bottle::edit(|state| { /* changes */ Ok(()) })` returns an `Operation<()>`.
 The callback receives a draft of the latest state under the owner lock. Edit

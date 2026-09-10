@@ -2,7 +2,6 @@
 
 use std::ops::AsyncFnOnce;
 
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{Bottle, BottleState, error::BottleError};
@@ -16,10 +15,8 @@ use crate::{
 impl Bottle {
     /// Lists Wine DLL overrides, starting the environment if necessary.
     pub async fn dll_overrides(&self) -> Result<Vec<DllOverride>> {
-        self.with_environment(None, async |_, environment| {
-            environment.dll_overrides().await
-        })
-        .await
+        self.with_environment(async |environment| environment.dll_overrides().await)
+            .await
     }
 
     /// Sets a Wine DLL loading mode, starting the environment if necessary.
@@ -28,8 +25,11 @@ impl Bottle {
         dll: impl Into<String>,
         mode: DllOverrideMode,
     ) -> Result<()> {
+        if mode == DllOverrideMode::Unspecified {
+            return Err(crate::EnvironmentError::DllOverrideModeRequired.into());
+        }
         let dll = dll.into();
-        self.with_environment(None, async move |_, environment| {
+        self.with_environment(async move |environment| {
             environment.set_dll_override(dll, mode).await
         })
         .await
@@ -38,10 +38,8 @@ impl Bottle {
     /// Removes a Wine DLL override. Removing a missing override succeeds.
     pub async fn unset_dll_override(&self, dll: impl Into<String>) -> Result<()> {
         let dll = dll.into();
-        self.with_environment(None, async move |_, environment| {
-            environment.unset_dll_override(dll).await
-        })
-        .await
+        self.with_environment(async move |environment| environment.unset_dll_override(dll).await)
+            .await
     }
 
     /// Launches the latest registration with this bottle's execution settings.
@@ -70,31 +68,38 @@ impl Bottle {
         let bottle = self.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            bottle
-                .with_environment(Some(&cancellation), async |state, environment| {
-                    let program = resolve(state)?;
-                    environment.launch(&program, &cancellation).await
-                })
+            let mut cached = cancellation
+                .run_until_cancelled(bottle.0.environment.lock())
                 .await
+                .ok_or(Error::Cancelled)?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let state = bottle.state()?;
+            let program = resolve(&state)?;
+            let environment = Self::environment(&mut cached, &state, &bottle.0.cx).await?;
+            environment.launch_program(&program, &cancellation).await
         })
     }
 
     /// Returns Windows processes, starting the environment if necessary.
     pub async fn processes(&self) -> Result<Vec<Process>> {
-        self.with_environment(None, async |_, environment| environment.processes().await)
+        self.with_environment(async |environment| environment.processes().await)
             .await
     }
 
     /// Terminates a registered program's UUID-keyed process group.
     /// This starts the environment if necessary and leaves it available afterward.
     pub async fn kill_program(&self, id: Uuid) -> Result<()> {
-        self.with_environment(None, async move |state, environment| {
-            if state.program(id).is_none() {
-                return Err(BottleError::ProgramNotFound(id).into());
-            }
-            environment.kill(id).await
-        })
-        .await
+        let mut cached = self.0.environment.lock().await;
+        let state = self.state()?;
+        if state.program(id).is_none() {
+            return Err(BottleError::ProgramNotFound(id).into());
+        }
+        Self::environment(&mut cached, &state, &self.0.cx)
+            .await?
+            .kill(id)
+            .await
     }
 
     /// Stops WineBridge, wineserver and storage, then clears the cached environment.
@@ -179,40 +184,36 @@ impl Bottle {
         cx: &Context,
         cached: &mut Option<Environment>,
     ) -> Result<()> {
-        let environment = cached.get_or_insert_with(|| Self::new_environment(state, cx));
-        environment.stop().await?;
+        Environment::stop(&state.environment, &cx.directories().bottle(state.id), cx).await?;
         *cached = None;
         Ok(())
     }
 
-    fn new_environment(state: &BottleState, cx: &Context) -> Environment {
-        Environment::new(
-            state.environment.clone(),
-            cx.directories().bottle(state.id),
-            cx.clone(),
-        )
+    async fn environment<'a>(
+        cached: &'a mut Option<Environment>,
+        state: &BottleState,
+        cx: &Context,
+    ) -> Result<&'a Environment> {
+        if cached.is_none() {
+            *cached = Some(
+                Environment::attach_or_start(
+                    &state.environment,
+                    cx.directories().bottle(state.id),
+                    cx.clone(),
+                )
+                .await?,
+            );
+        }
+        Ok(cached.as_ref().expect("environment initialized"))
     }
 
-    async fn with_environment<F, T>(
-        &self,
-        cancellation: Option<&CancellationToken>,
-        work: F,
-    ) -> Result<T>
+    async fn with_environment<F, T>(&self, work: F) -> Result<T>
     where
-        F: for<'a, 'b> AsyncFnOnce(&'a BottleState, &'b mut Environment) -> Result<T>,
+        F: for<'a> AsyncFnOnce(&'a Environment) -> Result<T>,
     {
-        let mut cached = match cancellation {
-            Some(cancellation) => cancellation
-                .run_until_cancelled(self.0.environment.lock())
-                .await
-                .ok_or(Error::Cancelled)?,
-            None => self.0.environment.lock().await,
-        };
-        if cancellation.is_some_and(CancellationToken::is_cancelled) {
-            return Err(Error::Cancelled);
-        }
+        let mut cached = self.0.environment.lock().await;
         let state = self.state()?;
-        let environment = cached.get_or_insert_with(|| Self::new_environment(&state, &self.0.cx));
-        work(&state, environment).await
+        let environment = Self::environment(&mut cached, &state, &self.0.cx).await?;
+        work(environment).await
     }
 }

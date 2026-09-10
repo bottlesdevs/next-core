@@ -50,32 +50,22 @@ impl Bottle {
                         return Err(Error::Cancelled);
                     }
                     if draft.environment != previous {
-                        let environment = cached.get_or_insert_with(|| {
-                            crate::environment::Environment::new(
-                                previous,
-                                cx.directories().bottle(draft.id),
-                                cx,
-                            )
-                        });
-                        environment.ensure_stopped().await?;
+                        if cached.is_some() {
+                            return Err(crate::EnvironmentError::MustBeStopped.into());
+                        }
+                        crate::environment::reconcile(
+                            &previous,
+                            &mut draft.environment,
+                            &cx.directories().bottle(draft.id),
+                            &cx,
+                            &bottle.0.addons,
+                            &progress,
+                            &cancellation,
+                        )
+                        .await?;
                         if cancellation.is_cancelled() {
                             return Err(Error::Cancelled);
                         }
-                        // Failed reconciliation must not retain its candidate configuration.
-                        let mut environment = cached.take().expect("environment initialized");
-                        environment
-                            .reconcile(
-                                draft.environment.clone(),
-                                &bottle.0.addons,
-                                &progress,
-                                &cancellation,
-                            )
-                            .await?;
-                        if cancellation.is_cancelled() {
-                            return Err(Error::Cancelled);
-                        }
-                        draft.environment = environment.config.clone();
-                        *cached = Some(environment);
                     }
                     Ok(())
                 })

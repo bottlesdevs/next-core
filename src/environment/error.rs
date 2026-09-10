@@ -5,9 +5,7 @@ use uuid::Uuid;
 /// Failures in shared execution configuration and operations.
 #[derive(Debug, Error)]
 pub enum EnvironmentError {
-    #[error(
-        "stop the environment before changing its settings; if a previous operation failed, call stop() and retry"
-    )]
+    #[error("stop the environment before changing its settings")]
     MustBeStopped,
     #[error("invalid environment edit: {0}")]
     InvalidEdit(&'static str),
