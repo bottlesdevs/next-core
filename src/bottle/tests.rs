@@ -1,3 +1,6 @@
+#[cfg(feature = "fvs")]
+use crate::environment::VirgoManager;
+
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -30,6 +33,8 @@ async fn deleted_bottle() -> (Bottle, Directories) {
         published,
         control: Mutex::new(()),
         id: uuid::Uuid::new_v4(),
+        #[cfg(feature = "fvs")]
+        virgo: Arc::new(VirgoManager::new(context.clone(), addons.clone())),
         cx: context,
         addons,
     }));
@@ -102,7 +107,16 @@ fn load_skips_corrupt_bottles() {
         )
         .unwrap();
         let addons = Addons::load(context.clone(), None, None).await.unwrap();
-        let manager = BottleManager::load(context, addons).await.unwrap();
+        #[cfg(feature = "fvs")]
+        let virgo = Arc::new(VirgoManager::new(context.clone(), addons.clone()));
+        let manager = BottleManager::load(
+            context,
+            addons,
+            #[cfg(feature = "fvs")]
+            virgo,
+        )
+        .await
+        .unwrap();
 
         assert!(manager.list().is_empty());
         std::fs::remove_dir_all(directories.data_dir()).unwrap();
@@ -170,7 +184,14 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
             addons.remove_component(unknown).await,
             Err(Error::Addon(AddonError::NotFound(id))) if id == unknown
         ));
-        let manager = BottleManager::new(context, addons);
+        #[cfg(feature = "fvs")]
+        let virgo = Arc::new(VirgoManager::new(context.clone(), addons.clone()));
+        let manager = BottleManager::new(
+            context,
+            addons,
+            #[cfg(feature = "fvs")]
+            virgo,
+        );
 
         let error = match manager
             .create("test", PrefixBackend::Standard, runner_id)

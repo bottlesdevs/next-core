@@ -51,7 +51,7 @@ impl Environment {
         config: &EnvironmentConfig,
         root: &Path,
         cx: &Context,
-        addons: &Addons,
+        #[cfg(feature = "fvs")] virgo: &VirgoManager,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<Self> {
@@ -80,7 +80,8 @@ impl Environment {
                 runner.as_ref(),
                 root,
                 cx,
-                addons,
+                #[cfg(feature = "fvs")]
+                virgo,
                 progress,
                 cancellation,
             )

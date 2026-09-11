@@ -1,4 +1,7 @@
 #[cfg(feature = "fvs")]
+use crate::environment::VirgoManager;
+
+#[cfg(feature = "fvs")]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -43,7 +46,15 @@ impl Bottles {
             Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
         let context = Context::new(directories, http_client, fvs2d)?;
         let addons = Addons::load(context.clone(), component_catalog, dependency_catalog).await?;
-        let bottles = BottleManager::load(context.clone(), addons.clone()).await?;
+        #[cfg(feature = "fvs")]
+        let virgo = Arc::new(VirgoManager::new(context.clone(), addons.clone()));
+        let bottles = BottleManager::load(
+            context.clone(),
+            addons.clone(),
+            #[cfg(feature = "fvs")]
+            virgo,
+        )
+        .await?;
         let library = Library::new(bottles.clone(), profiles.clone(), plugins.clone());
 
         Ok(Self {

@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::{VirgoLayer, VirgoManager, cache};
 use crate::{
-    AddonError, Addons, Context, EnvVars, EnvironmentError, Progress, Slot, Stage,
+    AddonError, EnvVars, EnvironmentError, Progress, Slot, Stage,
     addons::{InstallInputs, execute},
     error::{Error, Result},
 };
@@ -16,12 +16,10 @@ impl VirgoManager {
         &self,
         id: Uuid,
         base: &VirgoLayer,
-        addons: &Addons,
-        cx: &Context,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
-        let destination = self.root.join("addons").join(id.to_string());
+        let destination = self.root().join("addons").join(id.to_string());
         if let Some(artifact) = cache::load(&destination, Some(id)).await? {
             return Ok(artifact);
         }
@@ -32,33 +30,37 @@ impl VirgoManager {
         if let Some(artifact) = cache::load(&destination, Some(id)).await? {
             return Ok(artifact);
         }
-        let component = addons.component(id);
-        let dependency = addons.dependency(id);
+        let component = self.addons.component(id);
+        let dependency = self.addons.dependency(id);
         let (payload, resources) = if let Some(release) = &component {
-            let payload = release.path(cx.directories());
+            let payload = release.path(self.cx.directories());
             release.validate(&payload).await?;
             (payload, release.resources())
         } else if let Some(release) = &dependency {
-            let payload = release.path(cx.directories());
+            let payload = release.path(self.cx.directories());
             release.validate(&payload).await?;
             (payload, release.resources())
         } else {
             return Err(AddonError::NotFound(id).into());
         };
-        let soda = addons
+        let soda = self
+            .addons
             .component(base.id)
             .ok_or(AddonError::NotFound(base.id))?;
-        let runner = soda.addon().load_runner(cx.directories(), None).await?;
-        let winebridge = addons
+        let runner = soda
+            .addon()
+            .load_runner(self.cx.directories(), None)
+            .await?;
+        let winebridge = self
+            .addons
             .latest_component(Slot::WineBridge)
             .ok_or(EnvironmentError::ComponentNotInstalled(Slot::WineBridge))?
-            .path(cx.directories());
+            .path(self.cx.directories());
         self.build(
             id,
             &destination,
             runner.as_ref(),
             base,
-            cx,
             cancellation,
             |prefix, runner| async move {
                 let mut env_vars = EnvVars::default();

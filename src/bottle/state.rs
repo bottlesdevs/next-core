@@ -1,5 +1,8 @@
 //! Persisted bottle state and the shared bottle handle.
 
+#[cfg(feature = "fvs")]
+use crate::environment::VirgoManager;
+
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
@@ -77,6 +80,8 @@ pub(crate) struct BottleInner {
     pub(crate) cx: Context,
     /// Shared addon registry scoped to the owning manager.
     pub(crate) addons: Addons,
+    #[cfg(feature = "fvs")]
+    pub(crate) virgo: Arc<VirgoManager>,
 }
 
 /// A live, shared handle to one bottle.
@@ -110,6 +115,7 @@ impl Bottle {
         environment: EnvironmentConfig,
         context: Context,
         addons: Addons,
+        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
     ) -> Result<Self> {
         let state = BottleState {
             id,
@@ -117,13 +123,24 @@ impl Bottle {
             environment,
             programs: HashMap::new(),
         };
-        let bottle = Self::from_state(state, context, addons)?;
+        let bottle = Self::from_state(
+            state,
+            context,
+            addons,
+            #[cfg(feature = "fvs")]
+            virgo,
+        )?;
         bottle.save().await?;
         Ok(bottle)
     }
 
     /// Reconstructs a live handle after validating its addon requirements.
-    pub(crate) fn from_state(state: BottleState, cx: Context, addons: Addons) -> Result<Self> {
+    pub(crate) fn from_state(
+        state: BottleState,
+        cx: Context,
+        addons: Addons,
+        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
+    ) -> Result<Self> {
         state.environment.validate_requirements()?;
         let id = state.id;
         let (published, _) = watch::channel(Some(Arc::new(state)));
@@ -133,6 +150,8 @@ impl Bottle {
             control: Mutex::new(()),
             cx,
             addons,
+            #[cfg(feature = "fvs")]
+            virgo,
         })))
     }
 

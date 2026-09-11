@@ -61,11 +61,11 @@ Backends stop their initialization and installer processes through shared runtim
 helpers, without invoking owner lifecycle operations.
 
 Process inspection and group kill attach to an existing runtime without starting
-Wine or inspecting FVS mounts. Startup still checks existing Virgo mounts against
-resolved layers and the private upper when preparing storage. Dropping handles leaves
-Wine running. Explicit `stop()` waits
+Wine or inspecting FVS mounts. Successful attachment bypasses preparation. Otherwise,
+startup stops Wine and releases existing storage before preparing and mounting the
+selected composition. Dropping handles leaves Wine running. Explicit `stop()` waits
 for wineserver before unmounting, even when WineBridge cannot be reached.
-Unreachable discovery and mismatched mounts require `stop()` before retrying.
+Unreachable discovery requires `stop()` before retrying.
 
 Initialization and recipes run without game wrappers. Cancellation finishes cleanup
 before returning; failed shutdown retains storage. Temporary cache failures can
@@ -173,8 +173,11 @@ identity: completed caches survive runner and settings changes. Runner
 adapters are built using the selected runner over the pinned base. Adapter and
 addon builds record registry changes as patches and exclude full hives from
 their committed filesystem layers. Shared construction is serialized within one
-core instance. A `VirgoManager` held by the shared context owns artifact paths,
-staging, and the build mutex; it has no owner configuration or retained service handles.
+core instance. `Bottles::open` constructs one shared `VirgoManager` and passes it to
+the bottle manager and bottle handles. It retains `Context` and `Addons`, deriving
+artifact paths from that context and resolving sources through that addon manager.
+It owns staging and the build mutex, and retains no owner configuration.
+The context does not retain the manager, so its addon handle creates no ownership cycle.
 Constructing it does not access storage or start FVS. The context separately owns
 the lazy FVS connection used by both Virgo and Standard snapshots. Adapter and addon
 builds share the same shutdown, diff, unmount, and publication workflow. Standard

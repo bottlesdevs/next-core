@@ -5,7 +5,6 @@ use uuid::Uuid;
 
 use super::{VirgoLayer, VirgoManager, cache};
 use crate::{
-    Context,
     error::{Error, Result},
     runner::Runner,
 };
@@ -16,10 +15,9 @@ impl VirgoManager {
         id: Uuid,
         runner: &dyn Runner,
         base: &VirgoLayer,
-        cx: &Context,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
-        let destination = self.root.join("adapters").join(id.to_string());
+        let destination = self.root().join("adapters").join(id.to_string());
         if let Some(artifact) = cache::load(&destination, Some(id)).await? {
             return Ok(artifact);
         }
@@ -35,7 +33,6 @@ impl VirgoManager {
             &destination,
             runner,
             base,
-            cx,
             cancellation,
             |prefix, runner| async move { runner.wineboot(&prefix, "--init").await },
         )
