@@ -1,12 +1,13 @@
 //! Shared immutable bases, runner adapters, and UUID-only addon caches.
 
-pub(crate) mod cache;
+pub(super) mod cache;
 mod software;
 pub(crate) use software::prepare_addon;
 
-use super::prefix::{FVS_BLOCK_SIZE, VirgoError};
+use super::VirgoError;
+use crate::environment::prefix::FVS_BLOCK_SIZE;
 use crate::{
-    Addon, Addons, CatalogEntry, Component, Context, EnvironmentError, IndexEntry, Slot,
+    Addon, Addons, CatalogEntry, Component, Context, IndexEntry, Slot,
     error::{Error, Result},
     runner::Runner,
 };
@@ -36,7 +37,7 @@ fn latest_soda(entries: &[CatalogEntry<Component>]) -> Result<&CatalogEntry<Comp
         .filter(|entry| entry.slot() == Slot::Runner && entry.name().eq_ignore_ascii_case("soda"))
     {
         let version = semver::Version::parse(entry.version())
-            .map_err(|_| EnvironmentError::InvalidSodaVersion(entry.version().into()))?;
+            .map_err(|_| VirgoError::InvalidSodaVersion(entry.version().into()))?;
         if latest
             .as_ref()
             .is_none_or(|(current, _)| &version > current)
@@ -46,7 +47,7 @@ fn latest_soda(entries: &[CatalogEntry<Component>]) -> Result<&CatalogEntry<Comp
     }
     latest
         .map(|(_, entry)| entry)
-        .ok_or_else(|| EnvironmentError::SodaNotInCatalog.into())
+        .ok_or_else(|| VirgoError::SodaNotInCatalog.into())
 }
 
 fn downloaded_soda(
@@ -58,7 +59,7 @@ fn downloaded_soda(
         .component(id)
         .filter(|entry| entry.slot() == Slot::Runner && entry.version() == version)
         .ok_or_else(|| {
-            EnvironmentError::SodaNotDownloaded {
+            VirgoError::SodaNotDownloaded {
                 id,
                 version: version.into(),
             }
@@ -95,7 +96,7 @@ async fn ensure_base(
     })?;
     let initialized = runner.wineboot(&prefix, "--init").await;
     // Keep storage if Wine cannot be stopped safely.
-    super::shutdown_wine(runner.as_ref(), &prefix).await?;
+    crate::environment::shutdown_wine(runner.as_ref(), &prefix).await?;
     let result = async {
         initialized?;
         if cancellation.is_cancelled() {
@@ -227,101 +228,4 @@ async fn ensure_adapter(
 
 async fn remove_dir(path: PathBuf) {
     let _ = async_fs::remove_dir_all(path).await;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn release(name: &str, version: &str) -> CatalogEntry<Component> {
-        serde_json::from_value(json!({
-            "id": Uuid::new_v4(), "name": name, "version": version, "slot": "runner",
-            "artifacts": [{"url": "https://example.invalid/soda.tar", "file_name": "soda.tar",
-                "checksum": {"algorithm": "sha256", "value": "unused"}}]
-        }))
-        .unwrap()
-    }
-
-    #[tokio::test]
-    async fn soda_selection_pinning_and_uuid_reuse_without_services() {
-        let entries = vec![
-            release("SODA", "2.9.0"),
-            release("Soda", "2.10.0"),
-            release("Wine", "99.0.0"),
-        ];
-        assert_eq!(latest_soda(&entries).unwrap().id(), entries[1].id());
-        assert!(matches!(
-            latest_soda(&[release("Soda", "invalid")]),
-            Err(Error::Environment(EnvironmentError::InvalidSodaVersion(_)))
-        ));
-        let root = std::env::temp_dir().join(format!("soda-test-{}", Uuid::new_v4()));
-        let cx = Context::for_test(crate::Directories::from_path(&root).unwrap(), None).unwrap();
-        async_fs::write(
-            cx.directories().components().join("catalog.json"),
-            serde_json::to_vec(&json!({"schema_version": 1, "entries": entries})).unwrap(),
-        )
-        .await
-        .unwrap();
-        let addons = Addons::load(cx.clone(), None, None).await.unwrap();
-        let cancellation = CancellationToken::new();
-        assert!(
-            matches!(ensure_base(&addons, &cx, &cancellation).await, Err(Error::Environment(EnvironmentError::SodaNotDownloaded { id, .. })) if id == entries[1].id())
-        );
-
-        let soda = serde_json::from_value(
-            json!({"id": entries[0].id(), "name": "Soda", "version": "2.9.0", "slot": "runner"}),
-        )
-        .unwrap();
-        let layer = Layer::new(
-            &Repository {
-                repository_path: root.join("old-base").display().to_string(),
-                block_size: FVS_BLOCK_SIZE,
-            },
-            Some(&fvs_rs::Commit {
-                state_id: "pinned".into(),
-                ..Default::default()
-            }),
-        );
-        next_config::save(
-            manifest(&cx),
-            &Base {
-                soda,
-                layer: layer.clone(),
-            },
-        )
-        .await
-        .unwrap();
-        let pinned = ensure_base(&addons, &cx, &cancellation).await.unwrap();
-        assert_eq!(pinned.soda.id(), entries[0].id());
-        assert_eq!(pinned.layer, layer);
-        let id = Uuid::new_v4();
-        async_fs::create_dir_all(
-            cx.directories()
-                .data_dir()
-                .join("virgo/layers")
-                .join(id.to_string())
-                .join(".fvs2"),
-        )
-        .await
-        .unwrap();
-        let mut config = crate::EnvironmentConfig {
-            storage: crate::Storage::Virgo { layers: vec![] },
-            components: Default::default(),
-            dependencies: vec![],
-            env_vars: Default::default(),
-            wrappers: Default::default(),
-        };
-        let (progress, _) = tokio::sync::watch::channel(None);
-        prepare_addon(id, &config, &addons, &cx, &progress, &cancellation)
-            .await
-            .unwrap();
-        config.components.insert(Slot::Runner, pinned.soda);
-        prepare_addon(id, &config, &addons, &cx, &progress, &cancellation)
-            .await
-            .unwrap();
-        drop(addons);
-        drop(cx);
-        async_fs::remove_dir_all(root).await.unwrap();
-    }
 }

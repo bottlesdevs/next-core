@@ -8,7 +8,7 @@ use strum::IntoEnumIterator;
 use uuid::Uuid;
 
 /// Execution settings embedded in a bottle or standalone program's saved state.
-/// Storage retains resolved Virgo layers; live runtime resources are never persisted.
+/// Virgo layers and recipe variables are derived from these selections on demand.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EnvironmentConfig {
     pub storage: Storage,
@@ -23,22 +23,18 @@ pub struct EnvironmentConfig {
 }
 
 impl EnvironmentConfig {
-    #[cfg(feature = "fvs")]
-    pub(crate) fn ordered_addons(&self) -> impl Iterator<Item = Uuid> + '_ {
+    /// Prefix-contributing components in fixed slot order.
+    pub(crate) fn ordered_components(&self) -> impl Iterator<Item = &Addon<Component>> {
         Slot::iter()
             .filter(|slot| !slot.is_runtime())
             .filter_map(|slot| self.component(slot))
-            .map(Addon::id)
-            .chain(self.dependencies.iter().map(Addon::id))
     }
 
     /// Derives recipe variables from selections and UUID-pinned local dependency recipes.
     pub(crate) fn addon_env_vars(&self, addons: &crate::Addons) -> Result<EnvVars> {
         let mut vars = EnvVars::default();
-        for slot in Slot::iter().filter(|slot| !slot.is_runtime()) {
-            if self.component(slot).is_some() {
-                crate::addons::replay_env_vars(&mut vars, crate::addons::recipe_steps(slot));
-            }
+        for addon in self.ordered_components() {
+            crate::addons::replay_env_vars(&mut vars, crate::addons::recipe_steps(addon.slot()));
         }
         for addon in &self.dependencies {
             let entry = addons

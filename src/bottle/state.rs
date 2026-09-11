@@ -27,7 +27,7 @@ use crate::{Context, EnvironmentConfig, addons::Addons, error::Result};
 /// snapshot was published. Obtain another snapshot to observe later changes.
 /// Component locations are derived from their slot and version.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Config)]
-#[config(version = 2)]
+#[config(version = 1)]
 pub struct BottleState {
     pub(crate) id: Uuid,
     pub name: String,

@@ -77,7 +77,7 @@ impl Bottle {
             }
             let state = bottle.state()?;
             let program = resolve(&state)?;
-            let environment = bottle.attach_or_start(&cancellation).await?;
+            let environment = bottle.attach_or_start(&progress, &cancellation).await?;
             environment.launch_program(&program, &cancellation).await
         })
     }
@@ -189,9 +189,10 @@ impl Bottle {
         Environment::stop(&state.environment, &cx.directories().bottle(state.id), cx).await
     }
 
-    // Caller holds the owner lock. Startup uses the saved layer references.
+    // Caller holds the owner lock. Attachment leaves a running environment untouched.
     async fn attach_or_start(
         &self,
+        progress: &tokio::sync::watch::Sender<Option<Progress>>,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<Environment> {
         let state = self.state()?;
@@ -199,20 +200,13 @@ impl Bottle {
         if let Some(environment) = Environment::try_attach(&root).await? {
             return Ok(environment);
         }
-        let runner = state
-            .environment
-            .runner()
-            .load_runner(self.0.cx.directories(), state.environment.umu())
-            .await?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
         Environment::start(
             &state.environment,
-            runner.as_ref(),
             &root,
             &self.0.cx,
             &self.0.addons,
+            progress,
+            cancellation,
         )
         .await
     }
@@ -222,8 +216,9 @@ impl Bottle {
         F: for<'a> AsyncFnOnce(&'a Environment) -> Result<T>,
     {
         let _control = self.0.control.lock().await;
+        let (progress, _) = tokio::sync::watch::channel(None);
         let environment = self
-            .attach_or_start(&tokio_util::sync::CancellationToken::new())
+            .attach_or_start(&progress, &tokio_util::sync::CancellationToken::new())
             .await?;
         work(&environment).await
     }

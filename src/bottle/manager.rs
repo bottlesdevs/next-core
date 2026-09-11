@@ -16,8 +16,6 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
-#[cfg(feature = "fvs")]
-use crate::environment::prefix::FVS_BLOCK_SIZE;
 use crate::{
     Context, EnvironmentConfig, EnvironmentError, Operation, Progress, Stage, Storage,
     addons::{Addon, Addons, Requirement, Slot},
@@ -146,7 +144,9 @@ impl BottleManager {
     /// The newest downloaded WineBridge is selected automatically. A runner
     /// requiring UMU also receives the newest downloaded UMU release. No addon
     /// is downloaded implicitly. The runner UUID must identify a downloaded
-    /// runner component. Standard creation does not require FVS. Failures, and
+    /// runner component. Standard creation initializes Wine without FVS. Virgo
+    /// creation only saves selections and creates private storage directories;
+    /// artifacts and registry data are prepared before startup. Failures, and
     /// cancellation observed while the operation remains polled, remove the
     /// partially-created bottle directory on a best-effort basis. Dropping a
     /// started operation or a cleanup failure can leave a directory that a
@@ -201,9 +201,6 @@ impl BottleManager {
                 .into());
             }
             let winebridge = winebridge.unwrap(); // Safe to unwrap since we just checked it above
-            let loaded_runner = runner_component
-                .load_runner(cx.directories(), umu.as_deref())
-                .await?;
             let id = Uuid::new_v4();
             let bottle_path = cx.directories().bottle(id);
 
@@ -218,48 +215,29 @@ impl BottleManager {
             if let Some(umu) = umu {
                 components.insert(Slot::Umu, Addon::from(umu.as_ref()));
             }
-            let mut config = EnvironmentConfig {
+            let config = EnvironmentConfig {
                 storage,
                 components,
                 dependencies: Vec::new(),
                 env_vars: Default::default(),
                 wrappers: Default::default(),
             };
-            #[cfg(feature = "fvs")]
-            if let Storage::Virgo { layers } = &mut config.storage {
-                layers.clear();
-            }
-            Environment::prepare(
-                &mut config,
-                loaded_runner.as_ref(),
-                &addons,
-                &cx,
-                &cancellation,
-            )
-            .await?;
             prefix::create(&config.storage, &bottle_path).await?;
             // Initialization may retain live storage on failure; keep it outside the removal path.
             if matches!(config.storage, Storage::Standard) {
+                let loaded_runner = config
+                    .runner()
+                    .load_runner(cx.directories(), config.umu())
+                    .await?;
                 Environment::initialize(loaded_runner.as_ref(), &bottle_path.join("prefix"))
                     .await?;
             }
             let result = async {
-                #[cfg(feature = "fvs")]
-                if let Storage::Virgo { layers } = &config.storage {
-                    crate::environment::registry::compose(&bottle_path, layers, &[], &cx).await?;
-                }
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
                 let bottle = Bottle::new(id, name, config, cx.clone(), addons.clone()).await?;
                 progress.send_replace(Some(Progress::new(Stage::Configuring)));
-                #[cfg(feature = "fvs")]
-                if matches!(&bottle.state()?.environment.storage, Storage::Virgo { .. }) {
-                    cx.fvs()
-                        .await?
-                        .new_repository(&bottle_path, FVS_BLOCK_SIZE)
-                        .await?;
-                }
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }

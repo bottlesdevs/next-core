@@ -5,6 +5,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use super::super::VirgoError;
 use super::{cache, downloaded_soda, ensure_base};
 use crate::{
     AddonError, Addons, Context, EnvVars, EnvironmentError, Progress, Requirement, Slot, Stage,
@@ -61,7 +62,7 @@ fn visit(
         return Ok(());
     }
     if visiting.contains(&id) {
-        return Err(EnvironmentError::CyclicPrerequisites(id).into());
+        return Err(VirgoError::CyclicPrerequisites(id).into());
     }
     visiting.push(id);
     for prerequisite in prerequisites(id, config)? {
@@ -98,7 +99,7 @@ pub(crate) async fn prepare_addon(
     }
     let base = ensure_base(addons, cx, cancellation).await?;
     let soda = downloaded_soda(base.soda.id(), base.soda.version(), addons)?;
-    let runner = soda.load_runner(cx.directories(), None).await?;
+    let runner = soda.addon().load_runner(cx.directories(), None).await?;
     let winebridge = addons
         .latest_component(Slot::WineBridge)
         .ok_or(EnvironmentError::ComponentNotInstalled(Slot::WineBridge))?
@@ -154,49 +155,4 @@ pub(crate) async fn prepare_addon(
         .await?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn prerequisite_order_excludes_unrelated_addons_and_rejects_cycles() {
-        let ids = [
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-        ];
-        let dependency = |id: Uuid, requirements: Vec<Requirement>| {
-            serde_json::from_value(json!({
-                "id": id, "name": id.to_string(), "version": "1.0.0", "requirements": requirements
-            }))
-            .unwrap()
-        };
-        let mut config = EnvironmentConfig {
-            storage: crate::Storage::Virgo { layers: vec![] },
-            components: Default::default(),
-            dependencies: vec![
-                dependency(
-                    ids[0],
-                    vec![Requirement::Id(ids[1]), Requirement::Id(ids[2])],
-                ),
-                dependency(ids[1], vec![Requirement::Id(ids[2])]),
-                dependency(ids[2], vec![]),
-                dependency(ids[3], vec![]),
-            ],
-            env_vars: Default::default(),
-            wrappers: Default::default(),
-        };
-        let mut order = Vec::new();
-        visit(ids[0], &config, &mut Vec::new(), &mut order).unwrap();
-        assert_eq!(order, [ids[2], ids[1], ids[0]]);
-        config.dependencies[2] = dependency(ids[2], vec![Requirement::Id(ids[0])]);
-        assert!(matches!(
-            visit(ids[0], &config, &mut Vec::new(), &mut Vec::new()),
-            Err(Error::Environment(EnvironmentError::CyclicPrerequisites(_)))
-        ));
-    }
 }

@@ -17,8 +17,8 @@ impl Bottle {
     /// stop first. Storage is fixed; Standard dependencies may only be appended.
     /// Addon selections must be downloaded.
     /// Standard mutations write directly; failed recipes can leave partial effects.
-    /// Virgo prefix mutations checkpoint data and configuration together and restore both
-    /// on failure. Settings-only edits use atomic configuration saving.
+    /// Virgo edits save selections atomically; preparation happens before startup.
+    /// A successful edit does not guarantee that preparation will succeed.
     pub fn edit(
         &self,
         callback: impl FnOnce(&mut BottleState) -> Result<()> + Send + 'static,
@@ -54,7 +54,7 @@ impl Bottle {
                 program.validate()?;
             }
             draft.environment.validate_requirements()?;
-            let prefix_changed = crate::environment::validate_edit(
+            crate::environment::validate_edit(
                 &previous.environment,
                 &draft.environment,
                 &bottle.0.addons,
@@ -72,51 +72,21 @@ impl Bottle {
                     return Err(crate::EnvironmentError::MustBeStopped.into());
                 }
                 crate::environment::Environment::stop(&previous.environment, &root, cx).await?;
-            }
-            #[cfg(feature = "fvs")]
-            let checkpoint = if prefix_changed
-                && matches!(previous.environment.storage, crate::Storage::Virgo { .. })
-            {
-                Some(
-                    crate::environment::history::capture(
-                        &root,
-                        crate::environment::history::AUTO_CHECKPOINT_MESSAGE.into(),
-                        Stage::Checkpointing,
-                        cx,
-                        &progress,
-                    )
-                    .await?,
+                crate::environment::prefix::reconcile(
+                    &previous.environment,
+                    &draft.environment,
+                    &root,
+                    cx,
+                    &bottle.0.addons,
+                    &progress,
+                    &cancellation,
                 )
-            } else {
-                None
-            };
-            let result = async {
-                if prefix_changed {
-                    crate::environment::reconcile(
-                        &previous.environment,
-                        &mut draft.environment,
-                        &cx.directories().bottle(draft.id),
-                        cx,
-                        &bottle.0.addons,
-                        &progress,
-                        &cancellation,
-                    )
-                    .await?;
-                }
-                if cancellation.is_cancelled() {
-                    return Err(Error::Cancelled);
-                }
-                Self::save_state(&draft, cx).await
+                .await?;
             }
-            .await;
-            #[cfg(feature = "fvs")]
-            let result = if let Some(checkpoint) = checkpoint {
-                crate::environment::history::recover(result, &root, &checkpoint, cx, &progress)
-                    .await
-            } else {
-                result
-            };
-            result?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            Self::save_state(&draft, cx).await?;
             bottle.publish(draft);
             Ok(())
         })
