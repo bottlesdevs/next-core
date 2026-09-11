@@ -1,6 +1,6 @@
 //! Compose the managed registry baseline, then replay private changes over it.
 
-use super::{artifacts::cache, prefix::VirgoError};
+use super::{VirgoError, artifacts::cache};
 use crate::{
     Context,
     error::{Error, Result},
@@ -90,7 +90,7 @@ pub(crate) async fn compose(
     client
         .unmount(&mount, UnmountMode::Normal)
         .await
-        .map_err(|source| super::EnvironmentError::Cleanup {
+        .map_err(|source| crate::EnvironmentError::Cleanup {
             prefix,
             source: Box::new(source.into()),
         })?;

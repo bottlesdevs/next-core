@@ -1,25 +1,22 @@
 //! Shared execution configuration and temporary connections to a running environment.
 
 #[cfg(feature = "fvs")]
-pub(crate) mod artifacts;
-#[cfg(feature = "fvs")]
 pub(crate) mod history;
-#[cfg(feature = "fvs")]
-pub(crate) mod registry;
 
 mod config;
 mod error;
 pub(crate) mod prefix;
 mod software;
 
-pub(crate) use software::{reconcile, validate_edit};
+pub(crate) use software::validate_edit;
 
 use std::path::Path;
 
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Context, ProgramSpec,
+    Context, ProgramSpec, Progress,
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
     runner::Runner,
@@ -38,38 +35,6 @@ pub(crate) struct Environment {
 }
 
 impl Environment {
-    /// Derives the immutable stack from configuration while the owner is stopped.
-    pub(crate) async fn prepare(
-        config: &mut EnvironmentConfig,
-        runner: &dyn Runner,
-        addons: &crate::Addons,
-        cx: &Context,
-        cancellation: &CancellationToken,
-    ) -> Result<()> {
-        let _ = (runner, addons, cx, cancellation);
-        #[cfg(feature = "fvs")]
-        let ids: Vec<_> = config.ordered_addons().collect();
-        match &mut config.storage {
-            Storage::Standard => Ok(()),
-            #[cfg(feature = "fvs")]
-            Storage::Virgo { layers } => {
-                let mut base = artifacts::base_layers(
-                    runner,
-                    &config.components[&crate::Slot::Runner].id().to_string(),
-                    addons,
-                    cx,
-                    cancellation,
-                )
-                .await?;
-                for id in ids {
-                    base.push(artifacts::cache::layer(id, cx).await?);
-                }
-                *layers = base;
-                Ok(())
-            }
-        }
-    }
-
     pub(crate) async fn initialize(runner: &dyn Runner, prefix: &Path) -> Result<()> {
         let initialized = runner.wineboot(prefix, "--init").await;
         shutdown_wine(runner, prefix).await?;
@@ -78,27 +43,44 @@ impl Environment {
 
     /// Stops Wine and unmounts storage without requiring a live handle or bridge.
     pub(crate) async fn stop(config: &EnvironmentConfig, root: &Path, cx: &Context) -> Result<()> {
+        let prefix = root.join("prefix");
+        // A lazily created Virgo owner has no runtime mountpoint yet.
+        if !crate::utils::exists(&prefix).await? {
+            return Ok(());
+        }
         let runner = config
             .runner()
             .load_runner(cx.directories(), config.umu())
             .await?;
-        shutdown_wine(runner.as_ref(), &root.join("prefix")).await?;
+        shutdown_wine(runner.as_ref(), &prefix).await?;
         prefix::stop(&config.storage, root, cx).await
     }
 
-    /// Starts from references already resolved and published by the owner.
+    /// Materializes pending selections, then mounts and starts the selected runtime.
     pub(crate) async fn start(
         config: &EnvironmentConfig,
-        runner: &dyn Runner,
         root: &Path,
         cx: &Context,
         addons: &crate::Addons,
+        progress: &watch::Sender<Option<Progress>>,
+        cancellation: &CancellationToken,
     ) -> Result<Self> {
         let env_vars = config.addon_env_vars(addons)?;
-        prefix::prepare(&config.storage, root, cx).await?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        Self::stop(config, root, cx).await?;
+        let runner = config
+            .runner()
+            .load_runner(cx.directories(), config.umu())
+            .await?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        prefix::prepare(config, root, cx, addons, progress, cancellation).await?;
         let prefix = root.join("prefix");
         let command = config.wrappers.apply(WineBridgeClient::command(
-            runner,
+            runner.as_ref(),
             &prefix,
             config.winebridge().path(cx.directories()),
             env_vars.iter().chain(config.env_vars.iter()),

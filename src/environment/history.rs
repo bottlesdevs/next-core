@@ -1,4 +1,4 @@
-//! Owner history includes saved configuration, resolved layers, and persistent data.
+//! Owner history includes selected configuration, the registry baseline, and persistent data.
 //! Callers hold owner coordination and stop Wine and mounts before using it.
 
 use super::prefix::FVS_BLOCK_SIZE;
@@ -38,6 +38,7 @@ pub(crate) fn repository(root: &Path) -> Repository {
 pub(crate) async fn capture(
     root: &Path,
     message: String,
+    allow_empty: bool,
     stage: Stage,
     cx: &Context,
     progress: &watch::Sender<Option<Progress>>,
@@ -49,7 +50,9 @@ pub(crate) async fn capture(
     if !crate::utils::exists(&root.join(".fvs2")).await? {
         client.new_repository(root, FVS_BLOCK_SIZE).await?;
     }
-    let stream = client.commit_stream(&repository(root), message).await?;
+    let stream = client
+        .commit_stream(&repository(root), message, allow_empty)
+        .await?;
     finish_commit(stream, |event| {
         progress.send_replace(Some(Progress::transferring(stage.clone(), event.into())));
     })

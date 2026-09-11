@@ -20,7 +20,7 @@ use super::{
     catalog::{AddonFamily, Catalog},
     installer::Artifact,
 };
-use crate::{Directories, error::Result, runner::Runner};
+use crate::{Directories, error::Result};
 
 mod rebuild;
 
@@ -169,16 +169,6 @@ impl IndexEntry<Component> {
     #[cfg(feature = "fvs")]
     pub(crate) fn artifact(&self, directories: &Directories) -> Artifact {
         self.addon.artifact(directories)
-    }
-
-    pub(crate) async fn load_runner(
-        &self,
-        directories: &Directories,
-        umu: Option<&Self>,
-    ) -> Result<Box<dyn Runner>> {
-        self.addon
-            .load_runner(directories, umu.map(|entry| &entry.addon))
-            .await
     }
 }
 

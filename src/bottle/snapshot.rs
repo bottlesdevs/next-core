@@ -13,17 +13,16 @@ impl Bottle {
     ///
     /// The operation takes exclusive bottle access and stops the bottle before
     /// inspecting the complete library-managed bottle directory, including
-    /// `bottle.toml`. Standard history is initialized on the first snapshot.
+    /// `bottle.toml` and the existing registry baseline. Pending selections remain
+    /// pending; this operation does not build artifacts or prepare a new composition.
+    /// Standard history is initialized on the first snapshot.
     ///
-    /// If the tree has not changed, no history entry is created. The returned
-    /// [`Snapshot`] then has `created == false`, and its state ID, message, and
-    /// timestamp describe the pre-existing FVS head rather than `message`.
-    /// The message `bottles-next:auto-checkpoint` is reserved for internal
-    /// transactions; snapshots using it are hidden by [`snapshots`](Self::snapshots).
+    /// Explicit snapshots always create a new commit with the requested message,
+    /// even when the files have not changed. The message
+    /// `bottles-next:auto-checkpoint` is reserved and rejected.
     ///
-    /// Cancellation is observed after stopping and before the FVS commit
-    /// begins. Once streaming starts, this operation does not check for
-    /// cancellation again.
+    /// Cancellation is observed after stopping and before the snapshot commit.
+    /// Once that stream starts, it is drained without cancellation.
     ///
     /// # Errors
     ///
@@ -35,6 +34,13 @@ impl Bottle {
         let cx = self.0.cx.clone();
         let message = message.into();
         Operation::new(move |progress, cancellation| async move {
+            if message == AUTO_CHECKPOINT_MESSAGE {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "snapshot message is reserved for internal checkpoints",
+                )
+                .into());
+            }
             let _control = cancellation
                 .run_until_cancelled(bottle.0.control.lock())
                 .await
@@ -51,6 +57,7 @@ impl Bottle {
             history::capture(
                 &bottle.bottle_path(),
                 message,
+                true,
                 Stage::Committing,
                 &cx,
                 &progress,
@@ -134,6 +141,7 @@ impl Bottle {
             let checkpoint = history::capture(
                 &bottle_path,
                 AUTO_CHECKPOINT_MESSAGE.into(),
+                false,
                 Stage::Checkpointing,
                 &cx,
                 &progress,

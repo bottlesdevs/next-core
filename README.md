@@ -43,7 +43,7 @@ Both return `Operation<u32>` with the initial Windows process ID.
 
 Process inspection and group kill attach to an existing runtime without starting
 Wine or inspecting FVS mounts. Startup still checks existing Virgo mounts against
-saved layers and the private upper when preparing storage. Dropping handles leaves
+resolved layers and the private upper when preparing storage. Dropping handles leaves
 Wine running. Explicit `stop()` waits
 for wineserver before unmounting, even when WineBridge cannot be reached.
 Unreachable discovery and mismatched mounts require `stop()` before retrying.
@@ -59,18 +59,17 @@ The callback receives a draft of the latest state under the owner lock. Edit
 Metadata edits work while running. Call `stop()` before changing environment
 settings, including through `set_component`, `remove_component`, or `install`.
 Storage is fixed at creation. Standard dependencies may be appended; Virgo
-selections may also be removed or reordered. Selections are validated before prefix
-work. Virgo prefix mutations checkpoint the complete owner and save configuration
-before publication; failures restore both configuration and persistent data.
-Settings-only edits save configuration atomically. Standard keeps direct writes.
-Metadata-only edits remain available while running.
+selections may also be removed or reordered. Standard changes execute installers
+before saving and keep direct-write semantics. Virgo creation and edits save
+selections without building layers or changing private prefix data. Preparation
+errors surface when starting the environment.
 
 Virgo builds a clean shared base from the latest catalog runner named `Soda`
 (case-insensitive, semantic-version ordering). That exact release must already be
 downloaded. The base manifest pins its release and immutable FVS revision across
 catalog refreshes. The base is initialized once and reused; there is no rebuild
-operation. Startup mounts the owner's saved layers directly; creation and addon
-selection changes resolve the exact layer revisions. New bases and adapters use
+operation. Stopped preparation builds missing artifacts and resolves the selected
+composition before execution. New bases and adapters use
 `virgo/soda`; existing manifest references and addon caches remain usable.
 
 Addon cache misses use pinned Soda and declared prerequisite layers, without
@@ -81,10 +80,18 @@ construction is serialized within one core instance. Standard installers continu
 using their owner's runner.
 
 Virgo composition is always Soda base → selected runner adapter → components in
-slot order → dependencies in persisted order → private writable upper. Reordering
-or removing layers leaves private files, updates, saves, and whiteouts intact.
-Cached registry patches are applied in that same order. The owner retains a managed
-registry baseline and reapplies private registry changes after rebuilding it.
+slot order → dependencies in persisted order → private writable upper. Preparation
+resolves each selected addon's immutable layer by UUID and keeps the resulting
+stack local to that operation. There is no second persisted list of selections or
+layers. The shared base remains pinned and completed UUID caches remain immutable.
+
+Each preparation reconstructs the managed registry baseline and reapplies private
+changes relative to the previous baseline. The owner is checkpointed before that
+mutation; failure restores its prior data while keeping the selected configuration
+saved for retry. Shared artifact builds happen before the checkpoint. Private
+files, updates, saves, and whiteouts keep normal overlay precedence; the upper is
+never pruned. A later WineBridge startup failure does not undo successful registry
+preparation.
 
 Recipe environment variables are derived when starting an environment or running
 Standard installers; only explicit settings are persisted. Component recipes are
@@ -92,14 +99,16 @@ built in, and dependency recipes come from the UUID-pinned local index, not the
 current catalog. Missing dependency recipe metadata prevents startup. Explicit
 settings take precedence; execution-owned variables such as
 `WINEPREFIX`, `WINEARCH`, and `PROTONPATH` are applied last. Snapshots capture owner
-metadata, exact layer references, registry baseline, and private prefix data while
+metadata, addon selections, registry baseline, and private prefix data while
 stopped, without WineBridge discovery files.
 
-Bottle configuration uses version 2, with execution settings under `environment`
-and resolved FVS layers inside `environment.storage` for Virgo. Version 1 cannot
-separate already-mixed explicit and generated settings or recover the old registry
-baseline. It is rejected and left untouched; recreate those bottles to use this
-format. Completed addon caches remain reusable.
+Bottle configuration uses version 1. `environment.storage` selects Standard or
+Virgo; layers are derived from selected addons rather than stored in owner state.
+Completed addon caches remain reusable. Snapshots stop the runtime
+and capture existing configuration, registry baseline, and private data without
+preparing Virgo. Pending selections remain pending after restoration and are
+prepared at the next launch. Explicit snapshots create a new commit even when
+contents are unchanged; `bottles-next:auto-checkpoint` is a reserved message.
 
 Operations are lazy. Await them, call `cancel().await`, or spawn them and
 explicitly detach the task; dropping an operation abandons it.

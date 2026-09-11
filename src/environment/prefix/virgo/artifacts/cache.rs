@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::environment::registry::{registry_files, write_forward};
+use super::super::registry::{registry_files, write_forward};
 use fvs_rs::{Layer, UnmountMode};
 use regdiff_rs::prelude::apply_files;
 use uuid::Uuid;

@@ -2,19 +2,38 @@
 //!
 //! A mounted prefix combines a shared base, a runner-specific adapter, cached
 //! addon layers, and the owner's writable `upper` directory. Layer order is
-//! persisted by the owner and must be changed only while the owner is
-//! stopped.
+//! derived from selected addons when preparing a stopped environment.
+
+mod artifacts;
+mod registry;
 
 use std::path::{Path, PathBuf};
+
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use futures_lite::StreamExt;
 use fvs_rs::{Layer, UnmountMode};
 
-use crate::{Context, error::Result};
+use crate::{
+    Context, Progress, Stage,
+    environment::{EnvironmentConfig, history},
+    error::{Error, Result},
+};
 
 /// Virgo-specific failures carried by [`crate::error::Error::Virgo`].
 #[derive(Debug, thiserror::Error)]
 pub enum VirgoError {
+    #[error("no Soda runner release in the current component catalog")]
+    SodaNotInCatalog,
+    #[error("invalid Soda semantic version: {0}")]
+    InvalidSodaVersion(String),
+    #[error("download Soda {version} ({id}) before building the Virgo base or an addon layer")]
+    SodaNotDownloaded { id: Uuid, version: String },
+    #[error("cyclic addon prerequisites involving {0}")]
+    CyclicPrerequisites(Uuid),
+
     /// A required FVS commit is missing from a repository.
     #[error("FVS repository {repository} has no commit {state}")]
     MissingCommit {
@@ -27,7 +46,7 @@ pub enum VirgoError {
     #[error("mountpoint is not empty: {0}")]
     DirtyMountpoint(PathBuf),
     #[error(
-        "mounted layers or writable upper differ from saved configuration at {0}; call stop() and retry"
+        "mounted layers or writable upper differ from the selected composition at {0}; call stop() and retry"
     )]
     MountMismatch(PathBuf),
     /// A cached layer required to construct the prefix is missing.
@@ -38,14 +57,65 @@ pub enum VirgoError {
     Registry(String),
 }
 
-pub(super) async fn prepare(root: &Path, layers: &[Layer], context: &Context) -> Result<()> {
-    if !existing_mount(root, layers, context).await? {
+/// Builds the selected Virgo composition while the owner is coordinated and stopped.
+pub(super) async fn prepare(
+    config: &EnvironmentConfig,
+    root: &Path,
+    cx: &Context,
+    addons: &crate::Addons,
+    progress: &watch::Sender<Option<Progress>>,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let ids: Vec<_> = config
+        .ordered_components()
+        .map(crate::Addon::id)
+        .chain(config.dependencies.iter().map(crate::Addon::id))
+        .collect();
+    let runner = config
+        .runner()
+        .load_runner(cx.directories(), config.umu())
+        .await?;
+    for id in &ids {
+        artifacts::prepare_addon(*id, config, addons, cx, progress, cancellation).await?;
+    }
+    let mut layers = artifacts::base_layers(
+        runner.as_ref(),
+        &config.runner().id().to_string(),
+        addons,
+        cx,
+        cancellation,
+    )
+    .await?;
+    for id in &ids {
+        layers.push(artifacts::cache::layer(*id, cx).await?);
+    }
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    let checkpoint = history::capture(
+        root,
+        history::AUTO_CHECKPOINT_MESSAGE.into(),
+        false,
+        Stage::Checkpointing,
+        cx,
+        progress,
+    )
+    .await?;
+    let result = async {
+        registry::compose(root, &layers, &ids, cx).await?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        Ok(())
+    }
+    .await;
+    history::recover(result, root, &checkpoint, cx, progress).await?;
+    if !existing_mount(root, &layers, cx).await? {
         let prefix = root.join("prefix");
         ensure_empty_dir(&prefix).await?;
-        context
-            .fvs()
+        cx.fvs()
             .await?
-            .mount(&prefix, layers.to_vec(), Some(root.join("upper")))
+            .mount(&prefix, layers, Some(root.join("upper")))
             .await?;
     }
     Ok(())

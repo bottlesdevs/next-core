@@ -12,18 +12,6 @@ pub enum EnvironmentError {
         #[source]
         source: Box<crate::error::Error>,
     },
-    #[cfg(feature = "fvs")]
-    #[error("no Soda runner release in the current component catalog")]
-    SodaNotInCatalog,
-    #[cfg(feature = "fvs")]
-    #[error("invalid Soda semantic version: {0}")]
-    InvalidSodaVersion(String),
-    #[cfg(feature = "fvs")]
-    #[error("download Soda {version} ({id}) before building the Virgo base or an addon layer")]
-    SodaNotDownloaded { id: Uuid, version: String },
-    #[cfg(feature = "fvs")]
-    #[error("cyclic addon prerequisites involving {0}")]
-    CyclicPrerequisites(Uuid),
 
     /// Cleanup could not finish; the prefix remains available for explicit shutdown.
     #[error(
