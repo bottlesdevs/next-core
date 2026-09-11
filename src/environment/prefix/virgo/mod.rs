@@ -26,23 +26,10 @@ pub(super) async fn prepare(
     progress: &watch::Sender<Option<Progress>>,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let base = cx.virgo().prepare_base(addons, cx, cancellation).await?;
-    let adapter = cx
+    let artifacts::VirgoComposition { base, overlays } = cx
         .virgo()
-        .prepare_adapter(config.runner().id(), runner, &base, cx, cancellation)
+        .resolve(config, runner, cx, addons, progress, cancellation)
         .await?;
-    let ids = config
-        .ordered_components()
-        .map(crate::Addon::id)
-        .chain(config.dependencies.iter().map(crate::Addon::id));
-    let mut built = Vec::new();
-    for id in ids {
-        built.push(
-            cx.virgo()
-                .prepare_addon(id, &base, addons, cx, progress, cancellation)
-                .await?,
-        );
-    }
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
@@ -55,8 +42,8 @@ pub(super) async fn prepare(
         progress,
     )
     .await?;
-    let patches = std::iter::once(&adapter)
-        .chain(built.iter())
+    let patches = overlays
+        .iter()
         .map(|artifact| artifact.registry.clone())
         .collect();
     let result = async {
@@ -68,8 +55,8 @@ pub(super) async fn prepare(
     }
     .await;
     history::recover(result, root, &checkpoint, cx, progress).await?;
-    let mut layers = vec![base.layer, adapter.layer];
-    layers.extend(built.into_iter().map(|addon| addon.layer));
+    let mut layers = vec![base.layer];
+    layers.extend(overlays.into_iter().map(|artifact| artifact.layer));
     mount(root, layers, cx).await
 }
 

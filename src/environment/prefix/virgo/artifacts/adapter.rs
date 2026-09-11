@@ -11,7 +11,7 @@ use crate::{
 };
 
 impl VirgoManager {
-    pub(crate) async fn prepare_adapter(
+    pub(super) async fn prepare_adapter(
         &self,
         id: Uuid,
         runner: &dyn Runner,

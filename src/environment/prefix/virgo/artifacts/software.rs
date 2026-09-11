@@ -12,7 +12,7 @@ use crate::{
 };
 
 impl VirgoManager {
-    pub(crate) async fn prepare_addon(
+    pub(super) async fn prepare_addon(
         &self,
         id: Uuid,
         base: &VirgoLayer,
