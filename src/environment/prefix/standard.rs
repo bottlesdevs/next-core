@@ -45,7 +45,8 @@ pub(super) async fn apply(
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let mut removals = Vec::new();
-    let mut installations = Vec::new();
+    let mut components = Vec::new();
+    let mut dependencies = Vec::new();
     for slot in Slot::iter().filter(|slot| !slot.is_runtime()) {
         let old = previous.component(slot);
         let new = candidate.component(slot);
@@ -53,18 +54,26 @@ pub(super) async fn apply(
             continue;
         }
         if let Some(new) = new {
-            installations.push(vec![new.artifact(cx.directories())]);
+            let release = addons
+                .component(new.id())
+                .ok_or(AddonError::NotFound(new.id()))?;
+            release.require_payload(cx.directories()).await?;
+            components.push(release);
         } else if let Some(old) = old {
-            removals.push((old.id(), vec![old.artifact(cx.directories())]));
+            let release = addons
+                .component(old.id())
+                .ok_or(AddonError::NotFound(old.id()))?;
+            removals.push(release);
         }
     }
     for new in &candidate.dependencies[previous.dependencies.len()..] {
         let downloaded = addons
             .dependency(new.id())
             .ok_or(AddonError::NotFound(new.id()))?;
-        installations.push(downloaded.resources(cx.directories()));
+        downloaded.require_payload(cx.directories()).await?;
+        dependencies.push(downloaded);
     }
-    if removals.is_empty() && installations.is_empty() {
+    if removals.is_empty() && components.is_empty() && dependencies.is_empty() {
         return Ok(());
     }
     let runner = candidate
@@ -74,7 +83,7 @@ pub(super) async fn apply(
     let prefix = root.join("prefix");
     let winebridge = candidate.winebridge().path(cx.directories());
     let mut env_vars = previous.addon_env_vars(addons)?;
-    for (id, resources) in removals {
+    for release in removals {
         let result = uninstall(
             InstallInputs {
                 prefix: &prefix,
@@ -83,8 +92,8 @@ pub(super) async fn apply(
                 env_vars: &mut env_vars,
                 explicit_env_vars: &candidate.env_vars,
             },
-            &resources,
-            id,
+            release.recipe(),
+            release.id(),
             cancellation,
             |_| {
                 progress.send_replace(Some(Progress::new(Stage::Removing)));
@@ -94,7 +103,15 @@ pub(super) async fn apply(
         runtime::stop(runner.as_ref(), &prefix).await?;
         result?;
     }
-    for resources in installations {
+    let installations = components
+        .iter()
+        .map(|r| (r.path(cx.directories()), r.resources()))
+        .chain(
+            dependencies
+                .iter()
+                .map(|r| (r.path(cx.directories()), r.resources())),
+        );
+    for (payload, resources) in installations {
         let result = execute(
             InstallInputs {
                 prefix: &prefix,
@@ -103,7 +120,8 @@ pub(super) async fn apply(
                 env_vars: &mut env_vars,
                 explicit_env_vars: &candidate.env_vars,
             },
-            &resources,
+            &payload,
+            resources,
             cancellation,
             |_| {
                 progress.send_replace(Some(Progress::new(Stage::Configuring)));

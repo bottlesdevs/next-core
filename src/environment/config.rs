@@ -178,23 +178,20 @@ impl EnvironmentConfig {
             .filter_map(|slot| self.component(slot))
     }
 
-    /// Derives recipe variables from selections and UUID-pinned local dependency recipes.
+    /// Derives variables from the selected local releases' frozen recipes.
     pub(crate) fn addon_env_vars(&self, addons: &crate::Addons) -> Result<EnvVars> {
         let mut vars = EnvVars::default();
         for addon in self.ordered_components() {
-            crate::addons::replay_env_vars(&mut vars, crate::addons::recipe_steps(addon.slot()));
+            let release = addons
+                .component(addon.id())
+                .ok_or(crate::AddonError::NotFound(addon.id()))?;
+            crate::addons::replay_env_vars(&mut vars, release.recipe());
         }
         for addon in &self.dependencies {
-            let entry = addons
+            let release = addons
                 .dependency(addon.id())
                 .ok_or(crate::AddonError::NotFound(addon.id()))?;
-            crate::addons::replay_env_vars(
-                &mut vars,
-                entry
-                    .artifacts()
-                    .iter()
-                    .flat_map(|artifact| &artifact.steps),
-            );
+            crate::addons::replay_env_vars(&mut vars, release.recipe());
         }
         Ok(vars)
     }

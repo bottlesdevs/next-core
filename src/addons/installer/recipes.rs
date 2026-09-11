@@ -1,8 +1,5 @@
-//! Built-in installation recipes for recognized addon slots.
-//!
-//! These recipes are implementation details, not stable step-by-step contracts.
-//! Every selected component derives its removal and installation recipe from its
-//! slot, keeping bottle state independent of catalogs and downloaded index data.
+//! Default component recipes for imports and catalog entries without recipe overrides.
+//! Acquisition freezes the resolved recipe into the release; execution uses that record.
 
 use std::sync::LazyLock;
 
@@ -152,7 +149,7 @@ static LATENCY_FLEX_STEPS: LazyLock<Vec<InstallStep>> = LazyLock::new(|| {
     ]
 });
 
-/// Returns the built-in recipe for a component slot; runtime slots need no prefix changes.
+/// Returns the default recipe for a component slot; runtime slots need no prefix changes.
 pub(crate) fn steps(slot: Slot) -> &'static [InstallStep] {
     match slot {
         Slot::WineBridge | Slot::Runner | Slot::Umu => &[],

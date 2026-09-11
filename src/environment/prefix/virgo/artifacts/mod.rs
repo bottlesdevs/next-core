@@ -7,7 +7,7 @@ pub(crate) use software::prepare_addon;
 use super::VirgoError;
 use crate::environment::prefix::FVS_BLOCK_SIZE;
 use crate::{
-    Addon, Addons, CatalogEntry, Component, Context, IndexEntry, Slot,
+    Addon, Addons, CatalogEntry, Component, Context, Release, Slot,
     error::{Error, Result},
     runner::Runner,
 };
@@ -54,7 +54,7 @@ fn downloaded_soda(
     id: Uuid,
     version: &str,
     addons: &Addons,
-) -> Result<std::sync::Arc<IndexEntry<Component>>> {
+) -> Result<std::sync::Arc<Release<Component>>> {
     addons
         .component(id)
         .filter(|entry| entry.slot() == Slot::Runner && entry.version() == version)

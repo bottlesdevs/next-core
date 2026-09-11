@@ -7,17 +7,9 @@ use uuid::Uuid;
 use super::{cache, downloaded_soda, ensure_base};
 use crate::{
     AddonError, Addons, Context, EnvVars, EnvironmentError, Progress, Slot, Stage,
-    addons::{Artifact, InstallInputs, execute},
+    addons::{InstallInputs, execute},
     error::{Error, Result},
 };
-
-fn resources(id: Uuid, addons: &Addons, cx: &Context) -> Result<Vec<Artifact>> {
-    if let Some(component) = addons.component(id) {
-        return Ok(vec![component.artifact(cx.directories())]);
-    }
-    let dependency = addons.dependency(id).ok_or(AddonError::NotFound(id))?;
-    Ok(dependency.resources(cx.directories()))
-}
 
 pub(crate) async fn prepare_addon(
     id: Uuid,
@@ -34,6 +26,17 @@ pub(crate) async fn prepare_addon(
     if cache::exists(id, cx).await? {
         return Ok(());
     }
+    let component = addons.component(id);
+    let dependency = addons.dependency(id);
+    let (payload, resources) = if let Some(release) = &component {
+        release.require_payload(cx.directories()).await?;
+        (release.path(cx.directories()), release.resources())
+    } else if let Some(release) = &dependency {
+        release.require_payload(cx.directories()).await?;
+        (release.path(cx.directories()), release.resources())
+    } else {
+        return Err(AddonError::NotFound(id).into());
+    };
     let base = ensure_base(addons, cx, cancellation).await?;
     let soda = downloaded_soda(base.soda.id(), base.soda.version(), addons)?;
     let runner = soda.addon().load_runner(cx.directories(), None).await?;
@@ -45,7 +48,6 @@ pub(crate) async fn prepare_addon(
         return Err(Error::Cancelled);
     }
     let mut env_vars = EnvVars::default();
-    let resources = resources(id, addons, cx)?;
     cache::install(
         base.layer,
         id,
@@ -59,7 +61,8 @@ pub(crate) async fn prepare_addon(
                     env_vars: &mut env_vars,
                     explicit_env_vars: &EnvVars::default(),
                 },
-                &resources,
+                &payload,
+                resources,
                 cancellation,
                 |_| {
                     progress.send_replace(Some(Progress::new(Stage::Configuring)));

@@ -113,9 +113,19 @@ fn load_skips_corrupt_bottles() {
 fn create_reports_all_missing_runtime_addons_before_creating_files() {
     futures_lite::future::block_on(async {
         let directories = test_directories();
-        let runner_path = directories.components().join("runner/proton-test");
-        std::fs::create_dir_all(&runner_path).unwrap();
-        std::fs::write(runner_path.join("proton"), []).unwrap();
+        let runner_path = directories.data_dir().join("proton-test.tar");
+        let mut archive =
+            smol_tar::TarWriter::new(async_fs::File::create(&runner_path).await.unwrap());
+        archive
+            .write(
+                smol_tar::TarRegularFile::new("proton-test/proton", 0, &[][..])
+                    .with_mode(0o755)
+                    .into(),
+            )
+            .await
+            .unwrap();
+        archive.finish().await.unwrap();
+        drop(archive);
         let context = Context::for_test(
             directories.clone(),
             Some(directories.data_dir().join("fvs2d")),
@@ -123,19 +133,25 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
         .unwrap();
         let addons = Addons::load(context.clone(), None, None).await.unwrap();
         let runner = addons
-            .components()
-            .into_iter()
-            .find(|addon| addon.slot() == Slot::Runner)
+            .import_component(&runner_path, Slot::Runner, "Proton", "proton-test")
+            .await
             .unwrap();
-        assert_eq!(runner.path(&directories), runner_path);
         let runner_id = runner.id();
-        assert!(directories.components().join("index.toml").is_file());
-        assert!(
-            !std::fs::read_to_string(directories.components().join("index.toml"))
-                .unwrap()
-                .contains("path =")
+        assert_eq!(
+            runner.path(&directories),
+            directories
+                .component_releases()
+                .join(runner_id.to_string())
+                .join("payload")
         );
-        assert!(!runner_path.join(".addon.toml").exists());
+        assert!(
+            directories
+                .component_releases()
+                .join(runner_id.to_string())
+                .join("release.toml")
+                .is_file()
+        );
+        assert!(!directories.components().join("index.toml").exists());
         let unknown = uuid::Uuid::new_v4();
         assert!(matches!(
             addons.fetch_component(unknown).await,
@@ -180,6 +196,14 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
         assert_eq!(
             reloaded_addons.component(runner_id).unwrap().id(),
             runner_id
+        );
+        reloaded_addons.remove_component(runner_id).await.unwrap();
+        assert!(reloaded_addons.component(runner_id).is_none());
+        assert!(
+            !directories
+                .component_releases()
+                .join(runner_id.to_string())
+                .exists()
         );
         std::fs::remove_dir_all(directories.data_dir()).unwrap();
     });
