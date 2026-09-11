@@ -207,7 +207,14 @@ impl Bottle {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        Environment::start(&state.environment, runner.as_ref(), &root, &self.0.cx).await
+        Environment::start(
+            &state.environment,
+            runner.as_ref(),
+            &root,
+            &self.0.cx,
+            &self.0.addons,
+        )
+        .await
     }
 
     async fn with_environment<F, T>(&self, work: F) -> Result<T>

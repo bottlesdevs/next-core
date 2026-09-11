@@ -18,9 +18,6 @@ pub struct EnvironmentConfig {
     pub dependencies: Vec<Addon<Dependency>>,
     #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
     pub env_vars: EnvVars,
-    /// Derived recipe contributions, kept separate from explicit user settings.
-    #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
-    pub(crate) addon_env_vars: EnvVars,
     #[serde(default)]
     pub wrappers: Wrappers,
 }
@@ -35,29 +32,27 @@ impl EnvironmentConfig {
             .chain(self.dependencies.iter().map(Addon::id))
     }
 
-    pub(crate) fn effective_env_vars(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.addon_env_vars.iter().chain(self.env_vars.iter())
-    }
-
-    pub(crate) fn resolve_env_vars(
-        &mut self,
-        addons: &crate::Addons,
-        cx: &crate::Context,
-    ) -> Result<()> {
+    /// Derives recipe variables from selections and UUID-pinned local dependency recipes.
+    pub(crate) fn addon_env_vars(&self, addons: &crate::Addons) -> Result<EnvVars> {
         let mut vars = EnvVars::default();
         for slot in Slot::iter().filter(|slot| !slot.is_runtime()) {
-            if let Some(addon) = self.component(slot) {
-                crate::addons::replay_env_vars(&mut vars, &[addon.artifact(cx.directories())]);
+            if self.component(slot).is_some() {
+                crate::addons::replay_env_vars(&mut vars, crate::addons::recipe_steps(slot));
             }
         }
         for addon in &self.dependencies {
             let entry = addons
                 .dependency(addon.id())
                 .ok_or(crate::AddonError::NotFound(addon.id()))?;
-            crate::addons::replay_env_vars(&mut vars, &entry.resources(cx.directories()));
+            crate::addons::replay_env_vars(
+                &mut vars,
+                entry
+                    .artifacts()
+                    .iter()
+                    .flat_map(|artifact| &artifact.steps),
+            );
         }
-        self.addon_env_vars = vars;
-        Ok(())
+        Ok(vars)
     }
 
     /// Returns the runner recorded when this snapshot was published.

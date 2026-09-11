@@ -92,14 +92,16 @@ impl Environment {
         runner: &dyn Runner,
         root: &Path,
         cx: &Context,
+        addons: &crate::Addons,
     ) -> Result<Self> {
+        let env_vars = config.addon_env_vars(addons)?;
         prefix::prepare(&config.storage, root, cx).await?;
         let prefix = root.join("prefix");
         let command = config.wrappers.apply(WineBridgeClient::command(
             runner,
             &prefix,
             config.winebridge().path(cx.directories()),
-            config.effective_env_vars(),
+            env_vars.iter().chain(config.env_vars.iter()),
         ));
         let bridge = match WineBridgeClient::connect_or_spawn(&prefix, command).await {
             Ok(bridge) => bridge,
