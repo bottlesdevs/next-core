@@ -33,7 +33,7 @@ impl Addons {
                 }
                 if let Some(release) = addons.component(id) {
                     release
-                        .require_payload(addons.0.context.directories())
+                        .validate(&release.path(addons.0.context.directories()))
                         .await?;
                     return Ok(release);
                 }
@@ -71,7 +71,6 @@ impl Addons {
                         .to_vec(),
                 ),
             ));
-            record.validate(&record.directory(addons.0.context.directories()))?;
             let stage = addons.create_stage().await?;
             let result = async {
                 let downloads = stage.join("downloads");
@@ -110,7 +109,7 @@ impl Addons {
                 }
                 if let Some(release) = addons.dependency(id) {
                     release
-                        .require_payload(addons.0.context.directories())
+                        .validate(&release.path(addons.0.context.directories()))
                         .await?;
                     return Ok(release);
                 }
@@ -138,7 +137,6 @@ impl Addons {
                     })
                     .collect(),
             ));
-            record.validate(&record.directory(addons.0.context.directories()))?;
             let stage = addons.create_stage().await?;
             let result = async {
                 let prepared = stage.join("release");

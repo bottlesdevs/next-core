@@ -228,7 +228,7 @@ impl Addons {
     ) -> Result<Arc<Release<Component>>> {
         let id = record.id();
         let destination = record.directory(self.0.context.directories());
-        record.validate(&destination)?;
+        record.validate(&prepared.join("payload")).await?;
         let _write = cancellation
             .run_until_cancelled(self.0.write.lock())
             .await
@@ -242,7 +242,7 @@ impl Addons {
                 return Err(AddonError::InvalidRelease(destination).into());
             }
             current
-                .require_payload(self.0.context.directories())
+                .validate(&current.path(self.0.context.directories()))
                 .await?;
             return Ok(current.clone());
         }
@@ -270,7 +270,7 @@ impl Addons {
     ) -> Result<Arc<Release<Dependency>>> {
         let id = record.id();
         let destination = record.directory(self.0.context.directories());
-        record.validate(&destination)?;
+        record.validate(&prepared.join("payload")).await?;
         let _write = cancellation
             .run_until_cancelled(self.0.write.lock())
             .await
@@ -284,7 +284,7 @@ impl Addons {
                 return Err(AddonError::InvalidRelease(destination).into());
             }
             current
-                .require_payload(self.0.context.directories())
+                .validate(&current.path(self.0.context.directories()))
                 .await?;
             return Ok(current.clone());
         }
@@ -339,26 +339,24 @@ impl AddonsState {
         };
         for (id, path) in release_manifests(&directories.component_releases()).await? {
             let record: Release<Component> = next_config::load(&path).await?;
-            record.validate(&path)?;
             if record.id() != id {
                 return Err(AddonError::InvalidRelease(path).into());
             }
             if state.contains(id) {
                 return Err(AddonError::Duplicate(id).into());
             }
-            record.require_payload(directories).await?;
+            record.validate(&record.path(directories)).await?;
             state.components.insert(id, Arc::new(record));
         }
         for (id, path) in release_manifests(&directories.dependency_releases()).await? {
             let record: Release<Dependency> = next_config::load(&path).await?;
-            record.validate(&path)?;
             if record.id() != id {
                 return Err(AddonError::InvalidRelease(path).into());
             }
             if state.contains(id) {
                 return Err(AddonError::Duplicate(id).into());
             }
-            record.require_payload(directories).await?;
+            record.validate(&record.path(directories)).await?;
             state.dependencies.insert(id, Arc::new(record));
         }
         Ok(state)

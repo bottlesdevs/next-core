@@ -10,7 +10,7 @@ use strum::IntoEnumIterator;
 use uuid::Uuid;
 
 /// Execution settings embedded in a bottle or standalone program's saved state.
-/// Virgo layers and recipe variables are derived from these selections on demand.
+/// Selections preserve runtime contributions independently of installation inputs.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EnvironmentConfig {
     /// Prefix creation and software materialization strategy.
@@ -178,22 +178,16 @@ impl EnvironmentConfig {
             .filter_map(|slot| self.component(slot))
     }
 
-    /// Derives variables from the selected local releases' frozen recipes.
-    pub(crate) fn addon_env_vars(&self, addons: &crate::Addons) -> Result<EnvVars> {
+    /// Combines saved addon contributions; later selections override earlier ones.
+    pub(crate) fn addon_env_vars(&self) -> EnvVars {
         let mut vars = EnvVars::default();
         for addon in self.ordered_components() {
-            let release = addons
-                .component(addon.id())
-                .ok_or(crate::AddonError::NotFound(addon.id()))?;
-            crate::addons::replay_env_vars(&mut vars, release.recipe());
+            vars.extend(addon.env_vars().clone());
         }
         for addon in &self.dependencies {
-            let release = addons
-                .dependency(addon.id())
-                .ok_or(crate::AddonError::NotFound(addon.id()))?;
-            crate::addons::replay_env_vars(&mut vars, release.recipe());
+            vars.extend(addon.env_vars().clone());
         }
-        Ok(vars)
+        vars
     }
 
     /// Returns the runner recorded when this snapshot was published.

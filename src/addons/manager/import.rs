@@ -1,8 +1,8 @@
 //! Explicit local component archive import. Templates are frozen into fresh releases.
 
 use super::super::{
-    AddonError, Component, Release, Requirement, Slot,
-    installer::{InstallResource, InstallStep, recipe_steps},
+    Component, Release, Requirement, Slot,
+    installer::{InstallResource, recipe_steps},
 };
 use super::{Addons, prepare_component_archive};
 use crate::{
@@ -34,17 +34,6 @@ impl Addons {
                 let payload = prepared.join("payload");
                 let requirements = inspect_release(slot, &payload).await?;
                 let steps = recipe_steps(slot).to_vec();
-                // Template layouts must match the imported files.
-                for step in &steps {
-                    if let InstallStep::Copy { source, .. } = step {
-                        if !async_fs::metadata(payload.join(source))
-                            .await
-                            .is_ok_and(|m| m.is_file())
-                        {
-                            return Err(AddonError::InvalidComponent(payload).into());
-                        }
-                    }
-                }
                 let id = Uuid::new_v4();
                 let release = Release::new_component(
                     NonNilUuid::new(id).unwrap(),

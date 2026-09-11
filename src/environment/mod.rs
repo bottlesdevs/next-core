@@ -59,7 +59,7 @@ impl Environment {
         if let Some(environment) = Self::try_attach(root).await? {
             return Ok(environment);
         }
-        let env_vars = config.addon_env_vars(addons)?;
+        let env_vars = config.addon_env_vars();
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }

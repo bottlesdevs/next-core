@@ -29,10 +29,10 @@ pub(crate) async fn prepare_addon(
     let component = addons.component(id);
     let dependency = addons.dependency(id);
     let (payload, resources) = if let Some(release) = &component {
-        release.require_payload(cx.directories()).await?;
+        release.validate(&release.path(cx.directories())).await?;
         (release.path(cx.directories()), release.resources())
     } else if let Some(release) = &dependency {
-        release.require_payload(cx.directories()).await?;
+        release.validate(&release.path(cx.directories())).await?;
         (release.path(cx.directories()), release.resources())
     } else {
         return Err(AddonError::NotFound(id).into());
