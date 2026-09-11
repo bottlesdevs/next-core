@@ -25,7 +25,7 @@ use crate::{Context, EnvironmentConfig, addons::Addons, error::Result};
 /// They remain valid after the bottle changes or is deleted;
 /// their getters continue to return the values recorded when that particular
 /// snapshot was published. Obtain another snapshot to observe later changes.
-/// Component locations are derived from their slot and version.
+/// Component payload locations are derived from their UUIDs.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Config)]
 #[config(version = 1)]
 pub struct BottleState {

@@ -137,6 +137,15 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
             .await
             .unwrap();
         let runner_id = runner.id();
+        for slot in [Slot::WineBridge, Slot::Umu] {
+            assert!(matches!(
+                addons
+                    .import_component(&runner_path, slot, "Invalid runtime", "99.0.0")
+                    .await,
+                Err(Error::Addon(AddonError::InvalidComponent(_)))
+            ));
+            assert!(addons.latest_component(slot).is_none());
+        }
         assert_eq!(
             runner.path(&directories),
             directories

@@ -7,7 +7,7 @@ use strum::EnumIter;
 use uuid::{NonNilUuid, Uuid};
 
 use crate::{
-    Directories,
+    Directories, EnvVars,
     error::Result,
     runner::{Proton, Runner, RunnerError, RunnerKind, Wine, detect_runner_kind},
 };
@@ -15,8 +15,8 @@ use crate::{
 /// An addon selection persisted in a bottle.
 ///
 /// `K` is [`Component`] or [`Dependency`]. Unlike an [`Release`](super::Release),
-/// this value contains no download artifacts; it remains sufficient for requirement
-/// validation and for locating or removing a selected component.
+/// this value contains no installation resources; it preserves requirements and
+/// runtime variables independently of the shared release.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     deny_unknown_fields,
@@ -28,6 +28,7 @@ pub struct Addon<K> {
     version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
+    env_vars: EnvVars,
     #[serde(flatten)]
     kind: K,
 }
@@ -38,6 +39,7 @@ impl<K> Addon<K> {
         name: String,
         version: String,
         requirements: Vec<Requirement>,
+        env_vars: EnvVars,
         kind: K,
     ) -> Self {
         Self {
@@ -45,6 +47,7 @@ impl<K> Addon<K> {
             name,
             version,
             requirements,
+            env_vars,
             kind,
         }
     }
@@ -67,6 +70,16 @@ impl<K> Addon<K> {
     /// Returns the addons that must coexist with this selection.
     pub fn requirements(&self) -> &[Requirement] {
         &self.requirements
+    }
+
+    /// Returns this addon's frozen runtime environment variables.
+    ///
+    /// Values are derived from its resolved installation recipes during acquisition
+    /// and saved with the selection, so they remain available after the shared
+    /// release is removed. These are this addon's contributions only; environment
+    /// configuration combines them with other addons and applies owner overrides last.
+    pub fn env_vars(&self) -> &EnvVars {
+        &self.env_vars
     }
 }
 

@@ -57,7 +57,7 @@ pub(super) async fn apply(
             let release = addons
                 .component(new.id())
                 .ok_or(AddonError::NotFound(new.id()))?;
-            release.require_payload(cx.directories()).await?;
+            release.validate(&release.path(cx.directories())).await?;
             components.push(release);
         } else if let Some(old) = old {
             let release = addons
@@ -70,7 +70,9 @@ pub(super) async fn apply(
         let downloaded = addons
             .dependency(new.id())
             .ok_or(AddonError::NotFound(new.id()))?;
-        downloaded.require_payload(cx.directories()).await?;
+        downloaded
+            .validate(&downloaded.path(cx.directories()))
+            .await?;
         dependencies.push(downloaded);
     }
     if removals.is_empty() && components.is_empty() && dependencies.is_empty() {
@@ -82,7 +84,7 @@ pub(super) async fn apply(
         .await?;
     let prefix = root.join("prefix");
     let winebridge = candidate.winebridge().path(cx.directories());
-    let mut env_vars = previous.addon_env_vars(addons)?;
+    let mut env_vars = previous.addon_env_vars();
     for release in removals {
         let result = uninstall(
             InstallInputs {

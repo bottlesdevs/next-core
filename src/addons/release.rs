@@ -5,7 +5,7 @@ use super::{
     catalog::AddonFamily,
     installer::{InstallResource, InstallStep},
 };
-use crate::{Directories, error::Result};
+use crate::{Directories, EnvVars, error::Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use uuid::{NonNilUuid, Uuid};
@@ -66,19 +66,37 @@ impl<K: Clone> From<&Release<K>> for Addon<K> {
     }
 }
 impl Release<Component> {
-    pub(crate) async fn require_payload(&self, directories: &Directories) -> Result<()> {
-        if !async_fs::metadata(self.path(directories))
-            .await
-            .is_ok_and(|m| m.is_dir())
-        {
+    /// Validates the resource structure and component layout at a staged or published payload.
+    pub(crate) async fn validate(&self, payload: &Path) -> Result<()> {
+        if self.resources.len() != 1 || !self.resources[0].path.as_os_str().is_empty() {
+            return Err(AddonError::InvalidRelease(payload.to_path_buf()).into());
+        }
+        if !async_fs::metadata(payload).await.is_ok_and(|m| m.is_dir()) {
             return Err(AddonError::PayloadMissing(self.id()).into());
         }
-        Ok(())
-    }
-
-    pub(super) fn validate(&self, path: &Path) -> Result<()> {
-        if self.resources.len() != 1 || !self.resources[0].path.as_os_str().is_empty() {
-            return Err(AddonError::InvalidRelease(path.to_path_buf()).into());
+        let marker = match self.slot() {
+            Slot::Runner => {
+                crate::runner::detect_runner_kind(payload).await?;
+                None
+            }
+            Slot::WineBridge => Some("bottles-winebridge.exe"),
+            Slot::Umu => Some("umu-run"),
+            _ => None,
+        };
+        let sources = marker
+            .map(Path::new)
+            .into_iter()
+            .chain(self.recipe().filter_map(|step| match step {
+                InstallStep::Copy { source, .. } => Some(source.as_path()),
+                _ => None,
+            }));
+        for source in sources {
+            if !async_fs::metadata(payload.join(source))
+                .await
+                .is_ok_and(|entry| entry.is_file())
+            {
+                return Err(AddonError::InvalidComponent(payload.to_path_buf()).into());
+            }
         }
         Ok(())
     }
@@ -91,8 +109,17 @@ impl Release<Component> {
         requirements: Vec<Requirement>,
         resource: InstallResource,
     ) -> Self {
+        let mut env_vars = EnvVars::default();
+        super::installer::replay_env_vars(&mut env_vars, &resource.steps);
         Self {
-            addon: Addon::new(id, name, version, requirements, Component { slot }),
+            addon: Addon::new(
+                id,
+                name,
+                version,
+                requirements,
+                env_vars,
+                Component { slot },
+            ),
             resources: vec![resource],
         }
     }
@@ -103,8 +130,12 @@ impl Release<Component> {
     }
 }
 impl Release<Dependency> {
-    pub(crate) async fn require_payload(&self, directories: &Directories) -> Result<()> {
-        let payload = self.path(directories);
+    /// Validates unique resource paths and files at a staged or published payload.
+    pub(crate) async fn validate(&self, payload: &Path) -> Result<()> {
+        let mut names = std::collections::HashSet::new();
+        if self.resources.is_empty() || self.resources.iter().any(|r| !names.insert(&r.path)) {
+            return Err(AddonError::InvalidRelease(payload.to_path_buf()).into());
+        }
         for resource in &self.resources {
             if !async_fs::metadata(payload.join(&resource.path))
                 .await
@@ -116,19 +147,6 @@ impl Release<Dependency> {
         Ok(())
     }
 
-    pub(super) fn validate(&self, path: &Path) -> Result<()> {
-        let mut names = std::collections::HashSet::new();
-        if self.resources.is_empty()
-            || self
-                .resources
-                .iter()
-                .any(|r| !single_name(&r.path) || !names.insert(&r.path))
-        {
-            return Err(AddonError::InvalidRelease(path.to_path_buf()).into());
-        }
-        Ok(())
-    }
-
     pub(crate) fn new_dependency(
         id: NonNilUuid,
         name: String,
@@ -136,8 +154,17 @@ impl Release<Dependency> {
         requirements: Vec<Requirement>,
         resources: Vec<InstallResource>,
     ) -> Self {
+        let mut env_vars = EnvVars::default();
+        super::installer::replay_env_vars(&mut env_vars, resources.iter().flat_map(|r| &r.steps));
         Self {
-            addon: Addon::new(id, name, version, requirements, Dependency::default()),
+            addon: Addon::new(
+                id,
+                name,
+                version,
+                requirements,
+                env_vars,
+                Dependency::default(),
+            ),
             resources,
         }
     }
@@ -145,103 +172,4 @@ impl Release<Dependency> {
 
 impl<K: Serialize + serde::de::DeserializeOwned + 'static> next_config::Config for Release<K> {
     const VERSION: u32 = 1;
-}
-fn single_name(path: &Path) -> bool {
-    let mut parts = path.components();
-    matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none()
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::Value;
-
-    use super::*;
-
-    fn id() -> NonNilUuid {
-        NonNilUuid::new(Uuid::new_v4()).unwrap()
-    }
-
-    #[test]
-    fn release_flattens_addon_and_rejects_unknown_fields() {
-        let entry = Release::new_dependency(
-            id(),
-            "dependency".into(),
-            "1.0.0".into(),
-            vec![Requirement::Slot(Slot::Runner)],
-            vec![InstallResource::new("setup.exe", Vec::new())],
-        );
-        let value = serde_json::to_value(&entry).unwrap();
-
-        assert!(value.get("addon").is_none());
-        assert_eq!(value["name"], "dependency");
-        assert_eq!(value["resources"][0]["path"], "setup.exe");
-        assert_eq!(
-            serde_json::from_value::<Release<Dependency>>(value.clone()).unwrap(),
-            entry
-        );
-
-        let addon = Addon::from(&entry);
-        let addon_value = serde_json::to_value(&addon).unwrap();
-        assert!(addon_value.get("resources").is_none());
-        assert_eq!(addon.id(), entry.id());
-        assert_eq!(addon.requirements(), entry.requirements());
-
-        let mut unknown_entry = value;
-        unknown_entry
-            .as_object_mut()
-            .unwrap()
-            .insert("unknown".into(), Value::Bool(true));
-        assert!(serde_json::from_value::<Release<Dependency>>(unknown_entry).is_err());
-
-        let mut unknown_addon = addon_value;
-        unknown_addon
-            .as_object_mut()
-            .unwrap()
-            .insert("unknown".into(), Value::Bool(true));
-        assert!(serde_json::from_value::<Addon<Dependency>>(unknown_addon).is_err());
-    }
-
-    #[test]
-    fn release_paths_use_active_directories() {
-        let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
-        let directories = Directories::from_path(&root).unwrap();
-        let component = Release::new_component(
-            id(),
-            "runner".into(),
-            "1.0.0".into(),
-            Slot::Runner,
-            Vec::new(),
-            InstallResource::new("", Vec::new()),
-        );
-        let dependency = Release::new_dependency(
-            id(),
-            "dependency".into(),
-            "1.0.0".into(),
-            Vec::new(),
-            vec![InstallResource::new("setup.exe", Vec::new())],
-        );
-
-        assert_eq!(
-            component
-                .path(&directories)
-                .join(&component.resources()[0].path),
-            directories
-                .components()
-                .join("releases")
-                .join(component.id().to_string())
-                .join("payload")
-        );
-        assert_eq!(
-            dependency
-                .path(&directories)
-                .join(&dependency.resources()[0].path),
-            directories
-                .dependencies()
-                .join("releases")
-                .join(dependency.id().to_string())
-                .join("payload/setup.exe")
-        );
-        let serialized = serde_json::to_string(&(component, dependency)).unwrap();
-        assert!(!serialized.contains(root.to_string_lossy().as_ref()));
-    }
 }

@@ -90,16 +90,18 @@ The manager keeps separate typed component and dependency maps, with UUID unique
 checked across both families.
 Each ordered resource keeps a path relative to `payload/` and its recipe.
 Components use the payload directory itself; dependency resources use local filenames.
-Download URLs and checksums remain in the catalog and are used only during fetching. `Addon<K>` remains the lightweight
-selection in bottle state. A local release exists only as a complete record and
+Download URLs and checksums remain in the catalog and are used only during fetching.
+`Addon<K>` preserves identity, requirements, and frozen runtime variables in owner
+state. A local release exists only as a complete record and
 payload. Loading rejects incomplete releases. Removal renames the entire release
 directory out of its published location, removes it from the typed map, then deletes
 the withdrawn directory. A deletion failure leaves only unpublished staging data.
-Existing environments keep their selections and report missing releases when needed.
+Existing environments keep their runtime variables after removal. Source installation
+and runtime executables still require their payloads.
 Fetching a removed release resolves it from the current catalog; imported components
 must be imported again with a new UUID. Built Virgo caches are not removed.
 
-In catalog format 2, omitted component `steps` use the bundled recipe for that slot.
+Omitted component `steps` use the bundled recipe for that slot.
 Explicit `steps` replace the default entirely; `steps: []` means no installation steps.
 The resolved recipe is frozen into the local release, so template updates do not
 change existing releases. Dependency steps come from the catalog (omitted means empty),
@@ -114,7 +116,9 @@ supported. Imports work offline and leave the source archive untouched. Executab
 permissions and internal relative symlinks are preserved; escaping links are rejected.
 Catalog component downloads and local imports share archive preparation and release
 publication; catalog downloads additionally transfer and verify the archive. Templates are never read during installation
-or startup. Old indexes, slot/version directories, and the former top-level `releases/` directory
+or startup. Publication and loading check recognized runner layouts, WineBridge/UMU
+entrypoints, and recipe Copy sources before making a component selectable.
+Old indexes, slot/version directories, and the former top-level `releases/` directory
 are ignored and left untouched;
 re-download or explicitly import a component archive. There is no automatic migration.
 
@@ -149,15 +153,18 @@ files, updates, saves, and whiteouts keep normal overlay precedence; the upper i
 never pruned. A later WineBridge startup failure does not undo successful registry
 preparation.
 
-Recipe environment variables are derived from durable release records when starting
-an environment or running Standard installers. Both backends require the selected
-local releases for these recipes; Virgo caches contain filesystem and registry
-effects, not runtime variables. Catalog and bundled-template updates cannot change
-a local release's recipe. Explicit
-settings take precedence; execution-owned variables such as
+Runtime variables are derived once from resolved recipes during acquisition and
+saved in `Addon<K>`. Both backends merge these saved values in component slot order,
+then dependency order, without resolving shared releases. Virgo caches contain
+filesystem and registry effects. Installation still executes ordered environment
+steps so commands see the variables declared so far. Explicit owner settings take
+precedence; execution-owned variables such as
 `WINEPREFIX`, `WINEARCH`, and `PROTONPATH` are applied last. Snapshots capture owner
 metadata, addon selections, registry baseline, and private prefix data while
 stopped, without WineBridge discovery files.
+
+Standard component removal still uses the shared release’s recipe. Removing that
+release preserves runtime variables but makes recipe-based uninstallation unavailable.
 
 Bottle configuration uses version 1. `EnvironmentConfig::backend` selects
 `PrefixBackend::Standard` or `PrefixBackend::Virgo` and is serialized under the existing
