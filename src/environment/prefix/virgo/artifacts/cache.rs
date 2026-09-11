@@ -32,7 +32,7 @@ pub(crate) async fn exists(id: Uuid, context: &Context) -> Result<bool> {
 
 /// Builds and publishes the cached filesystem layer and registry patches.
 ///
-/// Installation runs in a unique staging mount over the preceding layers. The
+/// Installation runs in a unique staging mount over the pinned Soda base. The
 /// registry is diffed separately, unchanged filesystem entries are pruned by
 /// FVS, and the registry hives are removed before the upper directory is
 /// committed as a reusable layer.
@@ -42,9 +42,8 @@ pub(crate) async fn exists(id: Uuid, context: &Context) -> Result<bool> {
 /// failure may therefore leave only one destination present. Staging cleanup is
 /// best-effort.
 pub(crate) async fn install<F>(
-    layers: Vec<Layer>,
+    base: Layer,
     item_id: Uuid,
-    prerequisites: &[Uuid],
     runner: &dyn Runner,
     execute: F,
     context: &Context,
@@ -81,11 +80,8 @@ where
     }
 
     let client = context.fvs().await?;
-    let mount = client.mount(&prefix, layers, Some(&upper)).await?;
+    let mount = client.mount(&prefix, vec![base], Some(&upper)).await?;
     let installed = async {
-        for id in prerequisites {
-            apply_registry(&prefix, *id, context).await?;
-        }
         for (file, _) in registry_files() {
             async_fs::copy(prefix.join(file), before.join(file)).await?;
         }

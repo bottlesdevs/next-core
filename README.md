@@ -72,8 +72,10 @@ operation. Stopped preparation builds missing artifacts and resolves the selecte
 composition before execution. New bases and adapters use
 `virgo/soda`; existing manifest references and addon caches remain usable.
 
-Addon cache misses use pinned Soda and declared prerequisite layers, without
-owner settings, wrappers, or private writable data. UUID remains the sole cache
+Every addon recipe must install against pinned Soda alone. Cache construction
+uses no layers, registry patches, or environment contributions from other addons,
+and no owner settings, wrappers, or private writable data. Requirements are validated against
+the final environment selections. UUID remains the sole cache
 identity: completed caches survive runner and settings changes. Runner
 adapters are built using the selected runner over the pinned base. Shared
 construction is serialized within one core instance. Standard installers continue

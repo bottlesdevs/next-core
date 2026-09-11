@@ -31,8 +31,6 @@ pub enum VirgoError {
     InvalidSodaVersion(String),
     #[error("download Soda {version} ({id}) before building the Virgo base or an addon layer")]
     SodaNotDownloaded { id: Uuid, version: String },
-    #[error("cyclic addon prerequisites involving {0}")]
-    CyclicPrerequisites(Uuid),
 
     /// A required FVS commit is missing from a repository.
     #[error("FVS repository {repository} has no commit {state}")]
@@ -76,7 +74,7 @@ pub(super) async fn prepare(
         .load_runner(cx.directories(), config.umu())
         .await?;
     for id in &ids {
-        artifacts::prepare_addon(*id, config, addons, cx, progress, cancellation).await?;
+        artifacts::prepare_addon(*id, addons, cx, progress, cancellation).await?;
     }
     let mut layers = artifacts::base_layers(
         runner.as_ref(),
