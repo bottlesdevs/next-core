@@ -53,7 +53,8 @@ impl Bottle {
                 &state.environment,
                 &bottle.0.cx.directories().bottle(state.id),
                 &bottle.0.cx,
-                &bottle.0.addons,
+                #[cfg(feature = "fvs")]
+                &bottle.0.virgo,
                 &progress,
                 &cancellation,
             )
@@ -165,7 +166,8 @@ impl Bottle {
                 &state.environment,
                 &bottle.0.cx.directories().bottle(state.id),
                 &bottle.0.cx,
-                &bottle.0.addons,
+                #[cfg(feature = "fvs")]
+                &bottle.0.virgo,
                 &progress,
                 &cancellation,
             )

@@ -12,7 +12,7 @@ use uuid::Uuid;
 use super::super::registry;
 use super::{VirgoLayer, VirgoManager, cache, remove_dir};
 use crate::{
-    Context, EnvironmentError,
+    EnvironmentError,
     environment::{prefix::FVS_BLOCK_SIZE, runtime},
     error::{Error, Result},
     runner::Runner,
@@ -27,7 +27,6 @@ impl VirgoManager {
         destination: &Path,
         runner: &'a dyn Runner,
         base: &VirgoLayer,
-        cx: &Context,
         cancellation: &CancellationToken,
         work: impl FnOnce(PathBuf, &'a dyn Runner) -> Fut + Send,
     ) -> Result<VirgoLayer>
@@ -37,7 +36,7 @@ impl VirgoManager {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let client = cx.fvs().await?;
+        let client = self.cx.fvs().await?;
         let stage = self.staging_path();
         let artifact = stage.join("artifact");
         let upper = artifact.join("filesystem");

@@ -3,11 +3,7 @@ use download_manager::manager::{DownloadManager, DownloadManagerConfig};
 use http_client::HttpClient;
 use std::{path::PathBuf, sync::Arc};
 #[cfg(feature = "fvs")]
-use {
-    crate::{environment::VirgoManager, utils::absolute_path},
-    fvs_rs::Fvs2dClient,
-    tokio::sync::OnceCell,
-};
+use {crate::utils::absolute_path, fvs_rs::Fvs2dClient, tokio::sync::OnceCell};
 
 struct ContextInner {
     directories: Directories,
@@ -17,8 +13,6 @@ struct ContextInner {
     fvs2d_executable: PathBuf,
     #[cfg(feature = "fvs")]
     fvs: OnceCell<Fvs2dClient>,
-    #[cfg(feature = "fvs")]
-    virgo: VirgoManager,
 }
 
 #[derive(Clone)]
@@ -37,8 +31,6 @@ impl Context {
             DownloadManagerConfig::default(),
         )?);
         Ok(Self(Arc::new(ContextInner {
-            #[cfg(feature = "fvs")]
-            virgo: VirgoManager::new(directories.data_dir().join("virgo")),
             directories,
             http_client,
             downloader,
@@ -73,11 +65,6 @@ impl Context {
 
     pub(crate) fn http_client(&self) -> &Arc<dyn HttpClient> {
         &self.0.http_client
-    }
-
-    #[cfg(feature = "fvs")]
-    pub(crate) fn virgo(&self) -> &VirgoManager {
-        &self.0.virgo
     }
 
     #[cfg(feature = "fvs")]

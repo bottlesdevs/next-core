@@ -22,13 +22,12 @@ pub(super) async fn prepare(
     runner: &dyn Runner,
     root: &Path,
     cx: &Context,
-    addons: &crate::Addons,
+    virgo: &VirgoManager,
     progress: &watch::Sender<Option<Progress>>,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let artifacts::VirgoComposition { base, overlays } = cx
-        .virgo()
-        .resolve(config, runner, cx, addons, progress, cancellation)
+    let artifacts::VirgoComposition { base, overlays } = virgo
+        .resolve(config, runner, progress, cancellation)
         .await?;
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
@@ -62,33 +61,13 @@ pub(super) async fn prepare(
 
 /// Mount resolved layers after the environment workflow has stopped Wine.
 async fn mount(root: &Path, layers: Vec<Layer>, cx: &Context) -> Result<()> {
-    if !existing_mount(root, &layers, cx).await? {
-        let prefix = root.join("prefix");
-        ensure_empty_dir(&prefix).await?;
-        cx.fvs()
-            .await?
-            .mount(&prefix, layers, Some(root.join("upper")))
-            .await?;
-    }
-    Ok(())
-}
-
-async fn existing_mount(root: &Path, layers: &[Layer], context: &Context) -> Result<bool> {
     let prefix = root.join("prefix");
-    let mounts = context.fvs().await?.list_mounts().await?;
-    let Some(spec) = mounts
-        .into_iter()
-        .filter_map(|mount| mount.spec)
-        .find(|spec| spec.mount_point == prefix.to_string_lossy())
-    else {
-        return Ok(false);
-    };
-    if spec.layers != layers
-        || spec.upper_path.as_deref() != Some(root.join("upper").to_string_lossy().as_ref())
-    {
-        return Err(VirgoError::MountMismatch(prefix).into());
-    }
-    Ok(true)
+    ensure_empty_dir(&prefix).await?;
+    cx.fvs()
+        .await?
+        .mount(&prefix, layers, Some(root.join("upper")))
+        .await?;
+    Ok(())
 }
 
 pub(super) async fn release(root: &Path, context: &Context) -> Result<()> {
@@ -133,10 +112,6 @@ pub enum VirgoError {
     /// Virgo cannot mount a prefix over a nonempty mountpoint.
     #[error("mountpoint is not empty: {0}")]
     DirtyMountpoint(std::path::PathBuf),
-    #[error(
-        "mounted layers or writable upper differ from the selected composition at {0}; call stop() and retry"
-    )]
-    MountMismatch(std::path::PathBuf),
     /// A published artifact has an unsupported format or incomplete installed effects.
     #[error("invalid Virgo artifact: {0}")]
     InvalidArtifact(std::path::PathBuf),

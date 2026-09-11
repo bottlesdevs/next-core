@@ -18,9 +18,10 @@ use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-/// Shared artifact storage and construction for one core context.
+/// Shared artifact storage and construction for one core instance.
 pub(crate) struct VirgoManager {
-    root: PathBuf,
+    cx: Context,
+    addons: Addons,
     build_lock: Mutex<()>,
 }
 
@@ -32,9 +33,10 @@ pub(super) struct VirgoComposition {
 
 impl VirgoManager {
     /// Construct without touching storage or starting FVS.
-    pub(crate) fn new(root: PathBuf) -> Self {
+    pub(crate) fn new(cx: Context, addons: Addons) -> Self {
         Self {
-            root,
+            cx,
+            addons,
             build_lock: Mutex::new(()),
         }
     }
@@ -44,14 +46,12 @@ impl VirgoManager {
         &self,
         config: &EnvironmentConfig,
         runner: &dyn Runner,
-        cx: &Context,
-        addons: &Addons,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<VirgoComposition> {
-        let base = self.prepare_base(addons, cx, cancellation).await?;
+        let base = self.prepare_base(cancellation).await?;
         let adapter = self
-            .prepare_adapter(config.runner().id(), runner, &base, cx, cancellation)
+            .prepare_adapter(config.runner().id(), runner, &base, cancellation)
             .await?;
         let mut overlays = vec![adapter];
         let ids = config
@@ -60,15 +60,21 @@ impl VirgoManager {
             .chain(config.dependencies.iter().map(crate::Addon::id));
         for id in ids {
             overlays.push(
-                self.prepare_addon(id, &base, addons, cx, progress, cancellation)
+                self.prepare_addon(id, &base, progress, cancellation)
                     .await?,
             );
         }
         Ok(VirgoComposition { base, overlays })
     }
 
+    fn root(&self) -> PathBuf {
+        self.cx.directories().data_dir().join("virgo")
+    }
+
     fn staging_path(&self) -> PathBuf {
-        self.root.join(".staging").join(Uuid::new_v4().to_string())
+        self.root()
+            .join(".staging")
+            .join(Uuid::new_v4().to_string())
     }
 }
 
@@ -94,13 +100,8 @@ fn latest_soda(entries: &[CatalogEntry<Component>]) -> Result<&CatalogEntry<Comp
 
 impl VirgoManager {
     /// Resolve the pinned Soda base, creating it under the shared build lock if absent.
-    async fn prepare_base(
-        &self,
-        addons: &Addons,
-        cx: &Context,
-        cancellation: &CancellationToken,
-    ) -> Result<VirgoLayer> {
-        let destination = self.root.join("soda");
+    async fn prepare_base(&self, cancellation: &CancellationToken) -> Result<VirgoLayer> {
+        let destination = self.root().join("soda");
         if let Some(base) = cache::load(&destination, None).await? {
             return Ok(base);
         }
@@ -114,16 +115,19 @@ impl VirgoManager {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let entries = addons.component_entries();
+        let entries = self.addons.component_entries();
         let selected = latest_soda(&entries)?;
         let soda =
-            addons
+            self.addons
                 .component(selected.id())
                 .ok_or_else(|| VirgoError::SodaNotDownloaded {
                     id: selected.id(),
                     version: selected.version().into(),
                 })?;
-        let runner = soda.addon().load_runner(cx.directories(), None).await?;
+        let runner = soda
+            .addon()
+            .load_runner(self.cx.directories(), None)
+            .await?;
         let stage = self.staging_path();
         let artifact = stage.join("artifact");
         let prefix = artifact.join("filesystem");
@@ -139,7 +143,7 @@ impl VirgoManager {
             }
             // Both copies describe this same stopped prefix, before atomic publication.
             super::registry::capture(&prefix, &registry).await?;
-            let client = cx.fvs().await?;
+            let client = self.cx.fvs().await?;
             let repository = client.new_repository(&prefix, FVS_BLOCK_SIZE).await?;
             let commit = client
                 .commit(

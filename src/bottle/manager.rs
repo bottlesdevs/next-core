@@ -1,5 +1,8 @@
 //! Collection lifecycle and discovery for library-managed bottles.
 
+#[cfg(feature = "fvs")]
+use crate::environment::VirgoManager;
+
 use std::{
     collections::{HashMap, HashSet},
     hash::{Hash, Hasher},
@@ -108,6 +111,8 @@ impl BottleRegistry {
 pub struct BottleManager {
     pub(super) context: Context,
     pub(super) addons: Addons,
+    #[cfg(feature = "fvs")]
+    virgo: Arc<VirgoManager>,
     registry: Arc<BottleRegistry>,
 }
 
@@ -120,18 +125,33 @@ impl Hash for BottleManager {
 }
 
 impl BottleManager {
-    pub(crate) fn new(context: Context, addons: Addons) -> Self {
+    pub(crate) fn new(
+        context: Context,
+        addons: Addons,
+        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
+    ) -> Self {
         Self {
             context,
             addons,
+            #[cfg(feature = "fvs")]
+            virgo,
             registry: Arc::new(BottleRegistry::new()),
         }
     }
 
     /// Populates the shared registry, skipping unreadable bottle configuration
     /// with a warning so one corrupt bottle does not prevent startup.
-    pub(crate) async fn load(context: Context, addons: Addons) -> Result<Self> {
-        let manager = Self::new(context, addons);
+    pub(crate) async fn load(
+        context: Context,
+        addons: Addons,
+        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
+    ) -> Result<Self> {
+        let manager = Self::new(
+            context,
+            addons,
+            #[cfg(feature = "fvs")]
+            virgo,
+        );
         let bottles = manager.load_bottles().await?;
         manager.registry.replace(bottles);
         Ok(manager)
@@ -166,6 +186,8 @@ impl BottleManager {
         let name = name.into();
         let cx = self.context.clone();
         let addons = self.addons.clone();
+        #[cfg(feature = "fvs")]
+        let virgo = self.virgo.clone();
         let registry = self.registry.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
@@ -178,7 +200,16 @@ impl BottleManager {
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
-                let bottle = Bottle::new(id, name, config, cx.clone(), addons.clone()).await?;
+                let bottle = Bottle::new(
+                    id,
+                    name,
+                    config,
+                    cx.clone(),
+                    addons.clone(),
+                    #[cfg(feature = "fvs")]
+                    virgo.clone(),
+                )
+                .await?;
                 progress.send_replace(Some(Progress::new(Stage::Configuring)));
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
@@ -264,7 +295,13 @@ impl BottleManager {
             }
             .into());
         }
-        let bottle = Bottle::from_state(state, self.context.clone(), self.addons.clone())?;
+        let bottle = Bottle::from_state(
+            state,
+            self.context.clone(),
+            self.addons.clone(),
+            #[cfg(feature = "fvs")]
+            self.virgo.clone(),
+        )?;
         Ok(self.registry.intern(bottle))
     }
 
@@ -342,7 +379,13 @@ impl BottleManager {
         for path in paths {
             match next_config::load::<BottleState>(path).await {
                 Ok(state) => {
-                    match Bottle::from_state(state, self.context.clone(), self.addons.clone()) {
+                    match Bottle::from_state(
+                        state,
+                        self.context.clone(),
+                        self.addons.clone(),
+                        #[cfg(feature = "fvs")]
+                        self.virgo.clone(),
+                    ) {
                         Ok(bottle) => bottles.push(bottle),
                         Err(error) => {
                             tracing::warn!("skipping bottle with invalid runtime: {error}")

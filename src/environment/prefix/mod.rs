@@ -97,17 +97,17 @@ impl PrefixBackend {
         runner: &dyn Runner,
         root: &Path,
         cx: &Context,
-        addons: &Addons,
+        #[cfg(feature = "fvs")] virgo: &VirgoManager,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<()> {
         #[cfg(not(feature = "fvs"))]
-        let _ = (config, runner, root, cx, addons, progress, cancellation);
+        let _ = (config, runner, root, cx, progress, cancellation);
         match self {
             Self::Standard => Ok(()),
             #[cfg(feature = "fvs")]
             Self::Virgo => {
-                virgo::prepare(config, runner, root, cx, addons, progress, cancellation).await
+                virgo::prepare(config, runner, root, cx, virgo, progress, cancellation).await
             }
         }
     }
