@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::{VirgoLayer, VirgoManager, cache};
 use crate::{
-    AddonError, EnvVars, EnvironmentError, Progress, Slot, Stage,
+    AddonError, EnvironmentError, Progress, Slot, Stage,
     addons::{InstallInputs, execute},
     error::{Error, Result},
 };
@@ -63,14 +63,11 @@ impl VirgoManager {
             base,
             cancellation,
             |prefix, runner| async move {
-                let mut env_vars = EnvVars::default();
                 execute(
                     InstallInputs {
                         prefix: &prefix,
                         runner,
                         winebridge: &winebridge,
-                        env_vars: &mut env_vars,
-                        explicit_env_vars: &EnvVars::default(),
                     },
                     &payload,
                     resources,

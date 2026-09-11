@@ -109,8 +109,7 @@ impl Release<Component> {
         requirements: Vec<Requirement>,
         resource: InstallResource,
     ) -> Self {
-        let mut env_vars = EnvVars::default();
-        super::installer::replay_env_vars(&mut env_vars, &resource.steps);
+        let env_vars = collect_env_vars(&resource.steps);
         Self {
             addon: Addon::new(
                 id,
@@ -154,8 +153,7 @@ impl Release<Dependency> {
         requirements: Vec<Requirement>,
         resources: Vec<InstallResource>,
     ) -> Self {
-        let mut env_vars = EnvVars::default();
-        super::installer::replay_env_vars(&mut env_vars, resources.iter().flat_map(|r| &r.steps));
+        let env_vars = collect_env_vars(resources.iter().flat_map(|resource| &resource.steps));
         Self {
             addon: Addon::new(
                 id,
@@ -172,4 +170,15 @@ impl Release<Dependency> {
 
 impl<K: Serialize + serde::de::DeserializeOwned + 'static> next_config::Config for Release<K> {
     const VERSION: u32 = 1;
+}
+
+/// Extracts launch declarations once, in resource and step order; later values win.
+fn collect_env_vars<'a>(steps: impl IntoIterator<Item = &'a InstallStep>) -> EnvVars {
+    let mut env_vars = EnvVars::default();
+    for step in steps {
+        if let InstallStep::SetEnvironment { name, value } = step {
+            env_vars.insert(name.clone(), value.clone());
+        }
+    }
+    env_vars
 }

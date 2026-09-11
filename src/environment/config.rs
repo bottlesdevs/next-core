@@ -178,8 +178,8 @@ impl EnvironmentConfig {
             .filter_map(|slot| self.component(slot))
     }
 
-    /// Combines saved addon contributions; later selections override earlier ones.
-    pub(crate) fn addon_env_vars(&self) -> EnvVars {
+    /// Combines saved addon contributions in selection order, then applies bottle overrides.
+    pub(crate) fn effective_env_vars(&self) -> EnvVars {
         let mut vars = EnvVars::default();
         for addon in self.ordered_components() {
             vars.extend(addon.env_vars().clone());
@@ -187,6 +187,7 @@ impl EnvironmentConfig {
         for addon in &self.dependencies {
             vars.extend(addon.env_vars().clone());
         }
+        vars.extend(self.env_vars.clone());
         vars
     }
 

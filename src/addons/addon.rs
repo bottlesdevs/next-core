@@ -74,7 +74,7 @@ impl<K> Addon<K> {
 
     /// Returns this addon's frozen runtime environment variables.
     ///
-    /// Values are derived from its resolved installation recipes during acquisition
+    /// Values are collected from the selected recipe's declarations during acquisition
     /// and saved with the selection, so they remain available after the shared
     /// release is removed. These are this addon's contributions only; environment
     /// configuration combines them with other addons and applies owner overrides last.
