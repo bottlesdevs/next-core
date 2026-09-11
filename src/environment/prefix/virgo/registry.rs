@@ -1,13 +1,12 @@
 //! Compose the managed registry baseline, then replay private changes over it.
 
-use super::{VirgoError, artifacts::cache};
-use crate::{
-    Context,
-    error::{Error, Result},
-};
-use fvs_rs::{Layer, UnmountMode};
+use super::VirgoError;
+use crate::error::{Error, Result};
 use regdiff_rs::prelude::{Diff, Hive, Registry, apply_files};
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use uuid::Uuid;
 
 pub(crate) fn registry_files() -> [(&'static str, Hive); 2] {
@@ -25,6 +24,49 @@ pub(crate) fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -
     Registry::diff(&old, &new)
         .serialize_file(output)
         .map_err(|error| VirgoError::Registry(error.to_string()))?;
+    Ok(())
+}
+
+/// Save the initial hives alongside the stopped base filesystem before publication.
+pub(super) async fn capture(prefix: &Path, before: &Path) -> Result<()> {
+    async_fs::create_dir_all(before).await?;
+    for (file, _) in registry_files() {
+        async_fs::copy(prefix.join(file), before.join(file)).await?;
+    }
+    Ok(())
+}
+
+/// Write both forward patches after Wine has stopped, including empty changes.
+pub(super) async fn write_patches(before: &Path, prefix: &Path, patches: &Path) -> Result<()> {
+    let (before, prefix, patches) = (
+        before.to_path_buf(),
+        prefix.to_path_buf(),
+        patches.to_path_buf(),
+    );
+    blocking::unblock(move || {
+        fs::create_dir_all(&patches)?;
+        for (file, hive) in registry_files() {
+            write_forward(
+                &before.join(file),
+                &prefix.join(file),
+                &patches.join(file),
+                hive,
+            )?;
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// Committed artifact layers carry registry patches separately from filesystem effects.
+pub(super) async fn exclude_hives(filesystem: &Path) -> Result<()> {
+    for (file, _) in registry_files() {
+        match async_fs::remove_file(filesystem.join(file)).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     Ok(())
 }
 
@@ -58,69 +100,43 @@ fn merge_private(previous: &Path, upper: &Path, baseline: &Path, merged: &Path) 
 }
 
 /// The owner is stopped and checkpointed. Only managed registry files are replaced;
-/// all other private files and whiteouts keep normal overlay precedence.
-pub(crate) async fn compose(
-    root: &Path,
-    layers: &[Layer],
-    addons: &[Uuid],
-    cx: &Context,
-) -> Result<()> {
-    let stage = cx
-        .directories()
-        .data_dir()
-        .join("virgo/.staging")
-        .join(Uuid::new_v4().to_string());
-    let prefix = stage.join("prefix");
-    let baseline = stage.join("baseline");
-    async_fs::create_dir_all(&prefix).await?;
-    async_fs::create_dir_all(&baseline).await?;
-    let client = cx.fvs().await?;
-    let mount = client
-        .mount(&prefix, layers.to_vec(), None::<&Path>)
-        .await?;
-    let copied = async {
+/// all other private files and whiteouts keep normal overlay precedence. Soda supplies
+/// starting hives; patch paths are ordered adapter first, then selected addons.
+pub(crate) async fn compose(root: &Path, initial: &Path, patches: Vec<PathBuf>) -> Result<()> {
+    let stage = root.join(".staging").join(Uuid::new_v4().to_string());
+    let root = root.to_path_buf();
+    let initial = initial.to_path_buf();
+    let scratch = stage.clone();
+    let result = blocking::unblock(move || {
+        let baseline = scratch.join("baseline");
+        fs::create_dir_all(&baseline)?;
         for (file, _) in registry_files() {
-            async_fs::copy(prefix.join(file), baseline.join(file)).await?;
+            fs::copy(initial.join(file), baseline.join(file))?;
         }
+        for patch in patches {
+            for (file, hive) in registry_files() {
+                let path = baseline.join(file);
+                apply_files(&path, &patch.join(file), &path, hive)
+                    .map_err(|error| VirgoError::Registry(error.to_string()))?;
+            }
+        }
+        let previous = root.join("registry-baseline");
+        let upper = root.join("upper");
+        let merged = scratch.join("merged");
+        merge_private(&previous, &upper, &baseline, &merged)?;
+        for (file, _) in registry_files() {
+            fs::rename(merged.join(file), upper.join(file))?;
+            let whiteout = upper.join(format!(".wh.{file}"));
+            if whiteout.exists() {
+                fs::remove_file(whiteout)?;
+            }
+        }
+        if previous.exists() {
+            fs::remove_dir_all(&previous)?;
+        }
+        fs::rename(baseline, previous)?;
         Ok::<_, Error>(())
-    }
-    .await;
-    // This scratch mount never contains the owner's upper. Release it before
-    // changing owner data; on failure retain the mountpoint for explicit cleanup.
-    client
-        .unmount(&mount, UnmountMode::Normal)
-        .await
-        .map_err(|source| crate::EnvironmentError::Cleanup {
-            prefix,
-            source: Box::new(source.into()),
-        })?;
-    let result = async {
-        copied?;
-        for id in addons {
-            cache::apply_registry(&baseline, *id, cx).await?;
-        }
-        let root = root.to_path_buf();
-        let stage = stage.clone();
-        blocking::unblock(move || {
-            let previous = root.join("registry-baseline");
-            let upper = root.join("upper");
-            let merged = stage.join("merged");
-            merge_private(&previous, &upper, &baseline, &merged)?;
-            for (file, _) in registry_files() {
-                fs::rename(merged.join(file), upper.join(file))?;
-                let whiteout = upper.join(format!(".wh.{file}"));
-                if whiteout.exists() {
-                    fs::remove_file(whiteout)?;
-                }
-            }
-            if previous.exists() {
-                fs::remove_dir_all(&previous)?;
-            }
-            fs::rename(baseline, previous)?;
-            Ok::<_, Error>(())
-        })
-        .await
-    }
+    })
     .await;
     let _ = async_fs::remove_dir_all(stage).await;
     result

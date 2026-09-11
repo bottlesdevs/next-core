@@ -19,6 +19,7 @@ use crate::{
 use super::{InstallInputs, InstallResource, InstallStep};
 
 /// Applies every resource and step sequentially, reporting each step before it starts.
+/// `backup_files` preserves displaced files for Standard removal; layered builds disable it.
 ///
 /// Cancellation is checked before the first step, after every step, while waiting for child
 /// processes, between per-DLL operations, and during extraction. Cancellation attempts to kill
@@ -28,6 +29,7 @@ pub(crate) async fn execute(
     inputs: InstallInputs<'_>,
     payload_root: &Path,
     resources: &[InstallResource],
+    backup_files: bool,
     cancellation: &CancellationToken,
     on_step: impl Fn(&InstallStep) + Send,
 ) -> Result<()> {
@@ -53,6 +55,7 @@ pub(crate) async fn execute(
                 },
                 &source,
                 step,
+                backup_files,
                 cancellation,
             )
             .await?;
@@ -136,6 +139,7 @@ async fn execute_step(
     inputs: InstallInputs<'_>,
     resource: &Path,
     step: &InstallStep,
+    backup_files: bool,
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let InstallInputs {
@@ -155,10 +159,10 @@ async fn execute_step(
             } else {
                 resource.join(source)
             };
-            install_file(&source, prefix, destination).await?;
+            install_file(&source, prefix, destination, backup_files).await?;
         }
         InstallStep::Extract { destination } => {
-            extract_into(resource, prefix, destination, cancellation).await?;
+            extract_into(resource, prefix, destination, backup_files, cancellation).await?;
         }
         InstallStep::Execute { arguments } => {
             let mut command = Command::new(resource);
@@ -306,7 +310,7 @@ fn is_not_found(error: &Error) -> bool {
     matches!(error, Error::Status(status) if status.code() == tonic::Code::NotFound)
 }
 
-/// Copies a file into a prefix, preserving the first displaced regular file as a backup.
+/// Copies a file, optionally preserving the first displaced regular file for restoration.
 ///
 /// The backup is stored alongside the destination with `.bak` appended. An existing backup is
 /// never overwritten. `relative` is joined directly to `prefix` without containment validation.
@@ -314,14 +318,20 @@ fn is_not_found(error: &Error) -> bool {
 /// # Panics
 ///
 /// Panics if the resulting destination has no parent directory.
-async fn install_file(source: &Path, prefix: &Path, relative: &Path) -> Result<()> {
+async fn install_file(
+    source: &Path,
+    prefix: &Path,
+    relative: &Path,
+    backup_files: bool,
+) -> Result<()> {
     let destination = prefix.join(relative);
     async_fs::create_dir_all(destination.parent().expect("destination has a parent")).await?;
     let relative_backup = backup_path(relative);
     let backup = prefix.join(&relative_backup);
-    if async_fs::metadata(&destination)
-        .await
-        .is_ok_and(|entry| entry.is_file())
+    if backup_files
+        && async_fs::metadata(&destination)
+            .await
+            .is_ok_and(|entry| entry.is_file())
         && !exists(&backup).await?
     {
         async_fs::copy(&destination, &backup).await?;
@@ -354,8 +364,8 @@ async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
 
 /// Extracts an archive into an isolated staging directory, then installs its files.
 ///
-/// Files are installed in sorted path order through [`install_file`], preserving displaced files
-/// for possible restoration. The staging directory is removed on a best-effort basis regardless
+/// Files are installed in sorted path order through [`install_file`], following the caller's
+/// backup policy. The staging directory is removed on a best-effort basis regardless
 /// of the operation's result; a cleanup error does not replace the extraction result.
 ///
 /// # Panics
@@ -365,6 +375,7 @@ async fn extract_into(
     archive: &Path,
     prefix: &Path,
     destination: &Path,
+    backup_files: bool,
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let stage = prefix
@@ -386,7 +397,7 @@ async fn extract_into(
                     stage: stage.clone(),
                 }
             })?);
-            install_file(&source, prefix, &relative).await?;
+            install_file(&source, prefix, &relative, backup_files).await?;
         }
         check_cancellation(cancellation)?;
         Ok::<_, Error>(())
@@ -437,6 +448,7 @@ mod tests {
                     &root.join("missing.tar"),
                     &root.join("prefix"),
                     Path::new("drive_c"),
+                    true,
                     &cancellation,
                 )
                 .await,

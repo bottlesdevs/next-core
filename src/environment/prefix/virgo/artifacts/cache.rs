@@ -1,224 +1,88 @@
-//! Shared immutable Virgo addon cache.
-//!
-//! Each addon UUID owns an FVS filesystem layer and a separate set of forward
-//! registry patches. Registry hives are excluded from the layer so their changes
-//! can be merged into each owner's writable upper directory.
+//! Storage for complete immutable bases, addons, and runner adapters.
 
-use std::{
-    ops::AsyncFnOnce,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-use super::super::registry::{registry_files, write_forward};
-use fvs_rs::{Layer, UnmountMode};
-use regdiff_rs::prelude::apply_files;
+use fvs_rs::{Layer, Repository};
+use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{
-    Context,
-    error::{Error, Result},
-    runner::Runner,
-};
+use super::super::{VirgoError, registry::registry_files};
+use crate::error::{Error, Result};
 
-use crate::environment::{VirgoError, prefix::FVS_BLOCK_SIZE};
-
-/// Checks only for FVS repository metadata; [`layer`] validates its commit.
-pub(crate) async fn exists(id: Uuid, context: &Context) -> Result<bool> {
-    let path = layer_path(id, context).join(".fvs2");
-    Ok(async_fs::metadata(path)
-        .await
-        .is_ok_and(|entry| entry.is_dir()))
+#[derive(Deserialize, Serialize, next_config::Config)]
+#[config(version = 1)]
+struct VirgoLayerManifest {
+    id: Uuid,
+    commit: String,
 }
 
-/// Builds and publishes the cached filesystem layer and registry patches.
-///
-/// Installation runs in a unique staging mount over the pinned Soda base. The
-/// registry is diffed separately, unchanged filesystem entries are pruned by
-/// FVS, and the registry hives are removed before the upper directory is
-/// committed as a reusable layer.
-///
-/// Existing cache entries are removed before the build. Publishing the registry
-/// and filesystem destinations requires two renames and is not atomic as a pair;
-/// failure may therefore leave only one destination present. Staging cleanup is
-/// best-effort.
-pub(crate) async fn install<F>(
-    base: Layer,
-    item_id: Uuid,
-    runner: &dyn Runner,
-    execute: F,
-    context: &Context,
-) -> Result<()>
-where
-    F: for<'a> AsyncFnOnce(&'a Path) -> Result<()>,
-{
-    let layer_root = layer_root(context);
-    let registry_root = registry_root(context);
-    let destination = layer_root.join(item_id.to_string());
-    let registry_destination = registry_root.join(item_id.to_string());
-    let stage = context
-        .directories()
-        .data_dir()
-        .join("virgo/.staging")
-        .join(Uuid::new_v4().to_string());
-    let upper = stage.join("upper");
-    let prefix = stage.join("prefix");
-    let before = stage.join("before");
-    let patches = stage.join("registry");
-
-    let setup = async {
-        remove_dir_if_exists(&destination).await?;
-        remove_dir_if_exists(&registry_destination).await?;
-        for path in [&upper, &prefix, &before, &patches] {
-            async_fs::create_dir_all(path).await?;
-        }
-        Ok::<_, Error>(())
-    }
-    .await;
-    if let Err(error) = setup {
-        remove_stage(stage).await;
-        return Err(error);
-    }
-
-    let client = context.fvs().await?;
-    let mount = client.mount(&prefix, vec![base], Some(&upper)).await?;
-    let installed = async {
-        for (file, _) in registry_files() {
-            async_fs::copy(prefix.join(file), before.join(file)).await?;
-        }
-        execute(&prefix).await
-    }
-    .await;
-    crate::environment::runtime::stop(runner, &prefix).await?;
-    let diffed: Result<()> = async {
-        installed?;
-        let diff_before = before.clone();
-        let diff_prefix = prefix.clone();
-        let diff_patches = patches.clone();
-        blocking::unblock(move || {
-            for (file, hive) in registry_files() {
-                write_forward(
-                    &diff_before.join(file),
-                    &diff_prefix.join(file),
-                    &diff_patches.join(file),
-                    hive,
-                )?;
-            }
-            Ok::<_, Error>(())
-        })
-        .await?;
-        client.diff_mount(&mount, true).await?;
-        Ok(())
-    }
-    .await;
-    client
-        .unmount(&mount, UnmountMode::Normal)
-        .await
-        .map_err(|source| crate::EnvironmentError::Cleanup {
-            prefix: prefix.clone(),
-            source: Box::new(source.into()),
-        })?;
-
-    let result: Result<()> = async {
-        diffed?;
-        for (file, _) in registry_files() {
-            remove_file(&upper.join(file)).await?;
-        }
-        let client = context.fvs().await?;
-        let repository = client.new_repository(&upper, FVS_BLOCK_SIZE).await?;
-        client.commit(&repository, item_id.to_string()).await?;
-
-        async_fs::create_dir_all(layer_root).await?;
-        async_fs::create_dir_all(registry_root).await?;
-        async_fs::rename(patches, registry_destination).await?;
-        async_fs::rename(upper, destination).await?;
-        Ok(())
-    }
-    .await;
-    remove_stage(stage).await;
-    result
+/// Resolved installed effects, independent of build inputs and artifact kind.
+pub(crate) struct VirgoLayer {
+    pub(crate) id: Uuid,
+    pub(crate) layer: Layer,
+    pub(crate) registry: PathBuf,
 }
 
-/// Merges a cached addon's registry patches into prepared registry hives.
-///
-/// A missing patch directory means the addon has no recorded registry effects.
-pub(crate) async fn apply_registry(prefix: &Path, id: Uuid, context: &Context) -> Result<()> {
-    let patches = registry_path(id, context);
-    if !async_fs::metadata(&patches)
-        .await
-        .is_ok_and(|entry| entry.is_dir())
-    {
-        return Ok(());
-    }
-
-    let apply_prefix = prefix.to_path_buf();
-    blocking::unblock(move || {
-        for (file, hive) in registry_files() {
-            let path = apply_prefix.join(file);
-            apply_files(&path, &patches.join(file), &path, hive)
-                .map_err(|error| VirgoError::Registry(error.to_string()))?;
+impl VirgoLayerManifest {
+    fn resolve(self, root: &Path) -> VirgoLayer {
+        let repository = Repository {
+            repository_path: root.join("filesystem").display().to_string(),
+            block_size: 0,
+        };
+        VirgoLayer {
+            id: self.id,
+            layer: Layer::from_state_id(&repository, Some(&self.commit)),
+            registry: root.join("registry"),
         }
-        Ok(())
-    })
-    .await
+    }
 }
 
-/// Resolves a cached layer and its first available commit.
-///
-/// Repository metadata without a commit is treated as a corrupt cache entry.
-pub(crate) async fn layer(id: Uuid, context: &Context) -> Result<Layer> {
-    let destination = layer_path(id, context);
-    if !async_fs::metadata(destination.join(".fvs2"))
-        .await
-        .is_ok_and(|entry| entry.is_dir())
-    {
-        return Err(VirgoError::CachedLayerNotFound(destination).into());
+/// Only an absent directory is a cache miss.
+/// UUID-keyed caches check the expected ID; the fixed base directory discovers its pinned ID.
+pub(super) async fn load(root: &Path, id: Option<Uuid>) -> Result<Option<VirgoLayer>> {
+    match async_fs::symlink_metadata(root).await {
+        Ok(entry) if entry.is_dir() => {}
+        Ok(_) => return Err(VirgoError::InvalidArtifact(root.to_path_buf()).into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
     }
-    let client = context.fvs().await?;
-    let repository = client.new_repository(&destination, 0).await?;
-    let commit = client
-        .list_commits(&repository)
+    let manifest: VirgoLayerManifest = next_config::load(root.join("manifest.toml")).await?;
+    if id.is_some_and(|id| manifest.id != id) || manifest.commit.is_empty() {
+        return Err(VirgoError::InvalidArtifact(root.to_path_buf()).into());
+    }
+    if !async_fs::metadata(root.join("filesystem/.fvs2"))
         .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| VirgoError::MissingCommit {
-            repository: destination,
-            state: "HEAD".into(),
-        })?;
-    Ok(Layer::from_summary(&repository, Some(&commit)))
-}
-
-fn layer_root(context: &Context) -> PathBuf {
-    context.directories().data_dir().join("virgo/layers")
-}
-
-fn registry_root(context: &Context) -> PathBuf {
-    context.directories().data_dir().join("virgo/registry")
-}
-
-fn layer_path(id: Uuid, context: &Context) -> PathBuf {
-    layer_root(context).join(id.to_string())
-}
-
-fn registry_path(id: Uuid, context: &Context) -> PathBuf {
-    registry_root(context).join(id.to_string())
-}
-
-async fn remove_file(path: &Path) -> std::io::Result<()> {
-    match async_fs::remove_file(path).await {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+        .is_dir()
+    {
+        return Err(VirgoError::InvalidArtifact(root.to_path_buf()).into());
     }
-}
-
-async fn remove_dir_if_exists(path: &Path) -> std::io::Result<()> {
-    match async_fs::remove_dir_all(path).await {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+    for (file, _) in registry_files() {
+        if !async_fs::metadata(root.join("registry").join(file))
+            .await?
+            .is_file()
+        {
+            return Err(VirgoError::InvalidArtifact(root.to_path_buf()).into());
+        }
     }
+    Ok(Some(manifest.resolve(root)))
 }
 
-async fn remove_stage(stage: PathBuf) {
-    let _ = remove_dir_if_exists(&stage).await;
+/// The caller has committed the filesystem and written both registry files in staging.
+/// The shared build lock covers publication; published nonempty directories are never replaced.
+pub(super) async fn publish(
+    artifact: &Path,
+    destination: &Path,
+    id: Uuid,
+    commit: String,
+    cancellation: &CancellationToken,
+) -> Result<VirgoLayer> {
+    let manifest = VirgoLayerManifest { id, commit };
+    next_config::save(artifact.join("manifest.toml"), &manifest).await?;
+    async_fs::create_dir_all(destination.parent().expect("artifact has a parent")).await?;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    async_fs::rename(artifact, destination).await?;
+    Ok(manifest.resolve(destination))
 }
