@@ -1,117 +1,123 @@
-//! Prefix preparation and storage backends.
-//!
-//! Standard storage mutates a conventional prefix directly; Virgo stores an
-//! ordered FVS layer stack with a private writable upper directory. Virgo
-//! materialization uses rollback checkpoints; Standard uses FVS only for explicit snapshots.
+//! Prefix backends own initialization, software materialization, and storage release.
+//! Environment stops the owner's runtime before calling apply, prepare, or release.
+//! Backends stop their own initialization and installer processes before returning.
 
 mod standard;
 #[cfg(feature = "fvs")]
 mod virgo;
-
-use std::path::Path;
-
 #[cfg(feature = "fvs")]
 pub use virgo::VirgoError;
 
+use super::EnvironmentConfig;
+use crate::{Addons, Context, Progress, error::Result, runner::Runner};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Addons, Context, EnvironmentConfig, Progress, error::Result};
-
 #[cfg(feature = "fvs")]
-pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
+pub(super) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
-/// Selects conventional mutable storage or FVS composition.
+/// Selects how a runnable Wine prefix is created and maintained.
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
-pub enum Storage {
-    /// Stores a conventional mutable prefix in the owner directory.
-    ///
+pub enum PrefixBackend {
+    /// Initialize and mutate a conventional prefix directly.
     /// Explicit snapshots may use FVS; ordinary mutations use direct writes.
     Standard,
-    /// Stores the prefix as composable FVS layers.
-    ///
+    /// Build immutable artifacts and compose them with a private writable upper.
     /// Virgo is experimental and requires the configured FVS service.
     #[cfg(feature = "fvs")]
     Virgo,
 }
 
-/// Creates storage at an explicit owner location.
-pub(crate) async fn create(storage: &Storage, root: &Path) -> Result<()> {
-    let directory = match storage {
-        Storage::Standard => "prefix",
-        #[cfg(feature = "fvs")]
-        Storage::Virgo => "upper",
-    };
-    Ok(async_fs::create_dir_all(root.join(directory)).await?)
-}
-
-/// Checks backend restrictions before the owner stops or publishes an edit.
-pub(crate) fn validate_edit(
-    previous: &EnvironmentConfig,
-    candidate: &EnvironmentConfig,
-) -> Result<()> {
-    if matches!(candidate.storage, Storage::Standard)
-        && !candidate.dependencies.starts_with(&previous.dependencies)
-    {
-        return Err(crate::EnvironmentError::InvalidEdit(
-            "installed dependencies cannot be removed, replaced or reordered",
-        )
-        .into());
-    }
-    Ok(())
-}
-
-/// Applies edited selections to a stopped prefix; Virgo defers work until preparation.
-pub(crate) async fn reconcile(
-    previous: &EnvironmentConfig,
-    candidate: &EnvironmentConfig,
-    root: &Path,
-    cx: &Context,
-    addons: &Addons,
-    progress: &watch::Sender<Option<Progress>>,
-    cancellation: &CancellationToken,
-) -> Result<()> {
-    match candidate.storage {
-        Storage::Standard => {
-            standard::reconcile(
-                previous,
-                candidate,
-                root,
-                cx,
-                addons,
-                progress,
-                cancellation,
-            )
-            .await
+impl PrefixBackend {
+    /// Create initial prefix data. A successful return leaves no Wine processes running.
+    /// Failed cleanup retains data for explicit recovery by the caller.
+    pub(super) async fn create(
+        &self,
+        config: &EnvironmentConfig,
+        root: &Path,
+        cx: &Context,
+    ) -> Result<()> {
+        match self {
+            Self::Standard => standard::create(config, root, cx).await,
+            #[cfg(feature = "fvs")]
+            Self::Virgo => Ok(async_fs::create_dir_all(root.join("upper")).await?),
         }
-        #[cfg(feature = "fvs")]
-        Storage::Virgo => Ok(()),
     }
-}
 
-/// Prepares a stopped owner's prefix for execution.
-pub(crate) async fn prepare(
-    config: &EnvironmentConfig,
-    root: &Path,
-    cx: &Context,
-    addons: &Addons,
-    progress: &watch::Sender<Option<Progress>>,
-    cancellation: &CancellationToken,
-) -> Result<()> {
-    let _ = (root, cx, addons, progress, cancellation);
-    match config.storage {
-        Storage::Standard => Ok(()),
-        #[cfg(feature = "fvs")]
-        Storage::Virgo => virgo::prepare(config, root, cx, addons, progress, cancellation).await,
+    /// Check backend-specific edit restrictions before the owner is stopped or changed.
+    pub(super) fn validate_edit(
+        &self,
+        previous: &EnvironmentConfig,
+        candidate: &EnvironmentConfig,
+    ) -> Result<()> {
+        match self {
+            Self::Standard => standard::validate_edit(previous, candidate),
+            #[cfg(feature = "fvs")]
+            Self::Virgo => Ok(()),
+        }
     }
-}
 
-pub(crate) async fn stop(storage: &Storage, root: &Path, context: &Context) -> Result<()> {
-    let _ = (root, context);
-    match storage {
-        Storage::Standard => Ok(()),
-        #[cfg(feature = "fvs")]
-        Storage::Virgo => virgo::stop(root, context).await,
+    /// Apply validated selections to a stopped prefix. Virgo defers materialization.
+    pub(super) async fn apply(
+        &self,
+        previous: &EnvironmentConfig,
+        candidate: &EnvironmentConfig,
+        root: &Path,
+        cx: &Context,
+        addons: &Addons,
+        progress: &watch::Sender<Option<Progress>>,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        match self {
+            Self::Standard => {
+                standard::apply(
+                    previous,
+                    candidate,
+                    root,
+                    cx,
+                    addons,
+                    progress,
+                    cancellation,
+                )
+                .await
+            }
+            #[cfg(feature = "fvs")]
+            Self::Virgo => Ok(()),
+        }
+    }
+
+    /// Materialize a stopped prefix for execution using the selected configuration.
+    pub(super) async fn prepare(
+        &self,
+        config: &EnvironmentConfig,
+        runner: &dyn Runner,
+        root: &Path,
+        cx: &Context,
+        addons: &Addons,
+        progress: &watch::Sender<Option<Progress>>,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        #[cfg(not(feature = "fvs"))]
+        let _ = (config, runner, root, cx, addons, progress, cancellation);
+        match self {
+            Self::Standard => Ok(()),
+            #[cfg(feature = "fvs")]
+            Self::Virgo => {
+                virgo::prepare(config, runner, root, cx, addons, progress, cancellation).await
+            }
+        }
+    }
+
+    /// Release prefix storage only after environment has finished process shutdown.
+    pub(super) async fn release(&self, root: &Path, cx: &Context) -> Result<()> {
+        #[cfg(not(feature = "fvs"))]
+        let _ = (root, cx);
+        match self {
+            Self::Standard => Ok(()),
+            #[cfg(feature = "fvs")]
+            Self::Virgo => virgo::release(root, cx).await,
+        }
     }
 }

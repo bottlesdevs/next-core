@@ -96,7 +96,7 @@ async fn ensure_base(
     })?;
     let initialized = runner.wineboot(&prefix, "--init").await;
     // Keep storage if Wine cannot be stopped safely.
-    crate::environment::shutdown_wine(runner.as_ref(), &prefix).await?;
+    crate::environment::runtime::stop(runner.as_ref(), &prefix).await?;
     let result = async {
         initialized?;
         if cancellation.is_cancelled() {
@@ -192,7 +192,7 @@ async fn ensure_adapter(
         .mount(&mountpoint, vec![base.clone()], Some(&upper))
         .await?;
     let initialized = runner.wineboot(&mountpoint, "--init").await;
-    crate::environment::shutdown_wine(runner, &mountpoint).await?;
+    crate::environment::runtime::stop(runner, &mountpoint).await?;
     client
         .unmount(&mount, UnmountMode::Normal)
         .await

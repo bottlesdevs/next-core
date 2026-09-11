@@ -20,7 +20,7 @@ use crate::{
     runner::Runner,
 };
 
-use crate::environment::prefix::{FVS_BLOCK_SIZE, VirgoError};
+use crate::environment::{VirgoError, prefix::FVS_BLOCK_SIZE};
 
 /// Checks only for FVS repository metadata; [`layer`] validates its commit.
 pub(crate) async fn exists(id: Uuid, context: &Context) -> Result<bool> {
@@ -88,7 +88,7 @@ where
         execute(&prefix).await
     }
     .await;
-    crate::environment::shutdown_wine(runner, &prefix).await?;
+    crate::environment::runtime::stop(runner, &prefix).await?;
     let diffed: Result<()> = async {
         installed?;
         let diff_before = before.clone();

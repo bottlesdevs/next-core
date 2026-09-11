@@ -1,7 +1,9 @@
 //! Persisted execution settings shared by all environment owners.
 
-use super::{EnvironmentError, Storage};
-use crate::{Addon, Component, Dependency, EnvVars, Requirement, Slot, Wrappers, error::Result};
+use super::{EnvironmentError, PrefixBackend};
+use crate::{
+    Addon, AddonError, Component, Dependency, EnvVars, Requirement, Slot, Wrappers, error::Result,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use strum::IntoEnumIterator;
@@ -11,7 +13,9 @@ use uuid::Uuid;
 /// Virgo layers and recipe variables are derived from these selections on demand.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EnvironmentConfig {
-    pub storage: Storage,
+    /// Prefix creation and software materialization strategy.
+    #[serde(rename = "storage")]
+    pub backend: PrefixBackend,
     /// Component releases pinned to their occupied slots.
     pub components: HashMap<Slot, Addon<Component>>,
     /// Installed dependencies in installation order.
@@ -23,6 +27,150 @@ pub struct EnvironmentConfig {
 }
 
 impl EnvironmentConfig {
+    /// Resolve the downloaded runtime releases for a new environment.
+    pub(crate) fn new(
+        backend: PrefixBackend,
+        runner: Uuid,
+        addons: &crate::Addons,
+    ) -> Result<Self> {
+        let runner_component = addons
+            .component(runner)
+            .ok_or(crate::AddonError::NotFound(runner))?;
+        if runner_component.slot() != Slot::Runner {
+            return Err(EnvironmentError::InvalidComponentSlot {
+                component: runner_component.id(),
+                required: Slot::Runner,
+            }
+            .into());
+        }
+        let winebridge = addons.latest_component(Slot::WineBridge);
+        let needs_umu = runner_component
+            .requirements()
+            .contains(&Requirement::Slot(Slot::Umu));
+        let umu = needs_umu
+            .then(|| addons.latest_component(Slot::Umu))
+            .flatten();
+        let mut missing = Vec::new();
+        if winebridge.is_none() {
+            missing.push(Requirement::Slot(Slot::WineBridge));
+        }
+        if needs_umu && umu.is_none() {
+            missing.push(Requirement::Slot(Slot::Umu));
+        }
+        if !missing.is_empty() {
+            return Err(EnvironmentError::RequiresAddon {
+                required_by: None,
+                requirements: missing,
+            }
+            .into());
+        }
+        let winebridge = winebridge.unwrap(); // Safe to unwrap since we just checked it above
+        let mut components = HashMap::from([
+            (Slot::WineBridge, Addon::from(winebridge.as_ref())),
+            (Slot::Runner, Addon::from(runner_component.as_ref())),
+        ]);
+        if let Some(umu) = umu {
+            components.insert(Slot::Umu, Addon::from(umu.as_ref()));
+        }
+        let config = EnvironmentConfig {
+            backend,
+            components,
+            dependencies: Vec::new(),
+            env_vars: Default::default(),
+            wrappers: Default::default(),
+        };
+        config.validate_requirements()?;
+        Ok(config)
+    }
+
+    /// Select a downloaded component and pair a runner with UMU when required.
+    pub(crate) fn set_component(&mut self, id: Uuid, addons: &crate::Addons) -> Result<()> {
+        let component = addons
+            .component(id)
+            .ok_or(crate::AddonError::NotFound(id))?;
+        if self
+            .component(component.slot())
+            .is_some_and(|old| old.id() == id)
+        {
+            return Ok(());
+        }
+        let needs_umu = component
+            .requirements()
+            .contains(&crate::Requirement::Slot(Slot::Umu));
+        if needs_umu && self.umu().is_none() {
+            let umu = addons.latest_component(Slot::Umu).ok_or_else(|| {
+                crate::EnvironmentError::RequiresAddon {
+                    required_by: Some(id),
+                    requirements: vec![crate::Requirement::Slot(Slot::Umu)],
+                }
+            })?;
+            self.components
+                .insert(Slot::Umu, crate::Addon::from(umu.as_ref()));
+        }
+        self.components
+            .insert(component.slot(), crate::Addon::from(component.as_ref()));
+        if component.slot() == Slot::Runner && !needs_umu {
+            self.components.remove(&Slot::Umu);
+        }
+        Ok(())
+    }
+
+    /// Validate edited selections before runtime or prefix work.
+    pub(crate) fn validate_edit(&self, previous: &Self, addons: &crate::Addons) -> Result<()> {
+        self.validate_requirements()?;
+        if self.backend != previous.backend {
+            return Err(
+                EnvironmentError::InvalidEdit("prefix backend is fixed at creation").into(),
+            );
+        }
+        for slot in Slot::iter() {
+            let old = previous.component(slot);
+            let new = self.component(slot);
+            if old == new {
+                continue;
+            }
+            if let Some(new) = new {
+                let downloaded = addons
+                    .component(new.id())
+                    .ok_or(AddonError::NotFound(new.id()))?;
+                if Addon::from(downloaded.as_ref()) != *new {
+                    return Err(EnvironmentError::InvalidEdit(
+                        "component selection must match its downloaded release",
+                    )
+                    .into());
+                }
+            }
+        }
+        for new in &self.dependencies {
+            if self
+                .dependencies
+                .iter()
+                .filter(|addon| addon.id() == new.id())
+                .count()
+                != 1
+            {
+                return Err(EnvironmentError::InvalidEdit(
+                    "a dependency may only be selected once",
+                )
+                .into());
+            }
+            if previous.dependency(new.id()) == Some(new) {
+                continue;
+            }
+            let downloaded = addons
+                .dependency(new.id())
+                .ok_or(AddonError::NotFound(new.id()))?;
+            if Addon::from(downloaded.as_ref()) != *new {
+                return Err(EnvironmentError::InvalidEdit(
+                    "dependency selection must match its downloaded release",
+                )
+                .into());
+            }
+        }
+
+        Ok(())
+    }
+
     /// Prefix-contributing components in fixed slot order.
     pub(crate) fn ordered_components(&self) -> impl Iterator<Item = &Addon<Component>> {
         Slot::iter()

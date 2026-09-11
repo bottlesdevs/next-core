@@ -1,20 +1,41 @@
-//! Direct installation into a conventional mutable prefix.
+//! Initialize and mutate a conventional Wine prefix directly.
 
+use super::super::runtime;
+use crate::{
+    AddonError, Addons, Context, EnvironmentConfig, EnvironmentError, Progress, Slot, Stage,
+    addons::{InstallInputs, execute, uninstall},
+    error::Result,
+};
 use std::path::Path;
-
 use strum::IntoEnumIterator;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    AddonError, Addons, Context, EnvironmentConfig, Progress, Slot, Stage,
-    addons::{InstallInputs, execute, uninstall},
-    environment::Environment,
-    error::Result,
-};
+pub(super) async fn create(config: &EnvironmentConfig, root: &Path, cx: &Context) -> Result<()> {
+    let prefix = root.join("prefix");
+    async_fs::create_dir_all(&prefix).await?;
+    let runner = config
+        .runner()
+        .load_runner(cx.directories(), config.umu())
+        .await?;
+    runtime::initialize(runner.as_ref(), &prefix).await
+}
+
+pub(super) fn validate_edit(
+    previous: &EnvironmentConfig,
+    candidate: &EnvironmentConfig,
+) -> Result<()> {
+    if !candidate.dependencies.starts_with(&previous.dependencies) {
+        return Err(EnvironmentError::InvalidEdit(
+            "installed dependencies cannot be removed, replaced or reordered",
+        )
+        .into());
+    }
+    Ok(())
+}
 
 /// Apply validated Standard selections directly to the stopped owner's prefix.
-pub(super) async fn reconcile(
+pub(super) async fn apply(
     previous: &EnvironmentConfig,
     candidate: &EnvironmentConfig,
     root: &Path,
@@ -70,7 +91,7 @@ pub(super) async fn reconcile(
             },
         )
         .await;
-        Environment::stop(candidate, root, cx).await?;
+        runtime::stop(runner.as_ref(), &prefix).await?;
         result?;
     }
     for resources in installations {
@@ -89,7 +110,7 @@ pub(super) async fn reconcile(
             },
         )
         .await;
-        Environment::stop(candidate, root, cx).await?;
+        runtime::stop(runner.as_ref(), &prefix).await?;
         result?;
     }
     Ok(())

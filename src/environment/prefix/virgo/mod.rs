@@ -1,63 +1,24 @@
-//! Layered Virgo prefix storage.
-//!
-//! A mounted prefix combines a shared base, a runner-specific adapter, cached
-//! addon layers, and the owner's writable `upper` directory. Layer order is
-//! derived from selected addons when preparing a stopped environment.
+//! Resolve shared artifacts and prepare a stopped owner's Virgo composition.
 
 mod artifacts;
 mod registry;
 
-use std::path::{Path, PathBuf};
-
-use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
-
-use futures_lite::StreamExt;
-use fvs_rs::{Layer, UnmountMode};
-
+use super::super::{EnvironmentConfig, history};
 use crate::{
     Context, Progress, Stage,
-    environment::{EnvironmentConfig, history},
     error::{Error, Result},
+    runner::Runner,
 };
-
-/// Virgo-specific failures carried by [`crate::error::Error::Virgo`].
-#[derive(Debug, thiserror::Error)]
-pub enum VirgoError {
-    #[error("no Soda runner release in the current component catalog")]
-    SodaNotInCatalog,
-    #[error("invalid Soda semantic version: {0}")]
-    InvalidSodaVersion(String),
-    #[error("download Soda {version} ({id}) before building the Virgo base or an addon layer")]
-    SodaNotDownloaded { id: Uuid, version: String },
-
-    /// A required FVS commit is missing from a repository.
-    #[error("FVS repository {repository} has no commit {state}")]
-    MissingCommit {
-        /// Repository whose history was searched.
-        repository: PathBuf,
-        /// Requested full or abbreviated state ID.
-        state: String,
-    },
-    /// Virgo cannot mount a prefix over a nonempty mountpoint.
-    #[error("mountpoint is not empty: {0}")]
-    DirtyMountpoint(PathBuf),
-    #[error(
-        "mounted layers or writable upper differ from the selected composition at {0}; call stop() and retry"
-    )]
-    MountMismatch(PathBuf),
-    /// A cached layer required to construct the prefix is missing.
-    #[error("cached Virgo layer was not found: {0}")]
-    CachedLayerNotFound(PathBuf),
-    /// Registry data could not be converted while building a Virgo layer.
-    #[error("failed to process Virgo registry data: {0}")]
-    Registry(String),
-}
+use futures_lite::StreamExt;
+use fvs_rs::{Layer, UnmountMode};
+use std::path::Path;
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 /// Builds the selected Virgo composition while the owner is coordinated and stopped.
 pub(super) async fn prepare(
     config: &EnvironmentConfig,
+    runner: &dyn Runner,
     root: &Path,
     cx: &Context,
     addons: &crate::Addons,
@@ -69,15 +30,11 @@ pub(super) async fn prepare(
         .map(crate::Addon::id)
         .chain(config.dependencies.iter().map(crate::Addon::id))
         .collect();
-    let runner = config
-        .runner()
-        .load_runner(cx.directories(), config.umu())
-        .await?;
     for id in &ids {
         artifacts::prepare_addon(*id, addons, cx, progress, cancellation).await?;
     }
     let mut layers = artifacts::base_layers(
-        runner.as_ref(),
+        runner,
         &config.runner().id().to_string(),
         addons,
         cx,
@@ -108,6 +65,11 @@ pub(super) async fn prepare(
     }
     .await;
     history::recover(result, root, &checkpoint, cx, progress).await?;
+    mount(root, layers, cx).await
+}
+
+/// Mount resolved layers after the environment workflow has stopped Wine.
+async fn mount(root: &Path, layers: Vec<Layer>, cx: &Context) -> Result<()> {
     if !existing_mount(root, &layers, cx).await? {
         let prefix = root.join("prefix");
         ensure_empty_dir(&prefix).await?;
@@ -137,7 +99,7 @@ async fn existing_mount(root: &Path, layers: &[Layer], context: &Context) -> Res
     Ok(true)
 }
 
-pub(super) async fn stop(root: &Path, context: &Context) -> Result<()> {
+pub(super) async fn release(root: &Path, context: &Context) -> Result<()> {
     let prefix = root.join("prefix");
     let client = context.fvs().await?;
     if let Some(mount) = client.list_mounts().await?.into_iter().find(|mount| {
@@ -164,4 +126,37 @@ async fn ensure_empty_dir(path: &Path) -> Result<()> {
         return Err(VirgoError::DirtyMountpoint(path.to_path_buf()).into());
     }
     Ok(())
+}
+
+/// Virgo-specific failures carried by [`crate::error::Error::Virgo`].
+#[derive(Debug, thiserror::Error)]
+pub enum VirgoError {
+    #[error("no Soda runner release in the current component catalog")]
+    SodaNotInCatalog,
+    #[error("invalid Soda semantic version: {0}")]
+    InvalidSodaVersion(String),
+    #[error("download Soda {version} ({id}) before building the Virgo base or an addon layer")]
+    SodaNotDownloaded { id: uuid::Uuid, version: String },
+
+    /// A required FVS commit is missing from a repository.
+    #[error("FVS repository {repository} has no commit {state}")]
+    MissingCommit {
+        /// Repository whose history was searched.
+        repository: std::path::PathBuf,
+        /// Requested full or abbreviated state ID.
+        state: String,
+    },
+    /// Virgo cannot mount a prefix over a nonempty mountpoint.
+    #[error("mountpoint is not empty: {0}")]
+    DirtyMountpoint(std::path::PathBuf),
+    #[error(
+        "mounted layers or writable upper differ from the selected composition at {0}; call stop() and retry"
+    )]
+    MountMismatch(std::path::PathBuf),
+    /// A cached layer required to construct the prefix is missing.
+    #[error("cached Virgo layer was not found: {0}")]
+    CachedLayerNotFound(std::path::PathBuf),
+    /// Registry data could not be converted while building a Virgo layer.
+    #[error("failed to process Virgo registry data: {0}")]
+    Registry(String),
 }

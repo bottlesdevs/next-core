@@ -48,9 +48,8 @@ impl Bottle {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            Bottle::stop_state(&state, &cx).await?;
+            bottle.stop_locked().await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
@@ -131,9 +130,8 @@ impl Bottle {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            Bottle::stop_state(&state, &cx).await?;
+            bottle.stop_locked().await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }

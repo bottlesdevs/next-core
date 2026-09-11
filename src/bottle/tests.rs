@@ -7,7 +7,7 @@ use tokio::sync::{Mutex, watch};
 
 use super::state::BottleInner;
 use crate::{
-    Context, Directories, EnvironmentError, Storage,
+    Context, Directories, EnvironmentError, PrefixBackend,
     addons::{AddonError, Addons, CatalogError, Requirement, Slot},
     bottle::{Bottle, BottleManager},
     error::Error,
@@ -147,7 +147,10 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
         ));
         let manager = BottleManager::new(context, addons);
 
-        let error = match manager.create("test", Storage::Standard, runner_id).await {
+        let error = match manager
+            .create("test", PrefixBackend::Standard, runner_id)
+            .await
+        {
             Ok(_) => panic!("creation should fail before mutation"),
             Err(error) => error,
         };
