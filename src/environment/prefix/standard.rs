@@ -84,15 +84,12 @@ pub(super) async fn apply(
         .await?;
     let prefix = root.join("prefix");
     let winebridge = candidate.winebridge().path(cx.directories());
-    let mut env_vars = previous.addon_env_vars();
     for release in removals {
         let result = uninstall(
             InstallInputs {
                 prefix: &prefix,
                 runner: runner.as_ref(),
                 winebridge: &winebridge,
-                env_vars: &mut env_vars,
-                explicit_env_vars: &candidate.env_vars,
             },
             release.recipe(),
             release.id(),
@@ -119,8 +116,6 @@ pub(super) async fn apply(
                 prefix: &prefix,
                 runner: runner.as_ref(),
                 winebridge: &winebridge,
-                env_vars: &mut env_vars,
-                explicit_env_vars: &candidate.env_vars,
             },
             &payload,
             resources,

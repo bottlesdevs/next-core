@@ -6,16 +6,18 @@
 //! # Installation
 //!
 //! Resources and steps are applied in declaration order. Steps may copy or
-//! extract files, run installers, register DLLs, update the registry, configure
-//! DLL overrides, or change the bottle environment. Changes made by completed
-//! steps remain if a later step fails; the bottle storage layer is responsible
+//! extract files, run installers, register DLLs, update the registry, or configure
+//! DLL overrides. `SetEnvironment` declarations are collected into release metadata
+//! during acquisition and ignored during installation and uninstall. Installer
+//! commands declare their own variables. Changes made by completed steps remain
+//! if a later step fails; the bottle storage layer is responsible
 //! for any transaction-level rollback.
 //!
 //! # Component removal
 //!
 //! Resources and steps are visited in reverse order. Uninstallation can restore
-//! copied files, delete DLL overrides, and remove environment entries. Actions
-//! without an inverse—executing programs, extracting archives, registering DLLs,
+//! copied files and delete DLL overrides. Actions without an inverse—executing
+//! programs, extracting archives, registering DLLs,
 //! and setting registry values—are skipped. Consequently, a recipe is not
 //! necessarily fully reversible. Dependencies cannot be removed separately from
 //! their bottle.
@@ -48,7 +50,7 @@ use crate::{
 
 use super::deserialize_non_empty_string;
 
-pub(crate) use engine::{execute, replay_env_vars, uninstall};
+pub(crate) use engine::{execute, uninstall};
 pub(crate) use recipes::steps as recipe_steps;
 
 /// A local installation resource and its frozen recipe.
@@ -69,7 +71,7 @@ impl InstallResource {
     }
 }
 
-/// A declarative operation applied while installing an addon resource.
+/// An installation action or runtime environment declaration for an addon resource.
 ///
 /// Steps are serialized as part of Bottles' internal catalog schema; their wire
 /// representation is not a stable interchange API. The module overview describes
@@ -90,11 +92,13 @@ pub(crate) enum InstallStep {
     },
     /// Runs the resource through the configured runner and requires a successful exit status.
     ///
-    /// The process receives the bottle environment as it exists at this step.
+    /// Variables apply only to this command, in addition to the host environment.
     Execute {
         /// Passed directly to the child process without shell parsing.
         #[serde(default)]
         arguments: Vec<String>,
+        #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
+        env_vars: EnvVars,
     },
     /// Extracts a supported tar archive and copies its regular files into the Wine prefix.
     ///
@@ -108,15 +112,16 @@ pub(crate) enum InstallStep {
     },
     /// Registers DLLs silently with `regsvr32` in list order.
     ///
-    /// Each process receives the bottle environment as it exists at this step.
+    /// Variables apply only to these commands, in addition to the host environment.
     RegisterDlls {
         /// DLL paths intended to be relative to the Wine prefix.
         dlls: Vec<PathBuf>,
+        #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
+        env_vars: EnvVars,
     },
     /// Sets a registry value through WineBridge.
     ///
-    /// WineBridge is started with the current bottle environment when it is not
-    /// already running.
+    /// WineBridge is started with the runner's maintenance environment when needed.
     SetRegistryValue {
         hive: RegistryHive,
         /// Non-empty registry key path.
@@ -128,7 +133,7 @@ pub(crate) enum InstallStep {
     },
     /// Applies the same Wine DLL override mode to each named DLL.
     ///
-    /// WineBridge is started with the current bottle environment when needed.
+    /// WineBridge is started with the runner's maintenance environment when needed.
     /// Uninstall deletes these overrides rather than restoring their previous modes.
     SetDllOverrides {
         /// DLL names whose overrides are changed, in application order.
@@ -136,14 +141,15 @@ pub(crate) enum InstallStep {
         /// Applied uniformly; mixed per-DLL modes require separate steps.
         mode: DllOverrideMode,
     },
-    /// Overwrites an entry in the bottle's process environment.
+    /// Declares a launch variable, collected into addon metadata during acquisition.
     ///
-    /// The previous value is not retained. Uninstall removes the name rather than restoring a
-    /// previous value, and WineBridge is stopped so a later operation starts it with the change.
+    /// Later declarations win. Installation and uninstall ignore this declaration;
+    /// installer commands use their own explicit variables.
     SetEnvironment { name: String, value: String },
 }
 
 /// Execution inputs for a recipe in an owner prefix or shared build.
+#[derive(Clone, Copy)]
 pub(crate) struct InstallInputs<'a> {
     /// The prepared Wine prefix receiving recipe changes.
     pub(crate) prefix: &'a Path,
@@ -151,8 +157,4 @@ pub(crate) struct InstallInputs<'a> {
     pub(crate) runner: &'a dyn Runner,
     /// The WineBridge executable selected by the execution workflow.
     pub(crate) winebridge: &'a Path,
-    /// The environment updated by `SetEnvironment` steps and passed to processes.
-    pub(crate) env_vars: &'a mut EnvVars,
-    /// Explicit owner settings override recipe contributions for every process.
-    pub(crate) explicit_env_vars: &'a EnvVars,
 }
