@@ -5,7 +5,7 @@
 //! persisted by the owner and must be changed only while the owner is
 //! stopped.
 
-use crate::environment::artifacts::{self, cache};
+use crate::environment::artifacts::cache;
 
 use std::{
     ops::AsyncFnOnce,
@@ -16,7 +16,7 @@ use futures_lite::StreamExt;
 use fvs_rs::{Layer, UnmountMode};
 use uuid::Uuid;
 
-use crate::{Context, error::Result, runner::Runner};
+use crate::{Context, error::Result};
 
 /// Virgo-specific failures carried by [`crate::error::Error::Virgo`].
 #[derive(Debug, thiserror::Error)]
@@ -29,14 +29,6 @@ pub enum VirgoError {
         /// Requested full or abbreviated state ID.
         state: String,
     },
-    #[error("no Soda runner release in the current component catalog")]
-    SodaNotInCatalog,
-    #[error("invalid Soda semantic version: {0}")]
-    InvalidSodaVersion(String),
-    #[error("download Soda {version} ({id}) before building the Virgo base or an addon layer")]
-    SodaNotDownloaded { id: Uuid, version: String },
-    #[error("cyclic addon prerequisites involving {0}")]
-    CyclicPrerequisites(Uuid),
     /// Virgo cannot mount a prefix over a nonempty mountpoint.
     #[error("mountpoint is not empty: {0}")]
     DirtyMountpoint(PathBuf),
@@ -50,19 +42,6 @@ pub enum VirgoError {
     /// Registry data could not be converted while building a Virgo layer.
     #[error("failed to process Virgo registry data: {0}")]
     Registry(String),
-}
-
-pub(super) async fn create(
-    root: &Path,
-    runner: &dyn Runner,
-    runner_key: &str,
-    context: &Context,
-    addons: &crate::Addons,
-    cancellation: &tokio_util::sync::CancellationToken,
-) -> Result<Vec<Layer>> {
-    let upper = root.join("upper");
-    async_fs::create_dir_all(upper).await?;
-    artifacts::base_layers(runner, runner_key, addons, context, cancellation).await
 }
 
 pub(super) async fn prepare(root: &Path, layers: &[Layer], context: &Context) -> Result<()> {
@@ -113,26 +92,6 @@ pub(super) async fn stop(root: &Path, context: &Context) -> Result<()> {
                 source: Box::new(source.into()),
             })?;
     }
-    Ok(())
-}
-
-pub(super) async fn rebuild(
-    layers: &mut Vec<Layer>,
-    runner: &dyn Runner,
-    runner_key: &str,
-    installed: &[Uuid],
-    context: &Context,
-    addons: &crate::Addons,
-    cancellation: &tokio_util::sync::CancellationToken,
-) -> Result<()> {
-    // Build separately so failure to resolve any cached addon does not partially
-    // replace the owner's persisted layer order.
-    let mut rebuilt =
-        artifacts::base_layers(runner, runner_key, addons, context, cancellation).await?;
-    for id in installed {
-        rebuilt.push(cache::layer(*id, context).await?);
-    }
-    *layers = rebuilt;
     Ok(())
 }
 

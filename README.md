@@ -66,14 +66,15 @@ Settings-only edits save the draft without preparing or mutating the prefix.
 Virgo builds a clean shared base from the latest catalog runner named `Soda`
 (case-insensitive, semantic-version ordering). That exact release must already be
 downloaded. The base manifest pins its release and immutable FVS revision across
-catalog refreshes. `Bottles::rebuild_virgo_base()` explicitly publishes a new base;
-stopped preparations adopt it, while running environments and snapshots retain
-their resolved revisions. Older base generations and legacy caches are retained.
+catalog refreshes. The base is initialized once and reused; there is no rebuild
+operation. Startup mounts the owner's saved layers directly; creation and runner
+changes resolve the base and adapter references. New bases and adapters use
+`virgo/soda`; existing manifest references and addon caches remain usable.
 
 Addon cache misses use pinned Soda and declared prerequisite layers, without
 owner settings, wrappers, or private writable data. UUID remains the sole cache
-identity: completed caches survive runner changes and base rebuilds. Runner
-adapters are built using the selected runner over each base generation. Shared
+identity: completed caches survive runner and settings changes. Runner
+adapters are built using the selected runner over the pinned base. Shared
 construction is serialized within one core instance. Standard installers continue
 using their owner's runner. Managed registry-baseline composition remains step 8;
 Virgo retains its existing per-addon checkpoint boundary.

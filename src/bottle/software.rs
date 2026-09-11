@@ -189,34 +189,25 @@ impl Bottle {
         Environment::stop(&state.environment, &cx.directories().bottle(state.id), cx).await
     }
 
-    // Caller holds the owner lock. Attached runtimes keep their exact materialization.
+    // Caller holds the owner lock. Startup uses the saved layer references.
     async fn attach_or_start(
         &self,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<Environment> {
-        let _ = cancellation;
         let state = self.state()?;
         let root = self.0.cx.directories().bottle(state.id);
         if let Some(environment) = Environment::try_attach(&root).await? {
             return Ok(environment);
         }
-        #[cfg(feature = "fvs")]
-        {
-            let mut draft = state.as_ref().clone();
-            if Environment::refresh_base(
-                &mut draft.environment,
-                &root,
-                &self.0.addons,
-                &self.0.cx,
-                cancellation,
-            )
-            .await?
-            {
-                Self::save_state(&draft, &self.0.cx).await?;
-                self.publish(draft);
-            }
+        let runner = state
+            .environment
+            .runner()
+            .load_runner(self.0.cx.directories(), state.environment.umu())
+            .await?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
         }
-        Environment::attach_or_start(&self.state()?.environment, root, self.0.cx.clone()).await
+        Environment::start(&state.environment, runner.as_ref(), &root, &self.0.cx).await
     }
 
     async fn with_environment<F, T>(&self, work: F) -> Result<T>

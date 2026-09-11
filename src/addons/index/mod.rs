@@ -195,6 +195,15 @@ impl IndexEntry<Dependency> {
         )
     }
 
+    /// Resolves dependency recipe resources against their downloaded directory.
+    pub(crate) fn resources(&self, directories: &Directories) -> Vec<Artifact> {
+        let root = self.path(directories);
+        self.artifacts
+            .iter()
+            .map(|artifact| Artifact::new(root.join(&artifact.path), artifact.steps.clone()))
+            .collect()
+    }
+
     pub(crate) fn artifacts(&self) -> &[Artifact] {
         &self.artifacts
     }

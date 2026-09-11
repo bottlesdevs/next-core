@@ -9,7 +9,7 @@ use super::{cache, downloaded_soda, ensure_base};
 use crate::{
     AddonError, Addons, Context, EnvVars, EnvironmentError, Progress, Requirement, Slot, Stage,
     addons::{Artifact, InstallInputs, execute, replay_env_vars},
-    environment::{EnvironmentConfig, prefix::VirgoError},
+    environment::EnvironmentConfig,
     error::{Error, Result},
 };
 
@@ -61,7 +61,7 @@ fn visit(
         return Ok(());
     }
     if visiting.contains(&id) {
-        return Err(VirgoError::CyclicPrerequisites(id).into());
+        return Err(EnvironmentError::CyclicPrerequisites(id).into());
     }
     visiting.push(id);
     for prerequisite in prerequisites(id, config)? {
@@ -77,16 +77,7 @@ fn resources(id: Uuid, addons: &Addons, cx: &Context) -> Result<Vec<Artifact>> {
         return Ok(vec![component.artifact(cx.directories())]);
     }
     let dependency = addons.dependency(id).ok_or(AddonError::NotFound(id))?;
-    Ok(dependency
-        .artifacts()
-        .iter()
-        .map(|artifact| {
-            Artifact::new(
-                dependency.path(cx.directories()).join(&artifact.path),
-                artifact.steps.clone(),
-            )
-        })
-        .collect())
+    Ok(dependency.resources(cx.directories()))
 }
 
 pub(crate) async fn prepare_addon(
@@ -101,13 +92,13 @@ pub(crate) async fn prepare_addon(
         .run_until_cancelled(cx.artifact_build().lock())
         .await
         .ok_or(Error::Cancelled)?;
-    // UUID alone is the cache identity, even across base rebuilds and settings changes.
+    // UUID alone is the cache identity, independent of owner settings and runner.
     if cache::exists(id, cx).await? {
         return Ok(());
     }
     let base = ensure_base(addons, cx, cancellation).await?;
-    downloaded_soda(&base.soda, addons)?;
-    let runner = base.soda.load_runner(cx.directories(), None).await?;
+    let soda = downloaded_soda(base.soda.id(), base.soda.version(), addons)?;
+    let runner = soda.load_runner(cx.directories(), None).await?;
     let winebridge = addons
         .latest_component(Slot::WineBridge)
         .ok_or(EnvironmentError::ComponentNotInstalled(Slot::WineBridge))?
@@ -199,7 +190,7 @@ mod tests {
         config.dependencies[2] = dependency(ids[2], vec![Requirement::Id(ids[0])]);
         assert!(matches!(
             visit(ids[0], &config, &mut Vec::new(), &mut Vec::new()),
-            Err(Error::Virgo(VirgoError::CyclicPrerequisites(_)))
+            Err(Error::Environment(EnvironmentError::CyclicPrerequisites(_)))
         ));
     }
 }

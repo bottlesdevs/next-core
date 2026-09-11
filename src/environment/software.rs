@@ -6,12 +6,13 @@ use strum::IntoEnumIterator;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::{EnvironmentConfig, EnvironmentError, Storage, prefix};
+#[cfg(feature = "fvs")]
+use super::Storage;
+use super::{EnvironmentConfig, EnvironmentError, prefix};
 use crate::{
     Addon, AddonError, Addons, Context, Progress, Slot, Stage,
-    addons::{Artifact, InstallInputs, execute, replay_env_vars, uninstall},
+    addons::{InstallInputs, execute, replay_env_vars, uninstall},
     error::{Error, Result},
-    runner::Runner,
 };
 
 /// Called while the owner is coordinated and stopped. The owner publishes
@@ -91,16 +92,7 @@ pub(crate) async fn reconcile(
             )
             .into());
         }
-        let resources = downloaded
-            .artifacts()
-            .iter()
-            .map(|artifact| {
-                Artifact::new(
-                    downloaded.path(cx.directories()).join(&artifact.path),
-                    artifact.steps.clone(),
-                )
-            })
-            .collect();
+        let resources = downloaded.resources(cx.directories());
         installations.push((new.id(), None, resources));
     }
 
@@ -120,24 +112,21 @@ pub(crate) async fn reconcile(
                 .await?;
         }
     }
-    #[cfg(feature = "fvs")]
-    if !runner_changed {
-        super::Environment::refresh_base(candidate, root, addons, cx, cancellation).await?;
+    if runner_changed {
+        super::Environment::prepare(candidate, runner.as_ref(), addons, cx, cancellation).await?;
     }
     let winebridge = candidate.winebridge().path(cx.directories());
-    let env_vars = &mut candidate.env_vars;
 
     for (id, resources) in &removals {
         transact(
-            &mut candidate.storage,
+            candidate,
             root,
-            runner.as_ref(),
             cx,
             cancellation,
             progress,
-            async |storage| {
+            async |config| {
                 prefix::uninstall(
-                    storage,
+                    &mut config.storage,
                     root,
                     *id,
                     async |prefix, restore_files| {
@@ -146,7 +135,7 @@ pub(crate) async fn reconcile(
                                 prefix,
                                 runner: runner.as_ref(),
                                 winebridge: &winebridge,
-                                env_vars,
+                                env_vars: &mut config.env_vars,
                             },
                             resources,
                             restore_files,
@@ -165,40 +154,16 @@ pub(crate) async fn reconcile(
         )
         .await?;
     }
-    if runner_changed {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        progress.send_replace(Some(Progress::new(Stage::Rebuilding)));
-        let installed = Slot::iter()
-            .filter(|slot| !slot.is_runtime())
-            .filter_map(|slot| previous.component(slot))
-            .map(Addon::id)
-            .filter(|id| !removals.iter().any(|(removed, _)| removed == id))
-            .chain(previous.dependencies.iter().map(Addon::id))
-            .collect::<Vec<_>>();
-        prefix::rebuild(
-            &mut candidate.storage,
-            runner.as_ref(),
-            &candidate.components[&Slot::Runner].id().to_string(),
-            &installed,
-            cx,
-            addons,
-            cancellation,
-        )
-        .await?;
-    }
     for (id, replaced, resources) in installations {
         transact(
-            &mut candidate.storage,
+            candidate,
             root,
-            runner.as_ref(),
             cx,
             cancellation,
             progress,
-            async |storage| {
+            async |config| {
                 prefix::install(
-                    storage,
+                    &mut config.storage,
                     root,
                     id,
                     replaced,
@@ -208,7 +173,7 @@ pub(crate) async fn reconcile(
                                 prefix,
                                 runner: runner.as_ref(),
                                 winebridge: &winebridge,
-                                env_vars,
+                                env_vars: &mut config.env_vars,
                             },
                             &resources,
                             cancellation,
@@ -224,7 +189,7 @@ pub(crate) async fn reconcile(
             },
         )
         .await?;
-        replay_env_vars(env_vars, &resources);
+        replay_env_vars(&mut candidate.env_vars, &resources);
     }
     Ok(())
 }
@@ -233,13 +198,12 @@ pub(crate) async fn reconcile(
 /// Standard keeps direct writes. Owner configuration is saved separately.
 /// Failed shutdown/unmount returns before any rollback can touch live storage.
 async fn transact(
-    storage: &mut Storage,
+    config: &mut EnvironmentConfig,
     root: &Path,
-    runner: &dyn Runner,
     cx: &Context,
     cancellation: &CancellationToken,
     progress: &watch::Sender<Option<Progress>>,
-    work: impl for<'a> std::ops::AsyncFnOnce(&'a mut Storage) -> Result<()>,
+    work: impl for<'a> std::ops::AsyncFnOnce(&'a mut EnvironmentConfig) -> Result<()>,
 ) -> Result<()> {
     #[cfg(feature = "fvs")]
     let repository = fvs_rs::Repository {
@@ -247,7 +211,7 @@ async fn transact(
         block_size: prefix::FVS_BLOCK_SIZE,
     };
     #[cfg(feature = "fvs")]
-    let checkpoint = if matches!(storage, Storage::Virgo { .. }) {
+    let checkpoint = if matches!(config.storage, Storage::Virgo { .. }) {
         let stream = cx
             .fvs()
             .await?
@@ -269,9 +233,8 @@ async fn transact(
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
-    let result = work(storage).await;
-    super::shutdown_wine(runner, &root.join("prefix")).await?;
-    prefix::stop(storage, root, cx).await?;
+    let result = work(config).await;
+    super::Environment::stop(config, root, cx).await?;
     let result = if result.is_ok() && cancellation.is_cancelled() {
         Err(Error::Cancelled)
     } else {

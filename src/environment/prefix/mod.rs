@@ -4,7 +4,6 @@
 //! ordered FVS layer stack with a private writable upper directory. Virgo addon
 //! changes use rollback checkpoints; Standard uses FVS only for explicit snapshots.
 
-mod standard;
 #[cfg(feature = "fvs")]
 mod virgo;
 
@@ -23,7 +22,7 @@ use {
     fvs_rs::{Commit, Layer, Progress as FvsProgress, RestoreResponse, error::Error as FvsError},
 };
 
-use crate::{Context, error::Result, runner::Runner};
+use crate::{Context, error::Result};
 
 /// Identifies rollback checkpoints that must not appear as user snapshots.
 ///
@@ -65,26 +64,13 @@ impl From<&FvsProgress> for Transfer {
 }
 
 /// Creates storage at an explicit owner location.
-pub(crate) async fn create(
-    storage: &mut Storage,
-    root: &Path,
-    runner: &dyn Runner,
-    runner_key: &str,
-    context: &Context,
-    addons: &crate::Addons,
-    cancellation: &tokio_util::sync::CancellationToken,
-) -> Result<()> {
-    #[cfg(not(feature = "fvs"))]
-    let _ = (runner_key, context, addons, cancellation);
-    match storage {
-        Storage::Standard => standard::create(&root.join("prefix"), runner).await,
+pub(crate) async fn create(storage: &Storage, root: &Path) -> Result<()> {
+    let directory = match storage {
+        Storage::Standard => "prefix",
         #[cfg(feature = "fvs")]
-        Storage::Virgo { layers } => {
-            *layers =
-                virgo::create(root, runner, runner_key, context, addons, cancellation).await?;
-            Ok(())
-        }
-    }
+        Storage::Virgo { .. } => "upper",
+    };
+    Ok(async_fs::create_dir_all(root.join(directory)).await?)
 }
 
 pub(crate) async fn prepare(storage: &Storage, root: &Path, context: &Context) -> Result<()> {
@@ -102,36 +88,6 @@ pub(crate) async fn stop(storage: &Storage, root: &Path, context: &Context) -> R
         Storage::Standard => Ok(()),
         #[cfg(feature = "fvs")]
         Storage::Virgo { .. } => virgo::stop(root, context).await,
-    }
-}
-
-pub(crate) async fn rebuild(
-    storage: &mut Storage,
-    runner: &dyn Runner,
-    runner_key: &str,
-    installed: &[Uuid],
-    context: &Context,
-    addons: &crate::Addons,
-    cancellation: &tokio_util::sync::CancellationToken,
-) -> Result<()> {
-    match storage {
-        Storage::Standard => {
-            let _ = (runner, runner_key, installed, context, addons, cancellation);
-            Ok(())
-        }
-        #[cfg(feature = "fvs")]
-        Storage::Virgo { layers } => {
-            virgo::rebuild(
-                layers,
-                runner,
-                runner_key,
-                installed,
-                context,
-                addons,
-                cancellation,
-            )
-            .await
-        }
     }
 }
 

@@ -6,13 +6,13 @@ pub(crate) use software::prepare_addon;
 
 use super::prefix::{FVS_BLOCK_SIZE, VirgoError};
 use crate::{
-    Addon, Addons, CatalogEntry, Component, Context, Slot,
+    Addon, Addons, CatalogEntry, Component, Context, EnvironmentError, IndexEntry, Slot,
     error::{Error, Result},
     runner::Runner,
 };
 use fvs_rs::{Layer, Repository, UnmountMode};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -36,7 +36,7 @@ fn latest_soda(entries: &[CatalogEntry<Component>]) -> Result<&CatalogEntry<Comp
         .filter(|entry| entry.slot() == Slot::Runner && entry.name().eq_ignore_ascii_case("soda"))
     {
         let version = semver::Version::parse(entry.version())
-            .map_err(|_| VirgoError::InvalidSodaVersion(entry.version().into()))?;
+            .map_err(|_| EnvironmentError::InvalidSodaVersion(entry.version().into()))?;
         if latest
             .as_ref()
             .is_none_or(|(current, _)| &version > current)
@@ -46,21 +46,24 @@ fn latest_soda(entries: &[CatalogEntry<Component>]) -> Result<&CatalogEntry<Comp
     }
     latest
         .map(|(_, entry)| entry)
-        .ok_or_else(|| VirgoError::SodaNotInCatalog.into())
+        .ok_or_else(|| EnvironmentError::SodaNotInCatalog.into())
 }
 
-fn downloaded_soda(soda: &Addon<Component>, addons: &Addons) -> Result<()> {
-    if !addons
-        .component(soda.id())
-        .is_some_and(|entry| entry.slot() == Slot::Runner && entry.version() == soda.version())
-    {
-        return Err(VirgoError::SodaNotDownloaded {
-            id: soda.id(),
-            version: soda.version().into(),
-        }
-        .into());
-    }
-    Ok(())
+fn downloaded_soda(
+    id: Uuid,
+    version: &str,
+    addons: &Addons,
+) -> Result<std::sync::Arc<IndexEntry<Component>>> {
+    addons
+        .component(id)
+        .filter(|entry| entry.slot() == Slot::Runner && entry.version() == version)
+        .ok_or_else(|| {
+            EnvironmentError::SodaNotDownloaded {
+                id,
+                version: version.into(),
+            }
+            .into()
+        })
 }
 
 // Caller holds the shared build mutex, including publication of the manifest.
@@ -72,48 +75,24 @@ async fn ensure_base(
     if crate::utils::exists(&manifest(cx)).await? {
         return Ok(next_config::load(manifest(cx)).await?);
     }
-    build_base(addons, cx, cancellation).await
-}
-
-pub(crate) async fn rebuild_base(
-    addons: &Addons,
-    cx: &Context,
-    cancellation: &CancellationToken,
-) -> Result<()> {
-    let _build = cancellation
-        .run_until_cancelled(cx.artifact_build().lock())
-        .await
-        .ok_or(Error::Cancelled)?;
-    build_base(addons, cx, cancellation).await?;
-    Ok(())
-}
-
-async fn build_base(
-    addons: &Addons,
-    cx: &Context,
-    cancellation: &CancellationToken,
-) -> Result<Base> {
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
     let entries = addons.component_entries();
     let selected = latest_soda(&entries)?;
-    let downloaded = addons
-        .component(selected.id())
-        .filter(|entry| entry.slot() == Slot::Runner && entry.version() == selected.version())
-        .ok_or_else(|| VirgoError::SodaNotDownloaded {
-            id: selected.id(),
-            version: selected.version().into(),
-        })?;
+    let downloaded = downloaded_soda(selected.id(), selected.version(), addons)?;
     let soda = Addon::from(downloaded.as_ref());
     let runner = soda.load_runner(cx.directories(), None).await?;
-    let generation = cx
-        .directories()
-        .data_dir()
-        .join("virgo/bases")
-        .join(Uuid::new_v4().to_string());
-    let prefix = generation.join("prefix");
-    async_fs::create_dir_all(&prefix).await?;
+    let root = cx.directories().data_dir().join("virgo/soda");
+    let prefix = root.join("prefix");
+    async_fs::create_dir_all(&root).await?;
+    // Never reuse an unpublished prefix: failed shutdown may have left Wine alive.
+    async_fs::create_dir(&prefix).await.map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("cannot create Soda prefix at {}: {error}", prefix.display()),
+        )
+    })?;
     let initialized = runner.wineboot(&prefix, "--init").await;
     // Keep storage if Wine cannot be stopped safely.
     super::shutdown_wine(runner.as_ref(), &prefix).await?;
@@ -142,7 +121,7 @@ async fn build_base(
     }
     .await;
     if result.is_err() {
-        remove_dir(generation).await;
+        remove_dir(root).await;
     }
     result
 }
@@ -163,7 +142,7 @@ pub(crate) async fn base_layers(
     Ok(vec![base.layer, adapter])
 }
 
-/// Loads or creates the runner adapter within this immutable base generation.
+/// Loads or creates the selected runner adapter over the pinned Soda base.
 ///
 /// Creation is staged over the shared base and published by renaming the
 /// committed upper directory into the adapter cache.
@@ -174,7 +153,7 @@ async fn ensure_adapter(
     context: &Context,
     cancellation: &CancellationToken,
 ) -> Result<Layer> {
-    let root = Path::new(&base.repository_path).with_file_name("adapters");
+    let root = context.directories().data_dir().join("virgo/soda/adapters");
     let destination = root.join(runner_key);
     if async_fs::metadata(destination.join(".fvs2"))
         .await
@@ -274,7 +253,7 @@ mod tests {
         assert_eq!(latest_soda(&entries).unwrap().id(), entries[1].id());
         assert!(matches!(
             latest_soda(&[release("Soda", "invalid")]),
-            Err(Error::Virgo(VirgoError::InvalidSodaVersion(_)))
+            Err(Error::Environment(EnvironmentError::InvalidSodaVersion(_)))
         ));
         let root = std::env::temp_dir().join(format!("soda-test-{}", Uuid::new_v4()));
         let cx = Context::for_test(crate::Directories::from_path(&root).unwrap(), None).unwrap();
@@ -287,7 +266,7 @@ mod tests {
         let addons = Addons::load(cx.clone(), None, None).await.unwrap();
         let cancellation = CancellationToken::new();
         assert!(
-            matches!(rebuild_base(&addons, &cx, &cancellation).await, Err(Error::Virgo(VirgoError::SodaNotDownloaded { id, .. })) if id == entries[1].id())
+            matches!(ensure_base(&addons, &cx, &cancellation).await, Err(Error::Environment(EnvironmentError::SodaNotDownloaded { id, .. })) if id == entries[1].id())
         );
 
         let soda = serde_json::from_value(
@@ -316,15 +295,6 @@ mod tests {
         let pinned = ensure_base(&addons, &cx, &cancellation).await.unwrap();
         assert_eq!(pinned.soda.id(), entries[0].id());
         assert_eq!(pinned.layer, layer);
-        assert!(rebuild_base(&addons, &cx, &cancellation).await.is_err());
-        assert_eq!(
-            ensure_base(&addons, &cx, &cancellation)
-                .await
-                .unwrap()
-                .layer,
-            layer
-        );
-
         let id = Uuid::new_v4();
         async_fs::create_dir_all(
             cx.directories()
