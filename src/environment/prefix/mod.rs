@@ -7,6 +7,8 @@ mod standard;
 mod virgo;
 #[cfg(feature = "fvs")]
 pub use virgo::VirgoError;
+#[cfg(feature = "fvs")]
+pub(crate) use virgo::VirgoManager;
 
 use super::EnvironmentConfig;
 use crate::{Addons, Context, Progress, error::Result, runner::Runner};

@@ -2,6 +2,7 @@
 
 mod artifacts;
 mod registry;
+pub(crate) use artifacts::VirgoManager;
 
 use super::super::{EnvironmentConfig, history};
 use crate::{
@@ -25,16 +26,22 @@ pub(super) async fn prepare(
     progress: &watch::Sender<Option<Progress>>,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let base = artifacts::prepare_base(addons, cx, cancellation).await?;
-    let adapter =
-        artifacts::prepare_adapter(config.runner().id(), runner, &base, cx, cancellation).await?;
+    let base = cx.virgo().prepare_base(addons, cx, cancellation).await?;
+    let adapter = cx
+        .virgo()
+        .prepare_adapter(config.runner().id(), runner, &base, cx, cancellation)
+        .await?;
     let ids = config
         .ordered_components()
         .map(crate::Addon::id)
         .chain(config.dependencies.iter().map(crate::Addon::id));
     let mut built = Vec::new();
     for id in ids {
-        built.push(artifacts::prepare_addon(id, &base, addons, cx, progress, cancellation).await?);
+        built.push(
+            cx.virgo()
+                .prepare_addon(id, &base, addons, cx, progress, cancellation)
+                .await?,
+        );
     }
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);

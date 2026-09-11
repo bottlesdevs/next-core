@@ -4,9 +4,7 @@ mod adapter;
 mod build;
 mod cache;
 mod software;
-pub(crate) use adapter::prepare_adapter;
 pub(crate) use cache::VirgoLayer;
-pub(crate) use software::prepare_addon;
 
 use super::VirgoError;
 use crate::environment::prefix::FVS_BLOCK_SIZE;
@@ -15,8 +13,29 @@ use crate::{
     error::{Error, Result},
 };
 use std::path::PathBuf;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+/// Shared artifact storage and construction for one core context.
+pub(crate) struct VirgoManager {
+    root: PathBuf,
+    build_lock: Mutex<()>,
+}
+
+impl VirgoManager {
+    /// Construct without touching storage or starting FVS.
+    pub(crate) fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            build_lock: Mutex::new(()),
+        }
+    }
+
+    fn staging_path(&self) -> PathBuf {
+        self.root.join(".staging").join(Uuid::new_v4().to_string())
+    }
+}
 
 fn latest_soda(entries: &[CatalogEntry<Component>]) -> Result<&CatalogEntry<Component>> {
     let mut latest = None;
@@ -38,74 +57,74 @@ fn latest_soda(entries: &[CatalogEntry<Component>]) -> Result<&CatalogEntry<Comp
         .ok_or_else(|| VirgoError::SodaNotInCatalog.into())
 }
 
-/// Resolve the pinned Soda base, creating it under the shared build lock if absent.
-pub(crate) async fn prepare_base(
-    addons: &Addons,
-    cx: &Context,
-    cancellation: &CancellationToken,
-) -> Result<VirgoLayer> {
-    let destination = cx.directories().data_dir().join("virgo/soda");
-    if let Some(base) = cache::load(&destination, None).await? {
-        return Ok(base);
-    }
-    let _build = cancellation
-        .run_until_cancelled(cx.artifact_build().lock())
-        .await
-        .ok_or(Error::Cancelled)?;
-    if let Some(base) = cache::load(&destination, None).await? {
-        return Ok(base);
-    }
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancelled);
-    }
-    let entries = addons.component_entries();
-    let selected = latest_soda(&entries)?;
-    let soda = addons
-        .component(selected.id())
-        .ok_or_else(|| VirgoError::SodaNotDownloaded {
-            id: selected.id(),
-            version: selected.version().into(),
-        })?;
-    let runner = soda.addon().load_runner(cx.directories(), None).await?;
-    let stage = cx
-        .directories()
-        .data_dir()
-        .join("virgo/.staging")
-        .join(Uuid::new_v4().to_string());
-    let artifact = stage.join("artifact");
-    let prefix = artifact.join("filesystem");
-    let registry = artifact.join("registry");
-    async_fs::create_dir_all(&prefix).await?;
-    let initialized = runner.wineboot(&prefix, "--init").await;
-    // Keep storage if Wine cannot be stopped safely.
-    crate::environment::runtime::stop(runner.as_ref(), &prefix).await?;
-    let result = async {
-        initialized?;
+impl VirgoManager {
+    /// Resolve the pinned Soda base, creating it under the shared build lock if absent.
+    pub(crate) async fn prepare_base(
+        &self,
+        addons: &Addons,
+        cx: &Context,
+        cancellation: &CancellationToken,
+    ) -> Result<VirgoLayer> {
+        let destination = self.root.join("soda");
+        if let Some(base) = cache::load(&destination, None).await? {
+            return Ok(base);
+        }
+        let _build = cancellation
+            .run_until_cancelled(self.build_lock.lock())
+            .await
+            .ok_or(Error::Cancelled)?;
+        if let Some(base) = cache::load(&destination, None).await? {
+            return Ok(base);
+        }
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        // Both copies describe this same stopped prefix, before atomic publication.
-        super::registry::capture(&prefix, &registry).await?;
-        let client = cx.fvs().await?;
-        let repository = client.new_repository(&prefix, FVS_BLOCK_SIZE).await?;
-        let commit = client
-            .commit(
-                &repository,
-                format!("Soda {} ({})", soda.version(), soda.id()),
+        let entries = addons.component_entries();
+        let selected = latest_soda(&entries)?;
+        let soda =
+            addons
+                .component(selected.id())
+                .ok_or_else(|| VirgoError::SodaNotDownloaded {
+                    id: selected.id(),
+                    version: selected.version().into(),
+                })?;
+        let runner = soda.addon().load_runner(cx.directories(), None).await?;
+        let stage = self.staging_path();
+        let artifact = stage.join("artifact");
+        let prefix = artifact.join("filesystem");
+        let registry = artifact.join("registry");
+        async_fs::create_dir_all(&prefix).await?;
+        let initialized = runner.wineboot(&prefix, "--init").await;
+        // Keep storage if Wine cannot be stopped safely.
+        crate::environment::runtime::stop(runner.as_ref(), &prefix).await?;
+        let result = async {
+            initialized?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            // Both copies describe this same stopped prefix, before atomic publication.
+            super::registry::capture(&prefix, &registry).await?;
+            let client = cx.fvs().await?;
+            let repository = client.new_repository(&prefix, FVS_BLOCK_SIZE).await?;
+            let commit = client
+                .commit(
+                    &repository,
+                    format!("Soda {} ({})", soda.version(), soda.id()),
+                )
+                .await?;
+            cache::publish(
+                &artifact,
+                &destination,
+                soda.id(),
+                commit.state_id,
+                cancellation,
             )
-            .await?;
-        cache::publish(
-            &artifact,
-            &destination,
-            soda.id(),
-            commit.state_id,
-            cancellation,
-        )
-        .await
+            .await
+        }
+        .await;
+        remove_dir(stage).await;
+        result
     }
-    .await;
-    remove_dir(stage).await;
-    result
 }
 
 async fn remove_dir(path: PathBuf) {

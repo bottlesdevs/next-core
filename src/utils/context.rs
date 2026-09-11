@@ -3,7 +3,11 @@ use download_manager::manager::{DownloadManager, DownloadManagerConfig};
 use http_client::HttpClient;
 use std::{path::PathBuf, sync::Arc};
 #[cfg(feature = "fvs")]
-use {crate::utils::absolute_path, fvs_rs::Fvs2dClient, tokio::sync::OnceCell};
+use {
+    crate::{environment::VirgoManager, utils::absolute_path},
+    fvs_rs::Fvs2dClient,
+    tokio::sync::OnceCell,
+};
 
 struct ContextInner {
     directories: Directories,
@@ -14,7 +18,7 @@ struct ContextInner {
     #[cfg(feature = "fvs")]
     fvs: OnceCell<Fvs2dClient>,
     #[cfg(feature = "fvs")]
-    artifact_build: tokio::sync::Mutex<()>,
+    virgo: VirgoManager,
 }
 
 #[derive(Clone)]
@@ -33,6 +37,8 @@ impl Context {
             DownloadManagerConfig::default(),
         )?);
         Ok(Self(Arc::new(ContextInner {
+            #[cfg(feature = "fvs")]
+            virgo: VirgoManager::new(directories.data_dir().join("virgo")),
             directories,
             http_client,
             downloader,
@@ -43,8 +49,6 @@ impl Context {
                 .unwrap_or_else(|| PathBuf::from("fvs2d")),
             #[cfg(feature = "fvs")]
             fvs: OnceCell::new(),
-            #[cfg(feature = "fvs")]
-            artifact_build: tokio::sync::Mutex::new(()),
         })))
     }
 
@@ -72,8 +76,8 @@ impl Context {
     }
 
     #[cfg(feature = "fvs")]
-    pub(crate) fn artifact_build(&self) -> &tokio::sync::Mutex<()> {
-        &self.0.artifact_build
+    pub(crate) fn virgo(&self) -> &VirgoManager {
+        &self.0.virgo
     }
 
     #[cfg(feature = "fvs")]
