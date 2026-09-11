@@ -602,16 +602,18 @@ impl WineBridgeClient {
 
     // --- DLL Overrides ---
 
-    /// Lists the configured DLL overrides.
+    /// Lists the configured DLL overrides. A missing override key yields an empty list.
     ///
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
     pub async fn list_dll_overrides(&self) -> Result<Vec<DllOverride>> {
         let mut client = self.client.clone();
-        let response = client.list_dll_overrides(()).await?.into_inner();
-
-        Ok(response.overrides)
+        match client.list_dll_overrides(()).await {
+            Ok(response) => Ok(response.into_inner().overrides),
+            Err(status) if status.code() == tonic::Code::NotFound => Ok(Vec::new()),
+            Err(status) => Err(status.into()),
+        }
     }
 
     /// Returns the override mode configured for a single DLL.
@@ -649,18 +651,21 @@ impl WineBridgeClient {
         Ok(())
     }
 
-    /// Removes a DLL override.
+    /// Removes a DLL override. A missing override is already removed.
     ///
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn delete_dll_override(&self, dll: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
-        client
+        match client
             .delete_dll_override(proto::DllOverrideRequest { dll: dll.into() })
-            .await?;
-
-        Ok(())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(status) if status.code() == tonic::Code::NotFound => Ok(()),
+            Err(status) => Err(status.into()),
+        }
     }
 
     // --- System ---

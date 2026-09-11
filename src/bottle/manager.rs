@@ -17,9 +17,9 @@ use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
 use crate::{
-    Context, EnvironmentConfig, EnvironmentError, Operation, Progress, Stage, Storage,
-    addons::{Addon, Addons, Requirement, Slot},
-    environment::{Environment, prefix},
+    Context, EnvironmentConfig, Operation, PrefixBackend, Progress, Stage,
+    addons::Addons,
+    environment::Environment,
     error::{Error, Result},
 };
 
@@ -154,13 +154,13 @@ impl BottleManager {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvironmentError::RequiresAddon`] with every missing runtime
+    /// Returns [`crate::EnvironmentError::RequiresAddon`] with every missing runtime
     /// requirement before creating any files. Other service, I/O, and prefix
     /// creation failures are returned directly.
     pub fn create(
         &self,
         name: impl Into<String>,
-        storage: Storage,
+        backend: PrefixBackend,
         runner: Uuid,
     ) -> Operation<Bottle> {
         let name = name.into();
@@ -169,69 +169,11 @@ impl BottleManager {
         let registry = self.registry.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            let runner_component = addons
-                .component(runner)
-                .ok_or(crate::AddonError::NotFound(runner))?;
-            if runner_component.slot() != Slot::Runner {
-                return Err(EnvironmentError::InvalidComponentSlot {
-                    component: runner_component.id(),
-                    required: Slot::Runner,
-                }
-                .into());
-            }
-            let winebridge = addons.latest_component(Slot::WineBridge);
-            let needs_umu = runner_component
-                .requirements()
-                .contains(&Requirement::Slot(Slot::Umu));
-            let umu = needs_umu
-                .then(|| addons.latest_component(Slot::Umu))
-                .flatten();
-            let mut missing = Vec::new();
-            if winebridge.is_none() {
-                missing.push(Requirement::Slot(Slot::WineBridge));
-            }
-            if needs_umu && umu.is_none() {
-                missing.push(Requirement::Slot(Slot::Umu));
-            }
-            if !missing.is_empty() {
-                return Err(EnvironmentError::RequiresAddon {
-                    required_by: None,
-                    requirements: missing,
-                }
-                .into());
-            }
-            let winebridge = winebridge.unwrap(); // Safe to unwrap since we just checked it above
             let id = Uuid::new_v4();
             let bottle_path = cx.directories().bottle(id);
-
-            progress.send_replace(Some(Progress::new(Stage::CreatingPrefix)));
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            let mut components = HashMap::from([
-                (Slot::WineBridge, Addon::from(winebridge.as_ref())),
-                (Slot::Runner, Addon::from(runner_component.as_ref())),
-            ]);
-            if let Some(umu) = umu {
-                components.insert(Slot::Umu, Addon::from(umu.as_ref()));
-            }
-            let config = EnvironmentConfig {
-                storage,
-                components,
-                dependencies: Vec::new(),
-                env_vars: Default::default(),
-                wrappers: Default::default(),
-            };
-            prefix::create(&config.storage, &bottle_path).await?;
-            // Initialization may retain live storage on failure; keep it outside the removal path.
-            if matches!(config.storage, Storage::Standard) {
-                let loaded_runner = config
-                    .runner()
-                    .load_runner(cx.directories(), config.umu())
-                    .await?;
-                Environment::initialize(loaded_runner.as_ref(), &bottle_path.join("prefix"))
-                    .await?;
-            }
+            // Initialization may retain live storage on failure; only remove after it succeeds.
+            let config = EnvironmentConfig::new(backend, runner, &addons)?;
+            Environment::initialize(&config, &bottle_path, &cx, &progress, &cancellation).await?;
             let result = async {
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
@@ -278,9 +220,8 @@ impl BottleManager {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            let state = bottle.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            Bottle::stop_state(&state, &bottle.0.cx).await?;
+            bottle.stop_locked().await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }

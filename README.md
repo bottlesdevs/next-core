@@ -41,6 +41,25 @@ a temporary environment connection; registered programs use the bottle's setting
 unregistered executable; `Bottle::launch_program(uuid)` runs a registration.
 Both return `Operation<u32>` with the initial Windows process ID.
 
+DLL override queries and changes also return `Operation<T>`, exposing preparation
+progress and cooperative cancellation. Existing `.await` calls continue to work.
+An `Environment` represents a running execution environment and holds a required
+WineBridge connection. `attach_or_start` constructs it directly from the owner's
+configuration and location, including after an application restart. The handle retains
+neither configuration nor services; dropping it leaves Wine running. Launch and DLL
+operations use Bottle's `with_environment` helper, which holds the owner lock, resolves
+registration inputs before startup, and forwards progress and cancellation.
+
+Initialization, configuration edits, and shutdown are associated functions on
+`Environment` that take the owner's inputs and return completion, without requiring
+a running handle.
+The owner retains configuration, persistence, publication, and coordination.
+`PrefixBackend` owns how a runnable prefix is created and maintained: initialization, supported edits, software
+materialization, composition, and storage release. Standard and Virgo implementations
+live below this boundary; environment workflows do not distinguish between them.
+Backends stop their initialization and installer processes through shared runtime
+helpers, without invoking owner lifecycle operations.
+
 Process inspection and group kill attach to an existing runtime without starting
 Wine or inspecting FVS mounts. Startup still checks existing Virgo mounts against
 resolved layers and the private upper when preparing storage. Dropping handles leaves
@@ -58,7 +77,7 @@ The callback receives a draft of the latest state under the owner lock. Edit
 `name`, `programs`, and `environment` directly; errors discard the whole draft.
 Metadata edits work while running. Call `stop()` before changing environment
 settings, including through `set_component`, `remove_component`, or `install`.
-Storage is fixed at creation. Standard dependencies may be appended; Virgo
+The prefix backend is fixed at creation. Standard dependencies may be appended; Virgo
 selections may also be removed or reordered. Standard changes execute installers
 before saving and keep direct-write semantics. Virgo creation and edits save
 selections without building layers or changing private prefix data. Preparation
@@ -104,8 +123,10 @@ settings take precedence; execution-owned variables such as
 metadata, addon selections, registry baseline, and private prefix data while
 stopped, without WineBridge discovery files.
 
-Bottle configuration uses version 1. `environment.storage` selects Standard or
-Virgo; layers are derived from selected addons rather than stored in owner state.
+Bottle configuration uses version 1. `EnvironmentConfig::backend` selects
+`PrefixBackend::Standard` or `PrefixBackend::Virgo` and is serialized under the existing
+`environment.storage` key. Layers are derived from selected addons rather than stored
+in owner state.
 Completed addon caches remain reusable. Snapshots stop the runtime
 and capture existing configuration, registry baseline, and private data without
 preparing Virgo. Pending selections remain pending after restoration and are

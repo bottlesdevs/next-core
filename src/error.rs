@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[cfg(feature = "fvs")]
-pub use crate::environment::prefix::VirgoError;
+pub use crate::environment::VirgoError;
 pub use crate::{
     addons::{AddonError, CatalogError, InstallerError},
     bottle::error::BottleError,

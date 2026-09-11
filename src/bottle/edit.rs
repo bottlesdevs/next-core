@@ -14,7 +14,7 @@ impl Bottle {
     /// together; cloned handles serialize edits against the latest state.
     ///
     /// Metadata can change while running. Environment changes require an explicit
-    /// stop first. Storage is fixed; Standard dependencies may only be appended.
+    /// stop first. The prefix backend is fixed; Standard dependencies may only be appended.
     /// Addon selections must be downloaded.
     /// Standard mutations write directly; failed recipes can leave partial effects.
     /// Virgo edits save selections atomically; preparation happens before startup.
@@ -53,36 +53,16 @@ impl Bottle {
                 }
                 program.validate()?;
             }
-            draft.environment.validate_requirements()?;
-            crate::environment::validate_edit(
+            crate::environment::Environment::apply(
                 &previous.environment,
                 &draft.environment,
+                &cx.directories().bottle(draft.id),
+                cx,
                 &bottle.0.addons,
-            )?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            let root = cx.directories().bottle(draft.id);
-            let environment_changed = draft.environment != previous.environment;
-            if environment_changed {
-                if crate::environment::Environment::try_attach(&root)
-                    .await?
-                    .is_some()
-                {
-                    return Err(crate::EnvironmentError::MustBeStopped.into());
-                }
-                crate::environment::Environment::stop(&previous.environment, &root, cx).await?;
-                crate::environment::prefix::reconcile(
-                    &previous.environment,
-                    &draft.environment,
-                    &root,
-                    cx,
-                    &bottle.0.addons,
-                    &progress,
-                    &cancellation,
-                )
-                .await?;
-            }
+                &progress,
+                &cancellation,
+            )
+            .await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
