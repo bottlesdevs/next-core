@@ -166,6 +166,7 @@ impl IndexEntry<Component> {
         self.addon.path(directories)
     }
 
+    #[cfg(feature = "fvs")]
     pub(crate) fn artifact(&self, directories: &Directories) -> Artifact {
         self.addon.artifact(directories)
     }

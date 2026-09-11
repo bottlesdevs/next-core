@@ -310,6 +310,7 @@ mod tests {
             components: Default::default(),
             dependencies: vec![],
             env_vars: Default::default(),
+            addon_env_vars: Default::default(),
             wrappers: Default::default(),
         };
         let (progress, _) = tokio::sync::watch::channel(None);

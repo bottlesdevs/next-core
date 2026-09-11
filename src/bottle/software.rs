@@ -167,7 +167,7 @@ impl Bottle {
         })
     }
 
-    /// Permanently installs a downloaded dependency in a stopped environment.
+    /// Installs a downloaded dependency in a stopped environment.
     /// Reinstalling its UUID is a no-op.
     pub fn install(&self, id: Uuid) -> Operation<()> {
         let addons = self.0.addons.clone();

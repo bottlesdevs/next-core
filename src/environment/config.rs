@@ -4,6 +4,7 @@ use super::{EnvironmentError, Storage};
 use crate::{Addon, Component, Dependency, EnvVars, Requirement, Slot, Wrappers, error::Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use strum::IntoEnumIterator;
 use uuid::Uuid;
 
 /// Execution settings embedded in a bottle or standalone program's saved state.
@@ -17,11 +18,48 @@ pub struct EnvironmentConfig {
     pub dependencies: Vec<Addon<Dependency>>,
     #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
     pub env_vars: EnvVars,
+    /// Derived recipe contributions, kept separate from explicit user settings.
+    #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
+    pub(crate) addon_env_vars: EnvVars,
     #[serde(default)]
     pub wrappers: Wrappers,
 }
 
 impl EnvironmentConfig {
+    #[cfg(feature = "fvs")]
+    pub(crate) fn ordered_addons(&self) -> impl Iterator<Item = Uuid> + '_ {
+        Slot::iter()
+            .filter(|slot| !slot.is_runtime())
+            .filter_map(|slot| self.component(slot))
+            .map(Addon::id)
+            .chain(self.dependencies.iter().map(Addon::id))
+    }
+
+    pub(crate) fn effective_env_vars(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.addon_env_vars.iter().chain(self.env_vars.iter())
+    }
+
+    pub(crate) fn resolve_env_vars(
+        &mut self,
+        addons: &crate::Addons,
+        cx: &crate::Context,
+    ) -> Result<()> {
+        let mut vars = EnvVars::default();
+        for slot in Slot::iter().filter(|slot| !slot.is_runtime()) {
+            if let Some(addon) = self.component(slot) {
+                crate::addons::replay_env_vars(&mut vars, &[addon.artifact(cx.directories())]);
+            }
+        }
+        for addon in &self.dependencies {
+            let entry = addons
+                .dependency(addon.id())
+                .ok_or(crate::AddonError::NotFound(addon.id()))?;
+            crate::addons::replay_env_vars(&mut vars, &entry.resources(cx.directories()));
+        }
+        self.addon_env_vars = vars;
+        Ok(())
+    }
+
     /// Returns the runner recorded when this snapshot was published.
     ///
     /// Catalog refreshes do not replace this value.

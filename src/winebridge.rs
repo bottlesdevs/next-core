@@ -81,17 +81,20 @@ pub(crate) struct WineBridgeClient {
 }
 
 impl WineBridgeClient {
-    pub(crate) fn command(
+    pub(crate) fn command<'a>(
         runner: &dyn Runner,
         prefix: &Path,
         winebridge_root: impl AsRef<Path>,
+        env_vars: impl IntoIterator<Item = (&'a str, &'a str)>,
     ) -> RunnerCommand {
         runner.command(
             prefix,
-            Command::new(winebridge_root.as_ref().join("bottles-winebridge.exe")).env(
-                "WINEBRIDGE_PORT_FILE",
-                format!(r"C:\windows\temp\{PORT_FILE_NAME}"),
-            ),
+            Command::new(winebridge_root.as_ref().join("bottles-winebridge.exe"))
+                .envs(env_vars)
+                .env(
+                    "WINEBRIDGE_PORT_FILE",
+                    format!(r"C:\windows\temp\{PORT_FILE_NAME}"),
+                ),
         )
     }
 

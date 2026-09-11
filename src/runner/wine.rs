@@ -25,13 +25,8 @@ impl Wine {
 #[async_trait]
 impl Runner for Wine {
     fn command(&self, prefix: &Path, inner: Command) -> RunnerCommand {
-        RunnerCommand(
-            Command::new(&self.executable)
-                .env("WINEPREFIX", prefix)
-                .env("WINEARCH", "win64")
-                .wrap(inner)
-                .into(),
-        )
+        let command: Command = Command::new(&self.executable).wrap(inner).into();
+        RunnerCommand(command.env("WINEPREFIX", prefix).env("WINEARCH", "win64"))
     }
 
     async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
