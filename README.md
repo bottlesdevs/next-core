@@ -182,10 +182,12 @@ installers continue using their owner's runner and preserve displaced files as
 backups. Virgo disables those backups because the lower layer retains the originals.
 
 Virgo composition is always Soda base → selected runner adapter → components in
-slot order → dependencies in persisted order → private writable upper. Preparation
-resolves each selected addon's immutable layer by UUID and keeps the resulting
-stack local to that operation. There is no second persisted list of selections or
-layers. The shared base remains pinned and completed UUID caches remain immutable.
+slot order → dependencies in persisted order → private writable upper. The manager
+resolves a temporary `VirgoComposition` containing the base and ordered overlays
+without accessing owner data. Owner preparation consumes that same ordering for
+registry patches and filesystem layers, after resolution has completed. There is
+no second persisted list of selections or layers. The shared base remains pinned
+and completed UUID caches remain immutable.
 
 Each preparation copies the base's published initial hives, then applies adapter
 patches, addon patches in selection order, and private changes

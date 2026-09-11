@@ -9,11 +9,12 @@ pub(crate) use cache::VirgoLayer;
 use super::VirgoError;
 use crate::environment::prefix::FVS_BLOCK_SIZE;
 use crate::{
-    Addons, CatalogEntry, Component, Context, Slot,
+    Addons, CatalogEntry, Component, Context, EnvironmentConfig, Progress, Slot,
     error::{Error, Result},
+    runner::Runner,
 };
 use std::path::PathBuf;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -23,6 +24,12 @@ pub(crate) struct VirgoManager {
     build_lock: Mutex<()>,
 }
 
+/// A resolved base followed by adapter and addon effects, shared by registry and mount assembly.
+pub(super) struct VirgoComposition {
+    pub(super) base: VirgoLayer,
+    pub(super) overlays: Vec<VirgoLayer>,
+}
+
 impl VirgoManager {
     /// Construct without touching storage or starting FVS.
     pub(crate) fn new(root: PathBuf) -> Self {
@@ -30,6 +37,34 @@ impl VirgoManager {
             root,
             build_lock: Mutex::new(()),
         }
+    }
+
+    /// Resolve shared effects without reading or mutating an owner's directory.
+    pub(super) async fn resolve(
+        &self,
+        config: &EnvironmentConfig,
+        runner: &dyn Runner,
+        cx: &Context,
+        addons: &Addons,
+        progress: &watch::Sender<Option<Progress>>,
+        cancellation: &CancellationToken,
+    ) -> Result<VirgoComposition> {
+        let base = self.prepare_base(addons, cx, cancellation).await?;
+        let adapter = self
+            .prepare_adapter(config.runner().id(), runner, &base, cx, cancellation)
+            .await?;
+        let mut overlays = vec![adapter];
+        let ids = config
+            .ordered_components()
+            .map(crate::Addon::id)
+            .chain(config.dependencies.iter().map(crate::Addon::id));
+        for id in ids {
+            overlays.push(
+                self.prepare_addon(id, &base, addons, cx, progress, cancellation)
+                    .await?,
+            );
+        }
+        Ok(VirgoComposition { base, overlays })
     }
 
     fn staging_path(&self) -> PathBuf {
@@ -59,7 +94,7 @@ fn latest_soda(entries: &[CatalogEntry<Component>]) -> Result<&CatalogEntry<Comp
 
 impl VirgoManager {
     /// Resolve the pinned Soda base, creating it under the shared build lock if absent.
-    pub(crate) async fn prepare_base(
+    async fn prepare_base(
         &self,
         addons: &Addons,
         cx: &Context,
