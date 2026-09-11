@@ -79,8 +79,8 @@ impl InstallResource {
 pub(crate) enum InstallStep {
     /// Copies a resource file into the Wine prefix.
     ///
-    /// An existing regular destination file is backed up once alongside the destination so an
-    /// uninstall mode that restores files can reinstate it.
+    /// Standard backs up an existing regular file once for restoration during uninstall.
+    /// Shared layered builds disable these backups; their lower layer retains the original.
     Copy {
         /// Path intended to be relative to the resource, or empty to copy the resource itself.
         #[serde(default)]

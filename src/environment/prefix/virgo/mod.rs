@@ -25,24 +25,16 @@ pub(super) async fn prepare(
     progress: &watch::Sender<Option<Progress>>,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let ids: Vec<_> = config
+    let base = artifacts::prepare_base(addons, cx, cancellation).await?;
+    let adapter =
+        artifacts::prepare_adapter(config.runner().id(), runner, &base, cx, cancellation).await?;
+    let ids = config
         .ordered_components()
         .map(crate::Addon::id)
-        .chain(config.dependencies.iter().map(crate::Addon::id))
-        .collect();
-    for id in &ids {
-        artifacts::prepare_addon(*id, addons, cx, progress, cancellation).await?;
-    }
-    let mut layers = artifacts::base_layers(
-        runner,
-        &config.runner().id().to_string(),
-        addons,
-        cx,
-        cancellation,
-    )
-    .await?;
-    for id in &ids {
-        layers.push(artifacts::cache::layer(*id, cx).await?);
+        .chain(config.dependencies.iter().map(crate::Addon::id));
+    let mut built = Vec::new();
+    for id in ids {
+        built.push(artifacts::prepare_addon(id, &base, addons, cx, progress, cancellation).await?);
     }
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
@@ -56,8 +48,12 @@ pub(super) async fn prepare(
         progress,
     )
     .await?;
+    let patches = std::iter::once(&adapter)
+        .chain(built.iter())
+        .map(|artifact| artifact.registry.clone())
+        .collect();
     let result = async {
-        registry::compose(root, &layers, &ids, cx).await?;
+        registry::compose(root, &base.registry, patches).await?;
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
@@ -65,6 +61,8 @@ pub(super) async fn prepare(
     }
     .await;
     history::recover(result, root, &checkpoint, cx, progress).await?;
+    let mut layers = vec![base.layer, adapter.layer];
+    layers.extend(built.into_iter().map(|addon| addon.layer));
     mount(root, layers, cx).await
 }
 
@@ -138,14 +136,6 @@ pub enum VirgoError {
     #[error("download Soda {version} ({id}) before building the Virgo base or an addon layer")]
     SodaNotDownloaded { id: uuid::Uuid, version: String },
 
-    /// A required FVS commit is missing from a repository.
-    #[error("FVS repository {repository} has no commit {state}")]
-    MissingCommit {
-        /// Repository whose history was searched.
-        repository: std::path::PathBuf,
-        /// Requested full or abbreviated state ID.
-        state: String,
-    },
     /// Virgo cannot mount a prefix over a nonempty mountpoint.
     #[error("mountpoint is not empty: {0}")]
     DirtyMountpoint(std::path::PathBuf),
@@ -153,9 +143,9 @@ pub enum VirgoError {
         "mounted layers or writable upper differ from the selected composition at {0}; call stop() and retry"
     )]
     MountMismatch(std::path::PathBuf),
-    /// A cached layer required to construct the prefix is missing.
-    #[error("cached Virgo layer was not found: {0}")]
-    CachedLayerNotFound(std::path::PathBuf),
+    /// A published artifact has an unsupported format or incomplete installed effects.
+    #[error("invalid Virgo artifact: {0}")]
+    InvalidArtifact(std::path::PathBuf),
     /// Registry data could not be converted while building a Virgo layer.
     #[error("failed to process Virgo registry data: {0}")]
     Registry(String),

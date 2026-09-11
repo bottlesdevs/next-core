@@ -4,7 +4,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::{cache, downloaded_soda, ensure_base};
+use super::{VirgoLayer, build::build, cache};
 use crate::{
     AddonError, Addons, Context, EnvVars, EnvironmentError, Progress, Slot, Stage,
     addons::{InstallInputs, execute},
@@ -13,56 +13,68 @@ use crate::{
 
 pub(crate) async fn prepare_addon(
     id: Uuid,
+    base: &VirgoLayer,
     addons: &Addons,
     cx: &Context,
     progress: &watch::Sender<Option<Progress>>,
     cancellation: &CancellationToken,
-) -> Result<()> {
+) -> Result<VirgoLayer> {
+    let destination = cx
+        .directories()
+        .data_dir()
+        .join("virgo/addons")
+        .join(id.to_string());
+    if let Some(artifact) = cache::load(&destination, Some(id)).await? {
+        return Ok(artifact);
+    }
     let _build = cancellation
         .run_until_cancelled(cx.artifact_build().lock())
         .await
         .ok_or(Error::Cancelled)?;
-    // UUID alone is the cache identity, independent of owner settings and runner.
-    if cache::exists(id, cx).await? {
-        return Ok(());
+    if let Some(artifact) = cache::load(&destination, Some(id)).await? {
+        return Ok(artifact);
     }
     let component = addons.component(id);
     let dependency = addons.dependency(id);
     let (payload, resources) = if let Some(release) = &component {
-        release.validate(&release.path(cx.directories())).await?;
-        (release.path(cx.directories()), release.resources())
+        let payload = release.path(cx.directories());
+        release.validate(&payload).await?;
+        (payload, release.resources())
     } else if let Some(release) = &dependency {
-        release.validate(&release.path(cx.directories())).await?;
-        (release.path(cx.directories()), release.resources())
+        let payload = release.path(cx.directories());
+        release.validate(&payload).await?;
+        (payload, release.resources())
     } else {
         return Err(AddonError::NotFound(id).into());
     };
-    let base = ensure_base(addons, cx, cancellation).await?;
-    let soda = downloaded_soda(base.soda.id(), base.soda.version(), addons)?;
+    let soda = addons
+        .component(base.id)
+        .ok_or(AddonError::NotFound(base.id))?;
     let runner = soda.addon().load_runner(cx.directories(), None).await?;
     let winebridge = addons
         .latest_component(Slot::WineBridge)
         .ok_or(EnvironmentError::ComponentNotInstalled(Slot::WineBridge))?
         .path(cx.directories());
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancelled);
-    }
-    let mut env_vars = EnvVars::default();
-    cache::install(
-        base.layer,
+    build(
         id,
+        &destination,
         runner.as_ref(),
-        async |prefix| {
+        base,
+        cx,
+        cancellation,
+        |prefix, runner| async move {
+            let mut env_vars = EnvVars::default();
             execute(
                 InstallInputs {
-                    prefix,
-                    runner: runner.as_ref(),
+                    prefix: &prefix,
+                    runner,
                     winebridge: &winebridge,
                     env_vars: &mut env_vars,
                     explicit_env_vars: &EnvVars::default(),
                 },
                 &payload,
                 resources,
+                false,
                 cancellation,
                 |_| {
                     progress.send_replace(Some(Progress::new(Stage::Configuring)));
@@ -70,7 +82,6 @@ pub(crate) async fn prepare_addon(
             )
             .await
         },
-        cx,
     )
     .await
 }

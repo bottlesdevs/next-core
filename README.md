@@ -127,17 +127,56 @@ Virgo builds a clean shared base from the latest catalog runner named `Soda`
 downloaded. The base manifest pins its release and immutable FVS revision across
 catalog refreshes. The base is initialized once and reused; there is no rebuild
 operation. Stopped preparation builds missing artifacts and resolves the selected
-composition before execution. New bases and adapters use
-`virgo/soda`; existing manifest references and addon caches remain usable.
+composition before execution. The complete base lives under `virgo/soda`, with
+its manifest pinning the Soda UUID and exact commit.
+
+The base, addons, and runner adapters are each published as one immutable directory:
+
+```text
+virgo/addons/<uuid>/        # adapters: virgo/adapters/<runner-uuid>/; base: virgo/soda/
+    manifest.toml
+    filesystem/
+    registry/
+        user.reg
+        system.reg
+```
+
+The manifest records `_version`, the release `id`, and its exact FVS `commit` ID.
+Repository and registry paths are derived from the artifact directory. Manifests
+use `next_config` for versioned loading and saving; no migrations are defined.
+The base's registry files contain initial hives; adapter and addon registry files
+contain patches against those hives. The filesystem, both registry files, and
+manifest are built in staging and published with one rename. Scratch mounts and temporary baselines stay outside
+the published directory. Wine is stopped before diffing or unmounting; failed
+shutdown or unmount retains staging for explicit cleanup.
+
+Preparation loads the complete artifact before looking up a source release or
+waiting for the shared build lock. A cache miss acquires the lock and checks again
+before building. Reads never wait for unrelated artifact construction.
+A cache hit needs no addon source record or payload. Missing manifests,
+repositories, or patches are errors; no registry changes are represented by
+valid empty patches. Resolved artifacts supply layers and registry locations
+directly to composition, without looking up repository history or resolving UUIDs
+again. Existing artifacts are never rebuilt or replaced automatically.
+Legacy `virgo/layers`, `virgo/registry`, and `virgo/base.toml` are not used.
+The base layout is a clean format break: an old `virgo/soda` directory containing
+`prefix/` and adapters is rejected, not migrated or overwritten. Recreating a base
+requires explicitly clearing its dependent addon and adapter caches as well;
+they were built against that pinned base. Existing data is left untouched.
+There are no generation directories or upgrade-triggered rebuilds.
 
 Every addon recipe must install against pinned Soda alone. Cache construction
 uses no layers, registry patches, or environment contributions from other addons,
 and no owner settings, wrappers, or private writable data. Requirements are validated against
 the final environment selections. UUID remains the sole cache
 identity: completed caches survive runner and settings changes. Runner
-adapters are built using the selected runner over the pinned base. Shared
-construction is serialized within one core instance. Standard installers continue
-using their owner's runner.
+adapters are built using the selected runner over the pinned base. Adapter and
+addon builds record registry changes as patches and exclude full hives from
+their committed filesystem layers. Shared construction is serialized within one
+core instance. Adapter and addon builds
+share the same shutdown, diff, unmount, and publication workflow. Standard
+installers continue using their owner's runner and preserve displaced files as
+backups. Virgo disables those backups because the lower layer retains the originals.
 
 Virgo composition is always Soda base → selected runner adapter → components in
 slot order → dependencies in persisted order → private writable upper. Preparation
@@ -145,8 +184,9 @@ resolves each selected addon's immutable layer by UUID and keeps the resulting
 stack local to that operation. There is no second persisted list of selections or
 layers. The shared base remains pinned and completed UUID caches remain immutable.
 
-Each preparation reconstructs the managed registry baseline and reapplies private
-changes relative to the previous baseline. The owner is checkpointed before that
+Each preparation copies the base's published initial hives, then applies adapter
+patches, addon patches in selection order, and private changes
+relative to the previous baseline. The owner is checkpointed before that
 mutation; failure restores its prior data while keeping the selected configuration
 saved for retry. Shared artifact builds happen before the checkpoint. Private
 files, updates, saves, and whiteouts keep normal overlay precedence; the upper is

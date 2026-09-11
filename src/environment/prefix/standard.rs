@@ -124,6 +124,7 @@ pub(super) async fn apply(
             },
             &payload,
             resources,
+            true,
             cancellation,
             |_| {
                 progress.send_replace(Some(Progress::new(Stage::Configuring)));
