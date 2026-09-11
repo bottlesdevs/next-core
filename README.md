@@ -173,8 +173,11 @@ identity: completed caches survive runner and settings changes. Runner
 adapters are built using the selected runner over the pinned base. Adapter and
 addon builds record registry changes as patches and exclude full hives from
 their committed filesystem layers. Shared construction is serialized within one
-core instance. Adapter and addon builds
-share the same shutdown, diff, unmount, and publication workflow. Standard
+core instance. A `VirgoManager` held by the shared context owns artifact paths,
+staging, and the build mutex; it has no owner configuration or retained service handles.
+Constructing it does not access storage or start FVS. The context separately owns
+the lazy FVS connection used by both Virgo and Standard snapshots. Adapter and addon
+builds share the same shutdown, diff, unmount, and publication workflow. Standard
 installers continue using their owner's runner and preserve displaced files as
 backups. Virgo disables those backups because the lower layer retains the originals.
 

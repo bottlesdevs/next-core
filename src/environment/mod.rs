@@ -24,6 +24,8 @@ pub use error::EnvironmentError;
 pub use prefix::PrefixBackend;
 #[cfg(feature = "fvs")]
 pub use prefix::VirgoError;
+#[cfg(feature = "fvs")]
+pub(crate) use prefix::VirgoManager;
 
 /// A temporary connection to a running execution environment.
 /// Successful construction establishes a WineBridge connection. The runtime may
