@@ -16,7 +16,7 @@ bottles-core = { version = "0.1", default-features = false }
 
 Without `fvs`, snapshot APIs and Virgo storage are not compiled. Standard addon
 changes always use direct writes; failed or cancelled recipes can leave partial
-prefix changes. Explicit Standard snapshots initialize FVS history on demand.
+prefix changes.
 
 [Source] | [Issue tracker]
 
@@ -36,193 +36,20 @@ The crate is centered around six types:
   cancellation.
 
 Execution settings live in `BottleState::environment()` as an `EnvironmentConfig`.
-Cloned bottle handles share an operation mutex. Each runtime call attaches through
-a temporary environment connection; registered programs use the bottle's settings. `Bottle::launch(ProgramSpec)` runs an
-unregistered executable; `Bottle::launch_program(uuid)` runs a registration.
-Both return `Operation<u32>` with the initial Windows process ID.
+Use `Bottle::edit` to update bottle state, and call `stop()` before changing
+its environment settings. `Bottle::launch(ProgramSpec)` runs an unregistered
+program; `Bottle::launch_program(uuid)` runs a saved registration. Dropping a
+bottle handle leaves Wine running; call `stop()` to shut it down.
 
-DLL override queries and changes also return `Operation<T>`, exposing preparation
-progress and cooperative cancellation. Existing `.await` calls continue to work.
-An `Environment` represents a running execution environment and holds a required
-WineBridge connection. `attach_or_start` constructs it directly from the owner's
-configuration and location, including after an application restart. The handle retains
-neither configuration nor services; dropping it leaves Wine running. Launch and DLL
-operations hold the owner lock and forward progress and cancellation. Registered
-launch resolves its program before startup; other calls use `with_environment`.
+Choose a prefix backend when creating a bottle. Standard installs directly into
+a conventional Wine prefix. Virgo is experimental: it combines shared immutable
+layers with each bottle's private writable data, preparing missing layers at
+startup. Virgo requires FVS and a downloaded Soda runner to build its base.
 
-Initialization, configuration edits, and shutdown are associated functions on
-`Environment` that take the owner's inputs and return completion, without requiring
-a running handle.
-The owner retains configuration, persistence, publication, and coordination.
-`PrefixBackend` owns how a runnable prefix is created and maintained: initialization, supported edits, software
-materialization, composition, and storage release. Standard and Virgo implementations
-live below this boundary; environment workflows do not distinguish between them.
-Backends stop their initialization and installer processes through shared runtime
-helpers, without invoking owner lifecycle operations.
-
-Process inspection and group kill attach to an existing runtime without starting
-Wine or inspecting FVS mounts. Successful attachment bypasses preparation. Otherwise,
-startup stops Wine and releases existing storage before preparing and mounting the
-selected composition. Dropping handles leaves Wine running. Explicit `stop()` waits
-for wineserver before unmounting, even when WineBridge cannot be reached.
-Unreachable discovery requires `stop()` before retrying.
-
-Initialization and recipes run without game wrappers. Cancellation finishes cleanup
-before returning; failed shutdown retains storage. Temporary cache failures can
-require manual cleanup of the reported prefix. Automatic recovery and concurrent
-independent clients are deferred.
-
-`Bottle::edit(|state| { /* changes */ Ok(()) })` returns an `Operation<()>`.
-The callback receives a draft of the latest state under the owner lock. Edit
-`name`, `programs`, and `environment` directly; errors discard the whole draft.
-Metadata edits work while running. Call `stop()` before changing environment
-settings, including through `set_component`, `remove_component`, or `install`.
-The prefix backend is fixed at creation. Standard dependencies may be appended; Virgo
-selections may also be removed or reordered. Standard changes execute installers
-before saving and keep direct-write semantics. Virgo creation and edits save
-selections without building layers or changing private prefix data. Preparation
-errors surface when starting the environment.
-
-Local releases live at `components/releases/<uuid>/` or
-`dependencies/releases/<uuid>/`. Both `release.toml` and `payload/` are required;
-they are published and removed together. `Release<K>` is persisted directly and owns the local resource paths and frozen recipes.
-The manager keeps separate typed component and dependency maps, with UUID uniqueness
-checked across both families.
-Each ordered resource keeps a path relative to `payload/` and its recipe.
-Components use the payload directory itself; dependency resources use local filenames.
-Download URLs and checksums remain in the catalog and are used only during fetching.
-`Addon<K>` preserves identity, requirements, and frozen runtime variables in owner
-state. A local release exists only as a complete record and
-payload. Loading rejects incomplete releases. Removal renames the entire release
-directory out of its published location, removes it from the typed map, then deletes
-the withdrawn directory. A deletion failure leaves only unpublished staging data.
-Existing environments keep their runtime variables after removal. Source installation
-and runtime executables still require their payloads.
-Fetching a removed release resolves it from the current catalog; imported components
-must be imported again with a new UUID. Built Virgo caches are not removed.
-
-Omitted component `steps` use the bundled recipe for that slot.
-Explicit `steps` replace the default entirely; `steps: []` means no installation steps.
-The resolved recipe is frozen into the local release, so template updates do not
-change existing releases. Dependency steps come from the catalog (omitted means empty),
-and both families take their requirements from the catalog.
-Changed contents or recipes require a new UUID. Catalog refresh
-only replaces catalog snapshots; it neither changes releases nor discovers files.
-
-`import_component(path, slot, name, version)` extracts a local `.tar`, `.tar.gz`/`.tgz`,
-or `.tar.xz`/`.txz` archive containing one top-level component directory. It assigns a
-fresh UUID and freezes a bundled recipe into the release. Folder imports are not
-supported. Imports work offline and leave the source archive untouched. Executable
-permissions and internal relative symlinks are preserved; escaping links are rejected.
-Catalog component downloads and local imports share archive preparation and release
-publication; catalog downloads additionally transfer and verify the archive. Templates are never read during installation
-or startup. Publication and loading check recognized runner layouts, WineBridge/UMU
-entrypoints, and recipe Copy sources before making a component selectable.
-Old indexes, slot/version directories, and the former top-level `releases/` directory
-are ignored and left untouched;
-re-download or explicitly import a component archive. There is no automatic migration.
-
-Virgo builds a clean shared base from the latest catalog runner named `Soda`
-(case-insensitive, semantic-version ordering). That exact release must already be
-downloaded. The base manifest pins its release and immutable FVS revision across
-catalog refreshes. The base is initialized once and reused; there is no rebuild
-operation. Stopped preparation builds missing artifacts and resolves the selected
-composition before execution. The complete base lives under `virgo/soda`, with
-its manifest pinning the Soda UUID and exact commit.
-
-The base, addons, and runner adapters are each published as one immutable directory:
-
-```text
-virgo/addons/<uuid>/        # adapters: virgo/adapters/<runner-uuid>/; base: virgo/soda/
-    manifest.toml
-    filesystem/
-    registry/
-        user.reg
-        system.reg
-```
-
-The manifest records `_version`, the release `id`, and its exact FVS `commit` ID.
-Repository and registry paths are derived from the artifact directory. Manifests
-use `next_config` for versioned loading and saving; no migrations are defined.
-The base's registry files contain initial hives; adapter and addon registry files
-contain patches against those hives. The filesystem, both registry files, and
-manifest are built in staging and published with one rename. Scratch mounts and temporary baselines stay outside
-the published directory. Wine is stopped before diffing or unmounting; failed
-shutdown or unmount retains staging for explicit cleanup.
-
-Preparation loads the complete artifact before looking up a source release or
-waiting for the shared build lock. A cache miss acquires the lock and checks again
-before building. Reads never wait for unrelated artifact construction.
-A cache hit needs no addon source record or payload. Missing manifests,
-repositories, or patches are errors; no registry changes are represented by
-valid empty patches. Resolved artifacts supply layers and registry locations
-directly to composition, without looking up repository history or resolving UUIDs
-again. Existing artifacts are never rebuilt or replaced automatically.
-Legacy `virgo/layers`, `virgo/registry`, and `virgo/base.toml` are not used.
-The base layout is a clean format break: an old `virgo/soda` directory containing
-`prefix/` and adapters is rejected, not migrated or overwritten. Recreating a base
-requires explicitly clearing its dependent addon and adapter caches as well;
-they were built against that pinned base. Existing data is left untouched.
-There are no generation directories or upgrade-triggered rebuilds.
-
-Every addon recipe must install against pinned Soda alone. Cache construction
-uses no layers, registry patches, or environment contributions from other addons,
-and no owner settings, wrappers, or private writable data. Requirements are validated against
-the final environment selections. UUID remains the sole cache
-identity: completed caches survive runner and settings changes. Runner
-adapters are built using the selected runner over the pinned base. Adapter and
-addon builds record registry changes as patches and exclude full hives from
-their committed filesystem layers. Shared construction is serialized within one
-core instance. `Bottles::open` constructs one shared `VirgoManager` and passes it to
-the bottle manager and bottle handles. It retains `Context` and `Addons`, deriving
-artifact paths from that context and resolving sources through that addon manager.
-It owns staging and the build mutex, and retains no owner configuration.
-The context does not retain the manager, so its addon handle creates no ownership cycle.
-Constructing it does not access storage or start FVS. The context separately owns
-the lazy FVS connection used by both Virgo and Standard snapshots. Adapter and addon
-builds share the same shutdown, diff, unmount, and publication workflow. Standard
-installers continue using their owner's runner and preserve displaced files as
-backups. Virgo disables those backups because the lower layer retains the originals.
-
-Virgo composition is always Soda base → selected runner adapter → components in
-slot order → dependencies in persisted order → private writable upper. The manager
-resolves a temporary `VirgoComposition` containing the base and ordered overlays
-without accessing owner data. Owner preparation consumes that same ordering for
-registry patches and filesystem layers, after resolution has completed. There is
-no second persisted list of selections or layers. The shared base remains pinned
-and completed UUID caches remain immutable.
-
-Each preparation copies the base's published initial hives, then applies adapter
-patches, addon patches in selection order, and private changes
-relative to the previous baseline. The owner is checkpointed before that
-mutation; failure restores its prior data while keeping the selected configuration
-saved for retry. Shared artifact builds happen before the checkpoint. Private
-files, updates, saves, and whiteouts keep normal overlay precedence; the upper is
-never pruned. A later WineBridge startup failure does not undo successful registry
-preparation.
-
-Runtime variables are derived once from resolved recipes during acquisition and
-saved in `Addon<K>`. Both backends merge these saved values in component slot order,
-then dependency order, without resolving shared releases. Virgo caches contain
-filesystem and registry effects. Installation still executes ordered environment
-steps so commands see the variables declared so far. Explicit owner settings take
-precedence; execution-owned variables such as
-`WINEPREFIX`, `WINEARCH`, and `PROTONPATH` are applied last. Snapshots capture owner
-metadata, addon selections, registry baseline, and private prefix data while
-stopped, without WineBridge discovery files.
-
-Standard component removal still uses the shared release’s recipe. Removing that
-release preserves runtime variables but makes recipe-based uninstallation unavailable.
-
-Bottle configuration uses version 1. `EnvironmentConfig::backend` selects
-`PrefixBackend::Standard` or `PrefixBackend::Virgo` and is serialized under the existing
-`environment.storage` key. Layers are derived from selected addons rather than stored
-in owner state.
-Completed addon caches remain reusable. Snapshots stop the runtime
-and capture existing configuration, registry baseline, and private data without
-preparing Virgo. Pending selections remain pending after restoration and are
-prepared at the next launch. Explicit snapshots create a new commit even when
-contents are unchanged; `bottles-next:auto-checkpoint` is a reserved message.
+Fetch addons from the component and dependency catalogs, or use
+`Addons::import_component` to import a component archive. Local releases are
+identified by UUID. Removing a release deletes its installation inputs;
+runtime executables and Standard recipe-based removal still require those files.
 
 Operations are lazy. Await them, call `cancel().await`, or spawn them and
 explicitly detach the task; dropping an operation abandons it.
