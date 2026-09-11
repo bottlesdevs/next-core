@@ -107,7 +107,6 @@ pub(crate) async fn reconcile(
             super::artifacts::prepare_addon(id, candidate, addons, cx, progress, cancellation)
                 .await?;
         }
-        candidate.resolve_env_vars(addons, cx)?;
         super::Environment::prepare(candidate, runner.as_ref(), addons, cx, cancellation).await?;
         let ids: Vec<_> = candidate.ordered_addons().collect();
         if let Storage::Virgo { layers } = &candidate.storage {
@@ -137,7 +136,7 @@ pub(crate) async fn reconcile(
     }
     let prefix = root.join("prefix");
     let winebridge = candidate.winebridge().path(cx.directories());
-    let mut env_vars = candidate.addon_env_vars.clone();
+    let mut env_vars = previous.addon_env_vars(addons)?;
     for (id, resources) in removals {
         let result = uninstall(
             InstallInputs {
@@ -177,6 +176,5 @@ pub(crate) async fn reconcile(
         super::Environment::stop(candidate, root, cx).await?;
         result?;
     }
-    candidate.resolve_env_vars(addons, cx)?;
     Ok(())
 }

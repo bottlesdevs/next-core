@@ -223,7 +223,6 @@ impl BottleManager {
                 components,
                 dependencies: Vec::new(),
                 env_vars: Default::default(),
-                addon_env_vars: Default::default(),
                 wrappers: Default::default(),
             };
             #[cfg(feature = "fvs")]

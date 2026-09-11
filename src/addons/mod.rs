@@ -32,7 +32,7 @@ pub use error::{AddonError, CatalogError, InstallerError};
 pub use index::IndexEntry;
 #[cfg(feature = "fvs")]
 pub(crate) use installer::Artifact;
-pub(crate) use installer::{InstallInputs, execute, replay_env_vars, uninstall};
+pub(crate) use installer::{InstallInputs, execute, recipe_steps, replay_env_vars, uninstall};
 pub use manager::Addons;
 
 /// Rejects empty or whitespace-only input without trimming accepted values.

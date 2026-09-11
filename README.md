@@ -86,8 +86,11 @@ or removing layers leaves private files, updates, saves, and whiteouts intact.
 Cached registry patches are applied in that same order. The owner retains a managed
 registry baseline and reapplies private registry changes after rebuilding it.
 
-Recipe-generated environment variables are persisted separately from explicit
-settings. Explicit settings take precedence; execution-owned variables such as
+Recipe environment variables are derived when starting an environment or running
+Standard installers; only explicit settings are persisted. Component recipes are
+built in, and dependency recipes come from the UUID-pinned local index, not the
+current catalog. Missing dependency recipe metadata prevents startup. Explicit
+settings take precedence; execution-owned variables such as
 `WINEPREFIX`, `WINEARCH`, and `PROTONPATH` are applied last. Snapshots capture owner
 metadata, exact layer references, registry baseline, and private prefix data while
 stopped, without WineBridge discovery files.

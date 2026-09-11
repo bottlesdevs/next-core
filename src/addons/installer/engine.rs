@@ -104,14 +104,12 @@ pub(crate) async fn uninstall(
     Ok(())
 }
 
-/// Ensures environment changes are applied when prefix storage reuses an existing addon layer.
-///
-/// A cached Virgo layer can complete installation without executing the recipe,
-/// so its [`InstallStep::SetEnvironment`] steps would otherwise be absent from
-/// the bottle's in-memory state. Replaying is idempotent when the recipe did run;
-/// later entries with the same name overwrite earlier ones.
-pub(crate) fn replay_env_vars(env_vars: &mut EnvVars, resources: &[Artifact]) {
-    for step in resources.iter().flat_map(|resource| &resource.steps) {
+/// Collects recipe variables in declaration order; later values override earlier ones.
+pub(crate) fn replay_env_vars<'a>(
+    env_vars: &mut EnvVars,
+    steps: impl IntoIterator<Item = &'a InstallStep>,
+) {
+    for step in steps {
         if let InstallStep::SetEnvironment { name, value } = step {
             env_vars.insert(name.clone(), value.clone());
         }

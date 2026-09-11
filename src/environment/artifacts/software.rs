@@ -119,7 +119,12 @@ pub(crate) async fn prepare_addon(
         let mut env_vars = EnvVars::default();
         for prerequisite in &required {
             layers.push(cache::layer(*prerequisite, cx).await?);
-            replay_env_vars(&mut env_vars, &resources(*prerequisite, addons, cx)?);
+            replay_env_vars(
+                &mut env_vars,
+                resources(*prerequisite, addons, cx)?
+                    .iter()
+                    .flat_map(|resource| &resource.steps),
+            );
         }
         let resources = resources(id, addons, cx)?;
         cache::install(
@@ -183,7 +188,6 @@ mod tests {
                 dependency(ids[3], vec![]),
             ],
             env_vars: Default::default(),
-            addon_env_vars: Default::default(),
             wrappers: Default::default(),
         };
         let mut order = Vec::new();
