@@ -77,12 +77,7 @@ impl Bottle {
             }
             let state = bottle.state()?;
             let program = resolve(&state)?;
-            let environment = Environment::attach_or_start(
-                &state.environment,
-                bottle.0.cx.directories().bottle(state.id),
-                bottle.0.cx.clone(),
-            )
-            .await?;
+            let environment = bottle.attach_or_start(&cancellation).await?;
             environment.launch_program(&program, &cancellation).await
         })
     }
@@ -194,18 +189,44 @@ impl Bottle {
         Environment::stop(&state.environment, &cx.directories().bottle(state.id), cx).await
     }
 
+    // Caller holds the owner lock. Attached runtimes keep their exact materialization.
+    async fn attach_or_start(
+        &self,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<Environment> {
+        let _ = cancellation;
+        let state = self.state()?;
+        let root = self.0.cx.directories().bottle(state.id);
+        if let Some(environment) = Environment::try_attach(&root).await? {
+            return Ok(environment);
+        }
+        #[cfg(feature = "fvs")]
+        {
+            let mut draft = state.as_ref().clone();
+            if Environment::refresh_base(
+                &mut draft.environment,
+                &root,
+                &self.0.addons,
+                &self.0.cx,
+                cancellation,
+            )
+            .await?
+            {
+                Self::save_state(&draft, &self.0.cx).await?;
+                self.publish(draft);
+            }
+        }
+        Environment::attach_or_start(&self.state()?.environment, root, self.0.cx.clone()).await
+    }
+
     async fn with_environment<F, T>(&self, work: F) -> Result<T>
     where
         F: for<'a> AsyncFnOnce(&'a Environment) -> Result<T>,
     {
         let _control = self.0.control.lock().await;
-        let state = self.state()?;
-        let environment = Environment::attach_or_start(
-            &state.environment,
-            self.0.cx.directories().bottle(state.id),
-            self.0.cx.clone(),
-        )
-        .await?;
+        let environment = self
+            .attach_or_start(&tokio_util::sync::CancellationToken::new())
+            .await?;
         work(&environment).await
     }
 }

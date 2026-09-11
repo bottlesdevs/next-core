@@ -219,6 +219,8 @@ impl BottleManager {
                 loaded_runner.as_ref(),
                 &runner_component.id().to_string(),
                 &cx,
+                &addons,
+                &cancellation,
             )
             .await?;
             let result = async {

@@ -13,6 +13,8 @@ struct ContextInner {
     fvs2d_executable: PathBuf,
     #[cfg(feature = "fvs")]
     fvs: OnceCell<Fvs2dClient>,
+    #[cfg(feature = "fvs")]
+    artifact_build: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone)]
@@ -41,6 +43,8 @@ impl Context {
                 .unwrap_or_else(|| PathBuf::from("fvs2d")),
             #[cfg(feature = "fvs")]
             fvs: OnceCell::new(),
+            #[cfg(feature = "fvs")]
+            artifact_build: tokio::sync::Mutex::new(()),
         })))
     }
 
@@ -65,6 +69,11 @@ impl Context {
 
     pub(crate) fn http_client(&self) -> &Arc<dyn HttpClient> {
         &self.0.http_client
+    }
+
+    #[cfg(feature = "fvs")]
+    pub(crate) fn artifact_build(&self) -> &tokio::sync::Mutex<()> {
+        &self.0.artifact_build
     }
 
     #[cfg(feature = "fvs")]

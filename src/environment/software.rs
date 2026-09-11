@@ -113,6 +113,17 @@ pub(crate) async fn reconcile(
         .runner()
         .load_runner(cx.directories(), candidate.umu())
         .await?;
+    #[cfg(feature = "fvs")]
+    if matches!(candidate.storage, Storage::Virgo { .. }) {
+        for (id, _, _) in &installations {
+            super::artifacts::prepare_addon(*id, candidate, addons, cx, progress, cancellation)
+                .await?;
+        }
+    }
+    #[cfg(feature = "fvs")]
+    if !runner_changed {
+        super::Environment::refresh_base(candidate, root, addons, cx, cancellation).await?;
+    }
     let winebridge = candidate.winebridge().path(cx.directories());
     let env_vars = &mut candidate.env_vars;
 
@@ -172,6 +183,8 @@ pub(crate) async fn reconcile(
             &candidate.components[&Slot::Runner].id().to_string(),
             &installed,
             cx,
+            addons,
+            cancellation,
         )
         .await?;
     }
@@ -188,7 +201,6 @@ pub(crate) async fn reconcile(
                     storage,
                     root,
                     id,
-                    runner.as_ref(),
                     replaced,
                     async |prefix| {
                         execute(
