@@ -1,9 +1,7 @@
 //! Addon installation recipes and their executor.
 //!
-//! Downloaded dependency artifacts retain their catalog recipes in the local
-//! index. Components instead derive a built-in recipe from their [`super::Slot`],
-//! allowing a bottle to remove a selected component without consulting the
-//! catalog or local index.
+//! Each local release stores its installation recipes together with its source payload.
+//! Built-in recipes supply component defaults during import and download.
 //!
 //! # Installation
 //!
@@ -43,31 +41,31 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Directories,
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
     runner::Runner,
     utils::env_vars::EnvVars,
 };
 
-use super::{Addon, Component, deserialize_non_empty_string};
+use super::deserialize_non_empty_string;
 
 pub(crate) use engine::{execute, replay_env_vars, uninstall};
 pub(crate) use recipes::steps as recipe_steps;
 
-/// One local resource and the installation steps applied to it.
-///
-/// Persisted dependency index entries store a single-component relative path.
-/// Bottle installation resolves that path before passing the resource to the
-/// engine. Component resources are derived directly from their slot and version.
+/// A local installation resource and its frozen recipe.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct Artifact {
+#[serde(deny_unknown_fields)]
+pub(crate) struct InstallResource {
+    /// Relative to the release payload; empty for a component's payload directory.
     pub(crate) path: PathBuf,
     pub(crate) steps: Vec<InstallStep>,
 }
 
-impl Artifact {
-    pub(crate) fn new(path: PathBuf, steps: Vec<InstallStep>) -> Self {
-        Self { path, steps }
+impl InstallResource {
+    pub(crate) fn new(path: impl Into<PathBuf>, steps: Vec<InstallStep>) -> Self {
+        Self {
+            path: path.into(),
+            steps,
+        }
     }
 }
 
@@ -157,11 +155,4 @@ pub(crate) struct InstallInputs<'a> {
     pub(crate) env_vars: &'a mut EnvVars,
     /// Explicit owner settings override recipe contributions for every process.
     pub(crate) explicit_env_vars: &'a EnvVars,
-}
-
-impl Addon<Component> {
-    /// Derives the component resource and built-in recipe from stored metadata.
-    pub(crate) fn artifact(&self, directories: &Directories) -> Artifact {
-        Artifact::new(self.path(directories), recipe_steps(self.slot()).to_vec())
-    }
 }

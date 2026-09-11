@@ -99,7 +99,7 @@ enum Architecture {
 /// One validated, cached catalog document.
 ///
 /// Catalog loading is deliberately tolerant: an unavailable or invalid cache
-/// is treated as absent so local index entries remain usable.
+/// is treated as absent so local release records remain usable.
 pub(crate) struct Catalog<K> {
     #[serde(deserialize_with = "deserialize_catalog_version")]
     schema_version: u32,
@@ -148,14 +148,14 @@ pub(crate) struct CatalogUrls {
 
 /// Maps a family discriminator to its catalog URL and managed storage files.
 ///
-/// Keeping this mapping on the two runtime families lets catalog and index
+/// Keeping this mapping on the two runtime families lets catalog
 /// persistence share generic code without introducing per-slot component types.
 pub(crate) trait AddonFamily {
     const LABEL: &'static str;
 
     fn url(urls: &CatalogUrls) -> Option<Url>;
     fn catalog(directories: &Directories) -> PathBuf;
-    fn index(directories: &Directories) -> PathBuf;
+    fn releases(directories: &Directories) -> PathBuf;
 }
 
 impl AddonFamily for Component {
@@ -169,8 +169,8 @@ impl AddonFamily for Component {
         directories.components().join("catalog.json")
     }
 
-    fn index(directories: &Directories) -> PathBuf {
-        directories.components().join("index.toml")
+    fn releases(directories: &Directories) -> PathBuf {
+        directories.component_releases()
     }
 }
 
@@ -185,8 +185,8 @@ impl AddonFamily for Dependency {
         directories.dependencies().join("catalog.json")
     }
 
-    fn index(directories: &Directories) -> PathBuf {
-        directories.dependencies().join("index.toml")
+    fn releases(directories: &Directories) -> PathBuf {
+        directories.dependency_releases()
     }
 }
 
@@ -203,8 +203,6 @@ pub struct CatalogEntry<K> {
     name: String,
     #[serde(deserialize_with = "deserialize_non_empty_string")]
     version: String,
-    // Dependency requirements come from the catalog. Component requirements
-    // are derived from the downloaded release during inspection.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
     #[serde(deserialize_with = "deserialize_non_empty_vec")]
@@ -214,7 +212,7 @@ pub struct CatalogEntry<K> {
 }
 
 impl<K> CatalogEntry<K> {
-    /// Returns the identifier used to correlate this release with an index entry.
+    /// Returns the identifier used to correlate this release with a local release.
     pub fn id(&self) -> Uuid {
         self.id.get()
     }
@@ -227,6 +225,11 @@ impl<K> CatalogEntry<K> {
     /// Returns the catalog version string.
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    /// Requirements owned by this release definition, for either addon family.
+    pub fn requirements(&self) -> &[Requirement] {
+        &self.requirements
     }
 
     /// Reports whether at least one artifact matches the current build target.
@@ -255,19 +258,12 @@ impl CatalogEntry<Component> {
     }
 }
 
-impl CatalogEntry<Dependency> {
-    /// Returns the addons that must already be present before installation.
-    pub fn requirements(&self) -> &[Requirement] {
-        &self.requirements
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 /// One downloadable file and the recipe associated with it.
 ///
-/// Dependency recipes are retained in the local index. Components are inspected
-/// after extraction and use the built-in recipe for their slot instead.
+/// Both component and dependency recipes become part of the immutable release.
+/// Components are extracted before their recipe is applied.
 pub(crate) struct CatalogArtifact {
     url: url::Url,
     #[serde(deserialize_with = "deserialize_non_empty_string")]
@@ -276,25 +272,22 @@ pub(crate) struct CatalogArtifact {
     checksum: Checksum,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     platform: Option<Target>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    steps: Vec<InstallStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    steps: Option<Vec<InstallStep>>,
 }
 
 impl CatalogArtifact {
-    pub(crate) fn url(&self) -> &url::Url {
+    pub(crate) fn url(&self) -> &Url {
         &self.url
     }
-
     pub(crate) fn file_name(&self) -> &str {
         &self.file_name
     }
-
     pub(crate) fn checksum(&self) -> &Checksum {
         &self.checksum
     }
-
-    pub(crate) fn steps(&self) -> &[InstallStep] {
-        &self.steps
+    pub(crate) fn steps(&self) -> Option<&[InstallStep]> {
+        self.steps.as_deref()
     }
 
     fn matches(&self, target: Target) -> bool {

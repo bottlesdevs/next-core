@@ -1,4 +1,4 @@
-//! Artifact-free addon selections and their family discriminators.
+//! InstallResource-free addon selections and their family discriminators.
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
@@ -14,7 +14,7 @@ use crate::{
 
 /// An addon selection persisted in a bottle.
 ///
-/// `K` is [`Component`] or [`Dependency`]. Unlike an [`IndexEntry`](super::IndexEntry),
+/// `K` is [`Component`] or [`Dependency`]. Unlike an [`Release`](super::Release),
 /// this value contains no download artifacts; it remains sufficient for requirement
 /// validation and for locating or removing a selected component.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -49,17 +49,17 @@ impl<K> Addon<K> {
         }
     }
 
-    /// Returns the release identifier shared by its catalog, index, and bottle records.
+    /// Returns the release identifier shared by its catalog, release, and bottle records.
     pub fn id(&self) -> Uuid {
         self.id.get()
     }
 
-    /// Returns the catalog label, or version directory name for hand-placed components.
+    /// Returns the release label.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Returns the downloaded catalog or hand-placed version string.
+    /// Returns the release version string.
     pub fn version(&self) -> &str {
         &self.version
     }
@@ -78,9 +78,9 @@ impl Addon<Component> {
 
     pub(crate) fn path(&self, directories: &Directories) -> PathBuf {
         directories
-            .components()
-            .join(self.slot().as_str())
-            .join(self.version())
+            .component_releases()
+            .join(self.id().to_string())
+            .join("payload")
     }
 
     /// Reports whether this component satisfies `requirement`.
@@ -208,14 +208,14 @@ pub enum Requirement {
     Id(Uuid),
 }
 
-/// Type discriminator for component catalog, index, and bottle records.
+/// Type discriminator for component catalog, release, and bottle records.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
     pub(crate) slot: Slot,
 }
 
-/// Type discriminator for dependency catalog, index, and bottle records.
+/// Type discriminator for dependency catalog, release, and bottle records.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dependency {}

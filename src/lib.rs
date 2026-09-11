@@ -14,8 +14,8 @@ mod winebridge;
 mod wrapper;
 
 pub use addons::{
-    Addon, AddonError, Addons, CatalogEntry, CatalogError, Component, Dependency, IndexEntry,
-    InstallerError, Requirement, Slot,
+    Addon, AddonError, Addons, CatalogEntry, CatalogError, Component, Dependency, InstallerError,
+    Release, Requirement, Slot,
 };
 pub use bottle::{
     Bottle, BottleError, BottleManager, BottleState, DllOverride, DllOverrideMode, GamescopeConfig,

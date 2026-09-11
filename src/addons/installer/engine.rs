@@ -16,7 +16,7 @@ use crate::{
     winebridge::WineBridgeClient,
 };
 
-use super::{Artifact, InstallInputs, InstallStep};
+use super::{InstallInputs, InstallResource, InstallStep};
 
 /// Applies every resource and step sequentially, reporting each step before it starts.
 ///
@@ -26,7 +26,8 @@ use super::{Artifact, InstallInputs, InstallStep};
 /// before diffing, unmounting, or restoring storage.
 pub(crate) async fn execute(
     inputs: InstallInputs<'_>,
-    resources: &[Artifact],
+    payload_root: &Path,
+    resources: &[InstallResource],
     cancellation: &CancellationToken,
     on_step: impl Fn(&InstallStep) + Send,
 ) -> Result<()> {
@@ -39,6 +40,7 @@ pub(crate) async fn execute(
     } = inputs;
     check_cancellation(cancellation)?;
     for resource in resources {
+        let source = payload_root.join(&resource.path);
         for step in &resource.steps {
             on_step(step);
             execute_step(
@@ -49,7 +51,7 @@ pub(crate) async fn execute(
                     env_vars: &mut *env_vars,
                     explicit_env_vars,
                 },
-                resource,
+                &source,
                 step,
                 cancellation,
             )
@@ -66,9 +68,9 @@ pub(crate) async fn execute(
 /// removed and DLL overrides are deleted. Other step kinds have no inverse and are skipped with a
 /// warning. File, bridge and override failures are logged and ignored; cancellation is returned.
 /// The enclosing prefix scope owns Wine shutdown.
-pub(crate) async fn uninstall(
+pub(crate) async fn uninstall<'a>(
     inputs: InstallInputs<'_>,
-    resources: &[Artifact],
+    steps: impl DoubleEndedIterator<Item = &'a InstallStep>,
     item_id: Uuid,
     cancellation: &CancellationToken,
     on_step: impl Fn(&InstallStep) + Send,
@@ -82,24 +84,22 @@ pub(crate) async fn uninstall(
     } = inputs;
 
     check_cancellation(cancellation)?;
-    for resource in resources.iter().rev() {
-        for step in resource.steps.iter().rev() {
-            on_step(step);
-            uninstall_step(
-                InstallInputs {
-                    prefix,
-                    runner,
-                    winebridge,
-                    env_vars: &mut *env_vars,
-                    explicit_env_vars,
-                },
-                step,
-                item_id,
-                cancellation,
-            )
-            .await?;
-            check_cancellation(cancellation)?;
-        }
+    for step in steps.rev() {
+        on_step(step);
+        uninstall_step(
+            InstallInputs {
+                prefix,
+                runner,
+                winebridge,
+                env_vars: &mut *env_vars,
+                explicit_env_vars,
+            },
+            step,
+            item_id,
+            cancellation,
+        )
+        .await?;
+        check_cancellation(cancellation)?;
     }
     Ok(())
 }
@@ -134,7 +134,7 @@ async fn maintenance_bridge(
 
 async fn execute_step(
     inputs: InstallInputs<'_>,
-    resource: &Artifact,
+    resource: &Path,
     step: &InstallStep,
     cancellation: &CancellationToken,
 ) -> Result<()> {
@@ -151,17 +151,17 @@ async fn execute_step(
             destination,
         } => {
             let source = if source.as_os_str().is_empty() {
-                resource.path.clone()
+                resource.to_path_buf()
             } else {
-                resource.path.join(source)
+                resource.join(source)
             };
             install_file(&source, prefix, destination).await?;
         }
         InstallStep::Extract { destination } => {
-            extract_into(&resource.path, prefix, destination, cancellation).await?;
+            extract_into(resource, prefix, destination, cancellation).await?;
         }
         InstallStep::Execute { arguments } => {
-            let mut command = Command::new(&resource.path);
+            let mut command = Command::new(resource);
             for argument in arguments {
                 command = command.arg(argument);
             }

@@ -57,18 +57,19 @@ impl Addons {
                     catalog.save(addons.0.context.directories()).await?;
                     Some(catalog.clone())
                 }
-                Err(_) => current.components.catalog.clone(),
+                Err(_) => current.component_catalog.clone(),
             };
             let dependency_catalog = match &dependency {
                 Ok(catalog) => {
                     catalog.save(addons.0.context.directories()).await?;
                     Some(catalog.clone())
                 }
-                Err(_) => current.dependencies.catalog.clone(),
+                Err(_) => current.dependency_catalog.clone(),
             };
-            addons
-                .publish(component_catalog, dependency_catalog)
-                .await?;
+            let mut next = current.as_ref().clone();
+            next.component_catalog = component_catalog;
+            next.dependency_catalog = dependency_catalog;
+            addons.publish(next);
 
             match (component, dependency) {
                 (Ok(_), Ok(_)) => Ok(()),

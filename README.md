@@ -2,7 +2,7 @@
 
 The application core for managing Bottles Next Wine and Proton environments.
 
-`bottles-core` discovers and installs managed components, persists bottles,
+`bottles-core` imports and installs managed components, persists bottles,
 executes Windows programs through WineBridge, and provides Virgo storage and
 snapshots through the default `fvs` feature. Standard creation, launch, and addon
 changes work without FVS even when that feature is compiled in.
@@ -47,8 +47,8 @@ An `Environment` represents a running execution environment and holds a required
 WineBridge connection. `attach_or_start` constructs it directly from the owner's
 configuration and location, including after an application restart. The handle retains
 neither configuration nor services; dropping it leaves Wine running. Launch and DLL
-operations use Bottle's `with_environment` helper, which holds the owner lock, resolves
-registration inputs before startup, and forwards progress and cancellation.
+operations hold the owner lock and forward progress and cancellation. Registered
+launch resolves its program before startup; other calls use `with_environment`.
 
 Initialization, configuration edits, and shutdown are associated functions on
 `Environment` that take the owner's inputs and return completion, without requiring
@@ -83,6 +83,41 @@ before saving and keep direct-write semantics. Virgo creation and edits save
 selections without building layers or changing private prefix data. Preparation
 errors surface when starting the environment.
 
+Local releases live at `components/releases/<uuid>/` or
+`dependencies/releases/<uuid>/`. Both `release.toml` and `payload/` are required;
+they are published and removed together. `Release<K>` is persisted directly and owns the local resource paths and frozen recipes.
+The manager keeps separate typed component and dependency maps, with UUID uniqueness
+checked across both families.
+Each ordered resource keeps a path relative to `payload/` and its recipe.
+Components use the payload directory itself; dependency resources use local filenames.
+Download URLs and checksums remain in the catalog and are used only during fetching. `Addon<K>` remains the lightweight
+selection in bottle state. A local release exists only as a complete record and
+payload. Loading rejects incomplete releases. Removal renames the entire release
+directory out of its published location, removes it from the typed map, then deletes
+the withdrawn directory. A deletion failure leaves only unpublished staging data.
+Existing environments keep their selections and report missing releases when needed.
+Fetching a removed release resolves it from the current catalog; imported components
+must be imported again with a new UUID. Built Virgo caches are not removed.
+
+In catalog format 2, omitted component `steps` use the bundled recipe for that slot.
+Explicit `steps` replace the default entirely; `steps: []` means no installation steps.
+The resolved recipe is frozen into the local release, so template updates do not
+change existing releases. Dependency steps come from the catalog (omitted means empty),
+and both families take their requirements from the catalog.
+Changed contents or recipes require a new UUID. Catalog refresh
+only replaces catalog snapshots; it neither changes releases nor discovers files.
+
+`import_component(path, slot, name, version)` extracts a local `.tar`, `.tar.gz`/`.tgz`,
+or `.tar.xz`/`.txz` archive containing one top-level component directory. It assigns a
+fresh UUID and freezes a bundled recipe into the release. Folder imports are not
+supported. Imports work offline and leave the source archive untouched. Executable
+permissions and internal relative symlinks are preserved; escaping links are rejected.
+Catalog component downloads and local imports share archive preparation and release
+publication; catalog downloads additionally transfer and verify the archive. Templates are never read during installation
+or startup. Old indexes, slot/version directories, and the former top-level `releases/` directory
+are ignored and left untouched;
+re-download or explicitly import a component archive. There is no automatic migration.
+
 Virgo builds a clean shared base from the latest catalog runner named `Soda`
 (case-insensitive, semantic-version ordering). That exact release must already be
 downloaded. The base manifest pins its release and immutable FVS revision across
@@ -114,10 +149,11 @@ files, updates, saves, and whiteouts keep normal overlay precedence; the upper i
 never pruned. A later WineBridge startup failure does not undo successful registry
 preparation.
 
-Recipe environment variables are derived when starting an environment or running
-Standard installers; only explicit settings are persisted. Component recipes are
-built in, and dependency recipes come from the UUID-pinned local index, not the
-current catalog. Missing dependency recipe metadata prevents startup. Explicit
+Recipe environment variables are derived from durable release records when starting
+an environment or running Standard installers. Both backends require the selected
+local releases for these recipes; Virgo caches contain filesystem and registry
+effects, not runtime variables. Catalog and bundled-template updates cannot change
+a local release's recipe. Explicit
 settings take precedence; execution-owned variables such as
 `WINEPREFIX`, `WINEARCH`, and `PROTONPATH` are applied last. Snapshots capture owner
 metadata, addon selections, registry baseline, and private prefix data while
