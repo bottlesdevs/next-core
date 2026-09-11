@@ -21,7 +21,7 @@ use crate::environment::prefix::FVS_BLOCK_SIZE;
 use crate::{
     Context, EnvironmentConfig, EnvironmentError, Operation, Progress, Stage, Storage,
     addons::{Addon, Addons, Requirement, Slot},
-    environment::prefix,
+    environment::{Environment, prefix},
     error::{Error, Result},
 };
 
@@ -160,7 +160,7 @@ impl BottleManager {
     pub fn create(
         &self,
         name: impl Into<String>,
-        mut storage: Storage,
+        storage: Storage,
         runner: Uuid,
     ) -> Operation<Bottle> {
         let name = name.into();
@@ -211,44 +211,43 @@ impl BottleManager {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            fs::create_dir_all(&bottle_path).await?;
-            // Creation may retain live storage on failure; keep it outside the removal path.
-            prefix::create(
-                &mut storage,
-                &bottle_path,
+            let mut components = HashMap::from([
+                (Slot::WineBridge, Addon::from(winebridge.as_ref())),
+                (Slot::Runner, Addon::from(runner_component.as_ref())),
+            ]);
+            if let Some(umu) = umu {
+                components.insert(Slot::Umu, Addon::from(umu.as_ref()));
+            }
+            let mut config = EnvironmentConfig {
+                storage,
+                components,
+                dependencies: Vec::new(),
+                env_vars: Default::default(),
+                wrappers: Default::default(),
+            };
+            #[cfg(feature = "fvs")]
+            if let Storage::Virgo { layers } = &mut config.storage {
+                layers.clear();
+            }
+            Environment::prepare(
+                &mut config,
                 loaded_runner.as_ref(),
-                &runner_component.id().to_string(),
-                &cx,
                 &addons,
+                &cx,
                 &cancellation,
             )
             .await?;
+            prefix::create(&config.storage, &bottle_path).await?;
+            // Initialization may retain live storage on failure; keep it outside the removal path.
+            if matches!(config.storage, Storage::Standard) {
+                Environment::initialize(loaded_runner.as_ref(), &bottle_path.join("prefix"))
+                    .await?;
+            }
             let result = async {
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
-
-                let mut components = HashMap::from([
-                    (Slot::WineBridge, Addon::from(winebridge.as_ref())),
-                    (Slot::Runner, Addon::from(runner_component.as_ref())),
-                ]);
-                if let Some(umu) = umu {
-                    components.insert(Slot::Umu, Addon::from(umu.as_ref()));
-                }
-                let bottle = Bottle::new(
-                    id,
-                    name,
-                    EnvironmentConfig {
-                        storage,
-                        components,
-                        dependencies: Vec::new(),
-                        env_vars: Default::default(),
-                        wrappers: Default::default(),
-                    },
-                    cx.clone(),
-                    addons.clone(),
-                )
-                .await?;
+                let bottle = Bottle::new(id, name, config, cx.clone(), addons.clone()).await?;
                 progress.send_replace(Some(Progress::new(Stage::Configuring)));
                 #[cfg(feature = "fvs")]
                 if matches!(&bottle.state()?.environment.storage, Storage::Virgo { .. }) {

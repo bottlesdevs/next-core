@@ -64,19 +64,6 @@ impl Bottles {
         Ok(())
     }
 
-    /// Rebuilds the shared Virgo base using the latest catalog Soda release.
-    /// That exact release must already be downloaded. Existing runtimes, snapshots,
-    /// and completed addon caches remain intact; stopped preparations adopt the base.
-    #[cfg(feature = "fvs")]
-    pub fn rebuild_virgo_base(&self) -> crate::Operation<()> {
-        let cx = self.context.clone();
-        let addons = self.addons.clone();
-        crate::Operation::new(move |progress, cancellation| async move {
-            progress.send_replace(Some(crate::Progress::new(crate::Stage::CreatingPrefix)));
-            crate::environment::artifacts::rebuild_base(&addons, &cx, &cancellation).await
-        })
-    }
-
     pub fn bottles(&self) -> &BottleManager {
         &self.bottles
     }

@@ -10,7 +10,7 @@ mod software;
 
 pub(crate) use software::reconcile;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use tokio_util::sync::CancellationToken;
 
@@ -34,40 +34,37 @@ pub(crate) struct Environment {
 }
 
 impl Environment {
-    /// Refreshes only the shared base and runner adapter while the owner is stopped.
-    /// The owner saves changed materialization references before starting Wine.
-    #[cfg(feature = "fvs")]
-    pub(crate) async fn refresh_base(
+    /// Resolves layers at creation or when the stopped owner changes runners.
+    pub(crate) async fn prepare(
         config: &mut EnvironmentConfig,
-        root: &Path,
+        runner: &dyn Runner,
         addons: &crate::Addons,
         cx: &Context,
         cancellation: &CancellationToken,
-    ) -> Result<bool> {
-        let Storage::Virgo { layers } = &config.storage else {
-            return Ok(false);
-        };
-        let runner = config
-            .runner()
-            .load_runner(cx.directories(), config.umu())
-            .await?;
-        let base = artifacts::base_layers(
-            runner.as_ref(),
-            &config.runner().id().to_string(),
-            addons,
-            cx,
-            cancellation,
-        )
-        .await?;
-        if layers.starts_with(&base) {
-            return Ok(false);
+    ) -> Result<()> {
+        let _ = (runner, addons, cx, cancellation);
+        match &mut config.storage {
+            Storage::Standard => Ok(()),
+            #[cfg(feature = "fvs")]
+            Storage::Virgo { layers } => {
+                let base = artifacts::base_layers(
+                    runner,
+                    &config.components[&crate::Slot::Runner].id().to_string(),
+                    addons,
+                    cx,
+                    cancellation,
+                )
+                .await?;
+                layers.splice(..layers.len().min(2), base);
+                Ok(())
+            }
         }
-        Self::stop(config, root, cx).await?;
-        let Storage::Virgo { layers } = &mut config.storage else {
-            unreachable!()
-        };
-        layers.splice(..layers.len().min(2), base);
-        Ok(true)
+    }
+
+    pub(crate) async fn initialize(runner: &dyn Runner, prefix: &Path) -> Result<()> {
+        let initialized = runner.wineboot(prefix, "--init").await;
+        shutdown_wine(runner, prefix).await?;
+        initialized
     }
 
     /// Stops Wine and unmounts storage without requiring a live handle or bridge.
@@ -80,34 +77,23 @@ impl Environment {
         prefix::stop(&config.storage, root, cx).await
     }
 
-    /// Connects to an existing runtime or prepares and starts one.
-    pub(crate) async fn attach_or_start(
+    /// Starts from references already resolved and published by the owner.
+    pub(crate) async fn start(
         config: &EnvironmentConfig,
-        root: PathBuf,
-        cx: Context,
+        runner: &dyn Runner,
+        root: &Path,
+        cx: &Context,
     ) -> Result<Self> {
-        if let Some(environment) = Self::try_attach(&root).await? {
-            return Ok(environment);
-        }
-        let runner = config
-            .runner()
-            .load_runner(cx.directories(), config.umu())
-            .await?;
-        prefix::prepare(&config.storage, &root, &cx).await?;
+        prefix::prepare(&config.storage, root, cx).await?;
         let prefix = root.join("prefix");
         let command = config.wrappers.apply(
-            WineBridgeClient::command(
-                runner.as_ref(),
-                &prefix,
-                config.winebridge().path(cx.directories()),
-            )
-            .envs(config.env_vars.iter()),
+            WineBridgeClient::command(runner, &prefix, config.winebridge().path(cx.directories()))
+                .envs(config.env_vars.iter()),
         );
         let bridge = match WineBridgeClient::connect_or_spawn(&prefix, command).await {
             Ok(bridge) => bridge,
             Err(error) => {
-                shutdown_wine(runner.as_ref(), &prefix).await?;
-                prefix::stop(&config.storage, &root, &cx).await?;
+                Self::stop(config, root, cx).await?;
                 return Err(error);
             }
         };
