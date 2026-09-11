@@ -268,41 +268,17 @@ impl BottleManager {
     /// Opens the bottle identified by `id`.
     ///
     /// Repeated calls through this manager or its clones return handles to the
-    /// same live state. Once a UUID is in the registry, this method does not
-    /// reload `bottle.toml` or observe external changes. If a persisted bottle
-    /// is not yet interned, opening it adds the handle to the registry and
-    /// notifies manager watchers.
+    /// same live state. Only bottles loaded at startup or created through this
+    /// manager are opened; this method does not search storage or observe
+    /// external changes.
     ///
     /// # Errors
     ///
-    /// Returns [`BottleError::NotFound`] if `bottle.toml` is absent, is not a
-    /// regular file, or its metadata cannot be inspected. Returns
-    /// [`BottleError::IdMismatch`] if the loaded UUID differs from `id`.
-    /// Configuration loading failures are also returned.
+    /// Returns [`BottleError::NotFound`] if `id` is not in the registry.
     pub async fn open(&self, id: Uuid) -> Result<Bottle> {
-        if let Some(bottle) = self.registry.get(id) {
-            return Ok(bottle);
-        }
-        let path = self.context.directories().bottle(id).join("bottle.toml");
-        if !fs::metadata(&path).await.is_ok_and(|entry| entry.is_file()) {
-            return Err(BottleError::NotFound(id).into());
-        }
-        let state: BottleState = next_config::load(path).await?;
-        if state.id != id {
-            return Err(BottleError::IdMismatch {
-                expected: id,
-                actual: state.id,
-            }
-            .into());
-        }
-        let bottle = Bottle::from_state(
-            state,
-            self.context.clone(),
-            self.addons.clone(),
-            #[cfg(feature = "fvs")]
-            self.virgo.clone(),
-        )?;
-        Ok(self.registry.intern(bottle))
+        self.registry
+            .get(id)
+            .ok_or_else(|| BottleError::NotFound(id).into())
     }
 
     /// Returns the bottles currently known to this manager.
