@@ -1,12 +1,8 @@
 //! Snapshot history operations.
 
-use std::path::Path;
-
-use fvs_rs::{Repository, RestoreResponse};
-
 use crate::{
-    Operation, Progress, Stage, Transfer,
-    environment::prefix::{AUTO_CHECKPOINT_MESSAGE, FVS_BLOCK_SIZE, finish_commit, finish_restore},
+    Operation, Progress, Stage,
+    environment::history::{self, AUTO_CHECKPOINT_MESSAGE},
     error::{Error, Result},
 };
 
@@ -36,7 +32,6 @@ impl Bottle {
     /// the snapshot cannot be created.
     pub fn create_snapshot(&self, message: impl Into<String>) -> Operation<Snapshot> {
         let bottle = self.clone();
-        let repository = self.snapshot_repository();
         let cx = self.0.cx.clone();
         let message = message.into();
         Operation::new(move |progress, cancellation| async move {
@@ -53,19 +48,13 @@ impl Bottle {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            let client = cx.fvs().await?;
-            if !crate::utils::exists(&bottle.bottle_path().join(".fvs2")).await? {
-                client
-                    .new_repository(bottle.bottle_path(), FVS_BLOCK_SIZE)
-                    .await?;
-            }
-            let stream = client.commit_stream(&repository, message).await?;
-            finish_commit(stream, |update| {
-                progress.send_replace(Some(Progress::transferring(
-                    Stage::Committing,
-                    Transfer::from(update),
-                )));
-            })
+            history::capture(
+                &bottle.bottle_path(),
+                message,
+                Stage::Committing,
+                &cx,
+                &progress,
+            )
             .await
         })
     }
@@ -89,13 +78,12 @@ impl Bottle {
         if !crate::utils::exists(&self.bottle_path().join(".fvs2")).await? {
             return Ok(Vec::new());
         }
-        let repository = self.snapshot_repository();
         Ok(self
             .0
             .cx
             .fvs()
             .await?
-            .list_commits(&repository)
+            .list_commits(&history::repository(&self.bottle_path()))
             .await?
             .into_iter()
             .filter(|snapshot| snapshot.message != AUTO_CHECKPOINT_MESSAGE)
@@ -106,8 +94,8 @@ impl Bottle {
     ///
     /// The operation takes exclusive bottle access. It stops the bottle, then
     /// replaces the complete bottle tree with the target;
-    /// files absent from that snapshot are removed. The state being replaced is
-    /// not saved automatically. On success, the returned string is the resolved
+    /// files absent from that snapshot are removed. A checkpoint protects the
+    /// current state if restore or metadata validation fails. The returned string is the resolved
     /// full state ID and the restored `bottle.toml` is published as a new
     /// [`BottleState`] snapshot.
     ///
@@ -115,10 +103,8 @@ impl Bottle {
     /// commit to the target. Cancellation is observed before restore begins,
     /// but not while the FVS stream is running.
     ///
-    /// Restore changes the filesystem before loading and validating the
-    /// restored metadata. If that final step fails, the operation returns an
-    /// error after disk contents have changed, while the previously published
-    /// live state remains in place.
+    /// A failed restore or invalid metadata restores the previous files and
+    /// configuration before returning. Failed recovery reports the owner path.
     ///
     /// # Errors
     ///
@@ -127,7 +113,6 @@ impl Bottle {
     /// requested, or the restored metadata has a different bottle UUID.
     pub fn rollback(&self, state_id_or_prefix: &str) -> Operation<String> {
         let bottle = self.clone();
-        let repository = self.snapshot_repository();
         let bottle_path = self.bottle_path();
         let cx = self.0.cx.clone();
         let state_id_or_prefix = state_id_or_prefix.to_owned();
@@ -146,38 +131,33 @@ impl Bottle {
                 return Err(Error::Cancelled);
             }
 
-            bottle.ensure_exists()?;
-            let stream = cx
-                .fvs()
-                .await?
-                .restore_stream(&repository, &state_id_or_prefix, None::<&Path>, true, false)
-                .await?;
-            let response: RestoreResponse = finish_restore(stream, |update| {
-                progress.send_replace(Some(Progress::transferring(
-                    Stage::Restoring,
-                    Transfer::from(update),
-                )));
-            })
+            let checkpoint = history::capture(
+                &bottle_path,
+                AUTO_CHECKPOINT_MESSAGE.into(),
+                Stage::Checkpointing,
+                &cx,
+                &progress,
+            )
             .await?;
-            let path = bottle_path.join("bottle.toml");
-            let state: BottleState = next_config::load(path).await?;
-            if state.id != bottle.0.id {
-                return Err(BottleError::IdMismatch {
-                    expected: bottle.0.id,
-                    actual: state.id,
+            let result = async {
+                let response =
+                    history::restore(&bottle_path, &state_id_or_prefix, &cx, &progress).await?;
+                let state: BottleState = next_config::load(bottle_path.join("bottle.toml")).await?;
+                if state.id != bottle.0.id {
+                    return Err(BottleError::IdMismatch {
+                        expected: bottle.0.id,
+                        actual: state.id,
+                    }
+                    .into());
                 }
-                .into());
+                state.environment.validate_requirements()?;
+                Ok((response.state_id, state))
             }
+            .await;
+            let (revision, state) =
+                history::recover(result, &bottle_path, &checkpoint, &cx, &progress).await?;
             bottle.publish(state);
-            Ok(response.state_id)
+            Ok(revision)
         })
-    }
-
-    /// Addresses owner history, created on demand for Standard snapshots.
-    fn snapshot_repository(&self) -> Repository {
-        Repository {
-            repository_path: self.bottle_path().display().to_string(),
-            block_size: FVS_BLOCK_SIZE,
-        }
     }
 }

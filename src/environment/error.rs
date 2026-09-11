@@ -6,6 +6,13 @@ use uuid::Uuid;
 #[derive(Debug, Error)]
 pub enum EnvironmentError {
     #[cfg(feature = "fvs")]
+    #[error("rollback failed for {root}; repair or restore this owner before retrying: {source}")]
+    Rollback {
+        root: std::path::PathBuf,
+        #[source]
+        source: Box<crate::error::Error>,
+    },
+    #[cfg(feature = "fvs")]
     #[error("no Soda runner release in the current component catalog")]
     SodaNotInCatalog,
     #[cfg(feature = "fvs")]

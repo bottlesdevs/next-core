@@ -134,6 +134,7 @@ pub(crate) async fn prepare_addon(
                         runner: runner.as_ref(),
                         winebridge: &winebridge,
                         env_vars: &mut env_vars,
+                        explicit_env_vars: &EnvVars::default(),
                     },
                     &resources,
                     cancellation,
@@ -182,6 +183,7 @@ mod tests {
                 dependency(ids[3], vec![]),
             ],
             env_vars: Default::default(),
+            addon_env_vars: Default::default(),
             wrappers: Default::default(),
         };
         let mut order = Vec::new();

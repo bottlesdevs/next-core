@@ -155,6 +155,8 @@ pub(crate) struct InstallInputs<'a> {
     pub(crate) winebridge: &'a Path,
     /// The environment updated by `SetEnvironment` steps and passed to processes.
     pub(crate) env_vars: &'a mut EnvVars,
+    /// Explicit owner settings override recipe contributions for every process.
+    pub(crate) explicit_env_vars: &'a EnvVars,
 }
 
 impl Addon<Component> {

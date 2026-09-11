@@ -5,13 +5,13 @@
 //! can be merged into each owner's writable upper directory.
 
 use std::{
-    fs,
     ops::AsyncFnOnce,
     path::{Path, PathBuf},
 };
 
+use crate::environment::registry::{registry_files, write_forward};
 use fvs_rs::{Layer, UnmountMode};
-use regdiff_rs::prelude::{Diff, Hive, Registry, apply_files};
+use regdiff_rs::prelude::apply_files;
 use uuid::Uuid;
 
 use crate::{
@@ -21,12 +21,6 @@ use crate::{
 };
 
 use crate::environment::prefix::{FVS_BLOCK_SIZE, VirgoError};
-
-/// Removes references without deleting a shared cache.
-pub(crate) fn remove(layers: &mut Vec<Layer>, id: Uuid, context: &Context) {
-    let repository = layer_path(id, context).display().to_string();
-    layers.retain(|layer| layer.repository_path != repository);
-}
 
 /// Checks only for FVS repository metadata; [`layer`] validates its commit.
 pub(crate) async fn exists(id: Uuid, context: &Context) -> Result<bool> {
@@ -148,12 +142,9 @@ where
     result
 }
 
-/// Merges a cached addon's registry patches into an owner's writable upper.
+/// Merges a cached addon's registry patches into prepared registry hives.
 ///
 /// A missing patch directory means the addon has no recorded registry effects.
-/// Both replacement hives are prepared in a scratch directory before either is
-/// installed, but the final renames are not atomic as a pair. Scratch cleanup is
-/// best-effort.
 pub(crate) async fn apply_registry(prefix: &Path, id: Uuid, context: &Context) -> Result<()> {
     let patches = registry_path(id, context);
     if !async_fs::metadata(&patches)
@@ -164,26 +155,13 @@ pub(crate) async fn apply_registry(prefix: &Path, id: Uuid, context: &Context) -
     }
 
     let apply_prefix = prefix.to_path_buf();
-    let stage = prefix.join(format!(".bottles-next-registry-{}", Uuid::new_v4()));
     blocking::unblock(move || {
-        fs::create_dir_all(&stage)?;
-        let result = (|| {
-            for (file, hive) in registry_files() {
-                apply_files(
-                    apply_prefix.join(file),
-                    patches.join(file),
-                    stage.join(file),
-                    hive,
-                )
+        for (file, hive) in registry_files() {
+            let path = apply_prefix.join(file);
+            apply_files(&path, &patches.join(file), &path, hive)
                 .map_err(|error| VirgoError::Registry(error.to_string()))?;
-            }
-            for (file, _) in registry_files() {
-                fs::rename(stage.join(file), apply_prefix.join(file))?;
-            }
-            Ok::<_, Error>(())
-        })();
-        let _ = fs::remove_dir_all(stage);
-        result
+        }
+        Ok(())
     })
     .await
 }
@@ -227,24 +205,6 @@ fn layer_path(id: Uuid, context: &Context) -> PathBuf {
 
 fn registry_path(id: Uuid, context: &Context) -> PathBuf {
     registry_root(context).join(id.to_string())
-}
-
-fn registry_files() -> [(&'static str, Hive); 2] {
-    [
-        ("user.reg", Hive::CurrentUser),
-        ("system.reg", Hive::LocalMachine),
-    ]
-}
-
-fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -> Result<()> {
-    let old =
-        Registry::try_from(old, hive).map_err(|error| VirgoError::Registry(error.to_string()))?;
-    let new =
-        Registry::try_from(new, hive).map_err(|error| VirgoError::Registry(error.to_string()))?;
-    Registry::diff(&old, &new)
-        .serialize_file(output)
-        .map_err(|error| VirgoError::Registry(error.to_string()))?;
-    Ok(())
 }
 
 async fn remove_file(path: &Path) -> std::io::Result<()> {

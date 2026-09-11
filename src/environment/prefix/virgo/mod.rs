@@ -5,16 +5,10 @@
 //! persisted by the owner and must be changed only while the owner is
 //! stopped.
 
-use crate::environment::artifacts::cache;
-
-use std::{
-    ops::AsyncFnOnce,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use futures_lite::StreamExt;
 use fvs_rs::{Layer, UnmountMode};
-use uuid::Uuid;
 
 use crate::{Context, error::Result};
 
@@ -93,41 +87,6 @@ pub(super) async fn stop(root: &Path, context: &Context) -> Result<()> {
             })?;
     }
     Ok(())
-}
-
-pub(super) async fn install(
-    root: &Path,
-    layers: &mut Vec<Layer>,
-    item_id: Uuid,
-    replaced_id: Option<Uuid>,
-    context: &Context,
-) -> Result<()> {
-    let cached = cache::layer(item_id, context).await?;
-    if let Some(id) = replaced_id {
-        cache::remove(layers, id, context);
-    }
-    cache::remove(layers, item_id, context);
-    layers.push(cached);
-    prepare(root, layers, context).await?;
-    cache::apply_registry(&root.join("prefix"), item_id, context).await
-}
-
-pub(super) async fn uninstall<F>(
-    root: &Path,
-    layers: &mut Vec<Layer>,
-    item_id: Uuid,
-    execute: F,
-    context: &Context,
-) -> Result<()>
-where
-    F: for<'a> AsyncFnOnce(&'a Path, bool) -> Result<()>,
-{
-    // Removing the layer reveals the previous filesystem contents, so the recipe
-    // must not restore overwritten files into the writable upper directory.
-    cache::remove(layers, item_id, context);
-    prepare(root, layers, context).await?;
-    // The enclosing transaction shuts Wine down and unmounts before rollback.
-    execute(&root.join("prefix"), false).await
 }
 
 /// Refuses to mount over existing contents, which would otherwise be hidden.

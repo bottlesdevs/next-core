@@ -223,6 +223,7 @@ impl BottleManager {
                 components,
                 dependencies: Vec::new(),
                 env_vars: Default::default(),
+                addon_env_vars: Default::default(),
                 wrappers: Default::default(),
             };
             #[cfg(feature = "fvs")]
@@ -244,6 +245,10 @@ impl BottleManager {
                     .await?;
             }
             let result = async {
+                #[cfg(feature = "fvs")]
+                if let Storage::Virgo { layers } = &config.storage {
+                    crate::environment::registry::compose(&bottle_path, layers, &[], &cx).await?;
+                }
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }

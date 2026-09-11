@@ -16,7 +16,6 @@ pub(crate) use proton::Proton;
 pub(crate) use wine::Wine;
 
 use std::{
-    ffi::OsStr,
     path::{Path, PathBuf},
     process::ExitStatus,
 };
@@ -62,14 +61,6 @@ pub(crate) struct RunnerCommand(Command);
 impl RunnerCommand {
     pub(crate) fn wrapped_by(self, wrapper: impl Wrapper) -> Self {
         Self(wrapper.wrap(self.0).into())
-    }
-
-    pub(crate) fn envs<K: AsRef<OsStr>, V: AsRef<OsStr>>(
-        mut self,
-        envs: impl IntoIterator<Item = (K, V)>,
-    ) -> Self {
-        self.0 = self.0.envs(envs);
-        self
     }
 }
 

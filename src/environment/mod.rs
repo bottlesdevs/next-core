@@ -2,13 +2,17 @@
 
 #[cfg(feature = "fvs")]
 pub(crate) mod artifacts;
+#[cfg(feature = "fvs")]
+pub(crate) mod history;
+#[cfg(feature = "fvs")]
+pub(crate) mod registry;
 
 mod config;
 mod error;
 pub(crate) mod prefix;
 mod software;
 
-pub(crate) use software::reconcile;
+pub(crate) use software::{reconcile, validate_edit};
 
 use std::path::Path;
 
@@ -34,7 +38,7 @@ pub(crate) struct Environment {
 }
 
 impl Environment {
-    /// Resolves layers at creation or when the stopped owner changes runners.
+    /// Derives the immutable stack from configuration while the owner is stopped.
     pub(crate) async fn prepare(
         config: &mut EnvironmentConfig,
         runner: &dyn Runner,
@@ -43,11 +47,13 @@ impl Environment {
         cancellation: &CancellationToken,
     ) -> Result<()> {
         let _ = (runner, addons, cx, cancellation);
+        #[cfg(feature = "fvs")]
+        let ids: Vec<_> = config.ordered_addons().collect();
         match &mut config.storage {
             Storage::Standard => Ok(()),
             #[cfg(feature = "fvs")]
             Storage::Virgo { layers } => {
-                let base = artifacts::base_layers(
+                let mut base = artifacts::base_layers(
                     runner,
                     &config.components[&crate::Slot::Runner].id().to_string(),
                     addons,
@@ -55,7 +61,10 @@ impl Environment {
                     cancellation,
                 )
                 .await?;
-                layers.splice(..layers.len().min(2), base);
+                for id in ids {
+                    base.push(artifacts::cache::layer(id, cx).await?);
+                }
+                *layers = base;
                 Ok(())
             }
         }
@@ -86,10 +95,12 @@ impl Environment {
     ) -> Result<Self> {
         prefix::prepare(&config.storage, root, cx).await?;
         let prefix = root.join("prefix");
-        let command = config.wrappers.apply(
-            WineBridgeClient::command(runner, &prefix, config.winebridge().path(cx.directories()))
-                .envs(config.env_vars.iter()),
-        );
+        let command = config.wrappers.apply(WineBridgeClient::command(
+            runner,
+            &prefix,
+            config.winebridge().path(cx.directories()),
+            config.effective_env_vars(),
+        ));
         let bridge = match WineBridgeClient::connect_or_spawn(&prefix, command).await {
             Ok(bridge) => bridge,
             Err(error) => {
