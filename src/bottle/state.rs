@@ -1,30 +1,26 @@
 //! Persisted bottle state and the shared bottle handle.
 
+#[cfg(feature = "fvs")]
+use crate::environment::VirgoManager;
+
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
-    ops::AsyncFnOnce,
-    path::PathBuf,
     sync::Arc,
 };
+
+#[cfg(feature = "fvs")]
+use std::path::PathBuf;
 
 use futures_core::Stream;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{RwLock, watch};
+use tokio::sync::{Mutex, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::{edit::BottleEdit, error::BottleError};
-use crate::{
-    Context,
-    addons::{Addon, Addons, Component, Dependency, Requirement, Slot},
-    error::{Error, Result},
-    prefix::Prefix,
-    utils::environment::Environment,
-    wrapper::Wrappers,
-};
+use super::error::BottleError;
+use crate::{Context, EnvironmentConfig, addons::Addons, error::Result};
 
 /// An immutable snapshot of a bottle's published configuration.
 ///
@@ -32,25 +28,15 @@ use crate::{
 /// They remain valid after the bottle changes or is deleted;
 /// their getters continue to return the values recorded when that particular
 /// snapshot was published. Obtain another snapshot to observe later changes.
-/// Component locations are derived from their slot and version.
+/// Component payload locations are derived from their UUIDs.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Config)]
 #[config(version = 1)]
 pub struct BottleState {
     pub(crate) id: Uuid,
-    pub(crate) name: String,
-    pub(crate) storage: Prefix,
+    pub name: String,
+    pub environment: EnvironmentConfig,
     #[serde(default)]
-    pub(crate) programs: HashMap<Uuid, Program>,
-
-    /// Runtime and prefix components pinned to exact releases.
-    pub(crate) components: HashMap<Slot, Addon<Component>>,
-    /// Installed dependency releases.
-    pub(crate) dependencies: Vec<Addon<Dependency>>,
-    #[serde(default, skip_serializing_if = "Environment::is_empty")]
-    pub(crate) environment: Environment,
-
-    #[serde(flatten)]
-    pub(crate) wrappers: Wrappers,
+    pub programs: HashMap<Uuid, ProgramSpec>,
 }
 
 impl BottleState {
@@ -66,141 +52,19 @@ impl BottleState {
         &self.name
     }
 
-    /// Returns the runner recorded when this snapshot was published.
-    ///
-    /// Catalog refreshes do not replace this value.
-    pub fn runner(&self) -> &Addon<Component> {
-        self.component(Slot::Runner)
-            .expect("persisted bottle state is runtime-validated")
-    }
-
-    /// Returns the exact WineBridge release selected for this bottle.
-    pub fn winebridge(&self) -> &Addon<Component> {
-        self.component(Slot::WineBridge)
-            .expect("persisted bottle state is runtime-validated")
-    }
-
-    /// Returns the selected UMU release, if this runtime uses one.
-    pub fn umu(&self) -> Option<&Addon<Component>> {
-        self.component(Slot::Umu)
-    }
-
-    /// Returns exact component releases keyed by their occupied slots.
-    pub fn components(&self) -> &HashMap<Slot, Addon<Component>> {
-        &self.components
-    }
-
-    /// Returns every dependency installed in this bottle.
-    pub fn dependencies(&self) -> &[Addon<Dependency>] {
-        &self.dependencies
-    }
-
-    /// Returns the component occupying `slot`, if any.
-    pub fn component(&self, slot: Slot) -> Option<&Addon<Component>> {
-        self.components.get(&slot)
-    }
-
-    /// Returns the installed dependency with this release identifier.
-    pub fn dependency(&self, id: Uuid) -> Option<&Addon<Dependency>> {
-        self.dependencies
-            .iter()
-            .find(|dependency| dependency.id() == id)
-    }
-
-    pub(crate) fn contains_addon_matching(&self, requirement: &Requirement) -> bool {
-        self.components
-            .values()
-            .any(|component| component.satisfies(requirement))
-            || self
-                .dependencies
-                .iter()
-                .any(|dependency| dependency.satisfies(requirement))
-    }
-
-    pub(crate) fn validate_requirements(&self) -> Result<()> {
-        for (slot, component) in &self.components {
-            if component.slot() != *slot {
-                return Err(BottleError::InvalidComponentSlot {
-                    component: component.id(),
-                    required: *slot,
-                }
-                .into());
-            }
-        }
-
-        let missing = [Slot::WineBridge, Slot::Runner]
-            .into_iter()
-            .filter(|slot| self.component(*slot).is_none())
-            .map(Requirement::Slot)
-            .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            return Err(BottleError::RequiresAddon {
-                required_by: None,
-                requirements: missing,
-            }
-            .into());
-        }
-
-        for (id, requirements) in self
-            .components
-            .values()
-            .map(|addon| (addon.id(), addon.requirements()))
-            .chain(
-                self.dependencies
-                    .iter()
-                    .map(|addon| (addon.id(), addon.requirements())),
-            )
-        {
-            let missing = requirements
-                .iter()
-                .filter(|requirement| !self.contains_addon_matching(requirement))
-                .cloned()
-                .collect::<Vec<_>>();
-            if !missing.is_empty() {
-                return Err(BottleError::RequiresAddon {
-                    required_by: Some(id),
-                    requirements: missing,
-                }
-                .into());
-            }
-        }
-        Ok(())
-    }
-
-    /// Returns environment variables supplied when WineBridge is started.
-    ///
-    /// Changes do not affect an already-running WineBridge. Call
-    /// [`Bottle::stop`] before the next bridge-backed operation to apply them
-    /// immediately.
-    pub fn environment(&self) -> &Environment {
+    /// Returns the execution settings shared by every registration in this bottle.
+    pub fn environment(&self) -> &EnvironmentConfig {
         &self.environment
     }
 
-    /// Returns the wrapper configuration applied when WineBridge is started.
-    ///
-    /// Changes do not affect an already-running WineBridge. Call
-    /// [`Bottle::stop`] before the next bridge-backed operation to apply them
-    /// immediately.
-    pub fn wrappers(&self) -> &Wrappers {
-        &self.wrappers
-    }
-
     /// Iterates over registered programs in unspecified order.
-    pub fn programs(&self) -> impl Iterator<Item = &Program> {
+    pub fn programs(&self) -> impl Iterator<Item = &ProgramSpec> {
         self.programs.values()
     }
 
     /// Returns the registered program with identity `id`.
-    pub fn program(&self, id: Uuid) -> Option<&Program> {
+    pub fn program(&self, id: Uuid) -> Option<&ProgramSpec> {
         self.programs.get(&id)
-    }
-
-    /// Reports how the Wine prefix itself is stored.
-    ///
-    /// With the default `fvs` feature, both strategies use FVS for snapshot
-    /// history and addon mutation checkpoints.
-    pub fn storage(&self) -> Storage {
-        self.storage.kind()
     }
 }
 
@@ -208,14 +72,16 @@ impl BottleState {
 pub(crate) struct BottleInner {
     /// Latest state; `None` is the tombstone published when the bottle is deleted.
     pub(crate) published: watch::Sender<Option<Arc<BottleState>>>,
-    /// Excludes metadata and destructive operations while bridge calls hold shared access.
-    pub(crate) write_lock: RwLock<()>,
+    /// Serializes control operations across cloned handles.
+    pub(crate) control: Mutex<()>,
     /// Retained after deletion so stale handles report which bottle was deleted.
     pub(crate) id: Uuid,
     /// Shared services and storage locations scoped to the owning manager.
     pub(crate) cx: Context,
     /// Shared addon registry scoped to the owning manager.
     pub(crate) addons: Addons,
+    #[cfg(feature = "fvs")]
+    pub(crate) virgo: Arc<VirgoManager>,
 }
 
 /// A live, shared handle to one bottle.
@@ -226,10 +92,9 @@ pub(crate) struct BottleInner {
 /// Hashing identifies the shared live handle and remains stable across state
 /// publications and deletion.
 ///
-/// Methods that access WineBridge start it on demand. Once it is running,
-/// requests may run concurrently. As a current limitation, callers must
-/// serialize simultaneous first bridge-backed calls for a stopped bottle to
-/// avoid racing two WineBridge starts.
+/// Runtime operations attach to WineBridge for each control call. Calls
+/// serialize within this core instance; the lock is released after launch, not
+/// when the guest process exits. Dropping handles does not stop Wine.
 #[derive(Clone)]
 pub struct Bottle(pub(crate) Arc<BottleInner>);
 
@@ -247,38 +112,46 @@ impl Bottle {
     pub(crate) async fn new(
         id: Uuid,
         name: String,
-        components: HashMap<Slot, Addon<Component>>,
-        dependencies: Vec<Addon<Dependency>>,
-        storage: Prefix,
+        environment: EnvironmentConfig,
         context: Context,
         addons: Addons,
+        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
     ) -> Result<Self> {
         let state = BottleState {
             id,
             name,
-            components,
-            dependencies,
-            storage,
+            environment,
             programs: HashMap::new(),
-            wrappers: Wrappers::default(),
-            environment: Environment::default(),
         };
-        let bottle = Self::from_state(state, context, addons)?;
+        let bottle = Self::from_state(
+            state,
+            context,
+            addons,
+            #[cfg(feature = "fvs")]
+            virgo,
+        )?;
         bottle.save().await?;
         Ok(bottle)
     }
 
     /// Reconstructs a live handle after validating its addon requirements.
-    pub(crate) fn from_state(state: BottleState, cx: Context, addons: Addons) -> Result<Self> {
-        state.validate_requirements()?;
+    pub(crate) fn from_state(
+        state: BottleState,
+        cx: Context,
+        addons: Addons,
+        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
+    ) -> Result<Self> {
+        state.environment.validate_requirements()?;
         let id = state.id;
         let (published, _) = watch::channel(Some(Arc::new(state)));
         Ok(Self(Arc::new(BottleInner {
             id,
             published,
-            write_lock: RwLock::new(()),
+            control: Mutex::new(()),
             cx,
             addons,
+            #[cfg(feature = "fvs")]
+            virgo,
         })))
     }
 
@@ -316,13 +189,6 @@ impl Bottle {
             .filter_map(|state| state)
     }
 
-    /// Starts a batch of configuration changes.
-    ///
-    /// No changes are made until [`BottleEdit::commit`] is awaited.
-    pub fn edit(&self) -> BottleEdit {
-        BottleEdit::new(self.clone())
-    }
-
     #[cfg(feature = "fvs")]
     pub(crate) fn ensure_exists(&self) -> Result<()> {
         if self.is_deleted() {
@@ -343,36 +209,6 @@ impl Bottle {
         self.0.published.send_replace(None);
     }
 
-    /// Serializes a mutation against the latest state and publishes only after
-    /// persistence succeeds.
-    ///
-    /// The operation may perform external prefix work before `save_state`; such
-    /// side effects are not automatically reversed if persistence then fails.
-    pub(super) async fn update<F, R>(
-        &self,
-        cancellation: Option<&CancellationToken>,
-        operation: F,
-    ) -> Result<R>
-    where
-        F: for<'a> AsyncFnOnce(&'a mut BottleState, Context) -> Result<R>,
-    {
-        let _write = match cancellation {
-            Some(cancellation) => cancellation
-                .run_until_cancelled(self.0.write_lock.write())
-                .await
-                .ok_or(Error::Cancelled)?,
-            None => self.0.write_lock.write().await,
-        };
-        if cancellation.is_some_and(CancellationToken::is_cancelled) {
-            return Err(Error::Cancelled);
-        }
-        let mut draft = self.state()?.as_ref().clone();
-        let value = operation(&mut draft, self.0.cx.clone()).await?;
-        Self::save_state(&draft, &self.0.cx).await?;
-        self.publish(draft);
-        Ok(value)
-    }
-
     /// Publishes only observable state changes; an equal state does not wake
     /// watchers.
     pub(crate) fn publish(&self, state: BottleState) {
@@ -387,12 +223,9 @@ impl Bottle {
         });
     }
 
+    #[cfg(feature = "fvs")]
     pub(crate) fn bottle_path(&self) -> PathBuf {
         self.0.cx.directories().bottle(self.0.id)
-    }
-
-    pub(crate) fn prefix_path(&self) -> PathBuf {
-        self.bottle_path().join("prefix")
     }
 
     async fn save(&self) -> Result<()> {
@@ -400,7 +233,7 @@ impl Bottle {
         Self::save_state(&state, &self.0.cx).await
     }
 
-    async fn save_state(state: &BottleState, cx: &Context) -> Result<()> {
+    pub(super) async fn save_state(state: &BottleState, cx: &Context) -> Result<()> {
         let path = cx.directories().bottle(state.id).join("bottle.toml");
         next_config::save(path, state).await?;
         Ok(())
@@ -410,7 +243,7 @@ impl Bottle {
 /// A persisted, immutable Windows launch definition registered with a bottle.
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Program {
+pub struct ProgramSpec {
     id: Uuid,
     name: String,
     executable: String,
@@ -429,25 +262,40 @@ pub struct Program {
     new_console: bool,
 }
 
-impl Program {
+impl ProgramSpec {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() {
+            return Err(BottleError::InvalidProgram("name must not be blank".into()).into());
+        }
+        if self.executable.trim().is_empty() {
+            return Err(BottleError::InvalidProgram("executable must not be blank".into()).into());
+        }
+        if self
+            .working_directory
+            .as_ref()
+            .is_some_and(|path| path.trim().is_empty())
+        {
+            return Err(
+                BottleError::InvalidProgram("working directory must not be blank".into()).into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Creates a program with a new UUID and default launch options.
     pub fn new(name: impl Into<String>, executable: impl Into<String>) -> Result<Self> {
         let name = name.into();
         let executable = executable.into();
-        if name.trim().is_empty() {
-            return Err(BottleError::InvalidProgram("name must not be blank".into()).into());
-        }
-        if executable.trim().is_empty() {
-            return Err(BottleError::InvalidProgram("executable must not be blank".into()).into());
-        }
-        Ok(Self {
+        let program = Self {
             id: Uuid::new_v4(),
             name,
             executable,
             args: Vec::new(),
             working_directory: None,
             new_console: false,
-        })
+        };
+        program.validate()?;
+        Ok(program)
     }
 
     /// Replaces the Windows command-line fragments passed at launch.
@@ -507,19 +355,4 @@ impl Program {
     pub fn new_console(&self) -> bool {
         self.new_console
     }
-}
-
-/// The prefix-storage strategy persisted in [`BottleState`].
-#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
-pub enum Storage {
-    /// Stores a conventional mutable prefix in the bottle directory.
-    ///
-    /// With the default `fvs` feature, FVS also provides snapshots and addon
-    /// mutation checkpoints.
-    Standard,
-    /// Stores the prefix as composable FVS layers.
-    ///
-    /// Virgo is experimental and requires the configured FVS service.
-    #[cfg(feature = "fvs")]
-    Virgo,
 }

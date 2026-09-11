@@ -37,6 +37,10 @@ pub enum BridgeError {
     BridgeExited(ExitStatus),
     #[error("WineBridge did not report readiness before the startup timeout elapsed.")]
     Timeout,
+    #[error(
+        "WineBridge discovery exists but the runtime is unreachable at {0}; call stop() and retry"
+    )]
+    Unavailable(PathBuf),
     #[error("WineBridge did not stop before the shutdown timeout elapsed.")]
     ShutdownTimeout,
     #[error("WineBridge returned an invalid response: {0}")]
@@ -57,7 +61,7 @@ async fn endpoint_from_port_file(path: &Path) -> Result<Option<Endpoint>> {
         .ok()
         .filter(|port| *port != 0)
         .ok_or(BridgeError::InvalidResponse(
-            "WineBridge published an invalid port",
+            "WineBridge published an invalid port; call stop() and retry",
         ))?;
     Ok(Some(Endpoint::from_shared(format!(
         "http://127.0.0.1:{port}"
@@ -77,17 +81,20 @@ pub(crate) struct WineBridgeClient {
 }
 
 impl WineBridgeClient {
-    pub(crate) fn command(
+    pub(crate) fn command<'a>(
         runner: &dyn Runner,
         prefix: &Path,
         winebridge_root: impl AsRef<Path>,
+        env_vars: impl IntoIterator<Item = (&'a str, &'a str)>,
     ) -> RunnerCommand {
         runner.command(
             prefix,
-            Command::new(winebridge_root.as_ref().join("bottles-winebridge.exe")).env(
-                "WINEBRIDGE_PORT_FILE",
-                format!(r"C:\windows\temp\{PORT_FILE_NAME}"),
-            ),
+            Command::new(winebridge_root.as_ref().join("bottles-winebridge.exe"))
+                .envs(env_vars)
+                .env(
+                    "WINEBRIDGE_PORT_FILE",
+                    format!(r"C:\windows\temp\{PORT_FILE_NAME}"),
+                ),
         )
     }
 
@@ -103,13 +110,13 @@ impl WineBridgeClient {
         let ready = async {
             loop {
                 if let Some(status) = process.try_status()? {
-                    if let Some(client) = Self::try_connect(prefix).await? {
+                    if let Some(client) = Self::probe(prefix).await? {
                         return Ok(client);
                     }
                     return Err(BridgeError::BridgeExited(status).into());
                 }
 
-                if let Some(client) = Self::try_connect(prefix).await? {
+                if let Some(client) = Self::probe(prefix).await? {
                     return Ok(client);
                 }
 
@@ -117,29 +124,65 @@ impl WineBridgeClient {
             }
         };
 
-        future::race(ready, async {
+        let result = future::race(ready, async {
             Timer::after(Duration::from_secs(30)).await;
             Err(BridgeError::Timeout.into())
         })
-        .await
+        .await;
+        if result.is_err() {
+            if let Err(error) = process.kill()
+                && error.kind() != io::ErrorKind::InvalidInput
+            {
+                return Err(error.into());
+            }
+            process.status().await?;
+        }
+        result
     }
 
     pub(crate) async fn try_connect(prefix: &Path) -> Result<Option<Self>> {
+        let bridge = Self::probe(prefix).await?;
+        if bridge.is_none() && exists(&Self::port_file(prefix)).await? {
+            return Err(BridgeError::Unavailable(prefix.to_owned()).into());
+        }
+        Ok(bridge)
+    }
+
+    pub(crate) async fn shutdown_existing(prefix: &Path) -> Result<()> {
+        if let Some(bridge) = Self::try_connect(prefix).await? {
+            bridge.shutdown().await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn clear_discovery(prefix: &Path) -> Result<()> {
+        match async_fs::remove_file(Self::port_file(prefix)).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    async fn probe(prefix: &Path) -> Result<Option<Self>> {
         let port_file = Self::port_file(prefix);
 
         let Some(endpoint) = endpoint_from_port_file(&port_file).await? else {
             return Ok(None);
         };
 
-        let Ok(channel) = endpoint.connect().await else {
+        let Ok(channel) = endpoint
+            .connect_timeout(Duration::from_secs(2))
+            .connect()
+            .await
+        else {
             return Ok(None);
         };
 
-        let response = HealthClient::new(channel.clone())
-            .check(HealthCheckRequest {
-                service: proto::wine_bridge_server::SERVICE_NAME.to_string(),
-            })
-            .await;
+        let mut request = tonic::Request::new(HealthCheckRequest {
+            service: proto::wine_bridge_server::SERVICE_NAME.to_string(),
+        });
+        request.set_timeout(Duration::from_secs(2));
+        let response = HealthClient::new(channel.clone()).check(request).await;
 
         Ok(matches!(response, Ok(response) if response.get_ref().status() == ServingStatus::Serving)
             .then(|| Self {
@@ -559,16 +602,18 @@ impl WineBridgeClient {
 
     // --- DLL Overrides ---
 
-    /// Lists the configured DLL overrides.
+    /// Lists the configured DLL overrides. A missing override key yields an empty list.
     ///
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails.
     pub async fn list_dll_overrides(&self) -> Result<Vec<DllOverride>> {
         let mut client = self.client.clone();
-        let response = client.list_dll_overrides(()).await?.into_inner();
-
-        Ok(response.overrides)
+        match client.list_dll_overrides(()).await {
+            Ok(response) => Ok(response.into_inner().overrides),
+            Err(status) if status.code() == tonic::Code::NotFound => Ok(Vec::new()),
+            Err(status) => Err(status.into()),
+        }
     }
 
     /// Returns the override mode configured for a single DLL.
@@ -606,18 +651,21 @@ impl WineBridgeClient {
         Ok(())
     }
 
-    /// Removes a DLL override.
+    /// Removes a DLL override. A missing override is already removed.
     ///
     /// # Errors
     ///
     /// Returns an error if the gRPC request fails or WineBridge reports failure.
     pub async fn delete_dll_override(&self, dll: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
-        client
+        match client
             .delete_dll_override(proto::DllOverrideRequest { dll: dll.into() })
-            .await?;
-
-        Ok(())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(status) if status.code() == tonic::Code::NotFound => Ok(()),
+            Err(status) => Err(status.into()),
+        }
     }
 
     // --- System ---
@@ -650,19 +698,19 @@ impl WineBridgeClient {
 
     /// Requests the managed WineBridge server to shut down.
     ///
-    /// This consumes the wrapper so callers cannot issue more RPCs after shutdown.
+    /// The owner releases the connection after its complete shutdown succeeds.
     ///
     /// # Errors
     ///
     /// Returns an error if the shutdown RPC fails.
-    pub async fn shutdown(self) -> Result<()> {
+    pub async fn shutdown(&self) -> Result<()> {
         let mut client = self.client.clone();
-        client.shutdown(()).await?;
+        let mut request = tonic::Request::new(());
+        request.set_timeout(Duration::from_secs(5));
+        client.shutdown(request).await?;
         drop(client);
-        let port_file = self.port_file.clone();
-        drop(self);
         for _ in 0..50 {
-            if !exists(&port_file).await? {
+            if !exists(&self.port_file).await? {
                 return Ok(());
             }
             Timer::after(Duration::from_millis(100)).await;

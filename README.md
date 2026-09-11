@@ -2,9 +2,10 @@
 
 The application core for managing Bottles Next Wine and Proton environments.
 
-`bottles-core` discovers and installs managed components, persists bottles,
-executes Windows programs through WineBridge, and provides checkpointed prefix
-mutation and snapshots through the default `fvs` feature.
+`bottles-core` imports and installs managed components, persists bottles,
+executes Windows programs through WineBridge, and provides Virgo storage and
+snapshots through the default `fvs` feature. Standard creation, launch, and addon
+changes work without FVS even when that feature is compiled in.
 
 Disable FVS when only conventional, directly mutable prefixes are needed:
 
@@ -13,8 +14,9 @@ Disable FVS when only conventional, directly mutable prefixes are needed:
 bottles-core = { version = "0.1", default-features = false }
 ```
 
-Without `fvs`, snapshot APIs and Virgo storage are not compiled, and failed or
-cancelled addon recipes are not rolled back automatically.
+Without `fvs`, snapshot APIs and Virgo storage are not compiled. Standard addon
+changes always use direct writes; failed or cancelled recipes can leave partial
+prefix changes.
 
 [Source] | [Issue tracker]
 
@@ -33,6 +35,22 @@ The crate is centered around six types:
 - `Operation<T>` represents long-running work with progress and cooperative
   cancellation.
 
+Execution settings live in `BottleState::environment()` as an `EnvironmentConfig`.
+Use `Bottle::edit` to update bottle state, and call `stop()` before changing
+its environment settings. `Bottle::launch(ProgramSpec)` runs an unregistered
+program; `Bottle::launch_program(uuid)` runs a saved registration. Dropping a
+bottle handle leaves Wine running; call `stop()` to shut it down.
+
+Choose a prefix backend when creating a bottle. Standard installs directly into
+a conventional Wine prefix. Virgo is experimental: it combines shared immutable
+layers with each bottle's private writable data, preparing missing layers at
+startup. Virgo requires FVS and a downloaded Soda runner to build its base.
+
+Fetch addons from the component and dependency catalogs, or use
+`Addons::import_component` to import a component archive. Local releases are
+identified by UUID. Removing a release deletes its installation inputs;
+runtime executables and Standard recipe-based removal still require those files.
+
 Operations are lazy. Await them, call `cancel().await`, or spawn them and
 explicitly detach the task; dropping an operation abandons it.
 
@@ -50,7 +68,7 @@ futures-lite = "2"
 Open the library, inspect the current bottles, and stop its download service:
 
 ```rust
-use bottles_core::{Bottles, Config, Program, SearchSource};
+use bottles_core::{Bottles, Config, ProgramSpec, SearchSource};
 use futures_lite::StreamExt;
 
 #[tokio::main]
@@ -65,11 +83,13 @@ async fn main() -> Result<(), bottles_core::error::Error> {
     }
 
     if let Some(bottle) = bottles.bottles().list().into_iter().next() {
-        let program = Program::new("Example", "C:/Games/example.exe")?;
-        let mut edit = bottle.edit();
-        edit.add_program(program.clone());
-        edit.commit().await?;
-        println!("registered {} as {}", program.name(), program.id());
+        let program = ProgramSpec::new("Example", "C:/Games/example.exe")?;
+        let id = program.id();
+        bottle.edit(move |state| {
+            state.programs.insert(program.id(), program);
+            Ok(())
+        }).await?;
+        println!("registered {id}");
     }
 
     let mut installed = Box::pin(bottles.library().watch());

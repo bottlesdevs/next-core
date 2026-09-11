@@ -1,4 +1,4 @@
-//! Artifact-free addon selections and their family discriminators.
+//! InstallResource-free addon selections and their family discriminators.
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
@@ -7,16 +7,16 @@ use strum::EnumIter;
 use uuid::{NonNilUuid, Uuid};
 
 use crate::{
-    Directories,
+    Directories, EnvVars,
     error::Result,
     runner::{Proton, Runner, RunnerError, RunnerKind, Wine, detect_runner_kind},
 };
 
 /// An addon selection persisted in a bottle.
 ///
-/// `K` is [`Component`] or [`Dependency`]. Unlike an [`IndexEntry`](super::IndexEntry),
-/// this value contains no download artifacts; it remains sufficient for requirement
-/// validation and for locating or removing a selected component.
+/// `K` is [`Component`] or [`Dependency`]. Unlike an [`Release`](super::Release),
+/// this value contains no installation resources; it preserves requirements and
+/// runtime variables independently of the shared release.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     deny_unknown_fields,
@@ -28,6 +28,7 @@ pub struct Addon<K> {
     version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
+    env_vars: EnvVars,
     #[serde(flatten)]
     kind: K,
 }
@@ -38,6 +39,7 @@ impl<K> Addon<K> {
         name: String,
         version: String,
         requirements: Vec<Requirement>,
+        env_vars: EnvVars,
         kind: K,
     ) -> Self {
         Self {
@@ -45,21 +47,22 @@ impl<K> Addon<K> {
             name,
             version,
             requirements,
+            env_vars,
             kind,
         }
     }
 
-    /// Returns the release identifier shared by its catalog, index, and bottle records.
+    /// Returns the release identifier shared by its catalog, release, and bottle records.
     pub fn id(&self) -> Uuid {
         self.id.get()
     }
 
-    /// Returns the catalog label, or version directory name for hand-placed components.
+    /// Returns the release label.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Returns the downloaded catalog or hand-placed version string.
+    /// Returns the release version string.
     pub fn version(&self) -> &str {
         &self.version
     }
@@ -67,6 +70,16 @@ impl<K> Addon<K> {
     /// Returns the addons that must coexist with this selection.
     pub fn requirements(&self) -> &[Requirement] {
         &self.requirements
+    }
+
+    /// Returns this addon's frozen runtime environment variables.
+    ///
+    /// Values are collected from the selected recipe's declarations during acquisition
+    /// and saved with the selection, so they remain available after the shared
+    /// release is removed. These are this addon's contributions only; environment
+    /// configuration combines them with other addons and applies owner overrides last.
+    pub fn env_vars(&self) -> &EnvVars {
+        &self.env_vars
     }
 }
 
@@ -78,9 +91,9 @@ impl Addon<Component> {
 
     pub(crate) fn path(&self, directories: &Directories) -> PathBuf {
         directories
-            .components()
-            .join(self.slot().as_str())
-            .join(self.version())
+            .component_releases()
+            .join(self.id().to_string())
+            .join("payload")
     }
 
     /// Reports whether this component satisfies `requirement`.
@@ -208,14 +221,14 @@ pub enum Requirement {
     Id(Uuid),
 }
 
-/// Type discriminator for component catalog, index, and bottle records.
+/// Type discriminator for component catalog, release, and bottle records.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
     pub(crate) slot: Slot,
 }
 
-/// Type discriminator for dependency catalog, index, and bottle records.
+/// Type discriminator for dependency catalog, release, and bottle records.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dependency {}

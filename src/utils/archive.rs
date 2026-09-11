@@ -108,7 +108,10 @@ fn safe_path(path: impl AsRef<Path>) -> Result<PathBuf, ArchiveError> {
     Ok(result)
 }
 
-fn safe_symlink_target(link: &Path, target: &str) -> Result<(), ArchiveError> {
+pub(crate) fn safe_symlink_target(
+    link: &Path,
+    target: impl AsRef<Path>,
+) -> Result<(), ArchiveError> {
     safe_path(link.parent().unwrap_or(Path::new("")).join(target))?;
     Ok(())
 }

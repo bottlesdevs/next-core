@@ -1,23 +1,23 @@
 //! Addon installation recipes and their executor.
 //!
-//! Downloaded dependency artifacts retain their catalog recipes in the local
-//! index. Components instead derive a built-in recipe from their [`super::Slot`],
-//! allowing a bottle to remove a selected component without consulting the
-//! catalog or local index.
+//! Each local release stores its installation recipes together with its source payload.
+//! Built-in recipes supply component defaults during import and download.
 //!
 //! # Installation
 //!
 //! Resources and steps are applied in declaration order. Steps may copy or
-//! extract files, run installers, register DLLs, update the registry, configure
-//! DLL overrides, or change the bottle environment. Changes made by completed
-//! steps remain if a later step fails; the bottle storage layer is responsible
+//! extract files, run installers, register DLLs, update the registry, or configure
+//! DLL overrides. `SetEnvironment` declarations are collected into release metadata
+//! during acquisition and ignored during installation and uninstall. Installer
+//! commands declare their own variables. Changes made by completed steps remain
+//! if a later step fails; the bottle storage layer is responsible
 //! for any transaction-level rollback.
 //!
 //! # Component removal
 //!
 //! Resources and steps are visited in reverse order. Uninstallation can restore
-//! copied files, delete DLL overrides, and remove environment entries. Actions
-//! without an inverse—executing programs, extracting archives, registering DLLs,
+//! copied files and delete DLL overrides. Actions without an inverse—executing
+//! programs, extracting archives, registering DLLs,
 //! and setting registry values—are skipped. Consequently, a recipe is not
 //! necessarily fully reversible. Dependencies cannot be removed separately from
 //! their bottle.
@@ -27,8 +27,8 @@
 //! Cancellation is cooperative. It is checked between steps and during
 //! supported long-running work. Running child processes are killed and reaped
 //! when possible; WineBridge calls already in flight are not interrupted.
-//! Installation always attempts to stop WineBridge and the prefix runner before
-//! returning.
+//! The enclosing prefix scope stops WineBridge and the prefix runner before
+//! releasing storage.
 //!
 //! # Path handling
 //!
@@ -43,35 +43,35 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Directories,
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
     runner::Runner,
-    utils::environment::Environment,
+    utils::env_vars::EnvVars,
 };
 
-use super::{Addon, Component, deserialize_non_empty_string};
+use super::deserialize_non_empty_string;
 
-pub(crate) use engine::{execute, replay_environment, uninstall};
+pub(crate) use engine::{execute, uninstall};
 pub(crate) use recipes::steps as recipe_steps;
 
-/// One local resource and the installation steps applied to it.
-///
-/// Persisted dependency index entries store a single-component relative path.
-/// Bottle installation resolves that path before passing the resource to the
-/// engine. Component resources are derived directly from their slot and version.
+/// A local installation resource and its frozen recipe.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct Artifact {
+#[serde(deny_unknown_fields)]
+pub(crate) struct InstallResource {
+    /// Relative to the release payload; empty for a component's payload directory.
     pub(crate) path: PathBuf,
     pub(crate) steps: Vec<InstallStep>,
 }
 
-impl Artifact {
-    pub(crate) fn new(path: PathBuf, steps: Vec<InstallStep>) -> Self {
-        Self { path, steps }
+impl InstallResource {
+    pub(crate) fn new(path: impl Into<PathBuf>, steps: Vec<InstallStep>) -> Self {
+        Self {
+            path: path.into(),
+            steps,
+        }
     }
 }
 
-/// A declarative operation applied while installing an addon resource.
+/// An installation action or runtime environment declaration for an addon resource.
 ///
 /// Steps are serialized as part of Bottles' internal catalog schema; their wire
 /// representation is not a stable interchange API. The module overview describes
@@ -81,8 +81,8 @@ impl Artifact {
 pub(crate) enum InstallStep {
     /// Copies a resource file into the Wine prefix.
     ///
-    /// An existing regular destination file is backed up once alongside the destination so an
-    /// uninstall mode that restores files can reinstate it.
+    /// Standard backs up an existing regular file once for restoration during uninstall.
+    /// Shared layered builds disable these backups; their lower layer retains the original.
     Copy {
         /// Path intended to be relative to the resource, or empty to copy the resource itself.
         #[serde(default)]
@@ -92,11 +92,13 @@ pub(crate) enum InstallStep {
     },
     /// Runs the resource through the configured runner and requires a successful exit status.
     ///
-    /// The process receives the bottle environment as it exists at this step.
+    /// Variables apply only to this command, in addition to the host environment.
     Execute {
         /// Passed directly to the child process without shell parsing.
         #[serde(default)]
         arguments: Vec<String>,
+        #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
+        env_vars: EnvVars,
     },
     /// Extracts a supported tar archive and copies its regular files into the Wine prefix.
     ///
@@ -110,15 +112,16 @@ pub(crate) enum InstallStep {
     },
     /// Registers DLLs silently with `regsvr32` in list order.
     ///
-    /// Each process receives the bottle environment as it exists at this step.
+    /// Variables apply only to these commands, in addition to the host environment.
     RegisterDlls {
         /// DLL paths intended to be relative to the Wine prefix.
         dlls: Vec<PathBuf>,
+        #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
+        env_vars: EnvVars,
     },
     /// Sets a registry value through WineBridge.
     ///
-    /// WineBridge is started with the current bottle environment when it is not
-    /// already running.
+    /// WineBridge is started with the runner's maintenance environment when needed.
     SetRegistryValue {
         hive: RegistryHive,
         /// Non-empty registry key path.
@@ -130,7 +133,7 @@ pub(crate) enum InstallStep {
     },
     /// Applies the same Wine DLL override mode to each named DLL.
     ///
-    /// WineBridge is started with the current bottle environment when needed.
+    /// WineBridge is started with the runner's maintenance environment when needed.
     /// Uninstall deletes these overrides rather than restoring their previous modes.
     SetDllOverrides {
         /// DLL names whose overrides are changed, in application order.
@@ -138,28 +141,20 @@ pub(crate) enum InstallStep {
         /// Applied uniformly; mixed per-DLL modes require separate steps.
         mode: DllOverrideMode,
     },
-    /// Overwrites an entry in the bottle's process environment.
+    /// Declares a launch variable, collected into addon metadata during acquisition.
     ///
-    /// The previous value is not retained. Uninstall removes the name rather than restoring a
-    /// previous value, and WineBridge is stopped so a later operation starts it with the change.
+    /// Later declarations win. Installation and uninstall ignore this declaration;
+    /// installer commands use their own explicit variables.
     SetEnvironment { name: String, value: String },
 }
 
-/// Bottle-specific services and mutable state used while applying a recipe.
+/// Execution inputs for a recipe in an owner prefix or shared build.
+#[derive(Clone, Copy)]
 pub(crate) struct InstallInputs<'a> {
     /// The prepared Wine prefix receiving recipe changes.
     pub(crate) prefix: &'a Path,
-    /// The runner used for Windows processes and prefix shutdown.
+    /// The runner used for Windows processes. The execution workflow owns shutdown.
     pub(crate) runner: &'a dyn Runner,
-    /// The WineBridge executable selected by the bottle.
+    /// The WineBridge executable selected by the execution workflow.
     pub(crate) winebridge: &'a Path,
-    /// The environment updated by `SetEnvironment` steps and passed to processes.
-    pub(crate) environment: &'a mut Environment,
-}
-
-impl Addon<Component> {
-    /// Derives the component resource and built-in recipe from stored metadata.
-    pub(crate) fn artifact(&self, directories: &Directories) -> Artifact {
-        Artifact::new(self.path(directories), recipe_steps(self.slot()).to_vec())
-    }
 }

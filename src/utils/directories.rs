@@ -68,6 +68,14 @@ impl Directories {
         self.data_dir().join("dependencies")
     }
 
+    pub(crate) fn component_releases(&self) -> PathBuf {
+        self.components().join("releases")
+    }
+
+    pub(crate) fn dependency_releases(&self) -> PathBuf {
+        self.dependencies().join("releases")
+    }
+
     pub(crate) fn plugins(&self) -> PathBuf {
         self.data_dir().join("plugins")
     }
@@ -76,7 +84,7 @@ impl Directories {
         self.config_dir().join("profiles.toml")
     }
 
-    fn paths(&self) -> [PathBuf; 7] {
+    fn paths(&self) -> [PathBuf; 9] {
         [
             self.config_dir().to_path_buf(),
             self.data_dir().to_path_buf(),
@@ -85,6 +93,8 @@ impl Directories {
             self.components(),
             self.dependencies(),
             self.plugins(),
+            self.component_releases(),
+            self.dependency_releases(),
         ]
     }
 }

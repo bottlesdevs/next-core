@@ -10,7 +10,7 @@ use futures_util::{
 use uuid::Uuid;
 
 use crate::{
-    Bottle, BottleManager, PluginId, PluginKind, Plugins, Profiles, Program,
+    Bottle, BottleManager, Operation, PluginId, PluginKind, Plugins, Profiles, ProgramSpec,
     bottle::error::BottleError, credentials, error::Result,
 };
 
@@ -194,7 +194,7 @@ pub struct LibraryItem {
 
 impl LibraryItem {
     /// Returns the current launch definition.
-    pub fn program(&self) -> Result<Program> {
+    pub fn program(&self) -> Result<ProgramSpec> {
         self.bottle
             .state()?
             .program(self.program_id)
@@ -203,8 +203,8 @@ impl LibraryItem {
     }
 
     /// Launches the current registration.
-    pub async fn launch(&self) -> Result<u32> {
-        self.bottle.launch_program(self.program_id).await
+    pub fn launch(&self) -> Operation<u32> {
+        self.bottle.launch_program(self.program_id)
     }
 
     /// Kills the current registration's process group.

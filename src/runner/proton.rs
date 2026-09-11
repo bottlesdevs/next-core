@@ -29,13 +29,12 @@ impl Proton {
 #[async_trait]
 impl Runner for Proton {
     fn command(&self, prefix: &Path, inner: Command) -> RunnerCommand {
+        let command: Command = Command::new(&self.umu_executable).wrap(inner).into();
         RunnerCommand(
-            Command::new(&self.umu_executable)
+            command
                 .env("WINEPREFIX", prefix)
                 .env("WINEARCH", "win64")
-                .env("PROTONPATH", &self.proton_path)
-                .wrap(inner)
-                .into(),
+                .env("PROTONPATH", &self.proton_path),
         )
     }
 
@@ -46,11 +45,17 @@ impl Runner for Proton {
     ///
     /// See <https://github.com/Open-Wine-Components/umu-launcher/issues/593>.
     async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
-        let command = Command::new(self.proton_path.join("files/bin/wineserver"))
-            .arg(arg)
-            .env("PROTONPATH", "umu-sniper");
-
-        let status = self.command(prefix, command).spawn()?.status().await?;
+        let status = RunnerCommand(
+            Command::new(&self.umu_executable)
+                .arg(self.proton_path.join("files/bin/wineserver"))
+                .arg(arg)
+                .env("WINEPREFIX", prefix)
+                .env("WINEARCH", "win64")
+                .env("PROTONPATH", "umu-sniper"),
+        )
+        .spawn()?
+        .status()
+        .await?;
 
         if status.success() || (arg == "-k" && status.code() == Some(1)) {
             return Ok(());
@@ -97,6 +102,7 @@ mod tests {
                 .await
                 .unwrap();
             runner.wineserver(&prefix, "-k").await.unwrap();
+            runner.wineserver(&prefix, "-w").await.unwrap();
             assert!(matches!(
                 runner.wineboot(&prefix, "--fail").await,
                 Err(crate::error::Error::Runner(RunnerError::WinebootFailed(_)))
@@ -117,6 +123,10 @@ mod tests {
                     format!("{environment}<game.exe><--flag>\n"),
                     format!(
                         "{wineserver_environment}<{}><-k>\n",
+                        proton_path.join("files/bin/wineserver").display()
+                    ),
+                    format!(
+                        "{wineserver_environment}<{}><-w>\n",
                         proton_path.join("files/bin/wineserver").display()
                     ),
                     format!("{environment}<wineboot><--fail>\n"),

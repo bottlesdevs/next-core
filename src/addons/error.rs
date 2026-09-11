@@ -25,6 +25,9 @@ pub enum AddonError {
     /// The requested release is unknown or not present on disk for removal.
     #[error("addon {0} was not found")]
     NotFound(Uuid),
+    /// A local release is incomplete or its payload was removed outside the manager.
+    #[error("source payload is missing for addon {0}")]
+    PayloadMissing(Uuid),
     /// Local storage contains more than one addon with the same immutable identifier.
     #[error("local storage contains duplicate addon {0}")]
     Duplicate(Uuid),
@@ -37,10 +40,10 @@ pub enum AddonError {
     /// A component directory lacks the marker required by its slot.
     #[error("component could not be identified: {0}")]
     InvalidComponent(PathBuf),
-    /// A local addon index contains inconsistent or unsafe metadata.
-    #[error("addon index is invalid: {0}")]
-    InvalidAddonIndex(PathBuf),
-    /// A component download would overwrite an existing version directory.
+    /// A release record contains inconsistent or unsafe metadata.
+    #[error("release record is invalid: {0}")]
+    InvalidRelease(PathBuf),
+    /// A component download would overwrite an existing release directory.
     #[error("addon target already exists: {0}")]
     TargetExists(PathBuf),
 }

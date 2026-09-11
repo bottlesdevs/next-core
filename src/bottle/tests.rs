@@ -1,16 +1,18 @@
+#[cfg(feature = "fvs")]
+use crate::environment::VirgoManager;
+
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 
-use tokio::sync::{RwLock, watch};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::{Mutex, watch};
 
 use super::state::BottleInner;
 use crate::{
-    Context, Directories,
+    Context, Directories, EnvironmentError, PrefixBackend,
     addons::{AddonError, Addons, CatalogError, Requirement, Slot},
-    bottle::{Bottle, BottleManager, Storage, error::BottleError},
+    bottle::{Bottle, BottleManager},
     error::Error,
 };
 fn test_directories() -> Directories {
@@ -29,8 +31,10 @@ async fn deleted_bottle() -> (Bottle, Directories) {
     let (published, _) = watch::channel(None);
     let bottle = Bottle(Arc::new(BottleInner {
         published,
-        write_lock: RwLock::new(()),
+        control: Mutex::new(()),
         id: uuid::Uuid::new_v4(),
+        #[cfg(feature = "fvs")]
+        virgo: Arc::new(VirgoManager::new(context.clone(), addons.clone())),
         cx: context,
         addons,
     }));
@@ -38,17 +42,17 @@ async fn deleted_bottle() -> (Bottle, Directories) {
 }
 
 #[test]
-fn bottle_update_cancels_while_waiting_for_write_lock() {
+fn bottle_edit_cancels_while_waiting_for_write_lock() {
     futures_lite::future::block_on(async {
         let (bottle, directories) = deleted_bottle().await;
-        let write = bottle.0.write_lock.write().await;
-        let cancellation = CancellationToken::new();
+        let write = bottle.0.control.lock().await;
         let ran = Arc::new(AtomicBool::new(false));
         let work_ran = ran.clone();
-        let mut update = Box::pin(bottle.update(Some(&cancellation), async move |_, _| {
+        let mut update = Box::pin(bottle.edit(move |_| {
             work_ran.store(true, Ordering::Relaxed);
             Ok(())
         }));
+        let cancellation = update.cancellation_token();
 
         assert!(futures_lite::future::poll_once(&mut update).await.is_none());
         cancellation.cancel();
@@ -64,17 +68,17 @@ fn bottle_update_cancels_while_waiting_for_write_lock() {
 }
 
 #[test]
-fn bottle_update_rechecks_cancellation_when_lock_becomes_available() {
+fn bottle_edit_rechecks_cancellation_when_lock_becomes_available() {
     futures_lite::future::block_on(async {
         let (bottle, directories) = deleted_bottle().await;
-        let write = bottle.0.write_lock.write().await;
-        let cancellation = CancellationToken::new();
+        let write = bottle.0.control.lock().await;
         let ran = Arc::new(AtomicBool::new(false));
         let work_ran = ran.clone();
-        let mut update = Box::pin(bottle.update(Some(&cancellation), async move |_, _| {
+        let mut update = Box::pin(bottle.edit(move |_| {
             work_ran.store(true, Ordering::Relaxed);
             Ok(())
         }));
+        let cancellation = update.cancellation_token();
 
         assert!(futures_lite::future::poll_once(&mut update).await.is_none());
         cancellation.cancel();
@@ -103,7 +107,16 @@ fn load_skips_corrupt_bottles() {
         )
         .unwrap();
         let addons = Addons::load(context.clone(), None, None).await.unwrap();
-        let manager = BottleManager::load(context, addons).await.unwrap();
+        #[cfg(feature = "fvs")]
+        let virgo = Arc::new(VirgoManager::new(context.clone(), addons.clone()));
+        let manager = BottleManager::load(
+            context,
+            addons,
+            #[cfg(feature = "fvs")]
+            virgo,
+        )
+        .await
+        .unwrap();
 
         assert!(manager.list().is_empty());
         std::fs::remove_dir_all(directories.data_dir()).unwrap();
@@ -114,9 +127,19 @@ fn load_skips_corrupt_bottles() {
 fn create_reports_all_missing_runtime_addons_before_creating_files() {
     futures_lite::future::block_on(async {
         let directories = test_directories();
-        let runner_path = directories.components().join("runner/proton-test");
-        std::fs::create_dir_all(&runner_path).unwrap();
-        std::fs::write(runner_path.join("proton"), []).unwrap();
+        let runner_path = directories.data_dir().join("proton-test.tar");
+        let mut archive =
+            smol_tar::TarWriter::new(async_fs::File::create(&runner_path).await.unwrap());
+        archive
+            .write(
+                smol_tar::TarRegularFile::new("proton-test/proton", 0, &[][..])
+                    .with_mode(0o755)
+                    .into(),
+            )
+            .await
+            .unwrap();
+        archive.finish().await.unwrap();
+        drop(archive);
         let context = Context::for_test(
             directories.clone(),
             Some(directories.data_dir().join("fvs2d")),
@@ -124,19 +147,34 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
         .unwrap();
         let addons = Addons::load(context.clone(), None, None).await.unwrap();
         let runner = addons
-            .components()
-            .into_iter()
-            .find(|addon| addon.slot() == Slot::Runner)
+            .import_component(&runner_path, Slot::Runner, "Proton", "proton-test")
+            .await
             .unwrap();
-        assert_eq!(runner.path(&directories), runner_path);
         let runner_id = runner.id();
-        assert!(directories.components().join("index.toml").is_file());
-        assert!(
-            !std::fs::read_to_string(directories.components().join("index.toml"))
-                .unwrap()
-                .contains("path =")
+        for slot in [Slot::WineBridge, Slot::Umu] {
+            assert!(matches!(
+                addons
+                    .import_component(&runner_path, slot, "Invalid runtime", "99.0.0")
+                    .await,
+                Err(Error::Addon(AddonError::InvalidComponent(_)))
+            ));
+            assert!(addons.latest_component(slot).is_none());
+        }
+        assert_eq!(
+            runner.path(&directories),
+            directories
+                .component_releases()
+                .join(runner_id.to_string())
+                .join("payload")
         );
-        assert!(!runner_path.join(".addon.toml").exists());
+        assert!(
+            directories
+                .component_releases()
+                .join(runner_id.to_string())
+                .join("release.toml")
+                .is_file()
+        );
+        assert!(!directories.components().join("index.toml").exists());
         let unknown = uuid::Uuid::new_v4();
         assert!(matches!(
             addons.fetch_component(unknown).await,
@@ -146,15 +184,25 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
             addons.remove_component(unknown).await,
             Err(Error::Addon(AddonError::NotFound(id))) if id == unknown
         ));
-        let manager = BottleManager::new(context, addons);
+        #[cfg(feature = "fvs")]
+        let virgo = Arc::new(VirgoManager::new(context.clone(), addons.clone()));
+        let manager = BottleManager::new(
+            context,
+            addons,
+            #[cfg(feature = "fvs")]
+            virgo,
+        );
 
-        let error = match manager.create("test", Storage::Standard, runner_id).await {
+        let error = match manager
+            .create("test", PrefixBackend::Standard, runner_id)
+            .await
+        {
             Ok(_) => panic!("creation should fail before mutation"),
             Err(error) => error,
         };
         assert!(matches!(
             error,
-            Error::Bottle(BottleError::RequiresAddon {
+            Error::Environment(EnvironmentError::RequiresAddon {
                 required_by: None,
                 requirements,
             }) if requirements == vec![
@@ -178,6 +226,14 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
         assert_eq!(
             reloaded_addons.component(runner_id).unwrap().id(),
             runner_id
+        );
+        reloaded_addons.remove_component(runner_id).await.unwrap();
+        assert!(reloaded_addons.component(runner_id).is_none());
+        assert!(
+            !directories
+                .component_releases()
+                .join(runner_id.to_string())
+                .exists()
         );
         std::fs::remove_dir_all(directories.data_dir()).unwrap();
     });

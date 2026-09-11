@@ -16,7 +16,6 @@ pub(crate) use proton::Proton;
 pub(crate) use wine::Wine;
 
 use std::{
-    ffi::OsStr,
     path::{Path, PathBuf},
     process::ExitStatus,
 };
@@ -63,14 +62,6 @@ impl RunnerCommand {
     pub(crate) fn wrapped_by(self, wrapper: impl Wrapper) -> Self {
         Self(wrapper.wrap(self.0).into())
     }
-
-    pub(crate) fn envs<K: AsRef<OsStr>, V: AsRef<OsStr>>(
-        mut self,
-        envs: impl IntoIterator<Item = (K, V)>,
-    ) -> Self {
-        self.0 = self.0.envs(envs);
-        self
-    }
 }
 
 impl From<RunnerCommand> for Command {
@@ -104,24 +95,6 @@ pub(crate) trait Runner: Send + Sync {
 
     /// Runs runner-specific server control, including any status normalization.
     async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()>;
-}
-
-/// Initializes a prefix and then attempts to stop its server.
-///
-/// Shutdown is attempted even when initialization fails. If both fail, the
-/// initialization error takes precedence.
-pub(crate) async fn initialize_and_shutdown_prefix(
-    runner: &dyn Runner,
-    prefix: &Path,
-) -> Result<()> {
-    let initialized = runner.wineboot(prefix, "--init").await;
-    let stopped = shutdown_prefix(runner, prefix).await;
-    initialized?;
-    stopped
-}
-
-pub(crate) async fn shutdown_prefix(runner: &dyn Runner, prefix: &Path) -> Result<()> {
-    runner.wineserver(prefix, "-k").await
 }
 
 /// Classifies a component by its regular-file markers.
