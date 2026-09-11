@@ -20,17 +20,16 @@ use crate::{
     runner::Runner,
 };
 
-use super::super::FVS_BLOCK_SIZE;
-use super::VirgoError;
+use crate::environment::prefix::{FVS_BLOCK_SIZE, VirgoError};
 
 /// Removes references without deleting a shared cache.
-pub(super) fn remove(layers: &mut Vec<Layer>, id: Uuid, context: &Context) {
+pub(crate) fn remove(layers: &mut Vec<Layer>, id: Uuid, context: &Context) {
     let repository = layer_path(id, context).display().to_string();
     layers.retain(|layer| layer.repository_path != repository);
 }
 
 /// Checks only for FVS repository metadata; [`layer`] validates its commit.
-pub(super) async fn exists(id: Uuid, context: &Context) -> Result<bool> {
+pub(crate) async fn exists(id: Uuid, context: &Context) -> Result<bool> {
     let path = layer_path(id, context).join(".fvs2");
     Ok(async_fs::metadata(path)
         .await
@@ -48,9 +47,10 @@ pub(super) async fn exists(id: Uuid, context: &Context) -> Result<bool> {
 /// and filesystem destinations requires two renames and is not atomic as a pair;
 /// failure may therefore leave only one destination present. Staging cleanup is
 /// best-effort.
-pub(super) async fn install<F>(
+pub(crate) async fn install<F>(
     layers: Vec<Layer>,
     item_id: Uuid,
+    prerequisites: &[Uuid],
     runner: &dyn Runner,
     execute: F,
     context: &Context,
@@ -89,6 +89,9 @@ where
     let client = context.fvs().await?;
     let mount = client.mount(&prefix, layers, Some(&upper)).await?;
     let installed = async {
+        for id in prerequisites {
+            apply_registry(&prefix, *id, context).await?;
+        }
         for (file, _) in registry_files() {
             async_fs::copy(prefix.join(file), before.join(file)).await?;
         }
@@ -151,12 +154,7 @@ where
 /// Both replacement hives are prepared in a scratch directory before either is
 /// installed, but the final renames are not atomic as a pair. Scratch cleanup is
 /// best-effort.
-pub(super) async fn apply_registry(
-    root: &Path,
-    layers: &[Layer],
-    id: Uuid,
-    context: &Context,
-) -> Result<()> {
+pub(crate) async fn apply_registry(prefix: &Path, id: Uuid, context: &Context) -> Result<()> {
     let patches = registry_path(id, context);
     if !async_fs::metadata(&patches)
         .await
@@ -165,9 +163,7 @@ pub(super) async fn apply_registry(
         return Ok(());
     }
 
-    super::prepare(root, layers, context).await?;
-    let prefix = root.join("prefix");
-    let apply_prefix = prefix.clone();
+    let apply_prefix = prefix.to_path_buf();
     let stage = prefix.join(format!(".bottles-next-registry-{}", Uuid::new_v4()));
     blocking::unblock(move || {
         fs::create_dir_all(&stage)?;
@@ -195,7 +191,7 @@ pub(super) async fn apply_registry(
 /// Resolves a cached layer and its first available commit.
 ///
 /// Repository metadata without a commit is treated as a corrupt cache entry.
-pub(super) async fn layer(id: Uuid, context: &Context) -> Result<Layer> {
+pub(crate) async fn layer(id: Uuid, context: &Context) -> Result<Layer> {
     let destination = layer_path(id, context);
     if !async_fs::metadata(destination.join(".fvs2"))
         .await

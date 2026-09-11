@@ -71,14 +71,17 @@ pub(crate) async fn create(
     runner: &dyn Runner,
     runner_key: &str,
     context: &Context,
+    addons: &crate::Addons,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     #[cfg(not(feature = "fvs"))]
-    let _ = (runner_key, context);
+    let _ = (runner_key, context, addons, cancellation);
     match storage {
         Storage::Standard => standard::create(&root.join("prefix"), runner).await,
         #[cfg(feature = "fvs")]
         Storage::Virgo { layers } => {
-            *layers = virgo::create(root, runner, runner_key, context).await?;
+            *layers =
+                virgo::create(root, runner, runner_key, context, addons, cancellation).await?;
             Ok(())
         }
     }
@@ -108,15 +111,26 @@ pub(crate) async fn rebuild(
     runner_key: &str,
     installed: &[Uuid],
     context: &Context,
+    addons: &crate::Addons,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     match storage {
         Storage::Standard => {
-            let _ = (runner, runner_key, installed, context);
+            let _ = (runner, runner_key, installed, context, addons, cancellation);
             Ok(())
         }
         #[cfg(feature = "fvs")]
         Storage::Virgo { layers } => {
-            virgo::rebuild(layers, runner, runner_key, installed, context).await
+            virgo::rebuild(
+                layers,
+                runner,
+                runner_key,
+                installed,
+                context,
+                addons,
+                cancellation,
+            )
+            .await
         }
     }
 }
@@ -126,17 +140,16 @@ pub(crate) async fn install(
     storage: &mut Storage,
     root: &Path,
     item_id: Uuid,
-    runner: &dyn Runner,
     replaced_id: Option<Uuid>,
     execute: impl for<'a> std::ops::AsyncFnOnce(&'a Path) -> Result<()>,
     context: &Context,
 ) -> Result<()> {
-    let _ = (item_id, runner, replaced_id, context);
+    let _ = (item_id, replaced_id, context);
     match storage {
         Storage::Standard => execute(&root.join("prefix")).await,
         #[cfg(feature = "fvs")]
         Storage::Virgo { layers } => {
-            virgo::install(root, layers, item_id, runner, replaced_id, execute, context).await
+            virgo::install(root, layers, item_id, replaced_id, context).await
         }
     }
 }

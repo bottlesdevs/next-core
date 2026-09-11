@@ -5,7 +5,7 @@
 //! persisted by the owner and must be changed only while the owner is
 //! stopped.
 
-mod cache;
+use crate::environment::artifacts::{self, cache};
 
 use std::{
     ops::AsyncFnOnce,
@@ -13,16 +13,10 @@ use std::{
 };
 
 use futures_lite::StreamExt;
-use fvs_rs::{Layer, Repository, UnmountMode};
+use fvs_rs::{Layer, UnmountMode};
 use uuid::Uuid;
 
-use crate::{
-    Context,
-    error::{Error, Result},
-    runner::Runner,
-};
-
-use super::FVS_BLOCK_SIZE;
+use crate::{Context, error::Result, runner::Runner};
 
 /// Virgo-specific failures carried by [`crate::error::Error::Virgo`].
 #[derive(Debug, thiserror::Error)]
@@ -35,12 +29,14 @@ pub enum VirgoError {
         /// Requested full or abbreviated state ID.
         state: String,
     },
-    /// An existing Virgo base repository has no commits to use as a layer.
-    #[error("Virgo base exists but has no commits")]
-    EmptyBase,
-    /// Virgo cannot initialize a base over an existing nonempty directory.
-    #[error("refusing to initialize non-empty Virgo base at {0}")]
-    DirtyBase(PathBuf),
+    #[error("no Soda runner release in the current component catalog")]
+    SodaNotInCatalog,
+    #[error("invalid Soda semantic version: {0}")]
+    InvalidSodaVersion(String),
+    #[error("download Soda {version} ({id}) before building the Virgo base or an addon layer")]
+    SodaNotDownloaded { id: Uuid, version: String },
+    #[error("cyclic addon prerequisites involving {0}")]
+    CyclicPrerequisites(Uuid),
     /// Virgo cannot mount a prefix over a nonempty mountpoint.
     #[error("mountpoint is not empty: {0}")]
     DirtyMountpoint(PathBuf),
@@ -61,10 +57,12 @@ pub(super) async fn create(
     runner: &dyn Runner,
     runner_key: &str,
     context: &Context,
+    addons: &crate::Addons,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<Vec<Layer>> {
     let upper = root.join("upper");
     async_fs::create_dir_all(upper).await?;
-    base_layers(runner, runner_key, context).await
+    artifacts::base_layers(runner, runner_key, addons, context, cancellation).await
 }
 
 pub(super) async fn prepare(root: &Path, layers: &[Layer], context: &Context) -> Result<()> {
@@ -124,10 +122,13 @@ pub(super) async fn rebuild(
     runner_key: &str,
     installed: &[Uuid],
     context: &Context,
+    addons: &crate::Addons,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
     // Build separately so failure to resolve any cached addon does not partially
     // replace the owner's persisted layer order.
-    let mut rebuilt = base_layers(runner, runner_key, context).await?;
+    let mut rebuilt =
+        artifacts::base_layers(runner, runner_key, addons, context, cancellation).await?;
     for id in installed {
         rebuilt.push(cache::layer(*id, context).await?);
     }
@@ -135,31 +136,21 @@ pub(super) async fn rebuild(
     Ok(())
 }
 
-pub(super) async fn install<F>(
+pub(super) async fn install(
     root: &Path,
     layers: &mut Vec<Layer>,
     item_id: Uuid,
-    runner: &dyn Runner,
     replaced_id: Option<Uuid>,
-    execute: F,
     context: &Context,
-) -> Result<()>
-where
-    F: for<'a> AsyncFnOnce(&'a Path) -> Result<()>,
-{
-    // A cache hit deliberately skips the recipe. The cached filesystem layer and
-    // registry patch must therefore capture every prefix effect of installation.
-    if !cache::exists(item_id, context).await? {
-        cache::install(layers.clone(), item_id, runner, execute, context).await?;
-    }
-
+) -> Result<()> {
     let cached = cache::layer(item_id, context).await?;
     if let Some(id) = replaced_id {
         cache::remove(layers, id, context);
     }
     cache::remove(layers, item_id, context);
     layers.push(cached);
-    cache::apply_registry(root, layers, item_id, context).await
+    prepare(root, layers, context).await?;
+    cache::apply_registry(&root.join("prefix"), item_id, context).await
 }
 
 pub(super) async fn uninstall<F>(
@@ -180,154 +171,6 @@ where
     execute(&root.join("prefix"), false).await
 }
 
-async fn base_layers(
-    runner: &dyn Runner,
-    runner_key: &str,
-    context: &Context,
-) -> Result<Vec<Layer>> {
-    let base = ensure_base(runner, context).await?;
-    let adapter = ensure_adapter(runner, runner_key, &base, context).await?;
-    Ok(vec![base, adapter])
-}
-
-/// Loads or creates the single base shared by every Virgo owner.
-///
-/// Once the base repository exists, `runner` is not used. A nonempty directory
-/// without an FVS repository is rejected rather than overwritten.
-async fn ensure_base(runner: &dyn Runner, context: &Context) -> Result<Layer> {
-    let base_path = context.directories().data_dir().join("virgo/base");
-    let repository_path = base_path.join("prefix");
-    let cached = if async_fs::metadata(repository_path.join(".fvs2"))
-        .await
-        .is_ok_and(|entry| entry.is_dir())
-    {
-        true
-    } else {
-        if crate::utils::exists(&repository_path).await?
-            && async_fs::read_dir(&repository_path)
-                .await?
-                .try_next()
-                .await?
-                .is_some()
-        {
-            return Err(VirgoError::DirtyBase(repository_path).into());
-        }
-        async_fs::create_dir_all(&repository_path).await?;
-        false
-    };
-
-    let client = context.fvs().await?;
-    if cached {
-        let repository = client.new_repository(&repository_path, 0).await?;
-        let commit = client
-            .list_commits(&repository)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or(VirgoError::EmptyBase)?;
-        return Ok(Layer::from_summary(&repository, Some(&commit)));
-    }
-
-    let initialized = runner.wineboot(&repository_path, "--init").await;
-    crate::environment::shutdown_wine(runner, &repository_path).await?;
-    if let Err(error) = initialized {
-        remove_dir(base_path).await;
-        return Err(error);
-    }
-    let committed = async {
-        let repository = client
-            .new_repository(&repository_path, FVS_BLOCK_SIZE)
-            .await?;
-        let commit = client.commit(&repository, "Virgo base".into()).await?;
-        Ok(Layer::new(&repository, Some(&commit)))
-    }
-    .await;
-    if committed.is_err() {
-        remove_dir(base_path).await;
-    }
-    committed
-}
-
-/// Loads or creates the adapter cache identified solely by `runner_key`.
-///
-/// Creation is staged over the shared base and published by renaming the
-/// committed upper directory into the adapter cache.
-async fn ensure_adapter(
-    runner: &dyn Runner,
-    runner_key: &str,
-    base: &Layer,
-    context: &Context,
-) -> Result<Layer> {
-    let root = adapter_root(context);
-    let destination = root.join(runner_key);
-    if async_fs::metadata(destination.join(".fvs2"))
-        .await
-        .is_ok_and(|entry| entry.is_dir())
-    {
-        let client = context.fvs().await?;
-        let repository = client.new_repository(&destination, 0).await?;
-        let commit = client
-            .list_commits(&repository)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| VirgoError::MissingCommit {
-                repository: destination.clone(),
-                state: "HEAD".into(),
-            })?;
-        return Ok(Layer::from_summary(&repository, Some(&commit)));
-    }
-
-    let stage = context
-        .directories()
-        .data_dir()
-        .join("virgo/.staging")
-        .join(Uuid::new_v4().to_string());
-    let upper = stage.join("upper");
-    let mountpoint = stage.join("prefix");
-    async_fs::create_dir_all(&upper).await?;
-    async_fs::create_dir_all(&mountpoint).await?;
-
-    let client = context.fvs().await?;
-    let mount = client
-        .mount(&mountpoint, vec![base.clone()], Some(&upper))
-        .await?;
-    let initialized = runner.wineboot(&mountpoint, "--init").await;
-    crate::environment::shutdown_wine(runner, &mountpoint).await?;
-    client
-        .unmount(&mount, UnmountMode::Normal)
-        .await
-        .map_err(|source| crate::EnvironmentError::Cleanup {
-            prefix: mountpoint.clone(),
-            source: Box::new(source.into()),
-        })?;
-    let build = async {
-        initialized?;
-
-        let client = context.fvs().await?;
-        let repository = client.new_repository(&upper, FVS_BLOCK_SIZE).await?;
-        let commit = client
-            .commit(&repository, format!("Runner adapter {runner_key}"))
-            .await?;
-        async_fs::create_dir_all(root).await?;
-        async_fs::rename(&upper, &destination).await?;
-        Ok::<_, Error>(commit)
-    }
-    .await;
-    remove_dir(stage).await;
-
-    let commit = build?;
-    let repository = Repository {
-        repository_path: destination.display().to_string(),
-        block_size: FVS_BLOCK_SIZE,
-    };
-    Ok(Layer::new(&repository, Some(&commit)))
-}
-
-fn adapter_root(context: &Context) -> PathBuf {
-    context.directories().data_dir().join("virgo/adapters")
-}
-
 /// Refuses to mount over existing contents, which would otherwise be hidden.
 async fn ensure_empty_dir(path: &Path) -> Result<()> {
     async_fs::create_dir_all(path).await?;
@@ -335,8 +178,4 @@ async fn ensure_empty_dir(path: &Path) -> Result<()> {
         return Err(VirgoError::DirtyMountpoint(path.to_path_buf()).into());
     }
     Ok(())
-}
-
-async fn remove_dir(path: PathBuf) {
-    let _ = async_fs::remove_dir_all(path).await;
 }

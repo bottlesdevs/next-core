@@ -63,8 +63,20 @@ New dependency selections can be appended. Prefix changes run before publication
 batch rollback of those effects remains part of the later composition work.
 Settings-only edits save the draft without preparing or mutating the prefix.
 
-Pinned Soda builds and managed registry-baseline composition remain later steps.
-Virgo retains its existing per-addon layer and checkpoint behavior.
+Virgo builds a clean shared base from the latest catalog runner named `Soda`
+(case-insensitive, semantic-version ordering). That exact release must already be
+downloaded. The base manifest pins its release and immutable FVS revision across
+catalog refreshes. `Bottles::rebuild_virgo_base()` explicitly publishes a new base;
+stopped preparations adopt it, while running environments and snapshots retain
+their resolved revisions. Older base generations and legacy caches are retained.
+
+Addon cache misses use pinned Soda and declared prerequisite layers, without
+owner settings, wrappers, or private writable data. UUID remains the sole cache
+identity: completed caches survive runner changes and base rebuilds. Runner
+adapters are built using the selected runner over each base generation. Shared
+construction is serialized within one core instance. Standard installers continue
+using their owner's runner. Managed registry-baseline composition remains step 8;
+Virgo retains its existing per-addon checkpoint boundary.
 
 Bottle configuration requires execution settings under `environment`, with
 resolved FVS layers retained inside `environment.storage` for Virgo. Old

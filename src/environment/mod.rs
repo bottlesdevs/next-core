@@ -1,5 +1,8 @@
 //! Shared execution configuration and temporary connections to a running environment.
 
+#[cfg(feature = "fvs")]
+pub(crate) mod artifacts;
+
 mod config;
 mod error;
 pub(crate) mod prefix;
@@ -31,6 +34,42 @@ pub(crate) struct Environment {
 }
 
 impl Environment {
+    /// Refreshes only the shared base and runner adapter while the owner is stopped.
+    /// The owner saves changed materialization references before starting Wine.
+    #[cfg(feature = "fvs")]
+    pub(crate) async fn refresh_base(
+        config: &mut EnvironmentConfig,
+        root: &Path,
+        addons: &crate::Addons,
+        cx: &Context,
+        cancellation: &CancellationToken,
+    ) -> Result<bool> {
+        let Storage::Virgo { layers } = &config.storage else {
+            return Ok(false);
+        };
+        let runner = config
+            .runner()
+            .load_runner(cx.directories(), config.umu())
+            .await?;
+        let base = artifacts::base_layers(
+            runner.as_ref(),
+            &config.runner().id().to_string(),
+            addons,
+            cx,
+            cancellation,
+        )
+        .await?;
+        if layers.starts_with(&base) {
+            return Ok(false);
+        }
+        Self::stop(config, root, cx).await?;
+        let Storage::Virgo { layers } = &mut config.storage else {
+            unreachable!()
+        };
+        layers.splice(..layers.len().min(2), base);
+        Ok(true)
+    }
+
     /// Stops Wine and unmounts storage without requiring a live handle or bridge.
     pub(crate) async fn stop(config: &EnvironmentConfig, root: &Path, cx: &Context) -> Result<()> {
         let runner = config
