@@ -9,11 +9,7 @@ use crate::{
 };
 use futures_core::Stream;
 use futures_util::StreamExt;
-use std::{
-    collections::HashMap,
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use uuid::Uuid;
 
 /// The collection-level interface for bottles owned by one [`crate::Bottles`]
@@ -28,7 +24,6 @@ use uuid::Uuid;
 /// handle to the same live bottle state. The registry is loaded once from
 /// library-managed storage and is updated by manager operations; it is not a
 /// live view of external filesystem changes.
-/// Hashing identifies that shared registry and remains stable as bottles change.
 #[derive(Clone)]
 pub struct BottleManager {
     pub(super) context: Context,
@@ -36,14 +31,6 @@ pub struct BottleManager {
     #[cfg(feature = "fvs")]
     virgo: Arc<VirgoManager>,
     registry: Arc<Registry<BottleState>>,
-}
-
-// Allows the live handle to key iced subscriptions directly: clones must hash
-// alike, while registry changes must not restart the subscription.
-impl Hash for BottleManager {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.registry).hash(state);
-    }
 }
 
 impl BottleManager {
@@ -142,7 +129,7 @@ impl BottleManager {
                 &cancellation,
             )
             .await?;
-            Ok(Bottle(registry.intern(id, environment)))
+            Ok(Bottle(registry.intern(environment)?))
         })
     }
 

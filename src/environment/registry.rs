@@ -85,7 +85,8 @@ impl<T: EnvironmentOwnerState> Registry<T> {
     pub(crate) fn get(&self, id: Uuid) -> Option<Arc<Environment<T>>> {
         self.0.borrow().get(&id).cloned()
     }
-    pub(crate) fn intern(&self, id: Uuid, environment: Arc<Environment<T>>) -> Arc<Environment<T>> {
+    pub(crate) fn intern(&self, environment: Arc<Environment<T>>) -> Result<Arc<Environment<T>>> {
+        let id = environment.state()?.id();
         let mut interned = environment.clone();
         self.0.send_if_modified(|published| {
             if let Some(current) = published.get(&id) {
@@ -97,7 +98,7 @@ impl<T: EnvironmentOwnerState> Registry<T> {
             *published = Arc::new(members);
             true
         });
-        interned
+        Ok(interned)
     }
     pub(crate) fn remove(&self, id: Uuid) {
         self.0.send_if_modified(|published| {

@@ -7,13 +7,7 @@ mod steam;
 pub use error::ProfileError;
 use steam::SteamIntegration;
 
-use std::{
-    borrow::Cow,
-    hash::{Hash, Hasher},
-    io,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use futures_core::Stream;
@@ -170,21 +164,12 @@ impl ProfilesInner {
 
 /// The persisted collection of application profiles.
 ///
-/// Clones share one live collection. Hashing identifies that shared collection
-/// and remains stable as profiles and selection change.
+/// Clones share one live collection.
 #[derive(Clone)]
 pub struct Profiles {
     steam: Arc<SteamIntegration>,
     plugins: Arc<Plugins>,
     inner: Arc<ProfilesInner>,
-}
-
-// Allows the live handle to key iced subscriptions directly: clones must hash
-// alike, while profile and selection changes must not restart the subscription.
-impl Hash for Profiles {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.inner).hash(state);
-    }
 }
 
 impl Profiles {
