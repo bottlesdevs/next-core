@@ -20,10 +20,8 @@ use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
 use crate::{
-    Context, EnvironmentState, Operation, PrefixBackend, Progress, Stage,
-    addons::Addons,
-    environment,
-    error::{Error, Result},
+    Context, EnvironmentState, Operation, PrefixBackend, Progress, Stage, addons::Addons,
+    environment::Environment, error::Result,
 };
 
 use super::{
@@ -193,45 +191,25 @@ impl BottleManager {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
             let id = Uuid::new_v4();
             let bottle_path = cx.directories().bottle(id);
-            // Initialization may retain live storage on failure; only remove after it succeeds.
-            let config = EnvironmentState::new(runner, &addons)?;
-            environment::initialize(
-                &backend,
-                &config,
-                &bottle_path,
-                &cx,
+            let state = BottleState {
+                id,
+                name,
+                backend,
+                environment: EnvironmentState::new(runner, &addons)?,
+                programs: HashMap::new(),
+            };
+            let environment = Environment::create(
+                state,
+                bottle_path,
+                cx,
+                addons,
+                #[cfg(feature = "fvs")]
+                virgo,
                 &progress,
                 &cancellation,
             )
             .await?;
-            let result = async {
-                if cancellation.is_cancelled() {
-                    return Err(Error::Cancelled);
-                }
-                let bottle = Bottle::new(
-                    id,
-                    name,
-                    backend,
-                    config,
-                    cx.clone(),
-                    addons.clone(),
-                    #[cfg(feature = "fvs")]
-                    virgo.clone(),
-                )
-                .await?;
-                progress.send_replace(Some(Progress::new(Stage::Configuring)));
-                if cancellation.is_cancelled() {
-                    return Err(Error::Cancelled);
-                }
-                let bottle = registry.intern(id, bottle);
-                Ok(bottle)
-            }
-            .await;
-
-            if result.is_err() {
-                let _ = fs::remove_dir_all(bottle_path).await;
-            }
-            result
+            Ok(registry.intern(id, Bottle(environment)))
         })
     }
 
@@ -253,23 +231,8 @@ impl BottleManager {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let bottle = manager.open(id).await?;
-            let _control = cancellation
-                .run_until_cancelled(bottle.0.control.lock())
-                .await
-                .ok_or(Error::Cancelled)?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            bottle.stop_locked().await?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            progress.send_replace(Some(Progress::new(Stage::Removing)));
-            let path = manager.context.directories().bottle(id);
-            fs::remove_dir_all(path).await?;
+            bottle.0.delete(&progress, &cancellation).await?;
             manager.registry.remove(id);
-            bottle.mark_deleted();
             Ok(())
         })
     }
@@ -364,14 +327,15 @@ impl BottleManager {
         for path in paths {
             match next_config::load::<BottleState>(&path).await {
                 Ok(state) => {
-                    match Bottle::from_state(
+                    match Environment::from_state(
                         state,
+                        path.parent().expect("config has a parent").to_path_buf(),
                         self.context.clone(),
                         self.addons.clone(),
                         #[cfg(feature = "fvs")]
                         self.virgo.clone(),
                     ) {
-                        Ok(bottle) => bottles.push(bottle),
+                        Ok(environment) => bottles.push(Bottle(environment)),
                         Err(error) => {
                             tracing::warn!(path = %path.display(), "skipping bottle with invalid state: {error}")
                         }

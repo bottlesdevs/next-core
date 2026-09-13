@@ -1,25 +1,21 @@
 //! Persisted bottle state and the shared bottle handle.
 
-#[cfg(feature = "fvs")]
-use crate::environment::VirgoManager;
-
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
     sync::Arc,
 };
 
+#[cfg(feature = "fvs")]
 use std::path::PathBuf;
 
 use futures_core::Stream;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, watch};
-use tokio_stream::{StreamExt, wrappers::WatchStream};
 use uuid::Uuid;
 
 use super::error::BottleError;
-use crate::{Context, EnvironmentState, PrefixBackend, addons::Addons, error::Result};
+use crate::{EnvironmentState, PrefixBackend, error::Result};
 
 /// An immutable snapshot of a bottle's published configuration.
 ///
@@ -40,8 +36,21 @@ pub struct BottleState {
 }
 
 impl crate::environment::EnvironmentOwnerState for BottleState {
+    const FILE_NAME: &'static str = "bottle.toml";
+    fn id(&self) -> Uuid {
+        self.id
+    }
+    fn backend(&self) -> PrefixBackend {
+        self.backend.clone()
+    }
+    fn environment(&self) -> &EnvironmentState {
+        &self.environment
+    }
     fn environment_mut(&mut self) -> &mut EnvironmentState {
         &mut self.environment
+    }
+    fn validate(&self) -> Result<()> {
+        BottleState::validate(self)
     }
 }
 
@@ -87,38 +96,11 @@ impl BottleState {
     }
 }
 
-/// The shared coordination state behind cloned [`Bottle`] handles.
-pub(crate) struct BottleInner {
-    /// Latest state; `None` is the tombstone published when the bottle is deleted.
-    pub(crate) published: watch::Sender<Option<Arc<BottleState>>>,
-    /// Serializes control operations across cloned handles.
-    pub(crate) control: Mutex<()>,
-    /// Managed directory retained independently of published state.
-    pub(crate) root: PathBuf,
-    /// Shared services and storage locations scoped to the owning manager.
-    pub(crate) cx: Context,
-    /// Shared addon registry scoped to the owning manager.
-    pub(crate) addons: Addons,
-    #[cfg(feature = "fvs")]
-    pub(crate) virgo: Arc<VirgoManager>,
-}
-
-/// A live, shared handle to one bottle.
-///
-/// Clones refer to the same bottle and publish the same immutable state
-/// snapshots. A bottle's UUID is its identity; its display name may change and
-/// may be shared by other bottles.
-/// Hashing identifies the shared live handle and remains stable across state
-/// publications and deletion.
-///
-/// Runtime operations attach to WineBridge for each control call. Calls
-/// serialize within this core instance; the lock is released after launch, not
-/// when the guest process exits. Dropping handles does not stop Wine.
+/// A live bottle handle. Clones share state and coordination; dropping a handle
+/// does not stop Wine. Operations fail after deletion, including identity access.
 #[derive(Clone)]
-pub struct Bottle(pub(crate) Arc<BottleInner>);
+pub struct Bottle(pub(crate) Arc<crate::environment::Environment<BottleState>>);
 
-// Allows the live handle to key iced subscriptions directly: clones must hash
-// alike, while state publications and deletion must not change its identity.
 impl Hash for Bottle {
     fn hash<H: Hasher>(&self, state: &mut H) {
         Arc::as_ptr(&self.0).hash(state);
@@ -126,138 +108,21 @@ impl Hash for Bottle {
 }
 
 impl Bottle {
-    /// Creates and persists the initial state before the handle is published by
-    /// the manager.
-    pub(crate) async fn new(
-        id: Uuid,
-        name: String,
-        backend: PrefixBackend,
-        environment: EnvironmentState,
-        context: Context,
-        addons: Addons,
-        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
-    ) -> Result<Self> {
-        let state = BottleState {
-            id,
-            name,
-            backend,
-            environment,
-            programs: HashMap::new(),
-        };
-        let bottle = Self::from_state(
-            state,
-            context,
-            addons,
-            #[cfg(feature = "fvs")]
-            virgo,
-        )?;
-        bottle.save().await?;
-        Ok(bottle)
-    }
-
-    /// Reconstructs a live handle after validating its addon requirements.
-    pub(crate) fn from_state(
-        state: BottleState,
-        cx: Context,
-        addons: Addons,
-        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
-    ) -> Result<Self> {
-        state.validate()?;
-        let root = cx.directories().bottle(state.id);
-        let (published, _) = watch::channel(Some(Arc::new(state)));
-        Ok(Self(Arc::new(BottleInner {
-            root,
-            published,
-            control: Mutex::new(()),
-            cx,
-            addons,
-            #[cfg(feature = "fvs")]
-            virgo,
-        })))
-    }
-
-    /// Returns the identity from the current state; fails after deletion.
     pub fn id(&self) -> Result<Uuid> {
         Ok(self.state()?.id())
     }
-
-    /// Returns the latest published state.
-    ///
-    /// The returned [`Arc`] is a stable snapshot: later edits replace the
-    /// published state rather than modifying it in place.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BottleError::Deleted`] after the bottle has been deleted.
     pub fn state(&self) -> Result<Arc<BottleState>> {
-        self.0
-            .published
-            .borrow()
-            .clone()
-            .ok_or_else(|| BottleError::Deleted.into())
+        self.0.state()
     }
 
-    /// Watches this bottle's published state.
-    ///
-    /// The stream first yields the current snapshot, then the latest snapshot
-    /// after each observed change. Slow consumers may miss intermediate states.
-    /// Equal states are not republished. The stream ends when the bottle is
-    /// deleted or all live handles are dropped. Snapshots already yielded
-    /// remain usable afterward.
+    /// Observe current state and later publications. Deletion ends the stream.
     pub fn watch(&self) -> impl Stream<Item = Arc<BottleState>> + Send + 'static + use<> {
-        WatchStream::new(self.0.published.subscribe())
-            .take_while(Option::is_some)
-            .filter_map(|state| state)
-    }
-
-    #[cfg(feature = "fvs")]
-    pub(crate) fn ensure_exists(&self) -> Result<()> {
-        if self.is_deleted() {
-            Err(BottleError::Deleted.into())
-        } else {
-            Ok(())
-        }
-    }
-
-    #[cfg(feature = "fvs")]
-    pub(crate) fn is_deleted(&self) -> bool {
-        self.0.published.borrow().is_none()
-    }
-
-    /// Publishes the deletion tombstone, ending state streams without
-    /// invalidating snapshots that callers already hold.
-    pub(crate) fn mark_deleted(&self) {
-        self.0.published.send_replace(None);
-    }
-
-    /// Publishes only observable state changes; an equal state does not wake
-    /// watchers.
-    pub(crate) fn publish(&self, state: BottleState) {
-        let next = Arc::new(state);
-        self.0.published.send_if_modified(|published| {
-            if published.as_deref() == Some(next.as_ref()) {
-                false
-            } else {
-                *published = Some(next);
-                true
-            }
-        });
+        self.0.watch()
     }
 
     #[cfg(feature = "fvs")]
     pub(crate) fn bottle_path(&self) -> PathBuf {
         self.0.root.clone()
-    }
-
-    async fn save(&self) -> Result<()> {
-        let state = self.state()?;
-        Self::save_state(&state, &self.0.cx).await
-    }
-
-    pub(super) async fn save_state(state: &BottleState, cx: &Context) -> Result<()> {
-        let path = cx.directories().bottle(state.id).join("bottle.toml");
-        next_config::save(path, state).await?;
-        Ok(())
     }
 }
 

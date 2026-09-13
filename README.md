@@ -125,3 +125,8 @@ Bottle configuration uses version 2 in `bottle.toml`. Version 1 records and
 snapshots are incompatible and are left untouched; no migration is provided.
 Registration UUIDs belong to the bottle's program map, not to `LaunchSpec`.
 The prefix backend is stored on `BottleState` and is fixed at creation.
+
+Bottles delegate state publication, persistence and execution to one internal
+`Environment<T>`. The environment holds the coordination lock through asynchronous
+cleanup and uses `WineBridgeClient` directly. Handle identity is read from the
+published state and is unavailable after deletion.

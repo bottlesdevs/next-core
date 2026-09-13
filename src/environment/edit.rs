@@ -1,11 +1,9 @@
 //! Controlled edits of an owner's metadata and safe execution settings.
 
-use crate::{BottleState, EnvVars, EnvironmentState, LaunchSpec, Wrappers};
+use crate::{BottleState, EnvVars, LaunchSpec, Wrappers};
 use uuid::Uuid;
 
-pub(crate) trait EnvironmentOwnerState {
-    fn environment_mut(&mut self) -> &mut EnvironmentState;
-}
+use super::EnvironmentOwnerState;
 
 /// A draft available only during an owner's edit callback.
 /// Software selections, identity and backend are changed through owner operations.

@@ -5,6 +5,10 @@ use uuid::Uuid;
 /// Failures in shared execution configuration and operations.
 #[derive(Debug, Error)]
 pub enum EnvironmentError {
+    #[error("environment was deleted")]
+    Deleted,
+    #[error("environment ID {actual} does not match expected ID {expected}")]
+    IdMismatch { expected: Uuid, actual: Uuid },
     #[cfg(feature = "fvs")]
     #[error("rollback failed for {root}; repair or restore this owner before retrying: {source}")]
     Rollback {
