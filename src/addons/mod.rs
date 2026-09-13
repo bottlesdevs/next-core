@@ -28,7 +28,7 @@ pub use addon::{Addon, Component, Dependency, Requirement, Slot};
 pub use catalog::CatalogEntry;
 pub(crate) use catalog::Checksum;
 pub use error::{AddonError, CatalogError, InstallerError};
-pub(crate) use installer::{InstallInputs, execute, uninstall};
+pub(crate) use installer::{InstallInputs, execute, uninstall, validate_removal};
 pub use manager::Addons;
 pub use release::Release;
 
