@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     addons::InstallerError,
-    error::{Error, Result, ResultExt},
+    error::{Error, Result},
     runner::{Command, Runner, Spawnable},
     utils::{archive, exists},
     winebridge::WineBridgeClient,
@@ -45,11 +45,33 @@ pub(crate) async fn execute(
     Ok(())
 }
 
+/// Reject recipes that cannot be removed before modifying any prefix files.
+pub(crate) fn validate_removal<'a>(
+    steps: impl Iterator<Item = &'a InstallStep>,
+    addon: Uuid,
+) -> Result<()> {
+    for step in steps {
+        if !matches!(
+            step,
+            InstallStep::Copy { .. }
+                | InstallStep::SetDllOverrides { .. }
+                | InstallStep::SetEnvironment { .. }
+        ) {
+            return Err(InstallerError::UnsupportedRemoval {
+                addon,
+                step: format!("{step:?}"),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// Attempts to undo a recipe in reverse resource and step order.
 ///
 /// File copies are restored or removed and DLL overrides are deleted. Runtime variable
-/// declarations are ignored. Other step kinds have no inverse and are skipped with a
-/// warning. File, bridge and override failures are logged and ignored; cancellation is returned.
+/// declarations are ignored. Recipes without a supported inverse are rejected before
+/// removal starts. File, bridge and override failures are returned.
 /// The enclosing prefix scope owns Wine shutdown.
 pub(crate) async fn uninstall<'a>(
     inputs: InstallInputs<'_>,
@@ -58,8 +80,10 @@ pub(crate) async fn uninstall<'a>(
     cancellation: &CancellationToken,
     on_step: impl Fn(&InstallStep) + Send,
 ) -> Result<()> {
+    let steps = steps.collect::<Vec<_>>();
+    validate_removal(steps.iter().copied(), item_id)?;
     check_cancellation(cancellation)?;
-    for step in steps.rev() {
+    for step in steps.into_iter().rev() {
         on_step(step);
         uninstall_step(inputs, step, item_id, cancellation).await?;
         check_cancellation(cancellation)?;
@@ -172,34 +196,25 @@ async fn uninstall_step(
     match step {
         InstallStep::SetEnvironment { .. } => {}
         InstallStep::Copy { destination, .. } => {
-            if let Err(error) = uninstall_file(prefix, destination).await {
-                tracing::warn!(%error);
-            }
+            uninstall_file(prefix, destination).await?;
         }
         InstallStep::SetDllOverrides { dlls, .. } => {
-            let bridge = match maintenance_bridge(runner, prefix, winebridge).await {
-                Ok(bridge) => bridge,
-                Err(error) => {
-                    tracing::warn!(%error);
-                    return Ok(());
-                }
-            };
+            let bridge = maintenance_bridge(runner, prefix, winebridge).await?;
             for dll in dlls.iter().rev() {
                 check_cancellation(cancellation)?;
-                match bridge.delete_dll_override(dll.clone()).await {
-                    Err(error) if is_not_found(&error) => {}
-                    result => {
-                        result.log_warn();
+                if let Err(error) = bridge.delete_dll_override(dll.clone()).await {
+                    if !is_not_found(&error) {
+                        return Err(error);
                     }
                 }
             }
         }
         unsupported => {
-            tracing::warn!(
-                %addon_id,
-                step = ?unsupported,
-                "skipping unsupported component uninstall action"
-            );
+            return Err(InstallerError::UnsupportedRemoval {
+                addon: addon_id,
+                step: format!("{unsupported:?}"),
+            }
+            .into());
         }
     }
     check_cancellation(cancellation)

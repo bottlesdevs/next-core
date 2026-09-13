@@ -3,7 +3,7 @@
 use super::super::runtime;
 use crate::{
     AddonError, Addons, Context, EnvironmentError, EnvironmentState, Progress, Slot, Stage,
-    addons::{InstallInputs, execute, uninstall},
+    addons::{InstallInputs, execute, uninstall, validate_removal},
     error::Result,
 };
 use std::path::Path;
@@ -63,6 +63,7 @@ pub(super) async fn apply(
             let release = addons
                 .component(old.id())
                 .ok_or(AddonError::NotFound(old.id()))?;
+            validate_removal(release.recipe(), release.id())?;
             removals.push(release);
         }
     }
