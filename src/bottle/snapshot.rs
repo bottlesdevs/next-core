@@ -6,7 +6,7 @@ use crate::{
     error::{Error, Result},
 };
 
-use super::{Bottle, Snapshot, SnapshotSummary, error::BottleError, state::BottleState};
+use super::{Bottle, Snapshot, SnapshotSummary, state::BottleState};
 
 impl Bottle {
     /// Saves the bottle's current files and configuration in snapshot history.
@@ -31,7 +31,7 @@ impl Bottle {
     /// the snapshot cannot be created.
     pub fn create_snapshot(&self, message: impl Into<String>) -> Operation<Snapshot> {
         let bottle = self.clone();
-        let cx = self.0.cx.clone();
+        let cx = self.0.context.clone();
         let message = message.into();
         Operation::new(move |progress, cancellation| async move {
             if message == AUTO_CHECKPOINT_MESSAGE {
@@ -49,7 +49,7 @@ impl Bottle {
                 return Err(Error::Cancelled);
             }
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            bottle.stop_locked().await?;
+            bottle.0.stop_locked().await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
@@ -80,13 +80,13 @@ impl Bottle {
     /// unavailable, or its snapshot history cannot be read.
     pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
         let _read = self.0.control.lock().await;
-        self.ensure_exists()?;
+        self.state()?;
         if !crate::utils::exists(&self.bottle_path().join(".fvs2")).await? {
             return Ok(Vec::new());
         }
         Ok(self
             .0
-            .cx
+            .context
             .fvs()
             .await?
             .list_commits(&history::repository(&self.bottle_path()))
@@ -120,7 +120,7 @@ impl Bottle {
     pub fn rollback(&self, state_id_or_prefix: &str) -> Operation<String> {
         let bottle = self.clone();
         let bottle_path = self.bottle_path();
-        let cx = self.0.cx.clone();
+        let cx = self.0.context.clone();
         let state_id_or_prefix = state_id_or_prefix.to_owned();
         Operation::new(move |progress, cancellation| async move {
             let _control = cancellation
@@ -131,7 +131,7 @@ impl Bottle {
                 return Err(Error::Cancelled);
             }
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            bottle.stop_locked().await?;
+            bottle.0.stop_locked().await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
@@ -156,7 +156,7 @@ impl Bottle {
                     history::restore(&bottle_path, &state_id_or_prefix, &cx, &progress).await?;
                 let state: BottleState = next_config::load(bottle_path.join("bottle.toml")).await?;
                 if state.id != id {
-                    return Err(BottleError::IdMismatch {
+                    return Err(crate::EnvironmentError::IdMismatch {
                         expected: id,
                         actual: state.id,
                     }
@@ -177,7 +177,7 @@ impl Bottle {
             .await;
             let (revision, state) =
                 history::recover(result, &bottle_path, &checkpoint, &cx, &progress).await?;
-            bottle.publish(state);
+            bottle.0.publish(state);
             Ok(revision)
         })
     }

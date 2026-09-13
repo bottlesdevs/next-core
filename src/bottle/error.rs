@@ -12,17 +12,6 @@ pub enum BottleError {
     /// No persisted bottle exists for the requested UUID.
     #[error("bottle {0} was not found")]
     NotFound(Uuid),
-    /// An operation used a handle after its bottle was deleted.
-    #[error("bottle was deleted")]
-    Deleted,
-    /// Loaded or restored bottle metadata belongs to a different bottle.
-    #[error("bottle ID {actual} does not match directory ID {expected}")]
-    IdMismatch {
-        /// UUID of the live handle or requested bottle.
-        expected: Uuid,
-        /// UUID found in the loaded metadata.
-        actual: Uuid,
-    },
     /// A program definition is malformed.
     #[error("invalid program: {0}")]
     InvalidProgram(String),

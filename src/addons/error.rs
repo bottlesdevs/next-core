@@ -86,7 +86,12 @@ pub enum CatalogError {
 pub enum InstallerError {
     /// The recipe has effects for which Standard removal has no inverse.
     #[error("addon {addon} cannot be removed from a Standard prefix: {step}")]
-    UnsupportedRemoval { addon: Uuid, step: String },
+    UnsupportedRemoval {
+        /// Release whose recipe cannot be reversed.
+        addon: Uuid,
+        /// Unsupported recipe step.
+        step: String,
+    },
     /// A recipe-provided executable returned an unsuccessful exit status.
     #[error("installer exited with status {0}")]
     InstallerFailed(ExitStatus),
