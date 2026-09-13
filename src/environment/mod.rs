@@ -2,7 +2,10 @@
 //! Owners serialize access and persist state; prefix backends materialize execution settings.
 
 mod config;
+mod edit;
 mod error;
+pub use edit::Edit;
+pub(crate) use edit::EnvironmentOwnerState;
 #[cfg(feature = "fvs")]
 pub(crate) mod history;
 mod prefix;

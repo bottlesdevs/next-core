@@ -36,8 +36,8 @@ The crate is centered around six types:
   cancellation.
 
 Execution settings live in `BottleState::environment()` as an `EnvironmentState`.
-Use `Bottle::edit` to update bottle state, and call `stop()` before changing
-its environment settings. `Bottle::launch(group_id, LaunchSpec)` runs an unregistered
+Use `Bottle::edit` for metadata, environment variables and wrappers. These settings
+apply on the next startup. Stop the environment before explicit software changes. `Bottle::launch(group_id, LaunchSpec)` runs an unregistered
 program; `Bottle::launch_program(uuid)` runs a saved registration. Dropping a
 bottle handle leaves Wine running; call `stop()` to shut it down.
 
@@ -84,11 +84,7 @@ async fn main() -> Result<(), bottles_core::error::Error> {
 
     if let Some(bottle) = bottles.bottles().list().into_iter().next() {
         let program = LaunchSpec::new("Example", "C:/Games/example.exe")?;
-        let id = uuid::Uuid::new_v4();
-        bottle.edit(move |state| {
-            state.programs.insert(id, program);
-            Ok(())
-        }).await?;
+        let id = bottle.edit(move |edit| Ok(edit.add_program(program))).await?;
         println!("registered {id}");
     }
 

@@ -220,6 +220,14 @@ impl EnvironmentState {
     }
 
     pub(crate) fn validate_requirements(&self) -> Result<()> {
+        for (name, value) in self.env_vars.iter() {
+            if name.is_empty() || name.contains(['=', '\0']) {
+                return Err(EnvironmentError::InvalidEnvironmentName(name.into()).into());
+            }
+            if value.contains('\0') {
+                return Err(EnvironmentError::InvalidEnvironmentValue(name.into()).into());
+            }
+        }
         for (slot, component) in &self.components {
             if component.slot() != *slot {
                 return Err(EnvironmentError::InvalidComponentSlot {
