@@ -81,11 +81,13 @@ impl Library {
     ///
     /// The stream yields the current snapshot first. Slow consumers may miss
     /// intermediate generations and receive only the latest aggregate state.
+    /// Either registry may publish the same initial snapshot; neither initial
+    /// event is skipped because it may include changes since the other was polled.
     pub fn watch(&self) -> impl Stream<Item = Vec<LibraryItem>> + Send + 'static + use<> {
         let library = self.clone();
         let changes = self.bottles.watch().map(|_| ());
         #[cfg(feature = "fvs")]
-        let changes = stream::select(changes, self.programs.watch().skip(1).map(|_| ()));
+        let changes = stream::select(changes, self.programs.watch().map(|_| ()));
         changes.map(move |_| library.list())
     }
 
