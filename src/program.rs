@@ -11,10 +11,7 @@ use crate::{
 use futures_core::Stream;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
-use std::{
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Complete persisted standalone state. Its launch definition supplies its name.
@@ -63,11 +60,6 @@ impl EnvironmentOwnerState for ProgramState {
 /// Dropping a handle does not stop Wine; state access fails after deletion.
 #[derive(Clone)]
 pub struct Program(pub(crate) Arc<Environment<ProgramState>>);
-impl Hash for Program {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.0).hash(state);
-    }
-}
 impl Program {
     pub fn id(&self) -> Result<Uuid> {
         Ok(self.state()?.id())

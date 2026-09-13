@@ -1,10 +1,6 @@
 //! Persisted bottle state and the shared bottle handle.
 
-use std::{
-    collections::HashMap,
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use futures_core::Stream;
 use next_config::Config;
@@ -97,12 +93,6 @@ impl BottleState {
 /// does not stop Wine. Operations fail after deletion, including identity access.
 #[derive(Clone)]
 pub struct Bottle(pub(crate) Arc<crate::environment::Environment<BottleState>>);
-
-impl Hash for Bottle {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.0).hash(state);
-    }
-}
 
 impl Bottle {
     pub fn id(&self) -> Result<Uuid> {

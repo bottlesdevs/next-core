@@ -7,10 +7,7 @@ use crate::{
 };
 use futures_core::Stream;
 use futures_util::StreamExt;
-use std::{
-    hash::{Hash, Hasher},
-    sync::Arc,
-};
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -19,11 +16,6 @@ pub struct ProgramManager {
     addons: Addons,
     virgo: Arc<VirgoManager>,
     registry: Arc<Registry<ProgramState>>,
-}
-impl Hash for ProgramManager {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.registry).hash(state);
-    }
 }
 impl ProgramManager {
     pub(crate) async fn load(
@@ -63,7 +55,7 @@ impl ProgramManager {
                 &cancellation,
             )
             .await?;
-            Ok(Program(manager.registry.intern(id, environment)))
+            Ok(Program(manager.registry.intern(environment)?))
         })
     }
     /// Open an already-known program without filesystem or runtime work.
