@@ -6,9 +6,6 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(feature = "fvs")]
-use std::path::PathBuf;
-
 use futures_core::Stream;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
@@ -118,11 +115,6 @@ impl Bottle {
     /// Observe current state and later publications. Deletion ends the stream.
     pub fn watch(&self) -> impl Stream<Item = Arc<BottleState>> + Send + 'static + use<> {
         self.0.watch()
-    }
-
-    #[cfg(feature = "fvs")]
-    pub(crate) fn bottle_path(&self) -> PathBuf {
-        self.0.root.clone()
     }
 }
 
