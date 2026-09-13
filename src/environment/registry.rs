@@ -1,4 +1,4 @@
-//! Shared collection loading, identity interning and observation.
+//! Shared collection loading, membership and observation.
 
 #[cfg(feature = "fvs")]
 use super::VirgoManager;
@@ -85,20 +85,12 @@ impl<T: EnvironmentOwnerState> Registry<T> {
     pub(crate) fn get(&self, id: Uuid) -> Option<Arc<Environment<T>>> {
         self.0.borrow().get(&id).cloned()
     }
-    pub(crate) fn intern(&self, environment: Arc<Environment<T>>) -> Result<Arc<Environment<T>>> {
+    pub(crate) fn insert(&self, environment: Arc<Environment<T>>) -> Result<()> {
         let id = environment.state()?.id();
-        let mut interned = environment.clone();
-        self.0.send_if_modified(|published| {
-            if let Some(current) = published.get(&id) {
-                interned = current.clone();
-                return false;
-            }
-            let mut members = published.as_ref().clone();
-            members.insert(id, environment);
-            *published = Arc::new(members);
-            true
+        self.0.send_modify(|published| {
+            Arc::make_mut(published).insert(id, environment);
         });
-        Ok(interned)
+        Ok(())
     }
     pub(crate) fn remove(&self, id: Uuid) {
         self.0.send_if_modified(|published| {

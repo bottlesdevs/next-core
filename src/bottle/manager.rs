@@ -129,7 +129,8 @@ impl BottleManager {
                 &cancellation,
             )
             .await?;
-            Ok(Bottle(registry.intern(environment)?))
+            registry.insert(environment.clone())?;
+            Ok(Bottle(environment))
         })
     }
 
@@ -150,14 +151,14 @@ impl BottleManager {
     pub fn delete(&self, id: Uuid) -> Operation<()> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
-            let bottle = manager.open(id).await?;
+            let bottle = manager.open(id)?;
             bottle.0.delete(&progress, &cancellation).await?;
             manager.registry.remove(id);
             Ok(())
         })
     }
 
-    /// Opens the bottle identified by `id`.
+    /// Looks up the bottle identified by `id` synchronously in the registry.
     ///
     /// Repeated calls through this manager or its clones return handles to the
     /// same live state. Only bottles loaded at startup or created through this
@@ -167,7 +168,7 @@ impl BottleManager {
     /// # Errors
     ///
     /// Returns [`BottleError::NotFound`] if `id` is not in the registry.
-    pub async fn open(&self, id: Uuid) -> Result<Bottle> {
+    pub fn open(&self, id: Uuid) -> Result<Bottle> {
         self.registry
             .get(id)
             .map(Bottle)

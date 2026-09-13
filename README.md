@@ -27,10 +27,12 @@ The main entry points are:
 - `Bottles` owns the download service and provides addon, bottle, and standalone program managers.
 - `Addons` publishes live collections of runners and installable addons. Item
   values are snapshots; query the manager again after a publication.
-- `BottleManager` interns bottles by UUID. A `Bottle` is a shared handle whose
+- `BottleManager` owns bottle membership by UUID. A `Bottle` is a shared handle whose
   current immutable `BottleState` can be read or watched.
 - `ProgramManager` manages standalone Virgo programs, each with its own
-  `ProgramState`, environment, and snapshot history.
+  `ProgramState`, environment, and snapshot history. Both managers expose a
+  synchronous `open(id)` lookup; creation returns the newly registered handle,
+  and lookups and handle clones share its live environment.
 - `Library` combines bottle registrations and standalone programs and searches them
   alongside games owned through the selected profile's storefront plugins.
 - `Profiles` persists named application identities and the current selection.
