@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
 /// Selects how a runnable Wine prefix is created and maintained.
-#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Serialize)]
 pub enum PrefixBackend {
     /// Initialize and mutate a conventional prefix directly.
     /// Explicit snapshots may use FVS; ordinary mutations use direct writes.

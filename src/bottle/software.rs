@@ -1,7 +1,7 @@
 //! Bottle registrations and forwarding to shared environment operations.
 use super::{Bottle, error::BottleError};
 use crate::{
-    LaunchSpec, Operation, Slot,
+    Operation, ProgramSpec, Slot,
     error::Result,
     proto::{DllOverride, DllOverrideMode, Process},
 };
@@ -29,7 +29,7 @@ impl Bottle {
         })
     }
     /// Launch an unregistered definition with a caller-selected process-group UUID.
-    pub fn launch(&self, id: Uuid, launch: LaunchSpec) -> Operation<u32> {
+    pub fn launch(&self, id: Uuid, launch: ProgramSpec) -> Operation<u32> {
         self.0.launch(move |_| Ok((id, launch)))
     }
     pub async fn processes(&self) -> Result<Vec<Process>> {

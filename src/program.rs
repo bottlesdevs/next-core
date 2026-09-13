@@ -3,7 +3,7 @@ mod manager;
 pub use manager::ProgramManager;
 
 use crate::{
-    Edit, EnvironmentState, LaunchSpec, Operation, PrefixBackend, Slot, Snapshot, SnapshotSummary,
+    Edit, EnvironmentState, Operation, PrefixBackend, ProgramSpec, Slot, Snapshot, SnapshotSummary,
     environment::{Environment, EnvironmentOwnerState},
     error::Result,
     proto::{DllOverride, DllOverrideMode, Process},
@@ -22,7 +22,7 @@ use uuid::Uuid;
 #[config(version = 1)]
 pub struct ProgramState {
     pub(crate) id: Uuid,
-    pub(crate) launch: LaunchSpec,
+    pub(crate) launch: ProgramSpec,
     pub(crate) environment: EnvironmentState,
 }
 impl ProgramState {
@@ -32,7 +32,7 @@ impl ProgramState {
     pub fn name(&self) -> &str {
         self.launch.name()
     }
-    pub fn launch(&self) -> &LaunchSpec {
+    pub fn launch(&self) -> &ProgramSpec {
         &self.launch
     }
     pub fn environment(&self) -> &EnvironmentState {
@@ -136,7 +136,7 @@ impl Edit<'_, ProgramState> {
     pub fn rename(&mut self, name: impl Into<String>) {
         self.draft.launch.rename(name);
     }
-    pub fn launch(&mut self) -> &mut LaunchSpec {
+    pub fn launch(&mut self) -> &mut ProgramSpec {
         &mut self.draft.launch
     }
 }

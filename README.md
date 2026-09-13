@@ -39,7 +39,7 @@ The main entry points are:
 
 Execution settings live in `BottleState::environment()` as an `EnvironmentState`.
 Use `Bottle::edit` for metadata, environment variables and wrappers. These settings
-apply on the next startup. Stop the environment before explicit software changes. `Bottle::launch(group_id, LaunchSpec)` runs an unregistered
+apply on the next startup. Stop the environment before explicit software changes. `Bottle::launch(group_id, ProgramSpec)` runs an unregistered
 program; `Bottle::launch_program(uuid)` runs a saved registration. Dropping a
 bottle handle leaves Wine running; call `stop()` to shut it down.
 
@@ -70,7 +70,7 @@ futures-lite = "2"
 Open the library, inspect the current bottles, and stop its download service:
 
 ```rust
-use bottles_core::{Bottles, Config, LaunchSpec, SearchSource};
+use bottles_core::{Bottles, Config, ProgramSpec, SearchSource};
 use futures_lite::StreamExt;
 
 #[tokio::main]
@@ -85,7 +85,7 @@ async fn main() -> Result<(), bottles_core::error::Error> {
     }
 
     if let Some(bottle) = bottles.bottles().list().into_iter().next() {
-        let program = LaunchSpec::new("Example", "C:/Games/example.exe")?;
+        let program = ProgramSpec::new("Example", "C:/Games/example.exe")?;
         let id = bottle.edit(move |edit| Ok(edit.add_program(program))).await?;
         println!("registered {id}");
     }
@@ -98,7 +98,7 @@ async fn main() -> Result<(), bottles_core::error::Error> {
         println!("{} ({})", entry.title(), entry.source_name());
         match entry.source() {
             SearchSource::Installed(item) => {
-                println!("  launch {}", item.launch_spec()?.name());
+                println!("  launch {}", item.program()?.name());
             }
             SearchSource::Storefront { provider_id, .. } => {
                 println!("  owned through {provider_id}");
@@ -123,9 +123,8 @@ Licensed under the [GNU General Public License, version 3](LICENSE).
 [Source]: https://github.com/bottlesdevs/next-core
 [Issue tracker]: https://github.com/bottlesdevs/next-core/issues
 
-Bottle configuration uses version 2 in `bottle.toml`. Version 1 records and
-snapshots are incompatible and are left untouched; no migration is provided.
-Registration UUIDs belong to the bottle's program map, not to `LaunchSpec`.
+Bottle configuration uses version 1 in `bottle.toml`. Registration UUIDs belong
+to the bottle's program map, not to `ProgramSpec`.
 The prefix backend is stored on `BottleState` and is fixed at creation.
 
 Bottles delegate state publication, persistence and execution to one internal
@@ -137,7 +136,7 @@ With the `fvs` feature and a downloaded runner UUID in `runner_id`, create
 standalone programs through `Bottles::programs()`:
 
 ```rust
-let launch = LaunchSpec::new("Example", "C:/Games/example.exe")?;
+let launch = ProgramSpec::new("Example", "C:/Games/example.exe")?;
 let program = bottles.programs().create(launch, runner_id).await?;
 program.edit(|edit| {
     edit.rename("Example game");

@@ -22,14 +22,14 @@ use crate::{EnvironmentState, PrefixBackend, error::Result};
 /// snapshot was published. Obtain another snapshot to observe later changes.
 /// Component payload locations are derived from their UUIDs.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Config)]
-#[config(version = 2)]
+#[config(version = 1)]
 pub struct BottleState {
     pub(crate) id: Uuid,
     pub(crate) name: String,
     pub(crate) backend: PrefixBackend,
     pub(crate) environment: EnvironmentState,
     #[serde(default)]
-    pub(crate) programs: HashMap<Uuid, LaunchSpec>,
+    pub(crate) programs: HashMap<Uuid, ProgramSpec>,
 }
 
 impl crate::environment::EnvironmentOwnerState for BottleState {
@@ -38,7 +38,7 @@ impl crate::environment::EnvironmentOwnerState for BottleState {
         self.id
     }
     fn backend(&self) -> PrefixBackend {
-        self.backend.clone()
+        self.backend
     }
     fn environment(&self) -> &EnvironmentState {
         &self.environment
@@ -78,17 +78,17 @@ impl BottleState {
     }
 
     /// Iterates over registered programs in unspecified order.
-    pub fn programs(&self) -> impl Iterator<Item = (Uuid, &LaunchSpec)> {
+    pub fn programs(&self) -> impl Iterator<Item = (Uuid, &ProgramSpec)> {
         self.programs.iter().map(|(id, launch)| (*id, launch))
     }
 
     /// Returns the backend fixed when this bottle was created.
-    pub fn backend(&self) -> &PrefixBackend {
-        &self.backend
+    pub fn backend(&self) -> PrefixBackend {
+        self.backend
     }
 
     /// Returns the registered program with identity `id`.
-    pub fn program(&self, id: Uuid) -> Option<&LaunchSpec> {
+    pub fn program(&self, id: Uuid) -> Option<&ProgramSpec> {
         self.programs.get(&id)
     }
 }
@@ -121,7 +121,7 @@ impl Bottle {
 /// A persisted, immutable Windows launch definition registered with a bottle.
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct LaunchSpec {
+pub struct ProgramSpec {
     name: String,
     executable: String,
     /// Command-line fragments joined with spaces before launch.
@@ -139,7 +139,7 @@ pub struct LaunchSpec {
     new_console: bool,
 }
 
-impl LaunchSpec {
+impl ProgramSpec {
     pub(crate) fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty() {
             return Err(BottleError::InvalidProgram("name must not be blank".into()).into());

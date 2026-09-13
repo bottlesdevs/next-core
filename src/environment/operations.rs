@@ -2,7 +2,7 @@
 
 use super::{Environment, EnvironmentOwnerState, runtime};
 use crate::{
-    Addon, AddonError, Addons, Edit, EnvironmentError, EnvironmentState, LaunchSpec, Operation,
+    Addon, AddonError, Addons, Edit, EnvironmentError, EnvironmentState, Operation, ProgramSpec,
     Progress, Slot, Stage,
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
@@ -108,7 +108,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
 
     pub(crate) fn launch(
         self: &Arc<Self>,
-        select: impl FnOnce(&T) -> Result<(Uuid, LaunchSpec)> + Send + 'static,
+        select: impl FnOnce(&T) -> Result<(Uuid, ProgramSpec)> + Send + 'static,
     ) -> Operation<u32> {
         let environment = self.clone();
         Operation::new(move |progress, cancellation| async move {
