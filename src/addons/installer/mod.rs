@@ -18,9 +18,8 @@
 //! Resources and steps are visited in reverse order. Uninstallation can restore
 //! copied files and delete DLL overrides. Actions without an inverse—executing
 //! programs, extracting archives, registering DLLs,
-//! and setting registry values—cause removal to be rejected before modification.
-//! Failures while reversing supported steps are returned. Dependencies cannot be removed separately from
-//! their bottle.
+//! and setting registry values—are skipped. Failures while reversing supported
+//! steps are returned. Dependencies cannot be removed separately from their bottle.
 //!
 //! # Cancellation and cleanup
 //!
@@ -50,7 +49,7 @@ use crate::{
 
 use super::deserialize_non_empty_string;
 
-pub(crate) use engine::{execute, uninstall, validate_removal};
+pub(crate) use engine::{execute, uninstall};
 pub(crate) use recipes::steps as recipe_steps;
 
 /// A local installation resource and its frozen recipe.
