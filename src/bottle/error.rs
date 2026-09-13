@@ -12,9 +12,6 @@ pub enum BottleError {
     /// No persisted bottle exists for the requested UUID.
     #[error("bottle {0} was not found")]
     NotFound(Uuid),
-    /// A program definition is malformed.
-    #[error("invalid program: {0}")]
-    InvalidProgram(String),
     /// No program is registered with the requested UUID.
     #[error("program {0} was not found")]
     ProgramNotFound(Uuid),
