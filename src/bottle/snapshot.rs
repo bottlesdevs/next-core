@@ -136,7 +136,9 @@ impl Bottle {
                 return Err(Error::Cancelled);
             }
 
-            let backend = bottle.state()?.backend.clone();
+            let current = bottle.state()?;
+            let id = current.id();
+            let backend = current.backend.clone();
             let checkpoint = history::capture(
                 &bottle_path,
                 AUTO_CHECKPOINT_MESSAGE.into(),
@@ -153,9 +155,9 @@ impl Bottle {
                 let response =
                     history::restore(&bottle_path, &state_id_or_prefix, &cx, &progress).await?;
                 let state: BottleState = next_config::load(bottle_path.join("bottle.toml")).await?;
-                if state.id != bottle.0.id {
+                if state.id != id {
                     return Err(BottleError::IdMismatch {
-                        expected: bottle.0.id,
+                        expected: id,
                         actual: state.id,
                     }
                     .into());

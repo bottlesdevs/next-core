@@ -32,7 +32,7 @@ async fn deleted_bottle() -> (Bottle, Directories) {
     let bottle = Bottle(Arc::new(BottleInner {
         published,
         control: Mutex::new(()),
-        id: uuid::Uuid::new_v4(),
+        root: directories.bottle(uuid::Uuid::new_v4()),
         #[cfg(feature = "fvs")]
         virgo: Arc::new(VirgoManager::new(context.clone(), addons.clone())),
         cx: context,

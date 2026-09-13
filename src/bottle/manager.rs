@@ -62,20 +62,20 @@ impl BottleRegistry {
         self.0.send_replace(Arc::new(
             bottles
                 .into_iter()
-                .map(|bottle| (bottle.0.id, bottle))
+                .filter_map(|bottle| bottle.id().ok().map(|id| (id, bottle)))
                 .collect(),
         ));
     }
 
-    fn intern(&self, bottle: Bottle) -> Bottle {
+    fn intern(&self, id: Uuid, bottle: Bottle) -> Bottle {
         let mut interned = bottle.clone();
         self.0.send_if_modified(|published| {
-            if let Some(current) = published.get(&bottle.0.id) {
+            if let Some(current) = published.get(&id) {
                 interned = current.clone();
                 return false;
             }
             let mut bottles = published.as_ref().clone();
-            bottles.insert(bottle.0.id, bottle);
+            bottles.insert(id, bottle);
             *published = Arc::new(bottles);
             true
         });
@@ -223,7 +223,7 @@ impl BottleManager {
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
-                let bottle = registry.intern(bottle);
+                let bottle = registry.intern(id, bottle);
                 Ok(bottle)
             }
             .await;

@@ -13,8 +13,8 @@ pub enum BottleError {
     #[error("bottle {0} was not found")]
     NotFound(Uuid),
     /// An operation used a handle after its bottle was deleted.
-    #[error("bottle {0} was deleted")]
-    Deleted(Uuid),
+    #[error("bottle was deleted")]
+    Deleted,
     /// Loaded or restored bottle metadata belongs to a different bottle.
     #[error("bottle ID {actual} does not match directory ID {expected}")]
     IdMismatch {
