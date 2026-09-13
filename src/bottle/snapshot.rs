@@ -136,6 +136,7 @@ impl Bottle {
                 return Err(Error::Cancelled);
             }
 
+            let backend = bottle.state()?.backend.clone();
             let checkpoint = history::capture(
                 &bottle_path,
                 AUTO_CHECKPOINT_MESSAGE.into(),
@@ -158,6 +159,15 @@ impl Bottle {
                         actual: state.id,
                     }
                     .into());
+                }
+                if state.backend != backend {
+                    return Err(crate::EnvironmentError::InvalidEdit(
+                        "snapshot backend does not match owner",
+                    )
+                    .into());
+                }
+                for launch in state.programs.values() {
+                    launch.validate()?;
                 }
                 state.environment.validate_requirements()?;
                 Ok((response.state_id, state))

@@ -10,7 +10,7 @@ use futures_util::{
 use uuid::Uuid;
 
 use crate::{
-    Bottle, BottleManager, Operation, PluginId, PluginKind, Plugins, Profiles, ProgramSpec,
+    Bottle, BottleManager, LaunchSpec, Operation, PluginId, PluginKind, Plugins, Profiles,
     bottle::error::BottleError, credentials, error::Result,
 };
 
@@ -43,9 +43,9 @@ impl Library {
             .flat_map(|(bottle, state)| {
                 state
                     .programs()
-                    .map(move |program| LibraryItem {
+                    .map(move |(id, _)| LibraryItem {
                         bottle: bottle.clone(),
-                        program_id: program.id(),
+                        program_id: id,
                     })
                     .collect::<Vec<_>>()
             })
@@ -194,7 +194,7 @@ pub struct LibraryItem {
 
 impl LibraryItem {
     /// Returns the current launch definition.
-    pub fn program(&self) -> Result<ProgramSpec> {
+    pub fn program(&self) -> Result<LaunchSpec> {
         self.bottle
             .state()?
             .program(self.program_id)

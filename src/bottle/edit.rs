@@ -44,16 +44,17 @@ impl Bottle {
                 }
                 .into());
             }
-            for (id, program) in &draft.programs {
-                if *id != program.id() {
-                    return Err(BottleError::InvalidProgram(
-                        "registration key must match the program ID".into(),
-                    )
-                    .into());
-                }
+            if draft.backend != previous.backend {
+                return Err(crate::EnvironmentError::InvalidEdit(
+                    "prefix backend is fixed at creation",
+                )
+                .into());
+            }
+            for program in draft.programs.values() {
                 program.validate()?;
             }
             crate::environment::apply(
+                &previous.backend,
                 &previous.environment,
                 &draft.environment,
                 &cx.directories().bottle(draft.id),

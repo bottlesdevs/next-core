@@ -20,7 +20,7 @@ use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
 use crate::{
-    Context, EnvironmentConfig, Operation, PrefixBackend, Progress, Stage,
+    Context, EnvironmentState, Operation, PrefixBackend, Progress, Stage,
     addons::Addons,
     environment,
     error::{Error, Result},
@@ -194,8 +194,16 @@ impl BottleManager {
             let id = Uuid::new_v4();
             let bottle_path = cx.directories().bottle(id);
             // Initialization may retain live storage on failure; only remove after it succeeds.
-            let config = EnvironmentConfig::new(backend, runner, &addons)?;
-            environment::initialize(&config, &bottle_path, &cx, &progress, &cancellation).await?;
+            let config = EnvironmentState::new(runner, &addons)?;
+            environment::initialize(
+                &backend,
+                &config,
+                &bottle_path,
+                &cx,
+                &progress,
+                &cancellation,
+            )
+            .await?;
             let result = async {
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
@@ -203,6 +211,7 @@ impl BottleManager {
                 let bottle = Bottle::new(
                     id,
                     name,
+                    backend,
                     config,
                     cx.clone(),
                     addons.clone(),
@@ -353,7 +362,7 @@ impl BottleManager {
         }
         let mut bottles = Vec::with_capacity(paths.len());
         for path in paths {
-            match next_config::load::<BottleState>(path).await {
+            match next_config::load::<BottleState>(&path).await {
                 Ok(state) => {
                     match Bottle::from_state(
                         state,
@@ -364,11 +373,13 @@ impl BottleManager {
                     ) {
                         Ok(bottle) => bottles.push(bottle),
                         Err(error) => {
-                            tracing::warn!("skipping bottle with invalid runtime: {error}")
+                            tracing::warn!(path = %path.display(), "skipping bottle with invalid state: {error}")
                         }
                     }
                 }
-                Err(error) => tracing::warn!("skipping unreadable bottle: {error}"),
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), "skipping incompatible or unreadable bottle: {error}")
+                }
             }
         }
         Ok(bottles)

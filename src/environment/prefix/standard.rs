@@ -2,7 +2,7 @@
 
 use super::super::runtime;
 use crate::{
-    AddonError, Addons, Context, EnvironmentConfig, EnvironmentError, Progress, Slot, Stage,
+    AddonError, Addons, Context, EnvironmentError, EnvironmentState, Progress, Slot, Stage,
     addons::{InstallInputs, execute, uninstall},
     error::Result,
 };
@@ -11,7 +11,7 @@ use strum::IntoEnumIterator;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-pub(super) async fn create(config: &EnvironmentConfig, root: &Path, cx: &Context) -> Result<()> {
+pub(super) async fn create(config: &EnvironmentState, root: &Path, cx: &Context) -> Result<()> {
     let prefix = root.join("prefix");
     async_fs::create_dir_all(&prefix).await?;
     let runner = config
@@ -22,8 +22,8 @@ pub(super) async fn create(config: &EnvironmentConfig, root: &Path, cx: &Context
 }
 
 pub(super) fn validate_edit(
-    previous: &EnvironmentConfig,
-    candidate: &EnvironmentConfig,
+    previous: &EnvironmentState,
+    candidate: &EnvironmentState,
 ) -> Result<()> {
     if !candidate.dependencies.starts_with(&previous.dependencies) {
         return Err(EnvironmentError::InvalidEdit(
@@ -36,8 +36,8 @@ pub(super) fn validate_edit(
 
 /// Apply validated Standard selections directly to the stopped owner's prefix.
 pub(super) async fn apply(
-    previous: &EnvironmentConfig,
-    candidate: &EnvironmentConfig,
+    previous: &EnvironmentState,
+    candidate: &EnvironmentState,
     root: &Path,
     cx: &Context,
     addons: &Addons,

@@ -2,7 +2,7 @@
 
 use super::{Bottle, error::BottleError};
 use crate::{
-    Operation, ProgramSpec, Progress, Slot, Stage, environment,
+    LaunchSpec, Operation, Progress, Slot, Stage, environment,
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
     winebridge::WineBridgeClient,
@@ -48,6 +48,7 @@ impl Bottle {
             let state = bottle.state()?;
             let program = state.program(id).ok_or(BottleError::ProgramNotFound(id))?;
             let environment = environment::attach_or_start(
+                &state.backend,
                 &state.environment,
                 &bottle.0.cx.directories().bottle(state.id),
                 &bottle.0.cx,
@@ -57,13 +58,15 @@ impl Bottle {
                 &cancellation,
             )
             .await?;
-            environment::launch(&environment, program).await
+            environment::launch(&environment, id, program).await
         })
     }
 
-    /// Runs an unregistered definition. Its UUID identifies the process group.
-    pub fn launch(&self, program: ProgramSpec) -> Operation<u32> {
-        self.with_bridge(async move |environment| environment::launch(&environment, &program).await)
+    /// Runs an unregistered definition. The supplied UUID identifies the process group.
+    pub fn launch(&self, id: Uuid, program: LaunchSpec) -> Operation<u32> {
+        self.with_bridge(async move |environment| {
+            environment::launch(&environment, id, &program).await
+        })
     }
 
     /// Returns Windows processes without starting a stopped environment.
@@ -130,6 +133,7 @@ impl Bottle {
     pub(super) async fn stop_locked(&self) -> Result<()> {
         let state = self.state()?;
         environment::stop(
+            &state.backend,
             &state.environment,
             &self.0.cx.directories().bottle(state.id),
             &self.0.cx,
@@ -158,6 +162,7 @@ impl Bottle {
             }
             let state = bottle.state()?;
             let environment = environment::attach_or_start(
+                &state.backend,
                 &state.environment,
                 &bottle.0.cx.directories().bottle(state.id),
                 &bottle.0.cx,

@@ -9,7 +9,7 @@ pub(crate) use cache::VirgoLayer;
 use super::VirgoError;
 use crate::environment::prefix::FVS_BLOCK_SIZE;
 use crate::{
-    Addons, CatalogEntry, Component, Context, EnvironmentConfig, Progress, Slot,
+    Addons, CatalogEntry, Component, Context, EnvironmentState, Progress, Slot,
     error::{Error, Result},
     runner::Runner,
 };
@@ -44,7 +44,7 @@ impl VirgoManager {
     /// Resolve shared effects without reading or mutating an owner's directory.
     pub(super) async fn resolve(
         &self,
-        config: &EnvironmentConfig,
+        config: &EnvironmentState,
         runner: &dyn Runner,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,

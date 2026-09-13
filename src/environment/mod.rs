@@ -9,7 +9,7 @@ mod prefix;
 mod runtime;
 
 use crate::{
-    Addons, Context, ProgramSpec, Progress, Stage,
+    Addons, Context, LaunchSpec, Progress, Stage,
     error::{Error, Result},
     proto::Process,
     winebridge::WineBridgeClient,
@@ -19,7 +19,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-pub use config::EnvironmentConfig;
+pub use config::EnvironmentState;
 pub use error::EnvironmentError;
 pub use prefix::PrefixBackend;
 #[cfg(feature = "fvs")]
@@ -37,7 +37,8 @@ pub(crate) async fn try_attach(root: &Path) -> Result<Option<WineBridgeClient>> 
 /// Attach after an application restart or prepare and start a stopped runtime.
 /// A live attachment bypasses addon resolution, runner loading, and prefix preparation.
 pub(crate) async fn attach_or_start(
-    config: &EnvironmentConfig,
+    backend: &PrefixBackend,
+    config: &EnvironmentState,
     root: &Path,
     cx: &Context,
     #[cfg(feature = "fvs")] virgo: &VirgoManager,
@@ -54,7 +55,7 @@ pub(crate) async fn attach_or_start(
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
-    stop(config, root, cx).await?;
+    stop(backend, config, root, cx).await?;
     let runner = config
         .runner()
         .load_runner(cx.directories(), config.umu())
@@ -63,8 +64,7 @@ pub(crate) async fn attach_or_start(
         return Err(Error::Cancelled);
     }
     let result = async {
-        config
-            .backend
+        backend
             .prepare(
                 config,
                 runner.as_ref(),
@@ -92,15 +92,19 @@ pub(crate) async fn attach_or_start(
     .await;
     runtime::finish_start(result, cancellation, async {
         runtime::stop(runner.as_ref(), &root.join("prefix")).await?;
-        config.backend.release(root, cx).await
+        backend.release(root, cx).await
     })
     .await
 }
 
-pub(crate) async fn launch(bridge: &WineBridgeClient, program: &ProgramSpec) -> Result<u32> {
+pub(crate) async fn launch(
+    bridge: &WineBridgeClient,
+    id: Uuid,
+    program: &LaunchSpec,
+) -> Result<u32> {
     bridge
         .launch_process(
-            program.id(),
+            id,
             program.executable().to_owned(),
             program.args().to_vec(),
             program.working_directory().map(str::to_owned),
@@ -113,7 +117,8 @@ pub(crate) async fn launch(bridge: &WineBridgeClient, program: &ProgramSpec) -> 
 /// Failed initialization may retain live storage; the owner must not remove its
 /// directory unless this function succeeds.
 pub(crate) async fn initialize(
-    config: &EnvironmentConfig,
+    backend: &PrefixBackend,
+    config: &EnvironmentState,
     root: &Path,
     cx: &Context,
     progress: &watch::Sender<Option<Progress>>,
@@ -123,7 +128,7 @@ pub(crate) async fn initialize(
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
-    config.backend.create(config, root, cx).await
+    backend.create(config, root, cx).await
 }
 
 /// Inspect processes without starting Wine or preparing prefix storage.
@@ -143,7 +148,12 @@ pub(crate) async fn kill(root: &Path, id: Uuid) -> Result<()> {
 }
 
 /// Stop Wine before releasing prefix storage, even when WineBridge is unreachable.
-pub(crate) async fn stop(config: &EnvironmentConfig, root: &Path, cx: &Context) -> Result<()> {
+pub(crate) async fn stop(
+    backend: &PrefixBackend,
+    config: &EnvironmentState,
+    root: &Path,
+    cx: &Context,
+) -> Result<()> {
     let prefix = root.join("prefix");
     // No runtime exists until the backend has materialized a prefix.
     if !crate::utils::exists(&prefix).await? {
@@ -154,13 +164,14 @@ pub(crate) async fn stop(config: &EnvironmentConfig, root: &Path, cx: &Context) 
         .load_runner(cx.directories(), config.umu())
         .await?;
     runtime::stop(runner.as_ref(), &prefix).await?;
-    config.backend.release(root, cx).await
+    backend.release(root, cx).await
 }
 
 /// Apply a candidate to stopped prefix data; the owner persists and publishes it afterward.
 pub(crate) async fn apply(
-    previous: &EnvironmentConfig,
-    candidate: &EnvironmentConfig,
+    backend: &PrefixBackend,
+    previous: &EnvironmentState,
+    candidate: &EnvironmentState,
     root: &Path,
     cx: &Context,
     addons: &Addons,
@@ -168,7 +179,7 @@ pub(crate) async fn apply(
     cancellation: &CancellationToken,
 ) -> Result<()> {
     candidate.validate_edit(previous, addons)?;
-    candidate.backend.validate_edit(previous, candidate)?;
+    backend.validate_edit(previous, candidate)?;
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
@@ -178,9 +189,8 @@ pub(crate) async fn apply(
     if try_attach(root).await?.is_some() {
         return Err(EnvironmentError::MustBeStopped.into());
     }
-    stop(previous, root, cx).await?;
-    candidate
-        .backend
+    stop(backend, previous, root, cx).await?;
+    backend
         .apply(
             previous,
             candidate,

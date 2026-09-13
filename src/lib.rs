@@ -19,12 +19,12 @@ pub use addons::{
 };
 pub use bottle::{
     Bottle, BottleError, BottleManager, BottleState, DllOverride, DllOverrideMode, GamescopeConfig,
-    GamescopeFilter, GamescopeScaler, MangoHudConfig, Process, ProgramSpec, RegistryHive, Wrappers,
+    GamescopeFilter, GamescopeScaler, LaunchSpec, MangoHudConfig, Process, RegistryHive, Wrappers,
 };
 #[cfg(feature = "fvs")]
 pub use bottle::{Snapshot, SnapshotSummary};
 pub use core::{Bottles, Config};
-pub use environment::{EnvironmentConfig, EnvironmentError, PrefixBackend};
+pub use environment::{EnvironmentError, EnvironmentState, PrefixBackend};
 pub use library::{Library, LibraryItem, SearchEntry, SearchSource};
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use plugins::{PluginError, PluginId, PluginInfo, PluginKind, PluginManifest, Plugins};

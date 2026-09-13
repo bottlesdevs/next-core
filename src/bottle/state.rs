@@ -20,7 +20,7 @@ use tokio_stream::{StreamExt, wrappers::WatchStream};
 use uuid::Uuid;
 
 use super::error::BottleError;
-use crate::{Context, EnvironmentConfig, addons::Addons, error::Result};
+use crate::{Context, EnvironmentState, PrefixBackend, addons::Addons, error::Result};
 
 /// An immutable snapshot of a bottle's published configuration.
 ///
@@ -30,13 +30,14 @@ use crate::{Context, EnvironmentConfig, addons::Addons, error::Result};
 /// snapshot was published. Obtain another snapshot to observe later changes.
 /// Component payload locations are derived from their UUIDs.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Config)]
-#[config(version = 1)]
+#[config(version = 2)]
 pub struct BottleState {
     pub(crate) id: Uuid,
     pub name: String,
-    pub environment: EnvironmentConfig,
+    pub(crate) backend: PrefixBackend,
+    pub environment: EnvironmentState,
     #[serde(default)]
-    pub programs: HashMap<Uuid, ProgramSpec>,
+    pub programs: HashMap<Uuid, LaunchSpec>,
 }
 
 impl BottleState {
@@ -53,17 +54,22 @@ impl BottleState {
     }
 
     /// Returns the execution settings shared by every registration in this bottle.
-    pub fn environment(&self) -> &EnvironmentConfig {
+    pub fn environment(&self) -> &EnvironmentState {
         &self.environment
     }
 
     /// Iterates over registered programs in unspecified order.
-    pub fn programs(&self) -> impl Iterator<Item = &ProgramSpec> {
-        self.programs.values()
+    pub fn programs(&self) -> impl Iterator<Item = (Uuid, &LaunchSpec)> {
+        self.programs.iter().map(|(id, launch)| (*id, launch))
+    }
+
+    /// Returns the backend fixed when this bottle was created.
+    pub fn backend(&self) -> &PrefixBackend {
+        &self.backend
     }
 
     /// Returns the registered program with identity `id`.
-    pub fn program(&self, id: Uuid) -> Option<&ProgramSpec> {
+    pub fn program(&self, id: Uuid) -> Option<&LaunchSpec> {
         self.programs.get(&id)
     }
 }
@@ -112,7 +118,8 @@ impl Bottle {
     pub(crate) async fn new(
         id: Uuid,
         name: String,
-        environment: EnvironmentConfig,
+        backend: PrefixBackend,
+        environment: EnvironmentState,
         context: Context,
         addons: Addons,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
@@ -120,6 +127,7 @@ impl Bottle {
         let state = BottleState {
             id,
             name,
+            backend,
             environment,
             programs: HashMap::new(),
         };
@@ -243,8 +251,7 @@ impl Bottle {
 /// A persisted, immutable Windows launch definition registered with a bottle.
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProgramSpec {
-    id: Uuid,
+pub struct LaunchSpec {
     name: String,
     executable: String,
     /// Command-line fragments joined with spaces before launch.
@@ -262,7 +269,7 @@ pub struct ProgramSpec {
     new_console: bool,
 }
 
-impl ProgramSpec {
+impl LaunchSpec {
     pub(crate) fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty() {
             return Err(BottleError::InvalidProgram("name must not be blank".into()).into());
@@ -282,12 +289,11 @@ impl ProgramSpec {
         Ok(())
     }
 
-    /// Creates a program with a new UUID and default launch options.
+    /// Creates a launch definition with default launch options.
     pub fn new(name: impl Into<String>, executable: impl Into<String>) -> Result<Self> {
         let name = name.into();
         let executable = executable.into();
         let program = Self {
-            id: Uuid::new_v4(),
             name,
             executable,
             args: Vec::new(),
@@ -326,9 +332,9 @@ impl ProgramSpec {
         self
     }
 
-    /// Returns the bottle-scoped identity used for lookup and process grouping.
-    pub fn id(&self) -> Uuid {
-        self.id
+    /// Changes the display name; the owner validates it when saving an edit.
+    pub fn rename(&mut self, name: impl Into<String>) {
+        self.name = name.into();
     }
 
     /// Returns the display name preserved at registration.
