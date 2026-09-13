@@ -10,7 +10,7 @@ pub use virgo::VirgoError;
 #[cfg(feature = "fvs")]
 pub(crate) use virgo::VirgoManager;
 
-use super::EnvironmentConfig;
+use super::EnvironmentState;
 use crate::{Addons, Context, Progress, error::Result, runner::Runner};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -37,7 +37,7 @@ impl PrefixBackend {
     /// Failed cleanup retains data for explicit recovery by the caller.
     pub(super) async fn create(
         &self,
-        config: &EnvironmentConfig,
+        config: &EnvironmentState,
         root: &Path,
         cx: &Context,
     ) -> Result<()> {
@@ -51,8 +51,8 @@ impl PrefixBackend {
     /// Check backend-specific edit restrictions before the owner is stopped or changed.
     pub(super) fn validate_edit(
         &self,
-        previous: &EnvironmentConfig,
-        candidate: &EnvironmentConfig,
+        previous: &EnvironmentState,
+        candidate: &EnvironmentState,
     ) -> Result<()> {
         match self {
             Self::Standard => standard::validate_edit(previous, candidate),
@@ -64,8 +64,8 @@ impl PrefixBackend {
     /// Apply validated selections to a stopped prefix. Virgo defers materialization.
     pub(super) async fn apply(
         &self,
-        previous: &EnvironmentConfig,
-        candidate: &EnvironmentConfig,
+        previous: &EnvironmentState,
+        candidate: &EnvironmentState,
         root: &Path,
         cx: &Context,
         addons: &Addons,
@@ -93,7 +93,7 @@ impl PrefixBackend {
     /// Materialize a stopped prefix for execution using the selected configuration.
     pub(super) async fn prepare(
         &self,
-        config: &EnvironmentConfig,
+        config: &EnvironmentState,
         runner: &dyn Runner,
         root: &Path,
         cx: &Context,

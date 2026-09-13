@@ -4,7 +4,7 @@ mod artifacts;
 mod registry;
 pub(crate) use artifacts::VirgoManager;
 
-use super::super::{EnvironmentConfig, history};
+use super::super::{EnvironmentState, history};
 use crate::{
     Context, Progress, Stage,
     error::{Error, Result},
@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Builds the selected Virgo composition while the owner is coordinated and stopped.
 pub(super) async fn prepare(
-    config: &EnvironmentConfig,
+    config: &EnvironmentState,
     runner: &dyn Runner,
     root: &Path,
     cx: &Context,

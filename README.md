@@ -35,9 +35,9 @@ The crate is centered around six types:
 - `Operation<T>` represents long-running work with progress and cooperative
   cancellation.
 
-Execution settings live in `BottleState::environment()` as an `EnvironmentConfig`.
+Execution settings live in `BottleState::environment()` as an `EnvironmentState`.
 Use `Bottle::edit` to update bottle state, and call `stop()` before changing
-its environment settings. `Bottle::launch(ProgramSpec)` runs an unregistered
+its environment settings. `Bottle::launch(group_id, LaunchSpec)` runs an unregistered
 program; `Bottle::launch_program(uuid)` runs a saved registration. Dropping a
 bottle handle leaves Wine running; call `stop()` to shut it down.
 
@@ -68,7 +68,7 @@ futures-lite = "2"
 Open the library, inspect the current bottles, and stop its download service:
 
 ```rust
-use bottles_core::{Bottles, Config, ProgramSpec, SearchSource};
+use bottles_core::{Bottles, Config, LaunchSpec, SearchSource};
 use futures_lite::StreamExt;
 
 #[tokio::main]
@@ -83,10 +83,10 @@ async fn main() -> Result<(), bottles_core::error::Error> {
     }
 
     if let Some(bottle) = bottles.bottles().list().into_iter().next() {
-        let program = ProgramSpec::new("Example", "C:/Games/example.exe")?;
-        let id = program.id();
+        let program = LaunchSpec::new("Example", "C:/Games/example.exe")?;
+        let id = uuid::Uuid::new_v4();
         bottle.edit(move |state| {
-            state.programs.insert(program.id(), program);
+            state.programs.insert(id, program);
             Ok(())
         }).await?;
         println!("registered {id}");
@@ -124,3 +124,8 @@ Licensed under the [GNU General Public License, version 3](LICENSE).
 
 [Source]: https://github.com/bottlesdevs/next-core
 [Issue tracker]: https://github.com/bottlesdevs/next-core/issues
+
+Bottle configuration uses version 2 in `bottle.toml`. Version 1 records and
+snapshots are incompatible and are left untouched; no migration is provided.
+Registration UUIDs belong to the bottle's program map, not to `LaunchSpec`.
+The prefix backend is stored on `BottleState` and is fixed at creation.

@@ -1,6 +1,6 @@
 //! Persisted execution settings shared by all environment owners.
 
-use super::{EnvironmentError, PrefixBackend};
+use super::EnvironmentError;
 use crate::{
     Addon, AddonError, Component, Dependency, EnvVars, Requirement, Slot, Wrappers, error::Result,
 };
@@ -12,10 +12,7 @@ use uuid::Uuid;
 /// Execution settings embedded in a bottle or standalone program's saved state.
 /// Selections preserve runtime contributions independently of installation inputs.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct EnvironmentConfig {
-    /// Prefix creation and software materialization strategy.
-    #[serde(rename = "storage")]
-    pub backend: PrefixBackend,
+pub struct EnvironmentState {
     /// Component releases pinned to their occupied slots.
     pub components: HashMap<Slot, Addon<Component>>,
     /// Installed dependencies in installation order.
@@ -26,13 +23,9 @@ pub struct EnvironmentConfig {
     pub wrappers: Wrappers,
 }
 
-impl EnvironmentConfig {
+impl EnvironmentState {
     /// Resolve the downloaded runtime releases for a new environment.
-    pub(crate) fn new(
-        backend: PrefixBackend,
-        runner: Uuid,
-        addons: &crate::Addons,
-    ) -> Result<Self> {
+    pub(crate) fn new(runner: Uuid, addons: &crate::Addons) -> Result<Self> {
         let runner_component = addons
             .component(runner)
             .ok_or(crate::AddonError::NotFound(runner))?;
@@ -72,8 +65,7 @@ impl EnvironmentConfig {
         if let Some(umu) = umu {
             components.insert(Slot::Umu, Addon::from(umu.as_ref()));
         }
-        let config = EnvironmentConfig {
-            backend,
+        let config = EnvironmentState {
             components,
             dependencies: Vec::new(),
             env_vars: Default::default(),
@@ -118,11 +110,6 @@ impl EnvironmentConfig {
     /// Validate edited selections before runtime or prefix work.
     pub(crate) fn validate_edit(&self, previous: &Self, addons: &crate::Addons) -> Result<()> {
         self.validate_requirements()?;
-        if self.backend != previous.backend {
-            return Err(
-                EnvironmentError::InvalidEdit("prefix backend is fixed at creation").into(),
-            );
-        }
         for slot in Slot::iter() {
             let old = previous.component(slot);
             let new = self.component(slot);
