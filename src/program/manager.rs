@@ -55,11 +55,12 @@ impl ProgramManager {
                 &cancellation,
             )
             .await?;
-            Ok(Program(manager.registry.intern(environment)?))
+            manager.registry.insert(environment.clone())?;
+            Ok(Program(environment))
         })
     }
-    /// Open an already-known program without filesystem or runtime work.
-    pub async fn open(&self, id: Uuid) -> Result<Program> {
+    /// Look up an already-known program synchronously, without filesystem or runtime work.
+    pub fn open(&self, id: Uuid) -> Result<Program> {
         self.registry
             .get(id)
             .map(Program)
@@ -78,7 +79,7 @@ impl ProgramManager {
     pub fn delete(&self, id: Uuid) -> Operation<()> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
-            let program = manager.open(id).await?;
+            let program = manager.open(id)?;
             program.0.delete(&progress, &cancellation).await?;
             manager.registry.remove(id);
             Ok(())
