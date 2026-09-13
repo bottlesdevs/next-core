@@ -30,3 +30,23 @@ pub(super) async fn stop(runner: &dyn Runner, prefix: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+/// Finish startup under the caller's coordination lock. Failed or cancelled startup
+/// must stop its processes and release storage before the caller can return.
+pub(super) async fn finish_start<T>(
+    result: Result<T>,
+    cancellation: &tokio_util::sync::CancellationToken,
+    cleanup: impl std::future::Future<Output = Result<()>>,
+) -> Result<T> {
+    let result = result.and_then(|value| {
+        if cancellation.is_cancelled() {
+            Err(crate::error::Error::Cancelled)
+        } else {
+            Ok(value)
+        }
+    });
+    if result.is_err() {
+        cleanup.await?;
+    }
+    result
+}

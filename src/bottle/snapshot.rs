@@ -145,6 +145,9 @@ impl Bottle {
                 &progress,
             )
             .await?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
             let result = async {
                 let response =
                     history::restore(&bottle_path, &state_id_or_prefix, &cx, &progress).await?;

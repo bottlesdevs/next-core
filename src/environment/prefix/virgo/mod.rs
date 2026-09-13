@@ -50,13 +50,19 @@ pub(super) async fn prepare(
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
+        let mut layers = vec![base.layer];
+        layers.extend(overlays.into_iter().map(|artifact| artifact.layer));
+        mount(root, layers, cx).await?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
         Ok(())
     }
     .await;
-    history::recover(result, root, &checkpoint, cx, progress).await?;
-    let mut layers = vec![base.layer];
-    layers.extend(overlays.into_iter().map(|artifact| artifact.layer));
-    mount(root, layers, cx).await
+    if result.is_err() {
+        release(root, cx).await?;
+    }
+    history::recover(result, root, &checkpoint, cx, progress).await
 }
 
 /// Mount resolved layers after the environment workflow has stopped Wine.
