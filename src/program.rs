@@ -55,7 +55,7 @@ impl EnvironmentOwnerState for ProgramState {
     }
     fn validate(&self) -> Result<()> {
         self.launch.validate()?;
-        self.environment.validate_requirements()
+        self.environment.validate()
     }
 }
 
@@ -105,8 +105,8 @@ impl Program {
     pub fn remove_component(&self, slot: Slot) -> Operation<()> {
         self.0.remove_component(slot)
     }
-    pub fn install(&self, id: Uuid) -> Operation<()> {
-        self.0.install(id)
+    pub fn install_dependency(&self, id: Uuid) -> Operation<()> {
+        self.0.install_dependency(id)
     }
     pub fn dll_overrides(&self) -> Operation<Vec<DllOverride>> {
         self.0.dll_overrides()

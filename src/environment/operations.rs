@@ -2,8 +2,8 @@
 
 use super::{Environment, EnvironmentOwnerState, runtime};
 use crate::{
-    Addon, AddonError, Addons, Edit, EnvironmentError, EnvironmentState, Operation, ProgramSpec,
-    Progress, Slot, Stage,
+    Addons, Edit, EnvironmentError, EnvironmentState, Operation, ProgramSpec, Progress, Slot,
+    Stage,
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
     winebridge::WineBridgeClient,
@@ -28,6 +28,9 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
+            if draft == *previous {
+                return Ok(result);
+            }
             environment.save(&draft).await?;
             environment.publish(draft);
             Ok(result)
@@ -39,23 +42,11 @@ impl<T: EnvironmentOwnerState> Environment<T> {
     }
 
     pub(crate) fn remove_component(self: &Arc<Self>, slot: Slot) -> Operation<()> {
-        self.update_software(move |state, _| {
-            state
-                .components
-                .remove(&slot)
-                .ok_or(EnvironmentError::ComponentNotInstalled(slot))?;
-            Ok(())
-        })
+        self.update_software(move |state, _| state.remove_component(slot))
     }
 
-    pub(crate) fn install(self: &Arc<Self>, id: Uuid) -> Operation<()> {
-        self.update_software(move |state, addons| {
-            if state.dependency(id).is_none() {
-                let dependency = addons.dependency(id).ok_or(AddonError::NotFound(id))?;
-                state.dependencies.push(Addon::from(dependency.as_ref()));
-            }
-            Ok(())
-        })
+    pub(crate) fn install_dependency(self: &Arc<Self>, id: Uuid) -> Operation<()> {
+        self.update_software(move |state, addons| state.add_dependency(id, addons))
     }
 
     fn update_software(
@@ -97,9 +88,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
                     &cancellation,
                 )
                 .await?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
+            // Successful application must be saved and published even if cancellation arrives.
             environment.save(&draft).await?;
             environment.publish(draft);
             Ok(())
