@@ -73,34 +73,39 @@ impl Environment {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        config
-            .backend
-            .prepare(
-                config,
-                runner.as_ref(),
-                root,
-                cx,
-                #[cfg(feature = "fvs")]
-                virgo,
-                progress,
-                cancellation,
-            )
-            .await?;
-        let prefix = root.join("prefix");
-        let command = config.wrappers.apply(WineBridgeClient::command(
-            runner.as_ref(),
-            &prefix,
-            config.winebridge().path(cx.directories()),
-            env_vars.iter(),
-        ));
-        match WineBridgeClient::connect_or_spawn(&prefix, command).await {
-            Ok(bridge) => Ok(Self { bridge }),
-            Err(error) => {
-                runtime::stop(runner.as_ref(), &prefix).await?;
-                config.backend.release(root, cx).await?;
-                Err(error)
+        let result = async {
+            config
+                .backend
+                .prepare(
+                    config,
+                    runner.as_ref(),
+                    root,
+                    cx,
+                    #[cfg(feature = "fvs")]
+                    virgo,
+                    progress,
+                    cancellation,
+                )
+                .await?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
             }
+            let prefix = root.join("prefix");
+            let command = config.wrappers.apply(WineBridgeClient::command(
+                runner.as_ref(),
+                &prefix,
+                config.winebridge().path(cx.directories()),
+                env_vars.iter(),
+            ));
+            let bridge = WineBridgeClient::connect_or_spawn(&prefix, command).await?;
+            Ok(Self { bridge })
         }
+        .await;
+        runtime::finish_start(result, cancellation, async {
+            runtime::stop(runner.as_ref(), &root.join("prefix")).await?;
+            config.backend.release(root, cx).await
+        })
+        .await
     }
 
     pub(crate) async fn launch(&self, program: &ProgramSpec) -> Result<u32> {

@@ -59,9 +59,6 @@ impl Bottle {
                 &cancellation,
             )
             .await?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
             environment.launch(program).await
         })
     }
@@ -172,9 +169,6 @@ impl Bottle {
                 &cancellation,
             )
             .await?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
             work(environment).await
         })
     }

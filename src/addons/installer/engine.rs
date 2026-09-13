@@ -22,7 +22,7 @@ use super::{InstallInputs, InstallResource, InstallStep};
 /// `backup_files` preserves displaced files for Standard removal; layered builds disable it.
 ///
 /// Cancellation is checked before the first step, after every step, while waiting for child
-/// processes, between per-DLL operations, and during extraction. Cancellation attempts to kill
+/// processes, between per-DLL operations, and before and after extraction. Cancellation attempts to kill
 /// and reap a running child; a kill failure is returned. The enclosing prefix scope stops Wine
 /// before diffing, unmounting, or restoring storage.
 pub(crate) async fn execute(
@@ -314,10 +314,9 @@ async fn extract_into(
         .join(Uuid::new_v4().to_string());
     async_fs::create_dir_all(&stage).await?;
     let work = async {
-        cancellation
-            .run_until_cancelled(archive::extract(archive, &stage))
-            .await
-            .ok_or(Error::Cancelled)??;
+        check_cancellation(cancellation)?;
+        archive::extract(archive, &stage).await?;
+        check_cancellation(cancellation)?;
         for source in archive::files(&stage).await? {
             check_cancellation(cancellation)?;
             let relative = destination.join(source.strip_prefix(&stage).map_err(|_| {
