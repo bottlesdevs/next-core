@@ -2,10 +2,10 @@
 
 use super::{Bottle, error::BottleError};
 use crate::{
-    Operation, ProgramSpec, Progress, Slot, Stage,
-    environment::Environment,
+    Operation, ProgramSpec, Progress, Slot, Stage, environment,
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
+    winebridge::WineBridgeClient,
 };
 use std::future::Future;
 use uuid::Uuid;
@@ -13,7 +13,7 @@ use uuid::Uuid;
 impl Bottle {
     /// Lists Wine DLL overrides, reporting progress while starting the environment if needed.
     pub fn dll_overrides(&self) -> Operation<Vec<DllOverride>> {
-        self.with_environment(async |environment| environment.dll_overrides().await)
+        self.with_bridge(async |environment| environment.list_dll_overrides().await)
     }
 
     /// Sets a Wine DLL loading mode, reporting progress during environment preparation.
@@ -24,15 +24,13 @@ impl Bottle {
             });
         }
         let dll = dll.into();
-        self.with_environment(async move |environment| {
-            environment.set_dll_override(dll, mode).await
-        })
+        self.with_bridge(async move |environment| environment.set_dll_override(dll, mode).await)
     }
 
     /// Removes a Wine DLL override, reporting preparation progress. Missing overrides succeed.
     pub fn unset_dll_override(&self, dll: impl Into<String>) -> Operation<()> {
         let dll = dll.into();
-        self.with_environment(async move |environment| environment.unset_dll_override(dll).await)
+        self.with_bridge(async move |environment| environment.delete_dll_override(dll).await)
     }
 
     /// Resolves the latest registration under the owner lock before starting and launching.
@@ -49,7 +47,7 @@ impl Bottle {
             }
             let state = bottle.state()?;
             let program = state.program(id).ok_or(BottleError::ProgramNotFound(id))?;
-            let environment = Environment::attach_or_start(
+            let environment = environment::attach_or_start(
                 &state.environment,
                 &bottle.0.cx.directories().bottle(state.id),
                 &bottle.0.cx,
@@ -59,20 +57,20 @@ impl Bottle {
                 &cancellation,
             )
             .await?;
-            environment.launch(program).await
+            environment::launch(&environment, program).await
         })
     }
 
     /// Runs an unregistered definition. Its UUID identifies the process group.
     pub fn launch(&self, program: ProgramSpec) -> Operation<u32> {
-        self.with_environment(async move |environment| environment.launch(&program).await)
+        self.with_bridge(async move |environment| environment::launch(&environment, &program).await)
     }
 
     /// Returns Windows processes without starting a stopped environment.
     pub async fn processes(&self) -> Result<Vec<Process>> {
         let _control = self.0.control.lock().await;
         let state = self.state()?;
-        Environment::processes(&self.0.cx.directories().bottle(state.id)).await
+        environment::processes(&self.0.cx.directories().bottle(state.id)).await
     }
 
     /// Terminates a registered program's UUID-keyed process group without starting Wine.
@@ -82,7 +80,7 @@ impl Bottle {
         if state.program(id).is_none() {
             return Err(BottleError::ProgramNotFound(id).into());
         }
-        Environment::kill(&self.0.cx.directories().bottle(state.id), id).await
+        environment::kill(&self.0.cx.directories().bottle(state.id), id).await
     }
 
     /// Stops Wine before releasing storage, even when WineBridge cannot be reached.
@@ -131,7 +129,7 @@ impl Bottle {
     // Caller must hold the owner lock, including through subsequent filesystem work.
     pub(super) async fn stop_locked(&self) -> Result<()> {
         let state = self.state()?;
-        Environment::stop(
+        environment::stop(
             &state.environment,
             &self.0.cx.directories().bottle(state.id),
             &self.0.cx,
@@ -140,9 +138,9 @@ impl Bottle {
     }
 
     /// Execute against a running environment while holding the owner lock.
-    fn with_environment<T, Fut>(
+    fn with_bridge<T, Fut>(
         &self,
-        work: impl FnOnce(Environment) -> Fut + Send + 'static,
+        work: impl FnOnce(WineBridgeClient) -> Fut + Send + 'static,
     ) -> Operation<T>
     where
         T: Send + 'static,
@@ -159,7 +157,7 @@ impl Bottle {
                 return Err(Error::Cancelled);
             }
             let state = bottle.state()?;
-            let environment = Environment::attach_or_start(
+            let environment = environment::attach_or_start(
                 &state.environment,
                 &bottle.0.cx.directories().bottle(state.id),
                 &bottle.0.cx,

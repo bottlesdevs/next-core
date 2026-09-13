@@ -53,7 +53,7 @@ impl Bottle {
                 }
                 program.validate()?;
             }
-            crate::environment::Environment::apply(
+            crate::environment::apply(
                 &previous.environment,
                 &draft.environment,
                 &cx.directories().bottle(draft.id),
