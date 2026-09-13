@@ -7,7 +7,9 @@ mod error;
 pub(crate) mod history;
 mod operations;
 mod prefix;
+mod registry;
 mod runtime;
+pub(crate) use registry::Registry;
 #[cfg(feature = "fvs")]
 mod snapshot;
 mod state;

@@ -22,13 +22,15 @@ prefix changes.
 
 ## Overview
 
-The crate is centered around six types:
+The main entry points are:
 
-- `Bottles` owns the download service and provides the addon and bottle managers.
+- `Bottles` owns the download service and provides addon, bottle, and standalone program managers.
 - `Addons` publishes live collections of runners and installable addons. Item
   values are snapshots; query the manager again after a publication.
 - `BottleManager` interns bottles by UUID. A `Bottle` is a shared handle whose
   current immutable `BottleState` can be read or watched.
+- `ProgramManager` manages standalone Virgo programs, each with its own
+  `ProgramState`, environment, and snapshot history.
 - `Library` projects registered programs across bottles and searches them
   alongside games owned through the selected profile's storefront plugins.
 - `Profiles` persists named application identities and the current selection.
@@ -130,3 +132,22 @@ Bottles delegate state publication, persistence and execution to one internal
 `Environment<T>`. The environment holds the coordination lock through asynchronous
 cleanup and uses `WineBridgeClient` directly. Handle identity is read from the
 published state and is unavailable after deletion.
+
+With the `fvs` feature, create standalone programs through `Bottles::programs()`:
+
+```rust
+let launch = LaunchSpec::new("Example", "C:/Games/example.exe")?;
+let program = bottles.programs().create(launch, runner_id).await?;
+program.edit(|edit| {
+    edit.rename("Example game");
+    edit.env_vars().insert("EXAMPLE_OPTION".into(), "1".into());
+    Ok(())
+}).await?;
+program.launch().await?;
+```
+
+Standalone programs always use Virgo and store their complete state in
+`programs/<uuid>/program.toml`. Creation saves selections without acquiring the
+application or building shared layers. Snapshots capture the owner file and
+persistent private data after stopping Wine and unmounting Virgo; shared
+artifacts and files outside the managed root are excluded.
