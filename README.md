@@ -39,7 +39,8 @@ The main entry points are:
 
 Execution settings live in `BottleState::environment()` as an `EnvironmentState`.
 Use `Bottle::edit` for metadata, environment variables and wrappers. These settings
-apply on the next startup. Stop the environment before explicit software changes. `Bottle::launch(group_id, ProgramSpec)` runs an unregistered
+apply on the next startup. Stop the environment before explicit software changes. Selection operations resolve downloaded
+addons; shared state validation checks structure, unique dependencies, and requirements. `Bottle::launch(group_id, ProgramSpec)` runs an unregistered
 program; `Bottle::launch_program(uuid)` runs a saved registration. Dropping a
 bottle handle leaves Wine running; call `stop()` to shut it down.
 

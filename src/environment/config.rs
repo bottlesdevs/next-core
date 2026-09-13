@@ -5,7 +5,7 @@ use crate::{
     Addon, AddonError, Component, Dependency, EnvVars, Requirement, Slot, Wrappers, error::Result,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use strum::IntoEnumIterator;
 use uuid::Uuid;
 
@@ -123,57 +123,6 @@ impl EnvironmentState {
         Ok(())
     }
 
-    /// Validate edited selections before runtime or prefix work.
-    pub(crate) fn validate_edit(&self, previous: &Self, addons: &crate::Addons) -> Result<()> {
-        self.validate()?;
-        for slot in Slot::iter() {
-            let old = previous.component(slot);
-            let new = self.component(slot);
-            if old == new {
-                continue;
-            }
-            if let Some(new) = new {
-                let downloaded = addons
-                    .component(new.id())
-                    .ok_or(AddonError::NotFound(new.id()))?;
-                if Addon::from(downloaded.as_ref()) != *new {
-                    return Err(EnvironmentError::InvalidEdit(
-                        "component selection must match its downloaded release",
-                    )
-                    .into());
-                }
-            }
-        }
-        for new in &self.dependencies {
-            if self
-                .dependencies
-                .iter()
-                .filter(|addon| addon.id() == new.id())
-                .count()
-                != 1
-            {
-                return Err(EnvironmentError::InvalidEdit(
-                    "a dependency may only be selected once",
-                )
-                .into());
-            }
-            if previous.dependency(new.id()) == Some(new) {
-                continue;
-            }
-            let downloaded = addons
-                .dependency(new.id())
-                .ok_or(AddonError::NotFound(new.id()))?;
-            if Addon::from(downloaded.as_ref()) != *new {
-                return Err(EnvironmentError::InvalidEdit(
-                    "dependency selection must match its downloaded release",
-                )
-                .into());
-            }
-        }
-
-        Ok(())
-    }
-
     /// Prefix-contributing components in fixed slot order.
     pub(crate) fn ordered_components(&self) -> impl Iterator<Item = &Addon<Component>> {
         Slot::iter()
@@ -236,6 +185,15 @@ impl EnvironmentState {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        let mut dependencies = HashSet::new();
+        for addon in &self.dependencies {
+            if !dependencies.insert(addon.id()) {
+                return Err(EnvironmentError::InvalidEdit(
+                    "a dependency may only be selected once",
+                )
+                .into());
+            }
+        }
         for (name, value) in self.env_vars.iter() {
             if name.is_empty() || name.contains(['=', '\0']) {
                 return Err(EnvironmentError::InvalidEnvironmentName(name.into()).into());
