@@ -9,7 +9,6 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(feature = "fvs")]
 use std::path::PathBuf;
 
 use futures_core::Stream;
@@ -94,8 +93,8 @@ pub(crate) struct BottleInner {
     pub(crate) published: watch::Sender<Option<Arc<BottleState>>>,
     /// Serializes control operations across cloned handles.
     pub(crate) control: Mutex<()>,
-    /// Retained after deletion so stale handles report which bottle was deleted.
-    pub(crate) id: Uuid,
+    /// Managed directory retained independently of published state.
+    pub(crate) root: PathBuf,
     /// Shared services and storage locations scoped to the owning manager.
     pub(crate) cx: Context,
     /// Shared addon registry scoped to the owning manager.
@@ -164,10 +163,10 @@ impl Bottle {
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
     ) -> Result<Self> {
         state.validate()?;
-        let id = state.id;
+        let root = cx.directories().bottle(state.id);
         let (published, _) = watch::channel(Some(Arc::new(state)));
         Ok(Self(Arc::new(BottleInner {
-            id,
+            root,
             published,
             control: Mutex::new(()),
             cx,
@@ -177,9 +176,9 @@ impl Bottle {
         })))
     }
 
-    /// Returns this bottle's stable identity, including after deletion.
-    pub fn id(&self) -> Uuid {
-        self.0.id
+    /// Returns the identity from the current state; fails after deletion.
+    pub fn id(&self) -> Result<Uuid> {
+        Ok(self.state()?.id())
     }
 
     /// Returns the latest published state.
@@ -195,7 +194,7 @@ impl Bottle {
             .published
             .borrow()
             .clone()
-            .ok_or_else(|| BottleError::Deleted(self.0.id).into())
+            .ok_or_else(|| BottleError::Deleted.into())
     }
 
     /// Watches this bottle's published state.
@@ -214,7 +213,7 @@ impl Bottle {
     #[cfg(feature = "fvs")]
     pub(crate) fn ensure_exists(&self) -> Result<()> {
         if self.is_deleted() {
-            Err(BottleError::Deleted(self.0.id).into())
+            Err(BottleError::Deleted.into())
         } else {
             Ok(())
         }
@@ -247,7 +246,7 @@ impl Bottle {
 
     #[cfg(feature = "fvs")]
     pub(crate) fn bottle_path(&self) -> PathBuf {
-        self.0.cx.directories().bottle(self.0.id)
+        self.0.root.clone()
     }
 
     async fn save(&self) -> Result<()> {
