@@ -125,7 +125,8 @@ Licensed under the [GNU General Public License, version 3](LICENSE).
 [Issue tracker]: https://github.com/bottlesdevs/next-core/issues
 
 Bottle configuration uses version 1 in `bottle.toml`. Registration UUIDs belong
-to the bottle's program map, not to `ProgramSpec`.
+to the bottle's program map, not to `ProgramSpec`. The shared `ProgramSpec` is
+also used by standalone programs; malformed definitions return `Error::InvalidProgram`.
 The prefix backend is stored on `BottleState` and is fixed at creation.
 
 Bottles delegate state publication, persistence and execution to one internal

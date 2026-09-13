@@ -12,6 +12,8 @@ mod profiles;
 mod program;
 #[cfg(feature = "fvs")]
 pub use program::{Program, ProgramManager, ProgramState};
+mod program_spec;
+pub use program_spec::ProgramSpec;
 mod runner;
 mod utils;
 mod winebridge;
@@ -23,7 +25,7 @@ pub use addons::{
 };
 pub use bottle::{
     Bottle, BottleError, BottleManager, BottleState, DllOverride, DllOverrideMode, GamescopeConfig,
-    GamescopeFilter, GamescopeScaler, MangoHudConfig, Process, ProgramSpec, RegistryHive, Wrappers,
+    GamescopeFilter, GamescopeScaler, MangoHudConfig, Process, RegistryHive, Wrappers,
 };
 pub use core::{Bottles, Config};
 pub use environment::{Edit, EnvironmentError, EnvironmentState, PrefixBackend};
