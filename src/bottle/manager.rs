@@ -22,7 +22,7 @@ use uuid::Uuid;
 use crate::{
     Context, EnvironmentConfig, Operation, PrefixBackend, Progress, Stage,
     addons::Addons,
-    environment::Environment,
+    environment,
     error::{Error, Result},
 };
 
@@ -195,7 +195,7 @@ impl BottleManager {
             let bottle_path = cx.directories().bottle(id);
             // Initialization may retain live storage on failure; only remove after it succeeds.
             let config = EnvironmentConfig::new(backend, runner, &addons)?;
-            Environment::initialize(&config, &bottle_path, &cx, &progress, &cancellation).await?;
+            environment::initialize(&config, &bottle_path, &cx, &progress, &cancellation).await?;
             let result = async {
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
