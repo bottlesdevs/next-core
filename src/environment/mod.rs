@@ -8,7 +8,11 @@ pub(crate) mod history;
 mod operations;
 mod prefix;
 mod runtime;
+#[cfg(feature = "fvs")]
+mod snapshot;
 mod state;
+#[cfg(feature = "fvs")]
+pub use snapshot::{Snapshot, SnapshotSummary};
 
 pub use config::EnvironmentState;
 pub use edit::Edit;

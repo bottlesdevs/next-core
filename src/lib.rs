@@ -21,10 +21,10 @@ pub use bottle::{
     Bottle, BottleError, BottleManager, BottleState, DllOverride, DllOverrideMode, GamescopeConfig,
     GamescopeFilter, GamescopeScaler, LaunchSpec, MangoHudConfig, Process, RegistryHive, Wrappers,
 };
-#[cfg(feature = "fvs")]
-pub use bottle::{Snapshot, SnapshotSummary};
 pub use core::{Bottles, Config};
 pub use environment::{Edit, EnvironmentError, EnvironmentState, PrefixBackend};
+#[cfg(feature = "fvs")]
+pub use environment::{Snapshot, SnapshotSummary};
 pub use library::{Library, LibraryItem, SearchEntry, SearchSource};
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use plugins::{PluginError, PluginId, PluginInfo, PluginKind, PluginManifest, Plugins};
