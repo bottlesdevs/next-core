@@ -78,20 +78,25 @@ async fn mount(root: &Path, layers: Vec<Layer>, cx: &Context) -> Result<()> {
 
 pub(super) async fn release(root: &Path, context: &Context) -> Result<()> {
     let prefix = root.join("prefix");
-    let client = context.fvs().await?;
-    if let Some(mount) = client.list_mounts().await?.into_iter().find(|mount| {
-        mount
-            .spec
-            .as_ref()
-            .is_some_and(|spec| spec.mount_point == prefix.to_string_lossy())
-    }) {
-        client
-            .unmount(&mount, UnmountMode::Normal)
-            .await
-            .map_err(|source| crate::EnvironmentError::Cleanup {
-                prefix,
-                source: Box::new(source.into()),
-            })?;
+    if crate::utils::exists(&prefix).await? {
+        let client = context.fvs().await?;
+        if let Some(mount) = client.list_mounts().await?.into_iter().find(|mount| {
+            mount
+                .spec
+                .as_ref()
+                .is_some_and(|spec| spec.mount_point == prefix.to_string_lossy())
+        }) {
+            client
+                .unmount(&mount, UnmountMode::Normal)
+                .await
+                .map_err(|source| crate::EnvironmentError::Cleanup {
+                    prefix,
+                    source: Box::new(source.into()),
+                })?;
+        }
+    }
+    for directory in ["prefix", "upper"] {
+        crate::winebridge::WineBridgeClient::clear_discovery(&root.join(directory)).await?;
     }
     Ok(())
 }

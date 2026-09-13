@@ -131,8 +131,9 @@ The prefix backend is stored on `BottleState` and is fixed at creation.
 
 Bottles delegate state publication, persistence and execution to one internal
 `Environment<T>`. The environment holds the coordination lock through asynchronous
-cleanup and uses `WineBridgeClient` directly. Handle identity is read from the
-published state and is unavailable after deletion.
+cleanup and uses `WineBridgeClient` directly. Backend release removes transient
+WineBridge discovery files, including Virgo upper files, before history capture.
+Handle identity is read from the published state and is unavailable after deletion.
 
 With the `fvs` feature and a downloaded runner UUID in `runner_id`, create
 standalone programs through `Bottles::programs()`:
