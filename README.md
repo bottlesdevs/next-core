@@ -31,7 +31,7 @@ The main entry points are:
   current immutable `BottleState` can be read or watched.
 - `ProgramManager` manages standalone Virgo programs, each with its own
   `ProgramState`, environment, and snapshot history.
-- `Library` projects registered programs across bottles and searches them
+- `Library` combines bottle registrations and standalone programs and searches them
   alongside games owned through the selected profile's storefront plugins.
 - `Profiles` persists named application identities and the current selection.
 - `Operation<T>` represents long-running work with progress and cooperative
@@ -98,7 +98,7 @@ async fn main() -> Result<(), bottles_core::error::Error> {
         println!("{} ({})", entry.title(), entry.source_name());
         match entry.source() {
             SearchSource::Installed(item) => {
-                println!("  launch {}", item.program()?.name());
+                println!("  launch {}", item.launch_spec()?.name());
             }
             SearchSource::Storefront { provider_id, .. } => {
                 println!("  owned through {provider_id}");
@@ -133,7 +133,8 @@ Bottles delegate state publication, persistence and execution to one internal
 cleanup and uses `WineBridgeClient` directly. Handle identity is read from the
 published state and is unavailable after deletion.
 
-With the `fvs` feature, create standalone programs through `Bottles::programs()`:
+With the `fvs` feature and a downloaded runner UUID in `runner_id`, create
+standalone programs through `Bottles::programs()`:
 
 ```rust
 let launch = LaunchSpec::new("Example", "C:/Games/example.exe")?;

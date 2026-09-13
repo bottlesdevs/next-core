@@ -1,5 +1,7 @@
 //! Aggregate installed programs and one-shot library search.
 
+#[cfg(feature = "fvs")]
+use crate::{Program, ProgramManager};
 use std::sync::Arc;
 
 use futures_core::Stream;
@@ -14,18 +16,27 @@ use crate::{
     bottle::error::BottleError, credentials, error::Result,
 };
 
-/// A live, non-persisted projection of programs registered in managed bottles.
+/// A live, non-persisted projection of bottle registrations and standalone programs.
 #[derive(Clone)]
 pub struct Library {
     bottles: BottleManager,
+    #[cfg(feature = "fvs")]
+    programs: ProgramManager,
     profiles: Profiles,
     plugins: Arc<Plugins>,
 }
 
 impl Library {
-    pub(crate) fn new(bottles: BottleManager, profiles: Profiles, plugins: Arc<Plugins>) -> Self {
+    pub(crate) fn new(
+        bottles: BottleManager,
+        #[cfg(feature = "fvs")] programs: ProgramManager,
+        profiles: Profiles,
+        plugins: Arc<Plugins>,
+    ) -> Self {
         Self {
             bottles,
+            #[cfg(feature = "fvs")]
+            programs,
             profiles,
             plugins,
         }
@@ -33,32 +44,49 @@ impl Library {
 
     /// Returns immutable handles for every currently registered program.
     ///
-    /// This reads only current in-memory bottle snapshots. Ordering is
+    /// This reads only current in-memory owner states. Ordering is
     /// unspecified, and bottles deleted during the snapshot are omitted.
     pub fn list(&self) -> Vec<LibraryItem> {
-        self.bottles
+        let items = self
+            .bottles
             .list()
             .into_iter()
             .filter_map(|bottle| bottle.state().ok().map(|state| (bottle, state)))
             .flat_map(|(bottle, state)| {
                 state
                     .programs()
-                    .map(move |(id, _)| LibraryItem {
+                    .map(move |(id, _)| LibraryItem::Bottle {
                         bottle: bottle.clone(),
                         program_id: id,
                     })
                     .collect::<Vec<_>>()
             })
-            .collect()
+            .collect::<Vec<_>>();
+        #[cfg(feature = "fvs")]
+        let items = {
+            let mut items = items;
+            items.extend(
+                self.programs
+                    .list()
+                    .into_iter()
+                    .filter(|program| program.state().is_ok())
+                    .map(LibraryItem::Standalone),
+            );
+            items
+        };
+        items
     }
 
-    /// Watches the bottle registry and yields the current [`list`](Self::list).
+    /// Watches both installed registries and yields the current [`list`](Self::list).
     ///
     /// The stream yields the current snapshot first. Slow consumers may miss
     /// intermediate generations and receive only the latest aggregate state.
     pub fn watch(&self) -> impl Stream<Item = Vec<LibraryItem>> + Send + 'static + use<> {
         let library = self.clone();
-        self.bottles.watch().map(move |_| library.list())
+        let changes = self.bottles.watch().map(|_| ());
+        #[cfg(feature = "fvs")]
+        let changes = stream::select(changes, self.programs.watch().skip(1).map(|_| ()));
+        changes.map(move |_| library.list())
     }
 
     /// Searches installed programs and games owned by the selected profile.
@@ -167,11 +195,10 @@ impl Library {
             .list()
             .into_iter()
             .filter_map(|installed| {
-                let state = installed.bottle.state().ok()?;
-                let program = state.program(installed.program_id)?;
+                let (title, source_name) = installed.summary().ok()?;
                 Some(SearchEntry {
-                    title: program.name().to_owned(),
-                    source_name: state.name().to_owned(),
+                    title,
+                    source_name,
                     source: SearchSource::Installed(installed),
                 })
             })
@@ -185,31 +212,61 @@ impl Library {
     }
 }
 
-/// A live reference to a registered program with actions bound to its bottle.
+/// A live installed item with actions bound to its owning environment.
 #[derive(Clone)]
-pub struct LibraryItem {
-    bottle: Bottle,
-    program_id: Uuid,
+pub enum LibraryItem {
+    Bottle {
+        bottle: Bottle,
+        program_id: Uuid,
+    },
+    #[cfg(feature = "fvs")]
+    Standalone(Program),
 }
 
 impl LibraryItem {
-    /// Returns the current launch definition.
-    pub fn program(&self) -> Result<LaunchSpec> {
-        self.bottle
-            .state()?
-            .program(self.program_id)
-            .cloned()
-            .ok_or_else(|| BottleError::ProgramNotFound(self.program_id).into())
+    /// Returns the latest launch definition, failing if the owner or registration is gone.
+    pub fn launch_spec(&self) -> Result<LaunchSpec> {
+        match self {
+            Self::Bottle { bottle, program_id } => bottle
+                .state()?
+                .program(*program_id)
+                .cloned()
+                .ok_or_else(|| BottleError::ProgramNotFound(*program_id).into()),
+            #[cfg(feature = "fvs")]
+            Self::Standalone(program) => Ok(program.state()?.launch().clone()),
+        }
     }
 
-    /// Launches the current registration.
+    fn summary(&self) -> Result<(String, String)> {
+        match self {
+            Self::Bottle { bottle, program_id } => {
+                let state = bottle.state()?;
+                let launch = state
+                    .program(*program_id)
+                    .ok_or(BottleError::ProgramNotFound(*program_id))?;
+                Ok((launch.name().into(), state.name().into()))
+            }
+            #[cfg(feature = "fvs")]
+            Self::Standalone(program) => Ok((program.state()?.name().into(), "Standalone".into())),
+        }
+    }
+
+    /// Launch using the current definition and owning environment.
     pub fn launch(&self) -> Operation<u32> {
-        self.bottle.launch_program(self.program_id)
+        match self {
+            Self::Bottle { bottle, program_id } => bottle.launch_program(*program_id),
+            #[cfg(feature = "fvs")]
+            Self::Standalone(program) => program.launch(),
+        }
     }
 
-    /// Kills the current registration's process group.
+    /// Kill the installed item's process group without starting a stopped runtime.
     pub async fn kill(&self) -> Result<()> {
-        self.bottle.kill_program(self.program_id).await
+        match self {
+            Self::Bottle { bottle, program_id } => bottle.kill_program(*program_id).await,
+            #[cfg(feature = "fvs")]
+            Self::Standalone(program) => program.kill().await,
+        }
     }
 }
 
@@ -248,7 +305,7 @@ impl SearchEntry {
 #[derive(Clone)]
 #[non_exhaustive]
 pub enum SearchSource {
-    /// A launchable program currently registered in a bottle.
+    /// A bottle registration or standalone program currently installed.
     Installed(LibraryItem),
     /// A game owned through one linked storefront account.
     Storefront {
