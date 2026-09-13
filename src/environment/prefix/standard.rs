@@ -3,7 +3,7 @@
 use super::super::runtime;
 use crate::{
     AddonError, Addons, Context, EnvironmentError, EnvironmentState, Progress, Slot, Stage,
-    addons::{InstallInputs, execute, uninstall, validate_removal},
+    addons::{InstallInputs, execute, uninstall},
     error::Result,
 };
 use std::path::Path;
@@ -53,18 +53,18 @@ pub(super) async fn apply(
         if old == new {
             continue;
         }
+        if let Some(old) = old {
+            let release = addons
+                .component(old.id())
+                .ok_or(AddonError::NotFound(old.id()))?;
+            removals.push(release);
+        }
         if let Some(new) = new {
             let release = addons
                 .component(new.id())
                 .ok_or(AddonError::NotFound(new.id()))?;
             release.validate(&release.path(cx.directories())).await?;
             components.push(release);
-        } else if let Some(old) = old {
-            let release = addons
-                .component(old.id())
-                .ok_or(AddonError::NotFound(old.id()))?;
-            validate_removal(release.recipe(), release.id())?;
-            removals.push(release);
         }
     }
     for new in &candidate.dependencies[previous.dependencies.len()..] {

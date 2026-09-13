@@ -45,33 +45,11 @@ pub(crate) async fn execute(
     Ok(())
 }
 
-/// Reject recipes that cannot be removed before modifying any prefix files.
-pub(crate) fn validate_removal<'a>(
-    steps: impl Iterator<Item = &'a InstallStep>,
-    addon: Uuid,
-) -> Result<()> {
-    for step in steps {
-        if !matches!(
-            step,
-            InstallStep::Copy { .. }
-                | InstallStep::SetDllOverrides { .. }
-                | InstallStep::SetEnvironment { .. }
-        ) {
-            return Err(InstallerError::UnsupportedRemoval {
-                addon,
-                step: format!("{step:?}"),
-            }
-            .into());
-        }
-    }
-    Ok(())
-}
-
 /// Attempts to undo a recipe in reverse resource and step order.
 ///
 /// File copies are restored or removed and DLL overrides are deleted. Runtime variable
-/// declarations are ignored. Recipes without a supported inverse are rejected before
-/// removal starts. File, bridge and override failures are returned.
+/// declarations and steps without an inverse are ignored. File, bridge and override
+/// failures are returned.
 /// The enclosing prefix scope owns Wine shutdown.
 pub(crate) async fn uninstall<'a>(
     inputs: InstallInputs<'_>,
@@ -80,10 +58,8 @@ pub(crate) async fn uninstall<'a>(
     cancellation: &CancellationToken,
     on_step: impl Fn(&InstallStep) + Send,
 ) -> Result<()> {
-    let steps = steps.collect::<Vec<_>>();
-    validate_removal(steps.iter().copied(), item_id)?;
     check_cancellation(cancellation)?;
-    for step in steps.into_iter().rev() {
+    for step in steps.rev() {
         on_step(step);
         uninstall_step(inputs, step, item_id, cancellation).await?;
         check_cancellation(cancellation)?;
@@ -210,11 +186,11 @@ async fn uninstall_step(
             }
         }
         unsupported => {
-            return Err(InstallerError::UnsupportedRemoval {
-                addon: addon_id,
-                step: format!("{unsupported:?}"),
-            }
-            .into());
+            tracing::warn!(
+                %addon_id,
+                step = ?unsupported,
+                "skipping unsupported component uninstall action"
+            );
         }
     }
     check_cancellation(cancellation)
@@ -291,18 +267,23 @@ async fn install_file(
 async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
     let destination = prefix.join(relative);
     let backup = prefix.join(backup_path(relative));
-    if async_fs::metadata(&backup)
-        .await
-        .is_ok_and(|entry| entry.is_file())
-    {
-        async_fs::copy(&backup, &destination).await?;
-        async_fs::remove_file(backup).await
-    } else {
-        match async_fs::remove_file(destination).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
+    match async_fs::metadata(&backup).await {
+        Ok(entry) if entry.is_file() => {
+            async_fs::copy(&backup, &destination).await?;
+            async_fs::remove_file(backup).await
         }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            match async_fs::remove_file(destination).await {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            }
+        }
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("backup is not a regular file: {}", backup.display()),
+        )),
+        Err(error) => Err(error),
     }
 }
 

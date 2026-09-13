@@ -11,7 +11,7 @@
 //! queries use the last successfully loaded catalog, while release queries expose
 //! downloaded or imported releases. Fetching an entry only places it in shared
 //! storage; select components with [`crate::Bottle::set_component`] and install
-//! dependencies with [`crate::Bottle::install`].
+//! dependencies with [`crate::Bottle::install_dependency`].
 
 #![warn(missing_docs)]
 
@@ -28,7 +28,7 @@ pub use addon::{Addon, Component, Dependency, Requirement, Slot};
 pub use catalog::CatalogEntry;
 pub(crate) use catalog::Checksum;
 pub use error::{AddonError, CatalogError, InstallerError};
-pub(crate) use installer::{InstallInputs, execute, uninstall, validate_removal};
+pub(crate) use installer::{InstallInputs, execute, uninstall};
 pub use manager::Addons;
 pub use release::Release;
 
