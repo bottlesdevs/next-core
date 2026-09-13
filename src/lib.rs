@@ -8,6 +8,10 @@ mod library;
 mod operation;
 mod plugins;
 mod profiles;
+#[cfg(feature = "fvs")]
+mod program;
+#[cfg(feature = "fvs")]
+pub use program::{Program, ProgramManager, ProgramState};
 mod runner;
 mod utils;
 mod winebridge;
