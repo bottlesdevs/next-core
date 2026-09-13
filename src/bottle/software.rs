@@ -92,18 +92,15 @@ impl Bottle {
         self.stop_locked().await
     }
 
-    /// Selects a downloaded component in a stopped environment.
-    /// A runner requiring UMU selects the latest downloaded UMU if necessary.
+    /// Select a downloaded component in a stopped environment.
     pub fn set_component(&self, id: Uuid) -> Operation<()> {
-        let addons = self.0.addons.clone();
-        self.edit(move |state| state.environment.set_component(id, &addons))
+        self.update_software(move |environment, addons| environment.set_component(id, addons))
     }
 
-    /// Removes a component from a stopped environment unless another addon requires it.
+    /// Remove a component unless another selected addon requires it.
     pub fn remove_component(&self, slot: Slot) -> Operation<()> {
-        self.edit(move |state| {
-            state
-                .environment
+        self.update_software(move |environment, _| {
+            environment
                 .components
                 .remove(&slot)
                 .ok_or(crate::EnvironmentError::ComponentNotInstalled(slot))?;
@@ -111,20 +108,53 @@ impl Bottle {
         })
     }
 
-    /// Installs a downloaded dependency in a stopped environment.
-    /// Reinstalling its UUID is a no-op.
+    /// Install a downloaded dependency; an already-selected UUID is a no-op.
     pub fn install(&self, id: Uuid) -> Operation<()> {
-        let addons = self.0.addons.clone();
-        self.edit(move |state| {
-            if state.environment.dependency(id).is_none() {
+        self.update_software(move |environment, addons| {
+            if environment.dependency(id).is_none() {
                 let dependency = addons
                     .dependency(id)
                     .ok_or(crate::AddonError::NotFound(id))?;
-                state
-                    .environment
+                environment
                     .dependencies
                     .push(crate::Addon::from(dependency.as_ref()));
             }
+            Ok(())
+        })
+    }
+
+    fn update_software(
+        &self,
+        update: impl FnOnce(&mut crate::EnvironmentState, &crate::Addons) -> Result<()> + Send + 'static,
+    ) -> Operation<()> {
+        let bottle = self.clone();
+        Operation::new(move |progress, cancellation| async move {
+            let _control = cancellation
+                .run_until_cancelled(bottle.0.control.lock())
+                .await
+                .ok_or(Error::Cancelled)?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let previous = bottle.state()?;
+            let mut draft = previous.as_ref().clone();
+            update(&mut draft.environment, &bottle.0.addons)?;
+            environment::apply(
+                &previous.backend,
+                &previous.environment,
+                &draft.environment,
+                &bottle.0.cx.directories().bottle(previous.id),
+                &bottle.0.cx,
+                &bottle.0.addons,
+                &progress,
+                &cancellation,
+            )
+            .await?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            Self::save_state(&draft, &bottle.0.cx).await?;
+            bottle.publish(draft);
             Ok(())
         })
     }

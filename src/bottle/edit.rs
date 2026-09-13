@@ -1,32 +1,22 @@
-//! Coordinated edits to the latest persisted bottle configuration.
+//! Coordinated metadata and execution-setting edits.
 
-use super::{Bottle, BottleError, BottleState};
+use super::{Bottle, BottleState};
 use crate::{
-    Operation, Progress, Stage,
+    Edit, Operation,
     error::{Error, Result},
 };
 
 impl Bottle {
-    /// Applies a callback to a draft of the latest state when this operation runs.
-    ///
-    /// Edit `name`, `programs`, and `environment` directly. Returning an error
-    /// discards the draft. Valid changes are reconciled, persisted, then published
-    /// together; cloned handles serialize edits against the latest state.
-    ///
-    /// Metadata can change while running. Environment changes require an explicit
-    /// stop first. The prefix backend is fixed; Standard dependencies may only be appended.
-    /// Addon selections must be downloaded.
-    /// Standard mutations write directly; failed recipes can leave partial effects.
-    /// Virgo edits save selections atomically; preparation happens before startup.
-    /// A successful edit does not guarantee that preparation will succeed.
-    pub fn edit(
+    /// Clone, edit, validate, save and publish the latest state under coordination.
+    /// Returning an error discards the draft. Settings apply on the next startup;
+    /// editing does not start Wine or run installers. Software changes use explicit
+    /// component and dependency operations.
+    pub fn edit<R: Send + 'static>(
         &self,
-        callback: impl FnOnce(&mut BottleState) -> Result<()> + Send + 'static,
-    ) -> Operation<()> {
+        callback: impl FnOnce(&mut Edit<'_, BottleState>) -> Result<R> + Send + 'static,
+    ) -> Operation<R> {
         let bottle = self.clone();
-        Operation::new(move |progress, cancellation| async move {
-            progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            let cx = &bottle.0.cx;
+        Operation::new(move |_, cancellation| async move {
             let _control = cancellation
                 .run_until_cancelled(bottle.0.control.lock())
                 .await
@@ -36,40 +26,14 @@ impl Bottle {
             }
             let previous = bottle.state()?;
             let mut draft = previous.as_ref().clone();
-            callback(&mut draft)?;
-            if draft.id != bottle.id() {
-                return Err(BottleError::IdMismatch {
-                    expected: bottle.id(),
-                    actual: draft.id,
-                }
-                .into());
-            }
-            if draft.backend != previous.backend {
-                return Err(crate::EnvironmentError::InvalidEdit(
-                    "prefix backend is fixed at creation",
-                )
-                .into());
-            }
-            for program in draft.programs.values() {
-                program.validate()?;
-            }
-            crate::environment::apply(
-                &previous.backend,
-                &previous.environment,
-                &draft.environment,
-                &cx.directories().bottle(draft.id),
-                cx,
-                &bottle.0.addons,
-                &progress,
-                &cancellation,
-            )
-            .await?;
+            let result = callback(&mut Edit { draft: &mut draft })?;
+            draft.validate()?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            Self::save_state(&draft, cx).await?;
+            Self::save_state(&draft, &bottle.0.cx).await?;
             bottle.publish(draft);
-            Ok(())
+            Ok(result)
         })
     }
 }

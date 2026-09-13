@@ -33,14 +33,28 @@ use crate::{Context, EnvironmentState, PrefixBackend, addons::Addons, error::Res
 #[config(version = 2)]
 pub struct BottleState {
     pub(crate) id: Uuid,
-    pub name: String,
+    pub(crate) name: String,
     pub(crate) backend: PrefixBackend,
-    pub environment: EnvironmentState,
+    pub(crate) environment: EnvironmentState,
     #[serde(default)]
-    pub programs: HashMap<Uuid, LaunchSpec>,
+    pub(crate) programs: HashMap<Uuid, LaunchSpec>,
+}
+
+impl crate::environment::EnvironmentOwnerState for BottleState {
+    fn environment_mut(&mut self) -> &mut EnvironmentState {
+        &mut self.environment
+    }
 }
 
 impl BottleState {
+    pub(crate) fn validate(&self) -> Result<()> {
+        self.environment.validate_requirements()?;
+        for launch in self.programs.values() {
+            launch.validate()?;
+        }
+        Ok(())
+    }
+
     /// Returns the bottle's stable identity.
     pub fn id(&self) -> Uuid {
         self.id
@@ -149,7 +163,7 @@ impl Bottle {
         addons: Addons,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
     ) -> Result<Self> {
-        state.environment.validate_requirements()?;
+        state.validate()?;
         let id = state.id;
         let (published, _) = watch::channel(Some(Arc::new(state)));
         Ok(Self(Arc::new(BottleInner {
