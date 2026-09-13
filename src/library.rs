@@ -12,7 +12,7 @@ use futures_util::{
 use uuid::Uuid;
 
 use crate::{
-    Bottle, BottleManager, LaunchSpec, Operation, PluginId, PluginKind, Plugins, Profiles,
+    Bottle, BottleManager, Operation, PluginId, PluginKind, Plugins, Profiles, ProgramSpec,
     bottle::error::BottleError, credentials, error::Result,
 };
 
@@ -225,7 +225,7 @@ pub enum LibraryItem {
 
 impl LibraryItem {
     /// Returns the latest launch definition, failing if the owner or registration is gone.
-    pub fn launch_spec(&self) -> Result<LaunchSpec> {
+    pub fn program(&self) -> Result<ProgramSpec> {
         match self {
             Self::Bottle { bottle, program_id } => bottle
                 .state()?

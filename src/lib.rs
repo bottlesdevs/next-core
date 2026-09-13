@@ -23,7 +23,7 @@ pub use addons::{
 };
 pub use bottle::{
     Bottle, BottleError, BottleManager, BottleState, DllOverride, DllOverrideMode, GamescopeConfig,
-    GamescopeFilter, GamescopeScaler, LaunchSpec, MangoHudConfig, Process, RegistryHive, Wrappers,
+    GamescopeFilter, GamescopeScaler, MangoHudConfig, Process, ProgramSpec, RegistryHive, Wrappers,
 };
 pub use core::{Bottles, Config};
 pub use environment::{Edit, EnvironmentError, EnvironmentState, PrefixBackend};
