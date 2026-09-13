@@ -59,7 +59,13 @@ impl Bottles {
         .await?;
         #[cfg(feature = "fvs")]
         let programs = ProgramManager::load(context.clone(), addons.clone(), virgo).await?;
-        let library = Library::new(bottles.clone(), profiles.clone(), plugins.clone());
+        let library = Library::new(
+            bottles.clone(),
+            #[cfg(feature = "fvs")]
+            programs.clone(),
+            profiles.clone(),
+            plugins.clone(),
+        );
 
         Ok(Self {
             context,
