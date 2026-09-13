@@ -52,7 +52,7 @@ impl Bottle {
     pub fn remove_component(&self, slot: Slot) -> Operation<()> {
         self.0.remove_component(slot)
     }
-    pub fn install(&self, id: Uuid) -> Operation<()> {
-        self.0.install(id)
+    pub fn install_dependency(&self, id: Uuid) -> Operation<()> {
+        self.0.install_dependency(id)
     }
 }

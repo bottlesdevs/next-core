@@ -53,7 +53,7 @@ impl crate::environment::EnvironmentOwnerState for BottleState {
 
 impl BottleState {
     pub(crate) fn validate(&self) -> Result<()> {
-        self.environment.validate_requirements()?;
+        self.environment.validate()?;
         for launch in self.programs.values() {
             launch.validate()?;
         }

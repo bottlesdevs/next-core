@@ -71,7 +71,7 @@ impl EnvironmentState {
             env_vars: Default::default(),
             wrappers: Default::default(),
         };
-        config.validate_requirements()?;
+        config.validate()?;
         Ok(config)
     }
 
@@ -107,9 +107,25 @@ impl EnvironmentState {
         Ok(())
     }
 
+    pub(crate) fn remove_component(&mut self, slot: Slot) -> Result<()> {
+        self.components
+            .remove(&slot)
+            .ok_or(EnvironmentError::ComponentNotInstalled(slot))?;
+        Ok(())
+    }
+
+    /// Select a downloaded dependency unless it is already selected.
+    pub(crate) fn add_dependency(&mut self, id: Uuid, addons: &crate::Addons) -> Result<()> {
+        if self.dependency(id).is_none() {
+            let dependency = addons.dependency(id).ok_or(AddonError::NotFound(id))?;
+            self.dependencies.push(Addon::from(dependency.as_ref()));
+        }
+        Ok(())
+    }
+
     /// Validate edited selections before runtime or prefix work.
     pub(crate) fn validate_edit(&self, previous: &Self, addons: &crate::Addons) -> Result<()> {
-        self.validate_requirements()?;
+        self.validate()?;
         for slot in Slot::iter() {
             let old = previous.component(slot);
             let new = self.component(slot);
@@ -219,7 +235,7 @@ impl EnvironmentState {
                 .any(|dependency| dependency.satisfies(requirement))
     }
 
-    pub(crate) fn validate_requirements(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         for (name, value) in self.env_vars.iter() {
             if name.is_empty() || name.contains(['=', '\0']) {
                 return Err(EnvironmentError::InvalidEnvironmentName(name.into()).into());
