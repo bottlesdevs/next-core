@@ -148,15 +148,14 @@ impl<T: EnvironmentOwnerState> Environment<T> {
     pub(crate) async fn stop_locked(&self) -> Result<()> {
         let state = self.state()?;
         let prefix = self.root.join("prefix");
-        if !crate::utils::exists(&prefix).await? {
-            return Ok(());
+        if crate::utils::exists(&prefix).await? {
+            let config = state.environment();
+            let runner = config
+                .runner()
+                .load_runner(self.context.directories(), config.umu())
+                .await?;
+            runtime::stop(runner.as_ref(), &prefix).await?;
         }
-        let config = state.environment();
-        let runner = config
-            .runner()
-            .load_runner(self.context.directories(), config.umu())
-            .await?;
-        runtime::stop(runner.as_ref(), &prefix).await?;
         state.backend().release(&self.root, &self.context).await
     }
 
