@@ -375,10 +375,13 @@ async fn prepare_component_archive(
 ) -> Result<PathBuf> {
     let extracted = stage.join("extracted");
     async_fs::create_dir(&extracted).await?;
-    cancellation
-        .run_until_cancelled(crate::utils::archive::extract(archive, &extracted))
-        .await
-        .ok_or(Error::Cancelled)??;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    crate::utils::archive::extract(archive, &extracted).await?;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
     let mut entries = async_fs::read_dir(&extracted).await?;
     let Some(entry) = entries.try_next().await? else {
         return Err(AddonError::InvalidComponentArchive.into());

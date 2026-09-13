@@ -242,35 +242,41 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let result = async {
-            backend
-                .prepare(
-                    config,
-                    runner.as_ref(),
-                    &self.root,
-                    &self.context,
-                    #[cfg(feature = "fvs")]
-                    &self.virgo,
-                    progress,
-                    cancellation,
-                )
-                .await?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            let command = config.wrappers.apply(WineBridgeClient::command(
+        backend
+            .prepare(
+                config,
                 runner.as_ref(),
-                &prefix,
-                config.winebridge().path(self.context.directories()),
-                vars.iter(),
-            ));
-            WineBridgeClient::connect_or_spawn(&prefix, command).await
+                &self.root,
+                &self.context,
+                #[cfg(feature = "fvs")]
+                &self.virgo,
+                progress,
+                cancellation,
+            )
+            .await?;
+        if cancellation.is_cancelled() {
+            backend.release(&self.root, &self.context).await?;
+            return Err(Error::Cancelled);
         }
-        .await;
-        runtime::finish_start(result, cancellation, async {
+        let command = config.wrappers.apply(WineBridgeClient::command(
+            runner.as_ref(),
+            &prefix,
+            config.winebridge().path(self.context.directories()),
+            vars.iter(),
+        ));
+        let result = WineBridgeClient::connect_or_spawn(&prefix, command)
+            .await
+            .and_then(|bridge| {
+                if cancellation.is_cancelled() {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(bridge)
+                }
+            });
+        if result.is_err() {
             runtime::stop(runner.as_ref(), &prefix).await?;
-            backend.release(&self.root, &self.context).await
-        })
-        .await
+            backend.release(&self.root, &self.context).await?;
+        }
+        result
     }
 }

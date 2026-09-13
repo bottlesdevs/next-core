@@ -91,6 +91,7 @@ impl PrefixBackend {
     }
 
     /// Materialize a stopped prefix for execution using the selected configuration.
+    /// Backends undo partial owner materialization before returning an error.
     pub(super) async fn prepare(
         &self,
         config: &EnvironmentState,
