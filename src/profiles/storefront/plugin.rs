@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     AccountIdentity, AccountLinkInteraction, LinkedAccount, StorefrontAccountProvider,
-    StorefrontProvider,
+    StorefrontLibraryProvider, StorefrontProvider,
 };
 use crate::plugins::Plugin;
 
@@ -55,8 +55,13 @@ impl bottles_plugin_host::AccountLinkInteraction for HostAccountLinkInteraction 
     }
 }
 
-impl Plugin {
-    pub(crate) async fn list_games(
+#[async_trait]
+impl StorefrontLibraryProvider for Plugin {
+    fn name(&self) -> &str {
+        &self.manifest.name
+    }
+
+    async fn list_games(
         &self,
         account_id: &str,
         credential: Option<&[u8]>,

@@ -93,7 +93,7 @@ impl Library {
     /// method is called. Storefront searches start when the returned stream is
     /// first polled, and results are emitted as their sources become ready. Later
     /// selection changes affect subsequent searches, not the captured account set.
-    /// Account-only providers are skipped; an unlinked profile searches installed entries.
+    /// Installed account-only plugins are skipped; an unlinked profile searches installed entries.
     /// Storefront failures are logged and omitted so local and other storefront
     /// results remain available. An empty or whitespace-only query matches every
     /// entry, and result ordering is unspecified.

@@ -234,15 +234,16 @@ impl Profiles {
     }
 
     /// Read games for the binding captured by a search, without exposing credentials.
-    /// Account-only providers return None. Provider calls run outside the profile
-    /// write lock so storefronts remain concurrent; providers decide whether credentials are required.
+    /// Installed plugins without library capability return None; unavailable
+    /// providers return an error. Calls run outside the profile write lock so
+    /// storefronts remain concurrent; providers decide whether credentials are required.
     pub(crate) async fn owned_games(
         &self,
         profile_id: Uuid,
         account: &StorefrontAccount,
     ) -> Result<Option<(String, Vec<bottles_plugin_host::OwnedGame>)>> {
         let provider_id = &account.provider.id;
-        let Some(plugin) = storefront::library_provider(&self.inner.plugins, provider_id)? else {
+        let Some(provider) = storefront::library_provider(&self.inner.plugins, provider_id)? else {
             return Ok(None);
         };
         let credential = {
@@ -250,7 +251,7 @@ impl Profiles {
             self.require_binding(profile_id, account)?;
             credentials::load(provider_id, profile_id).await?
         };
-        let listed = plugin
+        let listed = provider
             .list_games(&account.identity.account_id, credential.as_deref())
             .await?;
         if let Some(updated) = listed.updated_credential.as_deref() {
@@ -263,7 +264,7 @@ impl Profiles {
                 }
             }
         }
-        Ok(Some((plugin.manifest.name.clone(), listed.games)))
+        Ok(Some((provider.name().to_owned(), listed.games)))
     }
 
     fn require_binding(&self, profile_id: Uuid, account: &StorefrontAccount) -> Result<()> {
