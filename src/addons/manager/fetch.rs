@@ -1,9 +1,10 @@
 //! Fetch and publish complete immutable releases.
 
 use super::super::{
-    AddonError, CatalogError, Component, Dependency, Release,
+    Addon, AddonError, CatalogError, Component, Dependency,
     catalog::{CatalogArtifact, Target},
-    installer::{InstallResource, recipe_steps},
+    recipe::InstallResource,
+    recipes::steps as recipe_steps,
 };
 use super::{Addons, download, prepare_component_archive};
 use crate::{
@@ -15,12 +16,12 @@ use download_manager::manager::DownloadManager;
 use std::{path::Path, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use uuid::{NonNilUuid, Uuid};
+use uuid::Uuid;
 
 impl Addons {
     /// Returns an existing local component or downloads the selected catalog release.
     /// Catalog refreshes never replace a local release's metadata or recipe.
-    pub fn fetch_component(&self, id: Uuid) -> Operation<Arc<Release<Component>>> {
+    pub fn fetch_component(&self, id: Uuid) -> Operation<Arc<Addon<Component>>> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
             {
@@ -33,7 +34,7 @@ impl Addons {
                 }
                 if let Some(release) = addons.component(id) {
                     release
-                        .validate(&release.path(addons.0.context.directories()))
+                        .validate(&release.path(&addons.0.directories))
                         .await?;
                     return Ok(release);
                 }
@@ -57,8 +58,8 @@ impl Addons {
                 .into());
             }
             let artifact = artifacts[0];
-            let record = Arc::new(Release::new_component(
-                NonNilUuid::new(id).expect("catalog UUID is non-nil"),
+            let record = Arc::new(Addon::new_component(
+                id,
                 entry.name().into(),
                 entry.version().into(),
                 entry.slot(),
@@ -77,7 +78,7 @@ impl Addons {
                 async_fs::create_dir(&downloads).await?;
                 let file = downloads.join(artifact.file_name());
                 download_artifact(
-                    addons.0.context.downloader(),
+                    &addons.0.downloader,
                     artifact,
                     &file,
                     &progress,
@@ -96,7 +97,7 @@ impl Addons {
     }
 
     /// Returns an existing local dependency or downloads the selected catalog release.
-    pub fn fetch_dependency(&self, id: Uuid) -> Operation<Arc<Release<Dependency>>> {
+    pub fn fetch_dependency(&self, id: Uuid) -> Operation<Arc<Addon<Dependency>>> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
             {
@@ -109,7 +110,7 @@ impl Addons {
                 }
                 if let Some(release) = addons.dependency(id) {
                     release
-                        .validate(&release.path(addons.0.context.directories()))
+                        .validate(&release.path(&addons.0.directories))
                         .await?;
                     return Ok(release);
                 }
@@ -125,8 +126,8 @@ impl Addons {
             if artifacts.is_empty() {
                 return Err(CatalogError::Unsupported(id).into());
             }
-            let record = Arc::new(Release::new_dependency(
-                NonNilUuid::new(id).expect("catalog UUID is non-nil"),
+            let record = Arc::new(Addon::new_dependency(
+                id,
                 entry.name().into(),
                 entry.version().into(),
                 entry.requirements().to_vec(),
@@ -144,7 +145,7 @@ impl Addons {
                 async_fs::create_dir_all(&payload).await?;
                 for artifact in &artifacts {
                     download_artifact(
-                        addons.0.context.downloader(),
+                        &addons.0.downloader,
                         artifact,
                         &payload.join(artifact.file_name()),
                         &progress,

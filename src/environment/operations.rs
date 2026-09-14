@@ -2,8 +2,8 @@
 
 use super::{Environment, EnvironmentOwnerState, prefix::standard, runtime};
 use crate::{
-    Addons, Edit, EnvironmentError, EnvironmentState, Operation, PrefixBackend, ProgramSpec,
-    Progress, Slot, Stage,
+    Addon, Component, Dependency, Edit, EnvironmentError, EnvironmentState, Operation,
+    PrefixBackend, ProgramSpec, Progress, Slot, Stage,
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
     winebridge::WineBridgeClient,
@@ -37,28 +37,37 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         })
     }
 
-    pub(crate) fn set_component(self: &Arc<Self>, id: Uuid) -> Operation<()> {
-        self.update_software(move |state, addons| state.set_component(id, addons))
+    pub(crate) fn set_component(self: &Arc<Self>, component: Addon<Component>) -> Operation<()> {
+        self.update_software(move |state| {
+            state.set_component(component);
+            Ok(())
+        })
     }
 
     pub(crate) fn remove_component(self: &Arc<Self>, slot: Slot) -> Operation<()> {
-        self.update_software(move |state, _| state.remove_component(slot))
+        self.update_software(move |state| state.remove_component(slot))
     }
 
-    pub(crate) fn install_dependency(self: &Arc<Self>, id: Uuid) -> Operation<()> {
-        self.update_software(move |state, addons| state.add_dependency(id, addons))
+    pub(crate) fn install_dependency(
+        self: &Arc<Self>,
+        dependency: Addon<Dependency>,
+    ) -> Operation<()> {
+        self.update_software(move |state| {
+            state.add_dependency(dependency);
+            Ok(())
+        })
     }
 
     fn update_software(
         self: &Arc<Self>,
-        update: impl FnOnce(&mut EnvironmentState, &Addons) -> Result<()> + Send + 'static,
+        update: impl FnOnce(&mut EnvironmentState) -> Result<()> + Send + 'static,
     ) -> Operation<()> {
         let environment = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let _control = environment.lock_control(&cancellation).await?;
             let previous = environment.state()?;
             let mut draft = previous.as_ref().clone();
-            update(draft.environment_mut(), &environment.addons)?;
+            update(draft.environment_mut())?;
             let before = previous.environment();
             let after = draft.environment();
             let backend = previous.backend();
@@ -83,7 +92,6 @@ impl<T: EnvironmentOwnerState> Environment<T> {
                         after,
                         &environment.root,
                         &environment.context,
-                        &environment.addons,
                         &progress,
                         &cancellation,
                     )

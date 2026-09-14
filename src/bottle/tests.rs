@@ -11,7 +11,7 @@ use tokio::sync::{Mutex, watch};
 use crate::environment::Environment;
 use crate::{
     Context, Directories, EnvironmentError, PrefixBackend,
-    addons::{AddonError, Addons, CatalogError, Requirement, Slot},
+    addons::{AddonError, CatalogError, Requirement, Slot},
     bottle::{Bottle, BottleManager},
     error::Error,
 };
@@ -26,17 +26,16 @@ async fn deleted_bottle() -> (Bottle, Directories) {
         directories.clone(),
         Some(directories.data_dir().join("fvs2d")),
     )
+    .await
     .unwrap();
-    let addons = Addons::load(context.clone(), None, None).await.unwrap();
     let (published, _) = watch::channel(None);
     let bottle = Bottle(Arc::new(Environment {
         published,
         control: Mutex::new(()),
         root: directories.bottle(uuid::Uuid::new_v4()),
         #[cfg(feature = "fvs")]
-        virgo: Arc::new(VirgoManager::new(context.clone(), addons.clone())),
+        virgo: Arc::new(VirgoManager::new(context.clone())),
         context,
-        addons,
     }));
     (bottle, directories)
 }
@@ -105,13 +104,12 @@ fn load_skips_corrupt_bottles() {
             directories.clone(),
             Some(directories.data_dir().join("fvs2d")),
         )
+        .await
         .unwrap();
-        let addons = Addons::load(context.clone(), None, None).await.unwrap();
         #[cfg(feature = "fvs")]
-        let virgo = Arc::new(VirgoManager::new(context.clone(), addons.clone()));
+        let virgo = Arc::new(VirgoManager::new(context.clone()));
         let manager = BottleManager::load(
             context,
-            addons,
             #[cfg(feature = "fvs")]
             virgo,
         )
@@ -124,7 +122,7 @@ fn load_skips_corrupt_bottles() {
 }
 
 #[test]
-fn create_reports_all_missing_runtime_addons_before_creating_files() {
+fn create_reports_missing_runtime_requirements_before_creating_files() {
     futures_lite::future::block_on(async {
         let directories = test_directories();
         let runner_path = directories.data_dir().join("proton-test.tar");
@@ -144,8 +142,9 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
             directories.clone(),
             Some(directories.data_dir().join("fvs2d")),
         )
+        .await
         .unwrap();
-        let addons = Addons::load(context.clone(), None, None).await.unwrap();
+        let addons = context.addons().clone();
         let runner = addons
             .import_component(&runner_path, Slot::Runner, "Proton", "proton-test")
             .await
@@ -185,16 +184,29 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
             Err(Error::Addon(AddonError::NotFound(id))) if id == unknown
         ));
         #[cfg(feature = "fvs")]
-        let virgo = Arc::new(VirgoManager::new(context.clone(), addons.clone()));
+        let virgo = Arc::new(VirgoManager::new(context.clone()));
         let manager = BottleManager::new(
             context,
-            addons,
             #[cfg(feature = "fvs")]
             virgo,
         );
 
+        let winebridge = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(),
+            "name": "WineBridge",
+            "version": "1.0.0",
+            "slot": "winebridge",
+            "resources": [{"path": "", "steps": []}],
+        }))
+        .unwrap();
         let error = match manager
-            .create("test", PrefixBackend::Standard, runner_id)
+            .create(
+                "test",
+                PrefixBackend::Standard,
+                runner.as_ref().clone(),
+                winebridge,
+                None,
+            )
             .await
         {
             Ok(_) => panic!("creation should fail before mutation"),
@@ -203,12 +215,9 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
         assert!(matches!(
             error,
             Error::Environment(EnvironmentError::RequiresAddon {
-                required_by: None,
+                required_by: Some(id),
                 requirements,
-            }) if requirements == vec![
-                Requirement::Slot(Slot::WineBridge),
-                Requirement::Slot(Slot::Umu),
-            ]
+            }) if id == runner_id && requirements == vec![Requirement::Slot(Slot::Umu)]
         ));
         assert!(manager.list().is_empty());
         assert!(
@@ -221,8 +230,9 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
             directories.clone(),
             Some(directories.data_dir().join("fvs2d")),
         )
+        .await
         .unwrap();
-        let reloaded_addons = Addons::load(reloaded, None, None).await.unwrap();
+        let reloaded_addons = reloaded.addons();
         assert_eq!(
             reloaded_addons.component(runner_id).unwrap().id(),
             runner_id

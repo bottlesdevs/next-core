@@ -54,14 +54,14 @@ impl Addons {
             let current = addons.state();
             let component_catalog = match &component {
                 Ok(catalog) => {
-                    catalog.save(addons.0.context.directories()).await?;
+                    catalog.save(&addons.0.directories).await?;
                     Some(catalog.clone())
                 }
                 Err(_) => current.component_catalog.clone(),
             };
             let dependency_catalog = match &dependency {
                 Ok(catalog) => {
-                    catalog.save(addons.0.context.directories()).await?;
+                    catalog.save(&addons.0.directories).await?;
                     Some(catalog.clone())
                 }
                 Err(_) => current.dependency_catalog.clone(),
@@ -93,12 +93,12 @@ impl Addons {
         Catalog<K>: DeserializeOwned,
     {
         let url = K::url(&self.0.catalog_urls).ok_or(CatalogError::UrlNotConfigured(K::LABEL))?;
-        let staging = self.0.context.directories().data_dir().join(".staging");
+        let staging = self.0.directories.data_dir().join(".staging");
         async_fs::create_dir_all(&staging).await?;
         let downloaded = staging.join(format!("catalog-{}.json", Uuid::new_v4()));
         let result = async {
             download(
-                self.0.context.downloader(),
+                &self.0.downloader,
                 url,
                 &downloaded,
                 cancellation,
@@ -133,8 +133,8 @@ mod tests {
         futures_lite::future::block_on(async {
             let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
             let directories = Directories::from_path(&root).unwrap();
-            let context = Context::for_test(directories, None).unwrap();
-            let addons = Addons::load(context, None, None).await.unwrap();
+            let context = Context::for_test(directories, None).await.unwrap();
+            let addons = context.addons().clone();
             let write = addons.0.write.lock().await;
             let mut refresh = addons.refresh();
 
