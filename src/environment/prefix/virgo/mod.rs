@@ -109,12 +109,8 @@ async fn ensure_empty_dir(path: &Path) -> Result<()> {
 /// Virgo-specific failures carried by [`crate::error::Error::Virgo`].
 #[derive(Debug, thiserror::Error)]
 pub enum VirgoError {
-    #[error("no Soda runner release in the current component catalog")]
-    SodaNotInCatalog,
-    #[error("invalid Soda semantic version: {0}")]
-    InvalidSodaVersion(String),
-    #[error("download Soda {version} ({id}) before building the Virgo base or an addon layer")]
-    SodaNotDownloaded { id: uuid::Uuid, version: String },
+    #[error("no locally recorded Soda runner with a valid semantic version")]
+    SodaNotDownloaded,
 
     /// Virgo cannot mount a prefix over a nonempty mountpoint.
     #[error("mountpoint is not empty: {0}")]
