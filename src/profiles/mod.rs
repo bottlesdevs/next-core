@@ -12,12 +12,11 @@ use next_config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
 use tokio_stream::wrappers::WatchStream;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{Directories, Operation, PluginId, Plugins, credentials, error::Result};
+use storefront::LinkedAccount;
 pub use storefront::{AccountIdentity, AccountLinkInteraction, StorefrontProvider};
-use storefront::{LinkedAccount, StorefrontAccountProvider};
 
 /// One coherent persisted snapshot of every profile and the selected profile.
 ///
@@ -301,6 +300,9 @@ impl Profiles {
     /// the profile write lock. Cancellation is observed during authentication
     /// and while waiting for that lock. Once the lock is acquired, the provider
     /// and profile are revalidated before a non-cancellable persistence step.
+    /// Reloads do not replace the authenticating provider's metadata. A new link
+    /// establishes its credential state, clearing a stale entry when none is supplied.
+    /// If profile persistence fails, cleanup of a newly saved credential is awaited.
     pub fn link_account(
         &self,
         profile_id: Uuid,
@@ -309,69 +311,56 @@ impl Profiles {
     ) -> Operation<Profile> {
         let profiles = self.clone();
         Operation::new(move |_progress, cancellation| async move {
+            let provider = storefront::account_provider(&profiles.inner.plugins, &provider_id)?;
+            let metadata = provider.metadata();
+            validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
+
+            let linked = provider.link_account(interaction, &cancellation).await;
             if cancellation.is_cancelled() {
                 return Err(crate::error::Error::Cancelled);
             }
-            let provider = storefront::account_provider(&profiles.inner.plugins, &provider_id)?;
-            profiles
-                .link_account_with(profile_id, provider.as_ref(), interaction, &cancellation)
+            let LinkedAccount {
+                identity,
+                credential,
+            } = linked.map_err(|message| ProfileError::Provider {
+                provider: provider_id.clone(),
+                message,
+            })?;
+
+            let _write = cancellation
+                .run_until_cancelled(profiles.inner.write_lock.lock())
                 .await
+                .ok_or(crate::error::Error::Cancelled)?;
+            if cancellation.is_cancelled() {
+                return Err(crate::error::Error::Cancelled);
+            }
+            let current = profiles.snapshot();
+            let profile_index = validate_account_link(&current, profile_id, &provider_id)?;
+            // Check availability while retaining the authenticating provider's metadata.
+            storefront::account_provider(&profiles.inner.plugins, &provider_id)?;
+            match credential.as_deref() {
+                Some(secret) => credentials::save(&provider_id, profile_id, secret).await?,
+                None => credentials::delete(&provider_id, profile_id).await?,
+            }
+            let mut next = current.as_ref().clone();
+            let profile = &mut next.profiles[profile_index];
+            profile.accounts.push(StorefrontAccount {
+                provider: metadata,
+                identity,
+            });
+            let profile = profile.clone();
+            if let Err(error) = profiles.persist(next).await {
+                if credential.is_some() {
+                    if let Err(cleanup_error) = credentials::delete(&provider_id, profile_id).await
+                    {
+                        tracing::warn!(provider = %provider_id, profile = %profile_id,
+                            "failed to delete credential after account linking failed: {cleanup_error}");
+                    }
+                }
+                return Err(error);
+            }
+            Ok(profile)
         })
-    }
-
-    async fn link_account_with(
-        &self,
-        profile_id: Uuid,
-        provider: &dyn StorefrontAccountProvider,
-        interaction: Arc<dyn AccountLinkInteraction>,
-        cancellation: &CancellationToken,
-    ) -> Result<Profile> {
-        if cancellation.is_cancelled() {
-            return Err(crate::error::Error::Cancelled);
-        }
-        let metadata = provider.metadata();
-        let provider_id = metadata.id.clone();
-        validate_account_link(
-            self.inner.published.borrow().as_ref(),
-            profile_id,
-            &provider_id,
-        )?;
-
-        let linked = provider.link_account(interaction, cancellation).await;
-        if cancellation.is_cancelled() {
-            return Err(crate::error::Error::Cancelled);
-        }
-        let linked = linked.map_err(|error| ProfileError::Provider {
-            provider: provider_id.clone(),
-            message: error,
-        })?;
-        let LinkedAccount {
-            identity,
-            credential,
-        } = linked;
-
-        let _write = cancellation
-            .run_until_cancelled(self.inner.write_lock.lock())
-            .await
-            .ok_or(crate::error::Error::Cancelled)?;
-        if cancellation.is_cancelled() {
-            return Err(crate::error::Error::Cancelled);
-        }
-        let current = self.inner.published.borrow().clone();
-        let profile_index = validate_account_link(&current, profile_id, &provider_id)?;
-        let metadata = storefront::account_provider(&self.inner.plugins, &provider_id)?.metadata();
-        if let Some(secret) = credential.as_deref() {
-            credentials::save(&provider_id, profile_id, secret).await?;
-        }
-        let mut next = current.as_ref().clone();
-        let profile = &mut next.profiles[profile_index];
-        profile.accounts.push(StorefrontAccount {
-            provider: metadata,
-            identity,
-        });
-        let profile = profile.clone();
-        self.persist(next).await?;
-        Ok(profile)
     }
 
     /// Removes persisted account metadata without requiring its provider.
