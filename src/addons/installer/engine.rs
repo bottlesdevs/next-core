@@ -16,7 +16,8 @@ use crate::{
     winebridge::WineBridgeClient,
 };
 
-use super::{InstallInputs, InstallResource, InstallStep};
+use super::InstallInputs;
+use crate::addons::recipe::{InstallResource, InstallStep};
 
 /// Applies every resource and step sequentially, reporting each step before it starts.
 /// `backup_files` preserves displaced files for Standard removal; layered builds disable it.

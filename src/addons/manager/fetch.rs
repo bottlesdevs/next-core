@@ -3,7 +3,8 @@
 use super::super::{
     AddonError, CatalogError, Component, Dependency, Release,
     catalog::{CatalogArtifact, Target},
-    installer::{InstallResource, recipe_steps},
+    recipe::InstallResource,
+    recipes::steps as recipe_steps,
 };
 use super::{Addons, download, prepare_component_archive};
 use crate::{

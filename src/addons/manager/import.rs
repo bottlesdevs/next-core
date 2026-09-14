@@ -1,8 +1,7 @@
 //! Explicit local component archive import. Templates are frozen into fresh releases.
 
 use super::super::{
-    Component, Release, Requirement, Slot,
-    installer::{InstallResource, recipe_steps},
+    Component, Release, Requirement, Slot, recipe::InstallResource, recipes::steps as recipe_steps,
 };
 use super::{Addons, prepare_component_archive};
 use crate::{

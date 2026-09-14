@@ -3,7 +3,7 @@
 use super::{
     Addon, AddonError, Component, Dependency, Requirement, Slot,
     catalog::AddonFamily,
-    installer::{InstallResource, InstallStep},
+    recipe::{InstallResource, InstallStep},
 };
 use crate::{Directories, EnvVars, error::Result};
 use serde::{Deserialize, Serialize};
