@@ -126,6 +126,12 @@ External plugins retain their own package lifecycle and may share one runtime ac
 multiple subsystem capabilities. Switching profiles changes
 which linked accounts Bottles uses, without switching accounts in external launchers.
 
+External components must be rebuilt for the updated library-result contract; the
+plugin SDK/WIT remains at 0.1.0. Library results can carry refreshed credentials
+even when game enumeration fails; core processes
+the credential update before logging that source's error and continuing with other
+results. Traps and abandoned calls cannot deliver updates through this contract.
+
 ## Getting help
 
 Build the API documentation locally with `cargo doc -p bottles-core --open`.
