@@ -68,6 +68,12 @@ pub(super) async fn load(root: &Path, id: Option<Uuid>) -> Result<Option<VirgoLa
     Ok(Some(manifest.resolve(root)))
 }
 
+pub(super) async fn require(root: &Path, id: Option<Uuid>) -> Result<VirgoLayer> {
+    load(root, id)
+        .await?
+        .ok_or_else(|| VirgoError::MissingArtifact(root.to_path_buf()).into())
+}
+
 /// The caller has committed the filesystem and written both registry files in staging.
 /// The shared build lock covers publication; published nonempty directories are never replaced.
 pub(super) async fn publish(
