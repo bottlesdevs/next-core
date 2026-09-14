@@ -3,7 +3,8 @@ mod manager;
 pub use manager::ProgramManager;
 
 use crate::{
-    Edit, EnvironmentState, Operation, PrefixBackend, ProgramSpec, Slot, Snapshot, SnapshotSummary,
+    Addon, Component, Dependency, Edit, EnvironmentState, Operation, PrefixBackend, ProgramSpec,
+    Slot, Snapshot, SnapshotSummary,
     environment::{Environment, EnvironmentOwnerState},
     error::Result,
     proto::{DllOverride, DllOverrideMode, Process},
@@ -91,14 +92,16 @@ impl Program {
     pub async fn processes(&self) -> Result<Vec<Process>> {
         self.0.processes().await
     }
-    pub fn set_component(&self, id: Uuid) -> Operation<()> {
-        self.0.set_component(id)
+    /// Select a frozen component without changing any other slot.
+    pub fn set_component(&self, component: Addon<Component>) -> Operation<()> {
+        self.0.set_component(component)
     }
     pub fn remove_component(&self, slot: Slot) -> Operation<()> {
         self.0.remove_component(slot)
     }
-    pub fn install_dependency(&self, id: Uuid) -> Operation<()> {
-        self.0.install_dependency(id)
+    /// Append a frozen dependency unless its identity is already installed.
+    pub fn install_dependency(&self, dependency: Addon<Dependency>) -> Operation<()> {
+        self.0.install_dependency(dependency)
     }
     pub fn dll_overrides(&self) -> Operation<Vec<DllOverride>> {
         self.0.dll_overrides()
