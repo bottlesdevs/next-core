@@ -33,19 +33,6 @@ pub enum PrefixBackend {
 }
 
 impl PrefixBackend {
-    /// Check backend-specific edit restrictions before the owner is stopped or changed.
-    pub(super) fn validate_edit(
-        &self,
-        previous: &EnvironmentState,
-        candidate: &EnvironmentState,
-    ) -> Result<()> {
-        match self {
-            Self::Standard => standard::validate_edit(previous, candidate),
-            #[cfg(feature = "fvs")]
-            Self::Virgo => Ok(()),
-        }
-    }
-
     /// Assemble a stopped prefix for execution from already-installed effects.
     /// Backends undo partial owner materialization before returning an error.
     pub(super) async fn prepare(

@@ -2,7 +2,7 @@
 
 use super::super::runtime;
 use crate::{
-    AddonError, Addons, Context, EnvironmentError, EnvironmentState, Progress, Slot, Stage,
+    AddonError, Addons, Context, EnvironmentState, Progress, Slot, Stage,
     addons::{InstallInputs, execute, uninstall},
     error::Result,
 };
@@ -24,19 +24,6 @@ pub(in crate::environment) async fn create(
         .load_runner(cx.directories(), config.umu())
         .await?;
     runtime::initialize(runner.as_ref(), &prefix).await
-}
-
-pub(super) fn validate_edit(
-    previous: &EnvironmentState,
-    candidate: &EnvironmentState,
-) -> Result<()> {
-    if !candidate.dependencies.starts_with(&previous.dependencies) {
-        return Err(EnvironmentError::InvalidEdit(
-            "installed dependencies cannot be removed, replaced or reordered",
-        )
-        .into());
-    }
-    Ok(())
 }
 
 /// Apply validated Standard selections directly to the stopped owner's prefix.
