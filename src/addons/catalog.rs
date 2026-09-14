@@ -8,7 +8,7 @@ use uuid::{NonNilUuid, Uuid};
 
 use crate::{Directories, error::Result};
 
-use super::installer::InstallStep;
+use super::recipe::InstallStep;
 use super::{Component, Dependency, Requirement, Slot, deserialize_non_empty_string};
 
 const CATALOG_VERSION: u32 = 1;
