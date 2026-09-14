@@ -72,12 +72,16 @@ impl<K> Addon<K> {
     /// configuration combines addon contributions and applies owner overrides last.
     pub fn env_vars(&self) -> EnvVars {
         let mut env_vars = EnvVars::default();
+        self.extend_env_vars(&mut env_vars);
+        env_vars
+    }
+
+    pub(crate) fn extend_env_vars(&self, env_vars: &mut EnvVars) {
         for step in self.recipe() {
             if let InstallStep::SetEnvironment { name, value } = step {
                 env_vars.insert(name.clone(), value.clone());
             }
         }
-        env_vars
     }
 
     pub(crate) fn path(&self, directories: &Directories) -> PathBuf
