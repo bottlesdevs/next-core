@@ -52,10 +52,11 @@ struct AddonsInner {
 }
 
 impl Addons {
-    /// Loads cached catalogs and complete local releases.
+    /// Loads cached catalogs and frozen local records independently of payload files.
     ///
     /// An unavailable or invalid catalog cache is ignored. Invalid or incomplete
-    /// releases are returned as errors.
+    /// records are returned as errors. A known record does not guarantee its payload
+    /// is available; acquisition and installation check the inputs they require.
     pub(crate) async fn load(
         context: Context,
         component_catalog_url: Option<Url>,
@@ -345,7 +346,6 @@ impl AddonsState {
             if state.contains(id) {
                 return Err(AddonError::Duplicate(id).into());
             }
-            record.validate(&record.path(directories)).await?;
             state.components.insert(id, Arc::new(record));
         }
         for (id, path) in release_manifests(&directories.dependency_releases()).await? {
@@ -356,7 +356,6 @@ impl AddonsState {
             if state.contains(id) {
                 return Err(AddonError::Duplicate(id).into());
             }
-            record.validate(&record.path(directories)).await?;
             state.dependencies.insert(id, Arc::new(record));
         }
         Ok(state)
