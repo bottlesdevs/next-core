@@ -41,6 +41,7 @@ pub struct PluginInfo {
     pub provides: Vec<PluginKind>,
 }
 
+/// External package lifecycle. Unloadable packages are logged and skipped on startup.
 pub struct Plugins {
     directories: Directories,
     lifecycle: Mutex<()>,
@@ -146,8 +147,15 @@ async fn discover(directory: &Path) -> Result<HashMap<PluginId, Plugin>> {
         if !entry.file_type().await?.is_dir() {
             continue;
         }
-        let plugin = Plugin::load(&entry.path()).await?;
-        loaded.insert(plugin.manifest.id.clone(), plugin);
+        let path = entry.path();
+        match Plugin::load(&path).await {
+            Ok(plugin) => {
+                loaded.insert(plugin.manifest.id.clone(), plugin);
+            }
+            Err(error) => {
+                tracing::warn!(path = %path.display(), "failed to load plugin: {error}");
+            }
+        }
     }
     Ok(loaded)
 }
