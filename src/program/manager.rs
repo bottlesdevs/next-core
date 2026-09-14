@@ -1,7 +1,7 @@
 //! Registry-backed standalone program lifecycle.
 use super::{Program, ProgramState};
 use crate::{
-    Context, EnvironmentState, Operation, ProgramSpec,
+    Addon, Component, Context, EnvironmentState, Operation, ProgramSpec,
     environment::{Environment, Registry, VirgoManager},
     error::Result,
 };
@@ -29,14 +29,21 @@ impl ProgramManager {
 
     /// Build missing Virgo layers, create private storage, and save the launch definition.
     /// Requires downloaded runtime and build inputs; does not acquire the application.
-    pub fn create(&self, launch: ProgramSpec, runner: Uuid) -> Operation<Program> {
+    /// Callers supply every owner runtime selection, including UMU when required.
+    pub fn create(
+        &self,
+        launch: ProgramSpec,
+        runner: Addon<Component>,
+        winebridge: Addon<Component>,
+        umu: Option<Addon<Component>>,
+    ) -> Operation<Program> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let id = Uuid::new_v4();
             let state = ProgramState {
                 id,
                 launch,
-                environment: EnvironmentState::new(runner, manager.context.addons())?,
+                environment: EnvironmentState::new(runner, winebridge, umu)?,
             };
             let environment = Environment::create(
                 state,

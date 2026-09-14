@@ -1,9 +1,7 @@
 //! Persisted execution settings shared by all environment owners.
 
 use super::EnvironmentError;
-use crate::{
-    Addon, AddonError, Component, Dependency, EnvVars, Requirement, Slot, Wrappers, error::Result,
-};
+use crate::{Addon, Component, Dependency, EnvVars, Requirement, Slot, Wrappers, error::Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use strum::IntoEnumIterator;
@@ -24,46 +22,16 @@ pub struct EnvironmentState {
 }
 
 impl EnvironmentState {
-    /// Resolve the downloaded runtime releases for a new environment.
-    pub(crate) fn new(runner: Uuid, addons: &crate::Addons) -> Result<Self> {
-        let runner_component = addons
-            .component(runner)
-            .ok_or(crate::AddonError::NotFound(runner))?;
-        if runner_component.slot() != Slot::Runner {
-            return Err(EnvironmentError::InvalidComponentSlot {
-                component: runner_component.id(),
-                required: Slot::Runner,
-            }
-            .into());
-        }
-        let winebridge = addons.latest_component(Slot::WineBridge);
-        let needs_umu = runner_component
-            .requirements()
-            .contains(&Requirement::Slot(Slot::Umu));
-        let umu = needs_umu
-            .then(|| addons.latest_component(Slot::Umu))
-            .flatten();
-        let mut missing = Vec::new();
-        if winebridge.is_none() {
-            missing.push(Requirement::Slot(Slot::WineBridge));
-        }
-        if needs_umu && umu.is_none() {
-            missing.push(Requirement::Slot(Slot::Umu));
-        }
-        if !missing.is_empty() {
-            return Err(EnvironmentError::RequiresAddon {
-                required_by: None,
-                requirements: missing,
-            }
-            .into());
-        }
-        let winebridge = winebridge.unwrap(); // Safe to unwrap since we just checked it above
-        let mut components = HashMap::from([
-            (Slot::WineBridge, winebridge.as_ref().clone()),
-            (Slot::Runner, runner_component.as_ref().clone()),
-        ]);
+    /// Construct a selection from caller-supplied runtime records.
+    pub(crate) fn new(
+        runner: Addon<Component>,
+        winebridge: Addon<Component>,
+        umu: Option<Addon<Component>>,
+    ) -> Result<Self> {
+        let mut components =
+            HashMap::from([(Slot::WineBridge, winebridge), (Slot::Runner, runner)]);
         if let Some(umu) = umu {
-            components.insert(Slot::Umu, umu.as_ref().clone());
+            components.insert(Slot::Umu, umu);
         }
         let config = EnvironmentState {
             components,
@@ -75,35 +43,15 @@ impl EnvironmentState {
         Ok(config)
     }
 
-    /// Select a downloaded component and pair a runner with UMU when required.
-    pub(crate) fn set_component(&mut self, id: Uuid, addons: &crate::Addons) -> Result<()> {
-        let component = addons
-            .component(id)
-            .ok_or(crate::AddonError::NotFound(id))?;
+    /// Change only the supplied component's slot, preserving an already-selected identity.
+    pub(crate) fn set_component(&mut self, component: Addon<Component>) {
         if self
             .component(component.slot())
-            .is_some_and(|old| old.id() == id)
+            .is_some_and(|old| old.id() == component.id())
         {
-            return Ok(());
+            return;
         }
-        let needs_umu = component
-            .requirements()
-            .contains(&crate::Requirement::Slot(Slot::Umu));
-        if needs_umu && self.umu().is_none() {
-            let umu = addons.latest_component(Slot::Umu).ok_or_else(|| {
-                crate::EnvironmentError::RequiresAddon {
-                    required_by: Some(id),
-                    requirements: vec![crate::Requirement::Slot(Slot::Umu)],
-                }
-            })?;
-            self.components.insert(Slot::Umu, umu.as_ref().clone());
-        }
-        self.components
-            .insert(component.slot(), component.as_ref().clone());
-        if component.slot() == Slot::Runner && !needs_umu {
-            self.components.remove(&Slot::Umu);
-        }
-        Ok(())
+        self.components.insert(component.slot(), component);
     }
 
     pub(crate) fn remove_component(&mut self, slot: Slot) -> Result<()> {
@@ -113,13 +61,11 @@ impl EnvironmentState {
         Ok(())
     }
 
-    /// Select a downloaded dependency unless it is already selected.
-    pub(crate) fn add_dependency(&mut self, id: Uuid, addons: &crate::Addons) -> Result<()> {
-        if self.dependency(id).is_none() {
-            let dependency = addons.dependency(id).ok_or(AddonError::NotFound(id))?;
-            self.dependencies.push(dependency.as_ref().clone());
+    /// Append the supplied dependency unless its identity is already selected.
+    pub(crate) fn add_dependency(&mut self, dependency: Addon<Dependency>) {
+        if self.dependency(dependency.id()).is_none() {
+            self.dependencies.push(dependency);
         }
-        Ok(())
     }
 
     /// Prefix-contributing components in fixed slot order.

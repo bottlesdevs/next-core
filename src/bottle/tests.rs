@@ -122,7 +122,7 @@ fn load_skips_corrupt_bottles() {
 }
 
 #[test]
-fn create_reports_all_missing_runtime_addons_before_creating_files() {
+fn create_reports_missing_runtime_requirements_before_creating_files() {
     futures_lite::future::block_on(async {
         let directories = test_directories();
         let runner_path = directories.data_dir().join("proton-test.tar");
@@ -191,8 +191,22 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
             virgo,
         );
 
+        let winebridge = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(),
+            "name": "WineBridge",
+            "version": "1.0.0",
+            "slot": "winebridge",
+            "resources": [{"path": "", "steps": []}],
+        }))
+        .unwrap();
         let error = match manager
-            .create("test", PrefixBackend::Standard, runner_id)
+            .create(
+                "test",
+                PrefixBackend::Standard,
+                runner.as_ref().clone(),
+                winebridge,
+                None,
+            )
             .await
         {
             Ok(_) => panic!("creation should fail before mutation"),
@@ -201,12 +215,9 @@ fn create_reports_all_missing_runtime_addons_before_creating_files() {
         assert!(matches!(
             error,
             Error::Environment(EnvironmentError::RequiresAddon {
-                required_by: None,
+                required_by: Some(id),
                 requirements,
-            }) if requirements == vec![
-                Requirement::Slot(Slot::WineBridge),
-                Requirement::Slot(Slot::Umu),
-            ]
+            }) if id == runner_id && requirements == vec![Requirement::Slot(Slot::Umu)]
         ));
         assert!(manager.list().is_empty());
         assert!(

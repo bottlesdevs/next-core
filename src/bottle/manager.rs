@@ -3,7 +3,7 @@ use super::{Bottle, BottleError, BottleState};
 #[cfg(feature = "fvs")]
 use crate::environment::VirgoManager;
 use crate::{
-    Context, EnvironmentState, Operation, PrefixBackend, Progress, Stage,
+    Addon, Component, Context, EnvironmentState, Operation, PrefixBackend, Progress, Stage,
     environment::{Environment, Registry},
     error::Result,
 };
@@ -70,10 +70,10 @@ impl BottleManager {
     ///
     /// A new UUID is assigned when the operation starts;
     /// display names are stored verbatim, may be empty, and need not be unique.
-    /// The newest downloaded WineBridge is selected automatically. A runner
-    /// requiring UMU also receives the newest downloaded UMU release. No addon
-    /// is downloaded implicitly. The runner UUID must identify a downloaded
-    /// runner component. Standard creation initializes Wine without FVS. Virgo
+    /// Callers supply the runner, WineBridge, and optional UMU records. Their slots
+    /// and coexistence requirements are checked before creating files; missing
+    /// requirements fail without selecting or downloading other owner components.
+    /// Standard creation initializes Wine without FVS. Virgo
     /// creation builds missing shared layers before creating private storage and
     /// saving selections. Startup composes the registry and mounts existing layers.
     /// Failures and cancellation observed while the operation remains polled remove the
@@ -83,14 +83,16 @@ impl BottleManager {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::EnvironmentError::RequiresAddon`] with every missing runtime
-    /// requirement before creating any files. Other service, I/O, and prefix
+    /// Returns [`crate::EnvironmentError::RequiresAddon`] for missing coexistence
+    /// requirements before creating any files. Other service, I/O, and prefix
     /// creation failures are returned directly.
     pub fn create(
         &self,
         name: impl Into<String>,
         backend: PrefixBackend,
-        runner: Uuid,
+        runner: Addon<Component>,
+        winebridge: Addon<Component>,
+        umu: Option<Addon<Component>>,
     ) -> Operation<Bottle> {
         let name = name.into();
         let cx = self.context.clone();
@@ -105,7 +107,7 @@ impl BottleManager {
                 id,
                 name,
                 backend,
-                environment: EnvironmentState::new(runner, cx.addons())?,
+                environment: EnvironmentState::new(runner, winebridge, umu)?,
                 programs: HashMap::new(),
             };
             let environment = Environment::create(
