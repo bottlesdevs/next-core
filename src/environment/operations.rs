@@ -1,9 +1,9 @@
 //! Consumer-driven mutations and runtime control under one environment lock.
 
-use super::{Environment, EnvironmentOwnerState, runtime};
+use super::{Environment, EnvironmentOwnerState, prefix::standard, runtime};
 use crate::{
-    Addons, Edit, EnvironmentError, EnvironmentState, Operation, ProgramSpec, Progress, Slot,
-    Stage,
+    Addons, Edit, EnvironmentError, EnvironmentState, Operation, PrefixBackend, ProgramSpec,
+    Progress, Slot, Stage,
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
     winebridge::WineBridgeClient,
@@ -77,17 +77,27 @@ impl<T: EnvironmentOwnerState> Environment<T> {
                 return Err(EnvironmentError::MustBeStopped.into());
             }
             environment.stop_locked().await?;
-            backend
-                .apply(
-                    before,
-                    after,
-                    &environment.root,
-                    &environment.context,
-                    &environment.addons,
-                    &progress,
-                    &cancellation,
-                )
-                .await?;
+            match backend {
+                PrefixBackend::Standard => {
+                    standard::apply(
+                        before,
+                        after,
+                        &environment.root,
+                        &environment.context,
+                        &environment.addons,
+                        &progress,
+                        &cancellation,
+                    )
+                    .await?;
+                }
+                #[cfg(feature = "fvs")]
+                PrefixBackend::Virgo => {
+                    environment
+                        .virgo
+                        .apply(after, &progress, &cancellation)
+                        .await?;
+                }
+            }
             // Successful application must be saved and published even if cancellation arrives.
             environment.save(&draft).await?;
             environment.publish(draft);
@@ -231,16 +241,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             return Err(Error::Cancelled);
         }
         backend
-            .prepare(
-                config,
-                runner.as_ref(),
-                &self.root,
-                &self.context,
-                #[cfg(feature = "fvs")]
-                &self.virgo,
-                progress,
-                cancellation,
-            )
+            .prepare(config, &self.root, &self.context, progress, cancellation)
             .await?;
         if cancellation.is_cancelled() {
             backend.release(&self.root, &self.context).await?;

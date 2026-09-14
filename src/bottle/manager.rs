@@ -83,9 +83,9 @@ impl BottleManager {
     /// requiring UMU also receives the newest downloaded UMU release. No addon
     /// is downloaded implicitly. The runner UUID must identify a downloaded
     /// runner component. Standard creation initializes Wine without FVS. Virgo
-    /// creation only saves selections and creates private storage directories;
-    /// artifacts and registry data are prepared before startup. Failures, and
-    /// cancellation observed while the operation remains polled, remove the
+    /// creation builds missing shared layers before creating private storage and
+    /// saving selections. Startup composes the registry and mounts existing layers.
+    /// Failures and cancellation observed while the operation remains polled remove the
     /// partially-created bottle directory on a best-effort basis. Dropping a
     /// started operation or a cleanup failure can leave a directory that a
     /// later library startup discovers.

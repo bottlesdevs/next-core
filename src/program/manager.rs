@@ -34,8 +34,8 @@ impl ProgramManager {
         })
     }
 
-    /// Create private Virgo storage and save the launch definition. Requires downloaded
-    /// runtime releases; does not acquire the application or prepare shared layers.
+    /// Build missing Virgo layers, create private storage, and save the launch definition.
+    /// Requires downloaded runtime and build inputs; does not acquire the application.
     pub fn create(&self, launch: ProgramSpec, runner: Uuid) -> Operation<Program> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {

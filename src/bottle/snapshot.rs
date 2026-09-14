@@ -4,8 +4,8 @@ use crate::{Operation, Snapshot, SnapshotSummary, error::Result};
 
 impl Bottle {
     /// Stop the environment and capture its managed files and `bottle.toml`.
-    /// Pending Virgo selections stay pending; shared artifacts and external files
-    /// are not copied. Explicit snapshots create a revision even without changes.
+    /// Shared artifacts and external files are not copied or rebuilt on restoration.
+    /// Explicit snapshots create a revision even without changes.
     /// The internal checkpoint message is reserved. Once capture starts it finishes
     /// under coordination, including when explicit cancellation is requested.
     pub fn create_snapshot(&self, message: impl Into<String>) -> Operation<Snapshot> {

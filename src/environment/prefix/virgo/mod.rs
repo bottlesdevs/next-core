@@ -1,4 +1,4 @@
-//! Resolve shared artifacts and prepare a stopped owner's Virgo composition.
+//! Load installed artifacts and prepare a stopped owner's Virgo composition.
 
 mod artifacts;
 mod registry;
@@ -8,7 +8,6 @@ use super::super::{EnvironmentState, history};
 use crate::{
     Context, Progress, Stage,
     error::{Error, Result},
-    runner::Runner,
 };
 use futures_lite::StreamExt;
 use fvs_rs::{Layer, UnmountMode};
@@ -16,19 +15,16 @@ use std::path::Path;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-/// Builds the selected Virgo composition while the owner is coordinated and stopped.
+/// Assemble installed layers while the owner is coordinated and stopped.
 pub(super) async fn prepare(
     config: &EnvironmentState,
-    runner: &dyn Runner,
     root: &Path,
     cx: &Context,
-    virgo: &VirgoManager,
     progress: &watch::Sender<Option<Progress>>,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let artifacts::VirgoComposition { base, overlays } = virgo
-        .resolve(config, runner, progress, cancellation)
-        .await?;
+    let artifacts::VirgoComposition { base, overlays } =
+        artifacts::load(config, cx.directories()).await?;
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
@@ -123,6 +119,9 @@ pub enum VirgoError {
     /// Virgo cannot mount a prefix over a nonempty mountpoint.
     #[error("mountpoint is not empty: {0}")]
     DirtyMountpoint(std::path::PathBuf),
+    /// A selected artifact has not been built or has been removed.
+    #[error("missing Virgo artifact: {0}")]
+    MissingArtifact(std::path::PathBuf),
     /// A published artifact has an unsupported format or incomplete installed effects.
     #[error("invalid Virgo artifact: {0}")]
     InvalidArtifact(std::path::PathBuf),

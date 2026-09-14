@@ -1,23 +1,23 @@
 //! Runner initialization effects over pinned Soda, with registry changes stored as patches.
 
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
 use super::{VirgoLayer, VirgoManager, cache};
 use crate::{
+    EnvironmentState,
     error::{Error, Result},
-    runner::Runner,
 };
 
 impl VirgoManager {
     pub(super) async fn prepare_adapter(
         &self,
-        id: Uuid,
-        runner: &dyn Runner,
+        config: &EnvironmentState,
         base: &VirgoLayer,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
-        let destination = self.root().join("adapters").join(id.to_string());
+        let id = config.runner().id();
+        let data_dir = self.cx.directories().data_dir();
+        let destination = data_dir.join("virgo/adapters").join(id.to_string());
         if let Some(artifact) = cache::load(&destination, Some(id)).await? {
             return Ok(artifact);
         }
@@ -28,10 +28,14 @@ impl VirgoManager {
         if let Some(artifact) = cache::load(&destination, Some(id)).await? {
             return Ok(artifact);
         }
+        let runner = config
+            .runner()
+            .load_runner(self.cx.directories(), config.umu())
+            .await?;
         self.build(
             id,
             &destination,
-            runner,
+            runner.as_ref(),
             base,
             cancellation,
             |prefix, runner| async move { runner.wineboot(&prefix, "--init").await },

@@ -11,7 +11,12 @@ use strum::IntoEnumIterator;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-pub(super) async fn create(config: &EnvironmentState, root: &Path, cx: &Context) -> Result<()> {
+/// Successful initialization leaves no Wine processes running; failed cleanup retains data.
+pub(in crate::environment) async fn create(
+    config: &EnvironmentState,
+    root: &Path,
+    cx: &Context,
+) -> Result<()> {
     let prefix = root.join("prefix");
     async_fs::create_dir_all(&prefix).await?;
     let runner = config
@@ -35,7 +40,7 @@ pub(super) fn validate_edit(
 }
 
 /// Apply validated Standard selections directly to the stopped owner's prefix.
-pub(super) async fn apply(
+pub(in crate::environment) async fn apply(
     previous: &EnvironmentState,
     candidate: &EnvironmentState,
     root: &Path,

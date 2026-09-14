@@ -2,6 +2,7 @@
 
 #[cfg(feature = "fvs")]
 use super::VirgoManager;
+use super::prefix::standard;
 use crate::{
     Addons, Context, EnvironmentError, EnvironmentState, PrefixBackend, Progress, Stage,
     error::{Error, Result},
@@ -95,10 +96,20 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         }
         progress.send_replace(Some(Progress::new(Stage::CreatingPrefix)));
         // Initialization owns shutdown. Retain storage when it cannot finish safely.
-        state
-            .backend()
-            .create(state.environment(), &environment.root, &environment.context)
-            .await?;
+        match state.backend() {
+            PrefixBackend::Standard => {
+                standard::create(state.environment(), &environment.root, &environment.context)
+                    .await?;
+            }
+            #[cfg(feature = "fvs")]
+            PrefixBackend::Virgo => {
+                environment
+                    .virgo
+                    .apply(state.environment(), progress, cancellation)
+                    .await?;
+                async_fs::create_dir_all(environment.root.join("upper")).await?;
+            }
+        }
         let result = async {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);

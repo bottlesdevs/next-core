@@ -78,7 +78,7 @@ impl Program {
     ) -> Operation<R> {
         self.0.edit(callback)
     }
-    /// Prepare selected Virgo layers and launch using this program's UUID as its group.
+    /// Assemble installed Virgo layers and launch using this program's UUID as its group.
     pub fn launch(&self) -> Operation<u32> {
         self.0.launch(|state| Ok((state.id, state.launch.clone())))
     }
@@ -110,7 +110,7 @@ impl Program {
         self.0.unset_dll_override(dll.into())
     }
     /// Capture `program.toml` and persistent owner files while stopped and unmounted.
-    /// Shared artifacts and external files are excluded; pending selections stay pending.
+    /// Shared artifacts and external files are excluded; restoration does not rebuild layers.
     pub fn create_snapshot(&self, message: impl Into<String>) -> Operation<Snapshot> {
         self.0.create_snapshot(message.into())
     }
