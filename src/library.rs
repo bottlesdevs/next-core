@@ -11,8 +11,8 @@ use futures_util::{
 use uuid::Uuid;
 
 use crate::{
-    Bottle, BottleManager, Operation, PluginId, Profiles, ProgramSpec,
-    bottle::error::BottleError, error::Result,
+    Bottle, BottleManager, Operation, PluginId, Profiles, ProgramSpec, bottle::error::BottleError,
+    error::Result,
 };
 
 /// A live, non-persisted projection of bottle registrations and standalone programs.
