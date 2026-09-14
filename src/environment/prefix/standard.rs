@@ -2,7 +2,7 @@
 
 use super::super::runtime;
 use crate::{
-    AddonError, Addons, Context, EnvironmentState, Progress, Slot, Stage,
+    Context, EnvironmentState, Progress, Slot, Stage,
     addons::{InstallInputs, execute, uninstall},
     error::Result,
 };
@@ -26,19 +26,20 @@ pub(in crate::environment) async fn create(
     runtime::initialize(runner.as_ref(), &prefix).await
 }
 
-/// Apply validated Standard selections directly to the stopped owner's prefix.
+/// Apply frozen Standard selections directly to the stopped owner's prefix.
+/// Validate every new payload before removing anything. Removal uses the previous
+/// selection's recipe and prefix backups, without consulting shared addon storage.
 pub(in crate::environment) async fn apply(
     previous: &EnvironmentState,
     candidate: &EnvironmentState,
     root: &Path,
     cx: &Context,
-    addons: &Addons,
     progress: &watch::Sender<Option<Progress>>,
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let mut removals = Vec::new();
     let mut components = Vec::new();
-    let mut dependencies = Vec::new();
+    let dependencies = &candidate.dependencies[previous.dependencies.len()..];
     for slot in Slot::iter().filter(|slot| !slot.is_runtime()) {
         let old = previous.component(slot);
         let new = candidate.component(slot);
@@ -46,27 +47,15 @@ pub(in crate::environment) async fn apply(
             continue;
         }
         if let Some(old) = old {
-            let release = addons
-                .component(old.id())
-                .ok_or(AddonError::NotFound(old.id()))?;
-            removals.push(release);
+            removals.push(old);
         }
         if let Some(new) = new {
-            let release = addons
-                .component(new.id())
-                .ok_or(AddonError::NotFound(new.id()))?;
-            release.validate(&release.path(cx.directories())).await?;
-            components.push(release);
+            new.validate(&new.path(cx.directories())).await?;
+            components.push(new);
         }
     }
-    for new in &candidate.dependencies[previous.dependencies.len()..] {
-        let downloaded = addons
-            .dependency(new.id())
-            .ok_or(AddonError::NotFound(new.id()))?;
-        downloaded
-            .validate(&downloaded.path(cx.directories()))
-            .await?;
-        dependencies.push(downloaded);
+    for new in dependencies {
+        new.validate(&new.path(cx.directories())).await?;
     }
     if removals.is_empty() && components.is_empty() && dependencies.is_empty() {
         return Ok(());
