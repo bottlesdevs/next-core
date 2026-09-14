@@ -2,7 +2,7 @@
 
 mod error;
 mod plugin;
-pub mod steam;
+mod steam;
 
 pub use error::ProfileError;
 use steam::SteamIntegration;
@@ -118,27 +118,6 @@ impl Profiles {
                 .ok_or(ProfileError::NotFound(id))?;
             state.selected = id;
             Ok(profile)
-        })
-        .await
-    }
-
-    /// Select the profile linked to this account, leaving selection unchanged if absent.
-    pub async fn select_account(
-        &self,
-        provider_id: &PluginId,
-        account_id: &str,
-    ) -> Result<Option<Profile>> {
-        self.update(|state| {
-            let Some(profile) = state.profiles.iter().find(|profile| {
-                profile.accounts.iter().any(|account| {
-                    &account.provider.id == provider_id && account.identity.account_id == account_id
-                })
-            }) else {
-                return Ok(None);
-            };
-            let profile = profile.clone();
-            state.selected = profile.id;
-            Ok(Some(profile))
         })
         .await
     }
@@ -455,20 +434,6 @@ impl Profiles {
                 .ok_or_else(|| ProfileError::ProviderNotFound(provider_id.clone()))?
                 .metadata()
         };
-        if let Some(owner) = current.profiles.iter().find(|profile| {
-            profile.accounts.iter().any(|account| {
-                account.provider.id == provider_id
-                    && account.identity.account_id == identity.account_id
-            })
-        }) {
-            return Err(ProfileError::AccountIdentityAlreadyLinked {
-                profile: owner.id,
-                provider: provider_id.clone(),
-                account_id: identity.account_id.clone(),
-            }
-            .into());
-        }
-
         if let Some(secret) = credential.as_deref() {
             credentials::save(&provider_id, profile_id, secret).await?;
         }

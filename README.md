@@ -111,35 +111,13 @@ async fn main() -> Result<(), bottles_core::error::Error> {
 }
 ```
 
-Opening core preserves the persisted active profile. Applications own Steam observation
-and decide whether local account changes should select a linked profile:
+Opening core preserves the persisted active profile. Select profiles explicitly with
+`profiles.select(id).await`; Steam account changes do not change selection. The initial
+Player profile has no linked accounts. Every profile may link one account per storefront,
+and the same account can be linked independently to multiple profiles.
 
-```rust
-let profiles = bottles.profiles().clone();
-let follow_steam = tokio::spawn(async move {
-    let mut accounts = Box::pin(bottles_core::steam::watch_account());
-    while let Some(account) = accounts.next().await {
-        match account {
-            Ok(Some(account)) => {
-                if let Err(error) = profiles
-                    .select_account(&bottles_core::steam::PROVIDER_ID, &account.account_id)
-                    .await
-                {
-                    eprintln!("Steam profile selection failed: {error}");
-                }
-            }
-            Ok(None) => {}
-            Err(error) => eprintln!("Steam observation failed: {error}"),
-        }
-    }
-});
-// Stop following when the application no longer wants Steam to select profiles.
-follow_steam.abort();
-let _ = follow_steam.await;
-```
-
-Dropping the stream releases its native watcher. Steam account linking works without
-starting observation, and unmatched accounts leave profile selection unchanged.
+Steam linking reads its most recent local account on demand. Switching profiles changes
+which linked accounts Bottles uses, without switching accounts in external launchers.
 
 ## Getting help
 

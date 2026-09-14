@@ -26,11 +26,4 @@ pub enum ProfileError {
     /// The provider rejected or failed an account operation.
     #[error("storefront account provider {provider}: {message}")]
     Provider { provider: PluginId, message: String },
-    /// Another profile already owns the same provider account.
-    #[error("account {account_id} from provider {provider} is already linked to profile {profile}")]
-    AccountIdentityAlreadyLinked {
-        profile: Uuid,
-        provider: PluginId,
-        account_id: String,
-    },
 }
