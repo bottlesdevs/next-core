@@ -3,12 +3,10 @@
 use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
+use bottles_plugin_host::AccountIdentity;
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    AccountIdentity, AccountLinkInteraction, LinkedAccount, StorefrontAccountProvider,
-    StorefrontProvider,
-};
+use super::{AccountLinkInteraction, LinkedAccount, StorefrontAccountProvider, StorefrontProvider};
 use crate::PluginId;
 
 pub const PROVIDER_ID: PluginId = PluginId::new("steam");

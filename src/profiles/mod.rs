@@ -1,8 +1,10 @@
 //! Persisted application profiles and selection.
 
+mod account;
 mod error;
 mod storefront;
 
+pub use account::StorefrontAccount;
 pub use error::ProfileError;
 
 use std::{io, path::PathBuf, sync::Arc};
@@ -14,7 +16,7 @@ use tokio::sync::{Mutex, watch};
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
-use crate::{Directories, Operation, PluginId, Plugins, credentials, error::Result};
+use crate::{Directories, Operation, PluginId, Plugins, error::Result};
 use storefront::LinkedAccount;
 pub use storefront::{AccountIdentity, AccountLinkInteraction, StorefrontProvider};
 
@@ -61,7 +63,7 @@ struct ProfilesInner {
     plugins: Arc<Plugins>,
     path: PathBuf,
     published: watch::Sender<Arc<ProfilesConfig>>,
-    write_lock: Mutex<()>,
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl Profiles {
@@ -86,7 +88,7 @@ impl Profiles {
         self.update_locked(operation).await
     }
 
-    /// Caller holds write_lock, including any credential cleanup after publication.
+    /// Caller holds write_lock through membership changes and credential cleanup.
     async fn update_locked<T>(
         &self,
         operation: impl FnOnce(&mut ProfilesConfig) -> Result<T>,
@@ -97,14 +99,9 @@ impl Profiles {
         if next == *current {
             return Ok(value);
         }
-        self.persist(next).await?;
-        Ok(value)
-    }
-
-    async fn persist(&self, next: ProfilesConfig) -> Result<()> {
         next_config::save(&self.inner.path, &next).await?;
         self.inner.published.send_replace(Arc::new(next));
-        Ok(())
+        Ok(value)
     }
 }
 
@@ -138,7 +135,7 @@ impl Profiles {
             plugins,
             path,
             published,
-            write_lock: Mutex::new(()),
+            write_lock: Arc::default(),
         });
         Ok(Self { inner })
     }
@@ -197,101 +194,42 @@ impl Profiles {
         .await
     }
 
-    /// Deletes an existing profile.
-    ///
+    /// Deletes a profile after unlinking its accounts and cleaning their credentials.
+    /// Failed cleanup keeps the affected slot occupied for retry; accounts already
+    /// unlinked remain removed if a later cleanup fails.
     /// Deleting the selected profile selects the first remaining profile in the
-    /// same persisted update. The only remaining profile cannot be deleted.
+    /// final persisted update. The only remaining profile cannot be deleted.
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let _write = self.inner.write_lock.lock().await;
-        let profile = self
-            .update_locked(|state| {
-                let index = state
-                    .profiles
-                    .iter()
-                    .position(|profile| profile.id == id)
-                    .ok_or(ProfileError::NotFound(id))?;
-                if state.profiles.len() == 1 {
-                    return Err(ProfileError::LastProfile(id).into());
-                }
-                let removed = state.profiles.remove(index);
-                if state.selected == id {
-                    state.selected = state.profiles[0].id;
-                }
-                Ok(removed)
-            })
-            .await?;
-        for account in profile.accounts {
-            if let Err(error) = credentials::delete(&account.provider.id, id).await {
-                tracing::warn!(
-                    provider = %account.provider.id,
-                    profile = %id,
-                    "failed to delete credential after profile deletion: {error}"
-                );
+        loop {
+            let write = self.inner.write_lock.lock().await;
+            let state = self.snapshot();
+            let profile = state.profile(id).ok_or(ProfileError::NotFound(id))?;
+            if state.profiles.len() == 1 {
+                return Err(ProfileError::LastProfile(id).into());
             }
+            let account = profile.accounts.first().cloned();
+            let Some(account) = account else {
+                return self
+                    .update_locked(|state| {
+                        state.profiles.retain(|profile| profile.id != id);
+                        if state.selected == id {
+                            state.selected = state.profiles[0].id;
+                        }
+                        Ok(())
+                    })
+                    .await;
+            };
+            drop(write);
+            self.unlink_account(id, account.provider.id).await?;
         }
-        Ok(())
     }
 
-    /// Read games for the binding captured by a search, without exposing credentials.
-    /// Installed plugins without library capability return None; unavailable
-    /// providers return an error. Calls run outside the profile write lock so
-    /// storefronts remain concurrent; providers decide whether credentials are required.
-    /// Credential updates are processed before reporting an enumeration error.
     pub(crate) async fn owned_games(
         &self,
         profile_id: Uuid,
         account: &StorefrontAccount,
     ) -> Result<Option<(String, Vec<bottles_plugin_host::OwnedGame>)>> {
-        let provider_id = &account.provider.id;
-        let Some(provider) = storefront::library_provider(&self.inner.plugins, provider_id)? else {
-            return Ok(None);
-        };
-        let credential = {
-            let _write = self.inner.write_lock.lock().await;
-            self.require_binding(profile_id, account)?;
-            credentials::load(provider_id, profile_id).await?
-        };
-        let listed = provider
-            .list_games(&account.identity.account_id, credential.as_deref())
-            .await
-            .map_err(|message| ProfileError::Provider {
-                provider: provider_id.clone(),
-                message,
-            })?;
-        if let Some(updated) = listed.updated_credential.as_deref() {
-            let _write = self.inner.write_lock.lock().await;
-            // An in-flight request must not recreate an unlinked account's credential.
-            if self.require_binding(profile_id, account).is_ok() {
-                if let Err(error) = credentials::save(provider_id, profile_id, updated).await {
-                    tracing::warn!(provider = %provider_id, profile = %profile_id,
-                        "failed to save refreshed storefront credential: {error}");
-                }
-            }
-        }
-        let games = listed.games.map_err(|message| ProfileError::Provider {
-            provider: provider_id.clone(),
-            message,
-        })?;
-        Ok(Some((provider.name().to_owned(), games)))
-    }
-
-    fn require_binding(&self, profile_id: Uuid, account: &StorefrontAccount) -> Result<()> {
-        let state = self.snapshot();
-        let profile = state
-            .profile(profile_id)
-            .ok_or(ProfileError::NotFound(profile_id))?;
-        if profile.accounts.iter().any(|linked| {
-            linked.provider.id == account.provider.id
-                && linked.identity.account_id == account.identity.account_id
-        }) {
-            Ok(())
-        } else {
-            Err(ProfileError::AccountNotLinked {
-                profile: profile_id,
-                provider: account.provider.id.clone(),
-            }
-            .into())
-        }
+        account.owned_games(&self.inner.plugins, profile_id).await
     }
 
     /// Returns the storefront providers available in this process.
@@ -301,13 +239,11 @@ impl Profiles {
 
     /// Links one account through an available provider.
     ///
-    /// Provider authentication and caller interaction happen without holding
-    /// the profile write lock. Cancellation is observed during authentication
-    /// and while waiting for that lock. Once the lock is acquired, the provider
-    /// and profile are revalidated before a non-cancellable persistence step.
-    /// Reloads do not replace the authenticating provider's metadata. A new link
-    /// establishes its credential state, clearing a stale entry when none is supplied.
-    /// If profile persistence fails, cleanup of a newly saved credential is awaited.
+    /// Authentication happens outside the profile write lock. Cancellation is
+    /// observed during authentication and while waiting for that lock. Credential
+    /// preparation and profile persistence then finish cooperatively under it.
+    /// Reloads do not replace the authenticating provider's metadata. A missing
+    /// credential clears any stale entry. Failed persistence awaits cleanup.
     pub fn link_account(
         &self,
         profile_id: Uuid,
@@ -331,74 +267,93 @@ impl Profiles {
                 provider: provider_id.clone(),
                 message,
             })?;
-
-            let _write = cancellation
-                .run_until_cancelled(profiles.inner.write_lock.lock())
+            let write = cancellation
+                .run_until_cancelled(profiles.inner.write_lock.clone().lock_owned())
                 .await
                 .ok_or(crate::error::Error::Cancelled)?;
+            let write = Arc::new(write);
             if cancellation.is_cancelled() {
                 return Err(crate::error::Error::Cancelled);
             }
-            let current = profiles.snapshot();
-            let profile_index = validate_account_link(&current, profile_id, &provider_id)?;
-            // Check availability while retaining the authenticating provider's metadata.
+            let index = validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
+            // Revalidate availability without replacing the authenticating metadata.
             storefront::account_provider(&profiles.inner.plugins, &provider_id)?;
-            match credential.as_deref() {
-                Some(secret) => credentials::save(&provider_id, profile_id, secret).await?,
-                None => credentials::delete(&provider_id, profile_id).await?,
-            }
-            let mut next = current.as_ref().clone();
-            let profile = &mut next.profiles[profile_index];
-            profile.accounts.push(StorefrontAccount {
-                provider: metadata,
-                identity,
-            });
-            let profile = profile.clone();
-            if let Err(error) = profiles.persist(next).await {
-                if credential.is_some() {
-                    if let Err(cleanup_error) = credentials::delete(&provider_id, profile_id).await
-                    {
-                        tracing::warn!(provider = %provider_id, profile = %profile_id,
-                            "failed to delete credential after account linking failed: {cleanup_error}");
-                    }
+            let account = StorefrontAccount::new(metadata, identity);
+            account
+                .prepare(profile_id, credential.as_deref(), write.clone())
+                .await?;
+            let result = profiles
+                .update_locked(|state| {
+                    state.profiles[index].accounts.push(account.clone());
+                    Ok(state.profiles[index].clone())
+                })
+                .await;
+            if result.is_err() && credential.is_some() {
+                let mut operation = account.lock().await;
+                if let Err(error) = account
+                    .cleanup(profile_id, &mut operation, write.clone())
+                    .await
+                {
+                    tracing::warn!(provider = %provider_id, profile = %profile_id,
+                        "failed to delete credential after account linking failed: {error}");
                 }
-                return Err(error);
             }
-            Ok(profile)
+            result
         })
     }
 
-    /// Removes persisted account metadata without requiring its provider.
+    /// Cleans an account's credential before releasing its slot, without requiring
+    /// its provider. Waits for the account's operation before taking the profile
+    /// write lock for cleanup and persistence. If either fails, the slot stays
+    /// occupied and further searches are disabled; unlinking can be retried.
     pub async fn unlink_account(&self, profile_id: Uuid, provider_id: PluginId) -> Result<Profile> {
-        let _write = self.inner.write_lock.lock().await;
-        let profile = self
-            .update_locked(|state| {
-                let profile = state
-                    .profiles
-                    .iter_mut()
-                    .find(|profile| profile.id == profile_id)
-                    .ok_or(ProfileError::NotFound(profile_id))?;
-                let account_index = profile
-                    .accounts
-                    .iter()
-                    .position(|account| account.provider.id == provider_id)
-                    .ok_or_else(|| ProfileError::AccountNotLinked {
-                        profile: profile_id,
-                        provider: provider_id.clone(),
-                    })?;
-                profile.accounts.remove(account_index);
-                Ok(profile.clone())
-            })
-            .await?;
-        if let Err(error) = credentials::delete(&provider_id, profile_id).await {
-            tracing::warn!(
-                provider = %provider_id,
-                profile = %profile_id,
-                "failed to delete credential after account unlinking: {error}"
-            );
+        let account = find_account(&self.snapshot(), profile_id, &provider_id)?;
+        let mut operation = account.lock().await;
+        let write = Arc::new(self.inner.write_lock.clone().lock_owned().await);
+        let current = find_account(&self.snapshot(), profile_id, &provider_id)?;
+        if !current.same_link(&account) {
+            return Err(ProfileError::AccountNotLinked {
+                profile: profile_id,
+                provider: provider_id.clone(),
+            }
+            .into());
         }
-        Ok(profile)
+        account
+            .cleanup(profile_id, &mut operation, write.clone())
+            .await?;
+        self.update_locked(|state| {
+            let profile = state
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == profile_id)
+                .ok_or(ProfileError::NotFound(profile_id))?;
+            profile.accounts.retain(|other| !other.same_link(&account));
+            Ok(profile.clone())
+        })
+        .await
     }
+}
+
+fn find_account(
+    state: &ProfilesConfig,
+    profile_id: Uuid,
+    provider_id: &PluginId,
+) -> Result<StorefrontAccount> {
+    let profile = state
+        .profile(profile_id)
+        .ok_or(ProfileError::NotFound(profile_id))?;
+    profile
+        .accounts
+        .iter()
+        .find(|account| &account.provider.id == provider_id)
+        .cloned()
+        .ok_or_else(|| {
+            ProfileError::AccountNotLinked {
+                profile: profile_id,
+                provider: provider_id.clone(),
+            }
+            .into()
+        })
 }
 
 fn validate_account_link(
@@ -432,13 +387,6 @@ fn profile_name(name: impl Into<String>) -> Result<String> {
     } else {
         Ok(name)
     }
-}
-
-/// Public metadata for a storefront account linked to a profile.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct StorefrontAccount {
-    pub provider: StorefrontProvider,
-    pub identity: AccountIdentity,
 }
 
 /// An immutable application-profile snapshot.

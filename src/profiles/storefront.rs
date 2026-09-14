@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
+pub use bottles_plugin_host::AccountLinkInteraction;
+pub(crate) use bottles_plugin_host::LinkedAccount;
+
 /// Static identity of one available storefront account provider.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StorefrontProvider {
@@ -21,22 +24,6 @@ pub struct StorefrontProvider {
 pub struct AccountIdentity {
     pub account_id: String,
     pub display_name: String,
-}
-
-/// Account metadata and credential produced by a successful provider link.
-pub(crate) struct LinkedAccount {
-    pub identity: AccountIdentity,
-    pub credential: Option<Vec<u8>>,
-}
-
-/// Supplies provider-directed interaction while an account is being linked.
-#[async_trait]
-pub trait AccountLinkInteraction: Send + Sync {
-    async fn request_input(
-        &self,
-        url: url::Url,
-        instructions: String,
-    ) -> std::result::Result<String, String>;
 }
 
 /// Links one storefront account through a native or Wasm provider.

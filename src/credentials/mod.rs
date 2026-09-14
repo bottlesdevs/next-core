@@ -61,15 +61,29 @@ pub(crate) async fn save(
     provider_id: &PluginId,
     profile_id: Uuid,
     secret: &[u8],
+    guard: impl Send + 'static,
 ) -> keyring::Result<()> {
     let account = account(provider_id, profile_id);
     let secret = secret.to_vec();
-    blocking::unblock(move || save_entry(&entry(&account)?, &secret)).await
+    blocking::unblock(move || {
+        // Retain the operation's lock even if its caller drops this future.
+        let _guard = guard;
+        save_entry(&entry(&account)?, &secret)
+    })
+    .await
 }
 
-pub(crate) async fn delete(provider_id: &PluginId, profile_id: Uuid) -> keyring::Result<()> {
+pub(crate) async fn delete(
+    provider_id: &PluginId,
+    profile_id: Uuid,
+    guard: impl Send + 'static,
+) -> keyring::Result<()> {
     let account = account(provider_id, profile_id);
-    blocking::unblock(move || delete_entry(&entry(&account)?)).await
+    blocking::unblock(move || {
+        let _guard = guard;
+        delete_entry(&entry(&account)?)
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -80,22 +94,27 @@ mod tests {
     fn credential_operations_are_idempotent_and_isolated() {
         use_test_store();
         futures_lite::future::block_on(async {
+            let guard = Arc::new(Arc::new(tokio::sync::Mutex::new(())).lock_owned().await);
             let provider = PluginId::new("provider");
             let profile = Uuid::new_v4();
             let other_provider = PluginId::new("other-provider");
             let other_profile = Uuid::new_v4();
 
             assert_eq!(load(&provider, profile).await.unwrap(), None);
-            save(&provider, profile, b"old").await.unwrap();
-            save(&provider, profile, b"new").await.unwrap();
+            save(&provider, profile, b"old", guard.clone())
+                .await
+                .unwrap();
+            save(&provider, profile, b"new", guard.clone())
+                .await
+                .unwrap();
             assert_eq!(
                 load(&provider, profile).await.unwrap(),
                 Some(b"new".to_vec())
             );
             assert_eq!(load(&other_provider, profile).await.unwrap(), None);
             assert_eq!(load(&provider, other_profile).await.unwrap(), None);
-            delete(&provider, profile).await.unwrap();
-            delete(&provider, profile).await.unwrap();
+            delete(&provider, profile, guard.clone()).await.unwrap();
+            delete(&provider, profile, guard).await.unwrap();
             assert_eq!(load(&provider, profile).await.unwrap(), None);
         });
     }
