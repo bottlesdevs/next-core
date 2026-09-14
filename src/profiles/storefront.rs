@@ -60,7 +60,7 @@ pub(crate) trait StorefrontLibraryProvider: Send + Sync {
         &self,
         account_id: &str,
         credential: Option<&[u8]>,
-    ) -> Result<bottles_plugin_host::ListedGames>;
+    ) -> std::result::Result<bottles_plugin_host::ListedGames, String>;
 }
 
 pub(crate) fn account_provider(

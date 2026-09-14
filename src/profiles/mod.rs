@@ -253,7 +253,11 @@ impl Profiles {
         };
         let listed = provider
             .list_games(&account.identity.account_id, credential.as_deref())
-            .await?;
+            .await
+            .map_err(|message| ProfileError::Provider {
+                provider: provider_id.clone(),
+                message,
+            })?;
         if let Some(updated) = listed.updated_credential.as_deref() {
             let _write = self.inner.write_lock.lock().await;
             // An in-flight request must not recreate an unlinked account's credential.

@@ -65,16 +65,7 @@ impl StorefrontLibraryProvider for Plugin {
         &self,
         account_id: &str,
         credential: Option<&[u8]>,
-    ) -> crate::error::Result<bottles_plugin_host::ListedGames> {
-        self.runtime
-            .list_games(account_id, credential)
-            .await
-            .map_err(|message| {
-                crate::ProfileError::Provider {
-                    provider: self.manifest.id.clone(),
-                    message,
-                }
-                .into()
-            })
+    ) -> Result<bottles_plugin_host::ListedGames, String> {
+        self.runtime.list_games(account_id, credential).await
     }
 }
