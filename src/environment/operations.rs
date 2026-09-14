@@ -63,7 +63,6 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             let after = draft.environment();
             let backend = previous.backend();
             after.validate()?;
-            backend.validate_edit(before, after)?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
