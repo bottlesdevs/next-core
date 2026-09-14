@@ -143,10 +143,7 @@ impl VirgoManager {
                     id: selected.id(),
                     version: selected.version().into(),
                 })?;
-        let runner = soda
-            .addon()
-            .load_runner(self.cx.directories(), None)
-            .await?;
+        let runner = soda.load_runner(self.cx.directories(), None).await?;
         let stage = self.staging_path();
         let artifact = stage.join("artifact");
         let prefix = artifact.join("filesystem");

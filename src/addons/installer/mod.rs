@@ -7,8 +7,8 @@
 //!
 //! Resources and steps are applied in declaration order. Steps may copy or
 //! extract files, run installers, register DLLs, update the registry, or configure
-//! DLL overrides. `SetEnvironment` declarations are collected into release metadata
-//! during acquisition and ignored during installation and uninstall. Installer
+//! DLL overrides. Launch variables are derived from frozen `SetEnvironment`
+//! declarations, which are ignored during installation and uninstall. Installer
 //! commands declare their own variables. Changes made by completed steps remain
 //! if a later step fails; the bottle storage layer is responsible
 //! for any transaction-level rollback.

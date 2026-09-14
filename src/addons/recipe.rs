@@ -99,7 +99,7 @@ pub(crate) enum InstallStep {
         /// Applied uniformly; mixed per-DLL modes require separate steps.
         mode: DllOverrideMode,
     },
-    /// Declares a launch variable, collected into addon metadata during acquisition.
+    /// Declares a launch variable derived from the frozen recipe at runtime.
     ///
     /// Later declarations win. Installation and uninstall ignore this declaration;
     /// installer commands use their own explicit variables.
