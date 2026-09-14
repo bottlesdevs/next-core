@@ -2,7 +2,6 @@
 
 #[cfg(feature = "fvs")]
 use crate::{Program, ProgramManager};
-use std::sync::Arc;
 
 use futures_core::Stream;
 use futures_util::{
@@ -12,8 +11,8 @@ use futures_util::{
 use uuid::Uuid;
 
 use crate::{
-    Bottle, BottleManager, Operation, PluginId, PluginKind, Plugins, Profiles, ProgramSpec,
-    bottle::error::BottleError, credentials, error::Result,
+    Bottle, BottleManager, Operation, PluginId, Profiles, ProgramSpec,
+    bottle::error::BottleError, error::Result,
 };
 
 /// A live, non-persisted projection of bottle registrations and standalone programs.
@@ -23,7 +22,6 @@ pub struct Library {
     #[cfg(feature = "fvs")]
     programs: ProgramManager,
     profiles: Profiles,
-    plugins: Arc<Plugins>,
 }
 
 impl Library {
@@ -31,14 +29,12 @@ impl Library {
         bottles: BottleManager,
         #[cfg(feature = "fvs")] programs: ProgramManager,
         profiles: Profiles,
-        plugins: Arc<Plugins>,
     ) -> Self {
         Self {
             bottles,
             #[cfg(feature = "fvs")]
             programs,
             profiles,
-            plugins,
         }
     }
 
@@ -109,72 +105,22 @@ impl Library {
         let storefronts = profile
             .accounts()
             .iter()
-            .filter_map(|account| {
-                let provider_id = account.provider.id.clone();
-                let Some(plugin) = self
-                    .plugins
-                    .contribution(&provider_id, PluginKind::StorefrontLibraryProvider)
-                else {
-                    tracing::warn!(
-                        provider = %provider_id,
-                        profile = %profile_id,
-                        "storefront library provider is unavailable"
-                    );
-                    return None;
-                };
-                let account_id = account.identity.account_id.clone();
-                let source_name = plugin.manifest.name.clone();
+            .cloned()
+            .map(|account| {
+                let profiles = self.profiles.clone();
                 let query = query.clone();
-
-                Some(async move {
-                    let credential = match credentials::load(&provider_id, profile_id).await {
-                        Ok(Some(credential)) => credential,
-                        Ok(None) => {
-                            tracing::warn!(
-                                provider = %provider_id,
-                                profile = %profile_id,
-                                "storefront credential is missing"
-                            );
-                            return Vec::new();
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                provider = %provider_id,
-                                profile = %profile_id,
-                                "failed to load storefront credential: {error}"
-                            );
-                            return Vec::new();
-                        }
-                    };
-                    let listed = match plugin
-                        .runtime
-                        .list_games(&account_id, Some(&credential))
-                        .await
-                    {
-                        Ok(listed) => listed,
-                        Err(error) => {
-                            tracing::warn!(
-                                provider = %provider_id,
-                                profile = %profile_id,
-                                "failed to list storefront games: {error}"
-                            );
-                            return Vec::new();
-                        }
-                    };
-
-                    if let Some(updated) = listed.updated_credential.as_deref()
-                        && let Err(error) =
-                            credentials::save(&provider_id, profile_id, updated).await
-                    {
-                        tracing::warn!(
-                            provider = %provider_id,
-                            profile = %profile_id,
-                            "failed to save refreshed storefront credential: {error}"
-                        );
-                    }
-
-                    listed
-                        .games
+                async move {
+                    let provider_id = account.provider.id.clone();
+                    let (source_name, games) =
+                        match profiles.owned_games(profile_id, &account).await {
+                            Ok(listed) => listed,
+                            Err(error) => {
+                                tracing::warn!(provider = %provider_id, profile = %profile_id,
+                                "failed to list storefront games: {error}");
+                                return Vec::new();
+                            }
+                        };
+                    games
                         .into_iter()
                         .filter_map(|game| {
                             let entry = SearchEntry {
@@ -189,7 +135,7 @@ impl Library {
                             entry.matches(&query).then_some(entry)
                         })
                         .collect()
-                })
+                }
             })
             .collect::<FuturesUnordered<_>>();
 
