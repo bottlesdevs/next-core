@@ -10,7 +10,7 @@ use strum::IntoEnumIterator;
 use uuid::Uuid;
 
 /// Execution settings embedded in a bottle or standalone program's saved state.
-/// Selections preserve runtime contributions independently of installation inputs.
+/// Selections preserve complete frozen recipes independently of shared payloads.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EnvironmentState {
     /// Component releases pinned to their occupied slots.
@@ -59,11 +59,11 @@ impl EnvironmentState {
         }
         let winebridge = winebridge.unwrap(); // Safe to unwrap since we just checked it above
         let mut components = HashMap::from([
-            (Slot::WineBridge, Addon::from(winebridge.as_ref())),
-            (Slot::Runner, Addon::from(runner_component.as_ref())),
+            (Slot::WineBridge, winebridge.as_ref().clone()),
+            (Slot::Runner, runner_component.as_ref().clone()),
         ]);
         if let Some(umu) = umu {
-            components.insert(Slot::Umu, Addon::from(umu.as_ref()));
+            components.insert(Slot::Umu, umu.as_ref().clone());
         }
         let config = EnvironmentState {
             components,
@@ -96,11 +96,10 @@ impl EnvironmentState {
                     requirements: vec![crate::Requirement::Slot(Slot::Umu)],
                 }
             })?;
-            self.components
-                .insert(Slot::Umu, crate::Addon::from(umu.as_ref()));
+            self.components.insert(Slot::Umu, umu.as_ref().clone());
         }
         self.components
-            .insert(component.slot(), crate::Addon::from(component.as_ref()));
+            .insert(component.slot(), component.as_ref().clone());
         if component.slot() == Slot::Runner && !needs_umu {
             self.components.remove(&Slot::Umu);
         }
@@ -118,7 +117,7 @@ impl EnvironmentState {
     pub(crate) fn add_dependency(&mut self, id: Uuid, addons: &crate::Addons) -> Result<()> {
         if self.dependency(id).is_none() {
             let dependency = addons.dependency(id).ok_or(AddonError::NotFound(id))?;
-            self.dependencies.push(Addon::from(dependency.as_ref()));
+            self.dependencies.push(dependency.as_ref().clone());
         }
         Ok(())
     }
@@ -130,14 +129,14 @@ impl EnvironmentState {
             .filter_map(|slot| self.component(slot))
     }
 
-    /// Combines saved addon contributions in selection order, then applies bottle overrides.
+    /// Derives addon contributions in selection order, then applies owner overrides.
     pub(crate) fn effective_env_vars(&self) -> EnvVars {
         let mut vars = EnvVars::default();
         for addon in self.ordered_components() {
-            vars.extend(addon.env_vars().clone());
+            vars.extend(addon.env_vars());
         }
         for addon in &self.dependencies {
-            vars.extend(addon.env_vars().clone());
+            vars.extend(addon.env_vars());
         }
         vars.extend(self.env_vars.clone());
         vars

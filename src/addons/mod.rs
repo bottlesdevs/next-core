@@ -1,11 +1,10 @@
 //! Cataloging, downloading, and selecting bottle addons.
 //!
-//! Addons pass through three representations:
+//! Addons have two representations:
 //!
 //! - [`CatalogEntry`] describes a release advertised by a remote catalog.
-//! - [`Release`] describes a local release with its frozen recipe and source payload.
-//! - [`Addon`] is the artifact-free selection persisted in a
-//!   [`crate::BottleState`].
+//! - [`Addon`] is a frozen definition containing metadata and a complete recipe,
+//!   stored alongside the shared payload and embedded in owner state.
 //!
 //! Obtain the shared [`Addons`] manager from [`crate::Bottles::addons`]. Catalog
 //! queries use the last successfully loaded catalog, while release queries expose
@@ -24,7 +23,6 @@ mod installer;
 mod manager;
 mod recipe;
 mod recipes;
-mod release;
 
 pub use addon::{Addon, Component, Dependency, Requirement, Slot};
 pub use catalog::CatalogEntry;
@@ -32,7 +30,6 @@ pub(crate) use catalog::Checksum;
 pub use error::{AddonError, CatalogError, InstallerError};
 pub(crate) use installer::{InstallInputs, execute, uninstall};
 pub use manager::Addons;
-pub use release::Release;
 
 /// Rejects empty or whitespace-only input without trimming accepted values.
 pub(crate) fn deserialize_non_empty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
