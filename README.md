@@ -111,20 +111,35 @@ async fn main() -> Result<(), bottles_core::error::Error> {
 }
 ```
 
-Opening core preserves the persisted active profile. Applications can opt into
-following Steam's local account using a future that they execute and stop themselves:
+Opening core preserves the persisted active profile. Applications own Steam observation
+and decide whether local account changes should select a linked profile:
 
 ```rust
-let follow_steam = tokio::spawn(bottles.profiles().follow_steam_profile());
-// Run the application. Only already-linked accounts select a profile.
-// When observation should stop:
+let profiles = bottles.profiles().clone();
+let follow_steam = tokio::spawn(async move {
+    let mut accounts = Box::pin(bottles_core::steam::watch_account());
+    while let Some(account) = accounts.next().await {
+        match account {
+            Ok(Some(account)) => {
+                if let Err(error) = profiles
+                    .select_account(&bottles_core::steam::PROVIDER_ID, &account.account_id)
+                    .await
+                {
+                    eprintln!("Steam profile selection failed: {error}");
+                }
+            }
+            Ok(None) => {}
+            Err(error) => eprintln!("Steam observation failed: {error}"),
+        }
+    }
+});
+// Stop following when the application no longer wants Steam to select profiles.
 follow_steam.abort();
 let _ = follow_steam.await;
 ```
 
-For custom selection policy, consume `bottles_core::steam::watch_account()` and
-call `profiles.select_account()` explicitly. Dropping the stream releases its native
-watcher. Steam account linking works without starting observation.
+Dropping the stream releases its native watcher. Steam account linking works without
+starting observation, and unmatched accounts leave profile selection unchanged.
 
 ## Getting help
 
