@@ -95,7 +95,8 @@ impl Library {
     /// selection changes affect subsequent searches, not the captured account set.
     /// Installed account-only plugins are skipped; an unlinked profile searches installed entries.
     /// Storefront failures are logged and omitted so local and other storefront
-    /// results remain available. An empty or whitespace-only query matches every
+    /// results remain available. The same case-insensitive title/source filter
+    /// applies to all results. An empty or whitespace-only query matches every
     /// entry, and result ordering is unspecified.
     pub fn search(
         &self,
@@ -110,7 +111,6 @@ impl Library {
             .cloned()
             .map(|account| {
                 let profiles = self.profiles.clone();
-                let query = query.clone();
                 async move {
                     let provider_id = account.provider.id.clone();
                     let (source_name, games) =
@@ -125,17 +125,14 @@ impl Library {
                         };
                     games
                         .into_iter()
-                        .filter_map(|game| {
-                            let entry = SearchEntry {
-                                title: game.title,
-                                source_name: source_name.clone(),
-                                source: SearchSource::Storefront {
-                                    profile_id,
-                                    provider_id: provider_id.clone(),
-                                    game_id: game.id,
-                                },
-                            };
-                            entry.matches(&query).then_some(entry)
+                        .map(|game| SearchEntry {
+                            title: game.title,
+                            source_name: source_name.clone(),
+                            source: SearchSource::Storefront {
+                                profile_id,
+                                provider_id: provider_id.clone(),
+                                game_id: game.id,
+                            },
                         })
                         .collect()
                 }
@@ -153,10 +150,10 @@ impl Library {
                     source: SearchSource::Installed(installed),
                 })
             })
-            .filter(|entry| entry.matches(&query))
             .collect::<Vec<_>>();
 
         stream::select(storefronts.flat_map(stream::iter), stream::iter(installed))
+            .filter(move |entry| std::future::ready(entry.matches(&query)))
     }
 }
 
