@@ -9,7 +9,7 @@ pub(crate) use cache::VirgoLayer;
 use super::VirgoError;
 use crate::environment::prefix::FVS_BLOCK_SIZE;
 use crate::{
-    CatalogEntry, Component, Context, Directories, EnvironmentState, Progress, Slot,
+    Context, Directories, EnvironmentState, Progress, Slot,
     error::{Error, Result},
 };
 use std::path::PathBuf;
@@ -98,28 +98,9 @@ fn addon_ids(config: &EnvironmentState) -> impl Iterator<Item = Uuid> + '_ {
         .chain(config.dependencies.iter().map(crate::Addon::id))
 }
 
-fn latest_soda(entries: &[CatalogEntry<Component>]) -> Result<&CatalogEntry<Component>> {
-    let mut latest = None;
-    for entry in entries
-        .iter()
-        .filter(|entry| entry.slot() == Slot::Runner && entry.name().eq_ignore_ascii_case("soda"))
-    {
-        let version = semver::Version::parse(entry.version())
-            .map_err(|_| VirgoError::InvalidSodaVersion(entry.version().into()))?;
-        if latest
-            .as_ref()
-            .is_none_or(|(current, _)| &version > current)
-        {
-            latest = Some((version, entry));
-        }
-    }
-    latest
-        .map(|(_, entry)| entry)
-        .ok_or_else(|| VirgoError::SodaNotInCatalog.into())
-}
-
 impl VirgoManager {
-    /// Resolve the pinned Soda base, creating it under the shared build lock if absent.
+    /// Reuse the pinned base, or build from the greatest valid local Soda version.
+    /// UUID breaks version ties. Missing inputs fail without downloading or falling back.
     async fn prepare_base(&self, cancellation: &CancellationToken) -> Result<VirgoLayer> {
         let destination = self.cx.directories().data_dir().join("virgo/soda");
         if let Some(base) = cache::load(&destination, None).await? {
@@ -135,14 +116,22 @@ impl VirgoManager {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let entries = self.cx.addons().component_entries();
-        let selected = latest_soda(&entries)?;
-        let soda = self.cx.addons().component(selected.id()).ok_or_else(|| {
-            VirgoError::SodaNotDownloaded {
-                id: selected.id(),
-                version: selected.version().into(),
-            }
-        })?;
+        let soda = self
+            .cx
+            .addons()
+            .components()
+            .into_iter()
+            .filter(|addon| {
+                addon.slot() == Slot::Runner && addon.name().eq_ignore_ascii_case("soda")
+            })
+            .filter_map(|addon| {
+                semver::Version::parse(addon.version())
+                    .ok()
+                    .map(|version| (version, addon))
+            })
+            .max_by(|(a, left), (b, right)| a.cmp(b).then_with(|| left.id().cmp(&right.id())))
+            .map(|(_, addon)| addon)
+            .ok_or(VirgoError::SodaNotDownloaded)?;
         let runner = soda.load_runner(self.cx.directories(), None).await?;
         let stage = self.staging_path();
         let artifact = stage.join("artifact");
