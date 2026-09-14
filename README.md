@@ -118,7 +118,10 @@ and the same account can be linked independently to multiple profiles.
 
 Steam is a built-in account provider and reads its most recent local account on demand.
 It appears alongside external storefront providers, without an installed plugin package.
-Built-in Steam takes precedence over external storefront contributions using its ID.
+Built-in Steam takes precedence for account linking. Library capability is resolved
+independently: an external Steam library provider can serve the locally linked account.
+Native Steam game enumeration is not implemented yet; without a library provider,
+search logs the unavailable source and continues returning results from other sources.
 External plugins retain their own package lifecycle and may share one runtime across
 multiple subsystem capabilities. Switching profiles changes
 which linked accounts Bottles uses, without switching accounts in external launchers.

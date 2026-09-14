@@ -3,7 +3,7 @@
 mod plugin;
 mod steam;
 
-use crate::{PluginId, PluginKind, Plugins, ProfileError, error::Result, plugins::Plugin};
+use crate::{PluginId, PluginKind, Plugins, ProfileError, error::Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, sync::Arc};
@@ -51,6 +51,18 @@ pub(crate) trait StorefrontAccountProvider: Send + Sync {
     ) -> std::result::Result<LinkedAccount, String>;
 }
 
+/// Enumerates owned games through a native or external implementation.
+#[async_trait]
+pub(crate) trait StorefrontLibraryProvider: Send + Sync {
+    fn name(&self) -> &str;
+
+    async fn list_games(
+        &self,
+        account_id: &str,
+        credential: Option<&[u8]>,
+    ) -> Result<bottles_plugin_host::ListedGames>;
+}
+
 pub(crate) fn account_provider(
     plugins: &Plugins,
     id: &PluginId,
@@ -76,13 +88,17 @@ pub(crate) fn account_providers(plugins: &Plugins) -> Vec<StorefrontProvider> {
         .collect()
 }
 
-pub(crate) fn library_provider(plugins: &Plugins, id: &PluginId) -> Result<Option<Plugin>> {
-    // Built-in identity takes precedence even when an external package uses this ID.
-    if id == &steam::PROVIDER_ID {
-        return Ok(None);
-    }
+/// Resolve library access independently of account linking. Native Steam account
+/// discovery does not prevent an external Steam library contribution. Until a
+/// library implementation is available, searches report the source as unavailable.
+pub(crate) fn library_provider(
+    plugins: &Plugins,
+    id: &PluginId,
+) -> Result<Option<Arc<dyn StorefrontLibraryProvider>>> {
     let plugin = plugins
         .get(id)
         .ok_or_else(|| ProfileError::ProviderNotFound(id.clone()))?;
-    Ok(plugin.contribution(PluginKind::StorefrontLibraryProvider))
+    Ok(plugin
+        .contribution(PluginKind::StorefrontLibraryProvider)
+        .map(|plugin| Arc::new(plugin) as Arc<dyn StorefrontLibraryProvider>))
 }
