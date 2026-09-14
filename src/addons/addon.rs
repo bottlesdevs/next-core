@@ -1,10 +1,14 @@
-//! InstallResource-free addon selections and their family discriminators.
+//! Immutable addon definitions, frozen recipes, and their family discriminators.
 
-use std::{fmt, path::PathBuf, str::FromStr};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
-use uuid::{NonNilUuid, Uuid};
+use uuid::Uuid;
 
 use crate::{
     Directories, EnvVars,
@@ -12,49 +16,38 @@ use crate::{
     runner::{Proton, Runner, RunnerError, RunnerKind, Wine, detect_runner_kind},
 };
 
-/// An addon selection persisted in a bottle.
+use super::{
+    AddonError,
+    catalog::AddonFamily,
+    recipe::{InstallResource, InstallStep},
+};
+
+/// An immutable addon definition with its complete installation recipe.
 ///
-/// `K` is [`Component`] or [`Dependency`]. Unlike an [`Release`](super::Release),
-/// this value contains no installation resources; it preserves requirements and
-/// runtime variables independently of the shared release.
+/// `K` is [`Component`] or [`Dependency`]. The same record is stored alongside its
+/// shared payload and embedded in bottle or standalone program state. Recipes are
+/// resolved during acquisition and never reconstructed from the catalog on load.
+/// A changed definition must have a new UUID; payload availability is separate.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     deny_unknown_fields,
     bound(serialize = "K: Serialize", deserialize = "K: Deserialize<'de>")
 )]
 pub struct Addon<K> {
-    id: NonNilUuid,
+    id: Uuid,
     name: String,
     version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
-    env_vars: EnvVars,
+    resources: Vec<InstallResource>,
     #[serde(flatten)]
     kind: K,
 }
 
 impl<K> Addon<K> {
-    pub(super) fn new(
-        id: NonNilUuid,
-        name: String,
-        version: String,
-        requirements: Vec<Requirement>,
-        env_vars: EnvVars,
-        kind: K,
-    ) -> Self {
-        Self {
-            id,
-            name,
-            version,
-            requirements,
-            env_vars,
-            kind,
-        }
-    }
-
     /// Returns the release identifier shared by its catalog, release, and bottle records.
     pub fn id(&self) -> Uuid {
-        self.id.get()
+        self.id
     }
 
     /// Returns the release label.
@@ -72,28 +65,97 @@ impl<K> Addon<K> {
         &self.requirements
     }
 
-    /// Returns this addon's frozen runtime environment variables.
+    /// Derives launch variables from the frozen recipe in resource and step order.
     ///
-    /// Values are collected from the selected recipe's declarations during acquisition
-    /// and saved with the selection, so they remain available after the shared
-    /// release is removed. These are this addon's contributions only; environment
-    /// configuration combines them with other addons and applies owner overrides last.
-    pub fn env_vars(&self) -> &EnvVars {
-        &self.env_vars
+    /// Later declarations win. Command-local variables are excluded. Environment
+    /// configuration combines addon contributions and applies owner overrides last.
+    pub fn env_vars(&self) -> EnvVars {
+        let mut env_vars = EnvVars::default();
+        for step in self.recipe() {
+            if let InstallStep::SetEnvironment { name, value } = step {
+                env_vars.insert(name.clone(), value.clone());
+            }
+        }
+        env_vars
+    }
+
+    pub(crate) fn path(&self, directories: &Directories) -> PathBuf
+    where
+        K: AddonFamily,
+    {
+        self.directory(directories).join("payload")
+    }
+    pub(super) fn directory(&self, directories: &Directories) -> PathBuf
+    where
+        K: AddonFamily,
+    {
+        K::releases(directories).join(self.id().to_string())
+    }
+    pub(crate) fn resources(&self) -> &[InstallResource] {
+        &self.resources
+    }
+    pub(crate) fn recipe(&self) -> impl DoubleEndedIterator<Item = &InstallStep> {
+        self.resources.iter().flat_map(|r| &r.steps)
     }
 }
 
 impl Addon<Component> {
+    pub(crate) fn new_component(
+        id: Uuid,
+        name: String,
+        version: String,
+        slot: Slot,
+        requirements: Vec<Requirement>,
+        resource: InstallResource,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            version,
+            requirements,
+            kind: Component { slot },
+            resources: vec![resource],
+        }
+    }
+
+    /// Validates the resource structure and component layout at a staged or published payload.
+    pub(crate) async fn validate(&self, payload: &Path) -> Result<()> {
+        if self.resources.len() != 1 || !self.resources[0].path.as_os_str().is_empty() {
+            return Err(AddonError::InvalidRelease(payload.to_path_buf()).into());
+        }
+        if !async_fs::metadata(payload).await.is_ok_and(|m| m.is_dir()) {
+            return Err(AddonError::PayloadMissing(self.id()).into());
+        }
+        let marker = match self.slot() {
+            Slot::Runner => {
+                crate::runner::detect_runner_kind(payload).await?;
+                None
+            }
+            Slot::WineBridge => Some("bottles-winebridge.exe"),
+            Slot::Umu => Some("umu-run"),
+            _ => None,
+        };
+        let sources = marker
+            .map(Path::new)
+            .into_iter()
+            .chain(self.recipe().filter_map(|step| match step {
+                InstallStep::Copy { source, .. } => Some(source.as_path()),
+                _ => None,
+            }));
+        for source in sources {
+            if !async_fs::metadata(payload.join(source))
+                .await
+                .is_ok_and(|entry| entry.is_file())
+            {
+                return Err(AddonError::InvalidComponent(payload.to_path_buf()).into());
+            }
+        }
+        Ok(())
+    }
+
     /// Returns the mutually exclusive role occupied by this component.
     pub fn slot(&self) -> Slot {
         self.kind.slot
-    }
-
-    pub(crate) fn path(&self, directories: &Directories) -> PathBuf {
-        directories
-            .component_releases()
-            .join(self.id().to_string())
-            .join("payload")
     }
 
     /// Reports whether this component satisfies `requirement`.
@@ -134,6 +196,40 @@ impl Addon<Component> {
 }
 
 impl Addon<Dependency> {
+    pub(crate) fn new_dependency(
+        id: Uuid,
+        name: String,
+        version: String,
+        requirements: Vec<Requirement>,
+        resources: Vec<InstallResource>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            version,
+            requirements,
+            kind: Dependency::default(),
+            resources,
+        }
+    }
+
+    /// Validates unique resource paths and files at a staged or published payload.
+    pub(crate) async fn validate(&self, payload: &Path) -> Result<()> {
+        let mut names = std::collections::HashSet::new();
+        if self.resources.is_empty() || self.resources.iter().any(|r| !names.insert(&r.path)) {
+            return Err(AddonError::InvalidRelease(payload.to_path_buf()).into());
+        }
+        for resource in &self.resources {
+            if !async_fs::metadata(payload.join(&resource.path))
+                .await
+                .is_ok_and(|m| m.is_file())
+            {
+                return Err(AddonError::PayloadMissing(self.id()).into());
+            }
+        }
+        Ok(())
+    }
+
     /// Reports whether this dependency satisfies `requirement`.
     ///
     /// Name and identifier matching is exact. Dependencies never satisfy slot
@@ -145,6 +241,10 @@ impl Addon<Dependency> {
             Requirement::Id(id) => self.id() == *id,
         }
     }
+}
+
+impl<K: Serialize + serde::de::DeserializeOwned + 'static> next_config::Config for Addon<K> {
+    const VERSION: u32 = 1;
 }
 
 /// A mutually exclusive component role within a bottle.

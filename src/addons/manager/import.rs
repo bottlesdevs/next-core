@@ -1,7 +1,7 @@
 //! Explicit local component archive import. Templates are frozen into fresh releases.
 
 use super::super::{
-    Component, Release, Requirement, Slot, recipe::InstallResource, recipes::steps as recipe_steps,
+    Addon, Component, Requirement, Slot, recipe::InstallResource, recipes::steps as recipe_steps,
 };
 use super::{Addons, prepare_component_archive};
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
     runner::{RunnerKind, detect_runner_kind},
 };
 use std::{path::Path, sync::Arc};
-use uuid::{NonNilUuid, Uuid};
+use uuid::Uuid;
 
 impl Addons {
     /// Imports a local tar, tar.gz/tgz, or tar.xz/txz.Assigns a fresh UUID and freezes the bundled recipe. The source archive is unchanged; directories are not supported.
@@ -20,7 +20,7 @@ impl Addons {
         slot: Slot,
         name: impl Into<String>,
         version: impl Into<String>,
-    ) -> Operation<Arc<Release<Component>>> {
+    ) -> Operation<Arc<Addon<Component>>> {
         let source = path.as_ref().to_path_buf();
         let name = name.into();
         let version = version.into();
@@ -34,8 +34,8 @@ impl Addons {
                 let requirements = inspect_release(slot, &payload).await?;
                 let steps = recipe_steps(slot).to_vec();
                 let id = Uuid::new_v4();
-                let release = Release::new_component(
-                    NonNilUuid::new(id).unwrap(),
+                let release = Addon::new_component(
+                    id,
                     name,
                     version,
                     slot,

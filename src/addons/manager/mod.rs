@@ -17,7 +17,7 @@ use url::Url;
 use uuid::Uuid;
 
 use super::{
-    AddonError, Component, Dependency, Release, Slot,
+    Addon, AddonError, Component, Dependency, Slot,
     catalog::{Catalog, CatalogEntry, CatalogUrls},
 };
 use crate::{
@@ -32,12 +32,12 @@ mod import;
 /// The shared manager for addon catalogs and local storage.
 ///
 /// Remote releases are exposed as [`CatalogEntry`] values. Fetching one adds an
-/// [`Release`] to shared storage; bottles then persist an artifact-free
-/// [`Addon`](crate::Addon) when selecting a component or installing a dependency.
+/// [`Addon`] and its payload to shared storage. Bottles and standalone programs
+/// clone that complete record when selecting a component or installing a dependency.
 /// Fetching alone does not modify any bottle.
 ///
 /// Clones refer to the same manager state. Returned [`CatalogEntry`] values and
-/// [`Release`] handles are snapshots: they do not change after a refresh,
+/// [`Addon`] handles are snapshots: they do not change after a refresh,
 /// fetch, or removal. Query the manager again, or use [`watch`](Self::watch), to
 /// observe a later publication.
 #[derive(Clone)]
@@ -99,23 +99,23 @@ impl Addons {
     /// Returns downloaded or imported component releases.
     ///
     /// The order is unspecified.
-    pub fn components(&self) -> Vec<Arc<Release<Component>>> {
+    pub fn components(&self) -> Vec<Arc<Addon<Component>>> {
         self.state().components.values().cloned().collect()
     }
 
     /// Returns downloaded dependency releases.
     /// The order is unspecified.
-    pub fn dependencies(&self) -> Vec<Arc<Release<Dependency>>> {
+    pub fn dependencies(&self) -> Vec<Arc<Addon<Dependency>>> {
         self.state().dependencies.values().cloned().collect()
     }
 
     /// Returns the known component with this release identifier.
-    pub fn component(&self, id: Uuid) -> Option<Arc<Release<Component>>> {
+    pub fn component(&self, id: Uuid) -> Option<Arc<Addon<Component>>> {
         self.state().components.get(&id).cloned()
     }
 
     /// Returns the known dependency with this release identifier.
-    pub fn dependency(&self, id: Uuid) -> Option<Arc<Release<Dependency>>> {
+    pub fn dependency(&self, id: Uuid) -> Option<Arc<Addon<Dependency>>> {
         self.state().dependencies.get(&id).cloned()
     }
 
@@ -209,7 +209,7 @@ impl Addons {
     }
 
     /// Selects the greatest semantic version among local releases for this slot.
-    pub(crate) fn latest_component(&self, slot: Slot) -> Option<Arc<Release<Component>>> {
+    pub(crate) fn latest_component(&self, slot: Slot) -> Option<Arc<Addon<Component>>> {
         let state = self.state();
         state
             .components
@@ -222,10 +222,10 @@ impl Addons {
 
     async fn commit_component(
         &self,
-        record: Arc<Release<Component>>,
+        record: Arc<Addon<Component>>,
         prepared: &Path,
         cancellation: &CancellationToken,
-    ) -> Result<Arc<Release<Component>>> {
+    ) -> Result<Arc<Addon<Component>>> {
         let id = record.id();
         let destination = record.directory(self.0.context.directories());
         record.validate(&prepared.join("payload")).await?;
@@ -264,10 +264,10 @@ impl Addons {
 
     async fn commit_dependency(
         &self,
-        record: Arc<Release<Dependency>>,
+        record: Arc<Addon<Dependency>>,
         prepared: &Path,
         cancellation: &CancellationToken,
-    ) -> Result<Arc<Release<Dependency>>> {
+    ) -> Result<Arc<Addon<Dependency>>> {
         let id = record.id();
         let destination = record.directory(self.0.context.directories());
         record.validate(&prepared.join("payload")).await?;
@@ -327,8 +327,8 @@ impl Addons {
 struct AddonsState {
     component_catalog: Option<Arc<Catalog<Component>>>,
     dependency_catalog: Option<Arc<Catalog<Dependency>>>,
-    components: HashMap<Uuid, Arc<Release<Component>>>,
-    dependencies: HashMap<Uuid, Arc<Release<Dependency>>>,
+    components: HashMap<Uuid, Arc<Addon<Component>>>,
+    dependencies: HashMap<Uuid, Arc<Addon<Dependency>>>,
 }
 impl AddonsState {
     async fn load_cached(directories: &Directories) -> Result<Self> {
@@ -338,7 +338,7 @@ impl AddonsState {
             ..Self::default()
         };
         for (id, path) in release_manifests(&directories.component_releases()).await? {
-            let record: Release<Component> = next_config::load(&path).await?;
+            let record: Addon<Component> = next_config::load(&path).await?;
             if record.id() != id {
                 return Err(AddonError::InvalidRelease(path).into());
             }
@@ -349,7 +349,7 @@ impl AddonsState {
             state.components.insert(id, Arc::new(record));
         }
         for (id, path) in release_manifests(&directories.dependency_releases()).await? {
-            let record: Release<Dependency> = next_config::load(&path).await?;
+            let record: Addon<Dependency> = next_config::load(&path).await?;
             if record.id() != id {
                 return Err(AddonError::InvalidRelease(path).into());
             }

@@ -48,10 +48,7 @@ impl VirgoManager {
             .addons
             .component(base.id)
             .ok_or(AddonError::NotFound(base.id))?;
-        let runner = soda
-            .addon()
-            .load_runner(self.cx.directories(), None)
-            .await?;
+        let runner = soda.load_runner(self.cx.directories(), None).await?;
         let winebridge = self
             .addons
             .latest_component(Slot::WineBridge)
