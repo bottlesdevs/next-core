@@ -27,6 +27,8 @@ use super::{
 /// shared payload and embedded in bottle or standalone program state. Recipes are
 /// resolved during acquisition and never reconstructed from the catalog on load.
 /// A changed definition must have a new UUID; payload availability is separate.
+/// Owner operations trust supplied records without checking manager membership.
+/// Callers deserializing records must preserve immutable UUID identity.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     deny_unknown_fields,
