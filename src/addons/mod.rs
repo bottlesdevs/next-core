@@ -22,6 +22,8 @@ mod catalog;
 mod error;
 mod installer;
 mod manager;
+mod recipe;
+mod recipes;
 mod release;
 
 pub use addon::{Addon, Component, Dependency, Requirement, Slot};
