@@ -11,7 +11,6 @@ use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use futures_core::Stream;
-use futures_util::StreamExt;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
@@ -103,13 +102,15 @@ impl ProfilesConfig {
 }
 
 struct ProfilesInner {
+    plugins: Arc<Plugins>,
     path: PathBuf,
     published: watch::Sender<Arc<ProfilesConfig>>,
     write_lock: Mutex<()>,
 }
 
-impl ProfilesInner {
-    async fn select(&self, id: Uuid) -> Result<Profile> {
+impl Profiles {
+    /// Selects an existing profile.
+    pub async fn select(&self, id: Uuid) -> Result<Profile> {
         self.update(move |state| {
             let profile = state
                 .profile(id)
@@ -121,7 +122,8 @@ impl ProfilesInner {
         .await
     }
 
-    async fn select_account(
+    /// Select the profile linked to this account, leaving selection unchanged if absent.
+    pub async fn select_account(
         &self,
         provider_id: &PluginId,
         account_id: &str,
@@ -145,7 +147,7 @@ impl ProfilesInner {
         &self,
         operation: impl FnOnce(&mut ProfilesConfig) -> Result<T>,
     ) -> Result<T> {
-        let _write = self.write_lock.lock().await;
+        let _write = self.inner.write_lock.lock().await;
         self.update_locked(operation).await
     }
 
@@ -154,7 +156,7 @@ impl ProfilesInner {
         &self,
         operation: impl FnOnce(&mut ProfilesConfig) -> Result<T>,
     ) -> Result<T> {
-        let current = self.published.borrow().clone();
+        let current = self.inner.published.borrow().clone();
         let mut next = current.as_ref().clone();
         let value = operation(&mut next)?;
         if next == *current {
@@ -165,8 +167,8 @@ impl ProfilesInner {
     }
 
     async fn persist(&self, next: ProfilesConfig) -> Result<()> {
-        next_config::save(&self.path, &next).await?;
-        self.published.send_replace(Arc::new(next));
+        next_config::save(&self.inner.path, &next).await?;
+        self.inner.published.send_replace(Arc::new(next));
         Ok(())
     }
 }
@@ -176,7 +178,6 @@ impl ProfilesInner {
 /// Clones share one live collection.
 #[derive(Clone)]
 pub struct Profiles {
-    plugins: Arc<Plugins>,
     inner: Arc<ProfilesInner>,
 }
 
@@ -199,11 +200,12 @@ impl Profiles {
         }
         let (published, _) = watch::channel(Arc::new(state));
         let inner = Arc::new(ProfilesInner {
+            plugins,
             path,
             published,
             write_lock: Mutex::new(()),
         });
-        Ok(Self { plugins, inner })
+        Ok(Self { inner })
     }
 
     /// Returns the current profile collection and selection atomically.
@@ -232,76 +234,32 @@ impl Profiles {
     /// Creates and selects a profile with a generated UUID in one publication.
     pub async fn create(&self, name: impl Into<String>) -> Result<Profile> {
         let name = profile_name(name)?;
-        self.inner
-            .update(move |state| {
-                let profile = Profile {
-                    id: Uuid::new_v4(),
-                    name,
-                    accounts: Vec::new(),
-                };
-                state.profiles.push(profile.clone());
-                state.selected = profile.id;
-                Ok(profile)
-            })
-            .await
+        self.update(move |state| {
+            let profile = Profile {
+                id: Uuid::new_v4(),
+                name,
+                accounts: Vec::new(),
+            };
+            state.profiles.push(profile.clone());
+            state.selected = profile.id;
+            Ok(profile)
+        })
+        .await
     }
 
     /// Renames an existing profile.
     pub async fn rename(&self, id: Uuid, name: impl Into<String>) -> Result<Profile> {
         let name = profile_name(name)?;
-        self.inner
-            .update(move |state| {
-                let profile = state
-                    .profiles
-                    .iter_mut()
-                    .find(|profile| profile.id == id)
-                    .ok_or(ProfileError::NotFound(id))?;
-                profile.name = name;
-                Ok(profile.clone())
-            })
-            .await
-    }
-
-    /// Selects an existing profile.
-    pub async fn select(&self, id: Uuid) -> Result<Profile> {
-        self.inner.select(id).await
-    }
-
-    /// Select the profile already linked to this provider account, if one exists.
-    /// No matching account leaves the current selection unchanged.
-    pub async fn select_account(
-        &self,
-        provider_id: &PluginId,
-        account_id: &str,
-    ) -> Result<Option<Profile>> {
-        self.inner.select_account(provider_id, account_id).await
-    }
-
-    /// Follow Steam's local account while this future is polled by the caller.
-    /// Observations select only already-linked profiles. Errors are logged; absent or
-    /// unmatched accounts leave selection unchanged. Dropping this future drops the watcher.
-    /// This is opt-in: loading profiles never starts observation or changes selection.
-    pub fn follow_steam_profile(
-        &self,
-    ) -> impl std::future::Future<Output = ()> + Send + 'static + use<> {
-        let profiles = self.clone();
-        async move {
-            let mut changes = Box::pin(steam::watch_account());
-            while let Some(change) = changes.next().await {
-                match change {
-                    Ok(Some(account)) => {
-                        if let Err(error) = profiles
-                            .select_account(&steam::PROVIDER_ID, &account.account_id)
-                            .await
-                        {
-                            tracing::warn!(account_id = %account.account_id, "failed to select Steam profile: {error}");
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => tracing::warn!("failed to observe Steam sessions: {error}"),
-                }
-            }
-        }
+        self.update(move |state| {
+            let profile = state
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == id)
+                .ok_or(ProfileError::NotFound(id))?;
+            profile.name = name;
+            Ok(profile.clone())
+        })
+        .await
     }
 
     /// Deletes an existing profile.
@@ -311,7 +269,6 @@ impl Profiles {
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         let _write = self.inner.write_lock.lock().await;
         let profile = self
-            .inner
             .update_locked(|state| {
                 let index = state
                     .profiles
@@ -349,6 +306,7 @@ impl Profiles {
     ) -> Result<(String, Vec<bottles_plugin_host::OwnedGame>)> {
         let provider_id = &account.provider.id;
         let plugin = self
+            .inner
             .plugins
             .contribution(provider_id, PluginKind::StorefrontLibraryProvider)
             .ok_or_else(|| ProfileError::ProviderNotFound(provider_id.clone()))?;
@@ -405,6 +363,7 @@ impl Profiles {
     /// Returns the storefront providers available in this process.
     pub fn account_providers(&self) -> Vec<StorefrontProvider> {
         let plugins = self
+            .inner
             .plugins
             .contributions(PluginKind::StorefrontAccountProvider)
             .into_iter()
@@ -437,6 +396,7 @@ impl Profiles {
             }
 
             let provider = profiles
+                .inner
                 .plugins
                 .contribution(&provider_id, PluginKind::StorefrontAccountProvider)
                 .ok_or_else(|| ProfileError::ProviderNotFound(provider_id))?;
@@ -489,7 +449,8 @@ impl Profiles {
         let metadata = if provider_id == steam::PROVIDER_ID {
             metadata
         } else {
-            self.plugins
+            self.inner
+                .plugins
                 .contribution(&provider_id, PluginKind::StorefrontAccountProvider)
                 .ok_or_else(|| ProfileError::ProviderNotFound(provider_id.clone()))?
                 .metadata()
@@ -518,7 +479,7 @@ impl Profiles {
             identity,
         });
         let profile = profile.clone();
-        self.inner.persist(next).await?;
+        self.persist(next).await?;
         Ok(profile)
     }
 
@@ -526,7 +487,6 @@ impl Profiles {
     pub async fn unlink_account(&self, profile_id: Uuid, provider_id: PluginId) -> Result<Profile> {
         let _write = self.inner.write_lock.lock().await;
         let profile = self
-            .inner
             .update_locked(|state| {
                 let profile = state
                     .profiles
