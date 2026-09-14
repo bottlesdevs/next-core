@@ -75,14 +75,15 @@ impl EnvironmentState {
             .filter_map(|slot| self.component(slot))
     }
 
-    /// Derives addon contributions in selection order, then applies owner overrides.
+    /// Apply all components in slot order, then dependencies in installation order,
+    /// then owner overrides. Later declarations win.
     pub(crate) fn effective_env_vars(&self) -> EnvVars {
         let mut vars = EnvVars::default();
-        for addon in self.ordered_components() {
-            vars.extend(addon.env_vars());
+        for addon in Slot::iter().filter_map(|slot| self.component(slot)) {
+            addon.extend_env_vars(&mut vars);
         }
         for addon in &self.dependencies {
-            vars.extend(addon.env_vars());
+            addon.extend_env_vars(&mut vars);
         }
         vars.extend(self.env_vars.clone());
         vars
