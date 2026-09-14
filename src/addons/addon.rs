@@ -17,8 +17,7 @@ use crate::{
 };
 
 use super::{
-    AddonError,
-    catalog::AddonFamily,
+    AddonError, AddonFamily,
     recipe::{InstallResource, InstallStep},
 };
 

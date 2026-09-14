@@ -40,7 +40,9 @@ impl VirgoManager {
         }
     }
 
-    /// Ensure selected effects exist before the owner publishes its configuration.
+    /// Build from complete frozen selections before the owner publishes configuration.
+    /// Cached effects remain usable after shared source payloads are removed; startup
+    /// only loads and composes these already published artifacts.
     pub(in crate::environment) async fn apply(
         &self,
         config: &EnvironmentState,
@@ -52,11 +54,12 @@ impl VirgoManager {
         }
         let base = self.prepare_base(cancellation).await?;
         self.prepare_adapter(config, &base, cancellation).await?;
-        for id in addon_ids(config) {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            self.prepare_addon(id, &base, progress, cancellation)
+        for addon in config.ordered_components() {
+            self.prepare_addon(addon, &base, progress, cancellation)
+                .await?;
+        }
+        for addon in &config.dependencies {
+            self.prepare_addon(addon, &base, progress, cancellation)
                 .await?;
         }
         if cancellation.is_cancelled() {
