@@ -1,15 +1,12 @@
 //! Persisted application profiles and selection.
 
 mod error;
-mod plugin;
-mod steam;
+mod storefront;
 
 pub use error::ProfileError;
-use steam::SteamIntegration;
 
-use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
+use std::{io, path::PathBuf, sync::Arc};
 
-use async_trait::async_trait;
 use futures_core::Stream;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
@@ -18,49 +15,9 @@ use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{Directories, Operation, PluginId, PluginKind, Plugins, credentials, error::Result};
-
-/// Static identity of one available storefront account provider.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct StorefrontProvider {
-    pub id: PluginId,
-    pub name: Cow<'static, str>,
-}
-
-/// Public account metadata returned by a storefront provider.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct AccountIdentity {
-    pub account_id: String,
-    pub display_name: String,
-}
-
-/// Account metadata and credential produced by a successful provider link.
-struct LinkedAccount {
-    pub identity: AccountIdentity,
-    pub credential: Option<Vec<u8>>,
-}
-
-/// Supplies provider-directed interaction while an account is being linked.
-#[async_trait]
-pub trait AccountLinkInteraction: Send + Sync {
-    async fn request_input(
-        &self,
-        url: url::Url,
-        instructions: String,
-    ) -> std::result::Result<String, String>;
-}
-
-/// Links one storefront account through a native or Wasm provider.
-#[async_trait]
-trait StorefrontAccountProvider: Send + Sync {
-    fn metadata(&self) -> StorefrontProvider;
-
-    async fn link_account(
-        &self,
-        interaction: Arc<dyn AccountLinkInteraction>,
-        cancellation: &CancellationToken,
-    ) -> std::result::Result<LinkedAccount, String>;
-}
+use crate::{Directories, Operation, PluginId, Plugins, credentials, error::Result};
+pub use storefront::{AccountIdentity, AccountLinkInteraction, StorefrontProvider};
+use storefront::{LinkedAccount, StorefrontAccountProvider};
 
 /// One coherent persisted snapshot of every profile and the selected profile.
 ///
@@ -284,10 +241,7 @@ impl Profiles {
         account: &StorefrontAccount,
     ) -> Result<(String, Vec<bottles_plugin_host::OwnedGame>)> {
         let provider_id = &account.provider.id;
-        let plugin = self
-            .inner
-            .plugins
-            .contribution(provider_id, PluginKind::StorefrontLibraryProvider)
+        let plugin = storefront::library_provider(&self.inner.plugins, provider_id)
             .ok_or_else(|| ProfileError::ProviderNotFound(provider_id.clone()))?;
         let credential = {
             let _write = self.inner.write_lock.lock().await;
@@ -300,13 +254,8 @@ impl Profiles {
                 })?
         };
         let listed = plugin
-            .runtime
             .list_games(&account.identity.account_id, Some(&credential))
-            .await
-            .map_err(|message| ProfileError::Provider {
-                provider: provider_id.clone(),
-                message,
-            })?;
+            .await?;
         if let Some(updated) = listed.updated_credential.as_deref() {
             let _write = self.inner.write_lock.lock().await;
             // An in-flight request must not recreate an unlinked account's credential.
@@ -341,14 +290,7 @@ impl Profiles {
 
     /// Returns the storefront providers available in this process.
     pub fn account_providers(&self) -> Vec<StorefrontProvider> {
-        let plugins = self
-            .inner
-            .plugins
-            .contributions(PluginKind::StorefrontAccountProvider)
-            .into_iter()
-            .map(|provider| provider.metadata())
-            .collect();
-        merge_account_providers(plugins)
+        storefront::account_providers(&self.inner.plugins)
     }
 
     /// Links one account through an available provider.
@@ -368,19 +310,9 @@ impl Profiles {
             if cancellation.is_cancelled() {
                 return Err(crate::error::Error::Cancelled);
             }
-            if provider_id == steam::PROVIDER_ID {
-                return profiles
-                    .link_account_with(profile_id, &SteamIntegration, interaction, &cancellation)
-                    .await;
-            }
-
-            let provider = profiles
-                .inner
-                .plugins
-                .contribution(&provider_id, PluginKind::StorefrontAccountProvider)
-                .ok_or_else(|| ProfileError::ProviderNotFound(provider_id))?;
+            let provider = storefront::account_provider(&profiles.inner.plugins, &provider_id)?;
             profiles
-                .link_account_with(profile_id, &provider, interaction, &cancellation)
+                .link_account_with(profile_id, provider.as_ref(), interaction, &cancellation)
                 .await
         })
     }
@@ -388,7 +320,7 @@ impl Profiles {
     async fn link_account_with(
         &self,
         profile_id: Uuid,
-        provider: &impl StorefrontAccountProvider,
+        provider: &dyn StorefrontAccountProvider,
         interaction: Arc<dyn AccountLinkInteraction>,
         cancellation: &CancellationToken,
     ) -> Result<Profile> {
@@ -425,15 +357,7 @@ impl Profiles {
         }
         let current = self.inner.published.borrow().clone();
         let profile_index = validate_account_link(&current, profile_id, &provider_id)?;
-        let metadata = if provider_id == steam::PROVIDER_ID {
-            metadata
-        } else {
-            self.inner
-                .plugins
-                .contribution(&provider_id, PluginKind::StorefrontAccountProvider)
-                .ok_or_else(|| ProfileError::ProviderNotFound(provider_id.clone()))?
-                .metadata()
-        };
+        let metadata = storefront::account_provider(&self.inner.plugins, &provider_id)?.metadata();
         if let Some(secret) = credential.as_deref() {
             credentials::save(&provider_id, profile_id, secret).await?;
         }
@@ -503,12 +427,6 @@ fn validate_account_link(
         .into());
     }
     Ok(profile_index)
-}
-
-fn merge_account_providers(mut plugins: Vec<StorefrontProvider>) -> Vec<StorefrontProvider> {
-    plugins.retain(|provider| provider.id != steam::PROVIDER_ID);
-    plugins.insert(0, steam::METADATA);
-    plugins
 }
 
 fn profile_name(name: impl Into<String>) -> Result<String> {
