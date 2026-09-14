@@ -3,7 +3,7 @@ use super::{Bottle, BottleError, BottleState};
 #[cfg(feature = "fvs")]
 use crate::environment::VirgoManager;
 use crate::{
-    Addons, Context, EnvironmentState, Operation, PrefixBackend, Progress, Stage,
+    Context, EnvironmentState, Operation, PrefixBackend, Progress, Stage,
     environment::{Environment, Registry},
     error::Result,
 };
@@ -27,7 +27,6 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct BottleManager {
     pub(super) context: Context,
-    pub(super) addons: Addons,
     #[cfg(feature = "fvs")]
     virgo: Arc<VirgoManager>,
     registry: Arc<Registry<BottleState>>,
@@ -35,14 +34,9 @@ pub struct BottleManager {
 
 impl BottleManager {
     #[cfg(test)]
-    pub(crate) fn new(
-        context: Context,
-        addons: Addons,
-        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
-    ) -> Self {
+    pub(crate) fn new(context: Context, #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>) -> Self {
         Self {
             context,
-            addons,
             #[cfg(feature = "fvs")]
             virgo,
             registry: Arc::new(Registry::new()),
@@ -53,14 +47,12 @@ impl BottleManager {
     /// with a warning so one corrupt bottle does not prevent startup.
     pub(crate) async fn load(
         context: Context,
-        addons: Addons,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
     ) -> Result<Self> {
         let registry = Arc::new(
             Registry::load(
                 &context.directories().bottles(),
                 &context,
-                &addons,
                 #[cfg(feature = "fvs")]
                 &virgo,
             )
@@ -68,7 +60,6 @@ impl BottleManager {
         );
         Ok(Self {
             context,
-            addons,
             registry,
             #[cfg(feature = "fvs")]
             virgo,
@@ -103,7 +94,6 @@ impl BottleManager {
     ) -> Operation<Bottle> {
         let name = name.into();
         let cx = self.context.clone();
-        let addons = self.addons.clone();
         #[cfg(feature = "fvs")]
         let virgo = self.virgo.clone();
         let registry = self.registry.clone();
@@ -115,14 +105,13 @@ impl BottleManager {
                 id,
                 name,
                 backend,
-                environment: EnvironmentState::new(runner, &addons)?,
+                environment: EnvironmentState::new(runner, cx.addons())?,
                 programs: HashMap::new(),
             };
             let environment = Environment::create(
                 state,
                 bottle_path,
                 cx,
-                addons,
                 #[cfg(feature = "fvs")]
                 virgo,
                 &progress,

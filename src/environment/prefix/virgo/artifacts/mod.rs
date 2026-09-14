@@ -9,7 +9,7 @@ pub(crate) use cache::VirgoLayer;
 use super::VirgoError;
 use crate::environment::prefix::FVS_BLOCK_SIZE;
 use crate::{
-    Addons, CatalogEntry, Component, Context, Directories, EnvironmentState, Progress, Slot,
+    CatalogEntry, Component, Context, Directories, EnvironmentState, Progress, Slot,
     error::{Error, Result},
 };
 use std::path::PathBuf;
@@ -20,7 +20,6 @@ use uuid::Uuid;
 /// Shared artifact storage and construction for one core instance.
 pub(crate) struct VirgoManager {
     cx: Context,
-    addons: Addons,
     build_lock: Mutex<()>,
 }
 
@@ -32,10 +31,9 @@ pub(super) struct VirgoComposition {
 
 impl VirgoManager {
     /// Construct without touching storage or starting FVS.
-    pub(crate) fn new(cx: Context, addons: Addons) -> Self {
+    pub(crate) fn new(cx: Context) -> Self {
         Self {
             cx,
-            addons,
             build_lock: Mutex::new(()),
         }
     }
@@ -137,15 +135,14 @@ impl VirgoManager {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let entries = self.addons.component_entries();
+        let entries = self.cx.addons().component_entries();
         let selected = latest_soda(&entries)?;
-        let soda =
-            self.addons
-                .component(selected.id())
-                .ok_or_else(|| VirgoError::SodaNotDownloaded {
-                    id: selected.id(),
-                    version: selected.version().into(),
-                })?;
+        let soda = self.cx.addons().component(selected.id()).ok_or_else(|| {
+            VirgoError::SodaNotDownloaded {
+                id: selected.id(),
+                version: selected.version().into(),
+            }
+        })?;
         let runner = soda.load_runner(self.cx.directories(), None).await?;
         let stage = self.staging_path();
         let artifact = stage.join("artifact");
