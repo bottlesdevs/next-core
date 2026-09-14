@@ -3,7 +3,7 @@
 #[cfg(feature = "fvs")]
 use super::VirgoManager;
 use super::{Environment, EnvironmentOwnerState};
-use crate::{Addons, Context, error::Result};
+use crate::{Context, error::Result};
 use futures_core::Stream;
 use futures_util::{
     StreamExt,
@@ -35,7 +35,6 @@ impl<T: EnvironmentOwnerState> Registry<T> {
     pub(crate) async fn load(
         root: &Path,
         context: &Context,
-        addons: &Addons,
         #[cfg(feature = "fvs")] virgo: &Arc<VirgoManager>,
     ) -> Result<Self> {
         let mut members = HashMap::new();
@@ -60,7 +59,6 @@ impl<T: EnvironmentOwnerState> Registry<T> {
                     state,
                     root,
                     context.clone(),
-                    addons.clone(),
                     #[cfg(feature = "fvs")]
                     virgo.clone(),
                 )?;

@@ -1,7 +1,7 @@
 //! Registry-backed standalone program lifecycle.
 use super::{Program, ProgramState};
 use crate::{
-    Addons, Context, EnvironmentState, Operation, ProgramSpec,
+    Context, EnvironmentState, Operation, ProgramSpec,
     environment::{Environment, Registry, VirgoManager},
     error::Result,
 };
@@ -13,22 +13,15 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct ProgramManager {
     context: Context,
-    addons: Addons,
     virgo: Arc<VirgoManager>,
     registry: Arc<Registry<ProgramState>>,
 }
 impl ProgramManager {
-    pub(crate) async fn load(
-        context: Context,
-        addons: Addons,
-        virgo: Arc<VirgoManager>,
-    ) -> Result<Self> {
-        let registry = Arc::new(
-            Registry::load(&context.directories().programs(), &context, &addons, &virgo).await?,
-        );
+    pub(crate) async fn load(context: Context, virgo: Arc<VirgoManager>) -> Result<Self> {
+        let registry =
+            Arc::new(Registry::load(&context.directories().programs(), &context, &virgo).await?);
         Ok(Self {
             context,
-            addons,
             virgo,
             registry,
         })
@@ -43,13 +36,12 @@ impl ProgramManager {
             let state = ProgramState {
                 id,
                 launch,
-                environment: EnvironmentState::new(runner, &manager.addons)?,
+                environment: EnvironmentState::new(runner, manager.context.addons())?,
             };
             let environment = Environment::create(
                 state,
                 manager.context.directories().program(id),
                 manager.context,
-                manager.addons,
                 manager.virgo,
                 &progress,
                 &cancellation,

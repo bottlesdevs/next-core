@@ -4,7 +4,7 @@
 use super::VirgoManager;
 use super::prefix::standard;
 use crate::{
-    Addons, Context, EnvironmentError, EnvironmentState, PrefixBackend, Progress, Stage,
+    Context, EnvironmentError, EnvironmentState, PrefixBackend, Progress, Stage,
     error::{Error, Result},
 };
 use futures_core::Stream;
@@ -29,7 +29,6 @@ pub(crate) struct Environment<T> {
     pub(crate) control: Mutex<()>,
     pub(crate) root: PathBuf,
     pub(crate) context: Context,
-    pub(crate) addons: Addons,
     #[cfg(feature = "fvs")]
     pub(crate) virgo: Arc<VirgoManager>,
 }
@@ -39,7 +38,6 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         state: T,
         root: PathBuf,
         context: Context,
-        addons: Addons,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
     ) -> Result<Arc<Self>> {
         state.validate()?;
@@ -66,7 +64,6 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             control: Mutex::new(()),
             root,
             context,
-            addons,
             #[cfg(feature = "fvs")]
             virgo,
         }))
@@ -77,7 +74,6 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         state: T,
         root: PathBuf,
         context: Context,
-        addons: Addons,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
@@ -86,7 +82,6 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             state,
             root,
             context,
-            addons,
             #[cfg(feature = "fvs")]
             virgo,
         )?;

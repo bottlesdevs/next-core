@@ -21,7 +21,7 @@ use super::{
     catalog::{Catalog, CatalogEntry, CatalogUrls},
 };
 use crate::{
-    Context, Directories, Transfer,
+    Directories, Transfer,
     error::{Error, Result},
 };
 
@@ -44,7 +44,8 @@ mod import;
 pub struct Addons(Arc<AddonsInner>);
 
 struct AddonsInner {
-    context: Context,
+    directories: Directories,
+    downloader: Arc<DownloadManager>,
     catalog_urls: CatalogUrls,
     published: watch::Sender<Arc<AddonsState>>,
     /// Serializes filesystem commits and state publication, not transfers.
@@ -58,14 +59,16 @@ impl Addons {
     /// records are returned as errors. A known record does not guarantee its payload
     /// is available; acquisition and installation check the inputs they require.
     pub(crate) async fn load(
-        context: Context,
+        directories: Directories,
+        downloader: Arc<DownloadManager>,
         component_catalog_url: Option<Url>,
         dependency_catalog_url: Option<Url>,
     ) -> Result<Self> {
-        let state = AddonsState::load_cached(context.directories()).await?;
+        let state = AddonsState::load_cached(&directories).await?;
         let (published, _) = watch::channel(Arc::new(state));
         Ok(Self(Arc::new(AddonsInner {
-            context,
+            directories,
+            downloader,
             catalog_urls: CatalogUrls {
                 components: component_catalog_url,
                 dependencies: dependency_catalog_url,
@@ -166,7 +169,7 @@ impl Addons {
                 .remove(&id)
                 .ok_or(AddonError::NotFound(id))?;
             let stage = self
-                .withdraw_release(&release.directory(self.0.context.directories()))
+                .withdraw_release(&release.directory(&self.0.directories))
                 .await?;
             self.publish(next);
             stage
@@ -186,7 +189,7 @@ impl Addons {
                 .remove(&id)
                 .ok_or(AddonError::NotFound(id))?;
             let stage = self
-                .withdraw_release(&release.directory(self.0.context.directories()))
+                .withdraw_release(&release.directory(&self.0.directories))
                 .await?;
             self.publish(next);
             stage
@@ -228,7 +231,7 @@ impl Addons {
         cancellation: &CancellationToken,
     ) -> Result<Arc<Addon<Component>>> {
         let id = record.id();
-        let destination = record.directory(self.0.context.directories());
+        let destination = record.directory(&self.0.directories);
         record.validate(&prepared.join("payload")).await?;
         let _write = cancellation
             .run_until_cancelled(self.0.write.lock())
@@ -242,9 +245,7 @@ impl Addons {
             if current != &record {
                 return Err(AddonError::InvalidRelease(destination).into());
             }
-            current
-                .validate(&current.path(self.0.context.directories()))
-                .await?;
+            current.validate(&current.path(&self.0.directories)).await?;
             return Ok(current.clone());
         }
         if next.contains(id) {
@@ -270,7 +271,7 @@ impl Addons {
         cancellation: &CancellationToken,
     ) -> Result<Arc<Addon<Dependency>>> {
         let id = record.id();
-        let destination = record.directory(self.0.context.directories());
+        let destination = record.directory(&self.0.directories);
         record.validate(&prepared.join("payload")).await?;
         let _write = cancellation
             .run_until_cancelled(self.0.write.lock())
@@ -284,9 +285,7 @@ impl Addons {
             if current != &record {
                 return Err(AddonError::InvalidRelease(destination).into());
             }
-            current
-                .validate(&current.path(self.0.context.directories()))
-                .await?;
+            current.validate(&current.path(&self.0.directories)).await?;
             return Ok(current.clone());
         }
         if next.contains(id) {
@@ -311,7 +310,7 @@ impl Addons {
 
     /// Creates a unique staging directory on the same data tree as final storage.
     async fn create_stage(&self) -> Result<PathBuf> {
-        let staging = self.0.context.directories().data_dir().join(".staging");
+        let staging = self.0.directories.data_dir().join(".staging");
         async_fs::create_dir_all(&staging).await?;
         let stage = staging.join(Uuid::new_v4().to_string());
         async_fs::create_dir_all(&stage).await?;

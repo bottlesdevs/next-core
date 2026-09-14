@@ -34,7 +34,7 @@ impl Addons {
                 }
                 if let Some(release) = addons.component(id) {
                     release
-                        .validate(&release.path(addons.0.context.directories()))
+                        .validate(&release.path(&addons.0.directories))
                         .await?;
                     return Ok(release);
                 }
@@ -78,7 +78,7 @@ impl Addons {
                 async_fs::create_dir(&downloads).await?;
                 let file = downloads.join(artifact.file_name());
                 download_artifact(
-                    addons.0.context.downloader(),
+                    &addons.0.downloader,
                     artifact,
                     &file,
                     &progress,
@@ -110,7 +110,7 @@ impl Addons {
                 }
                 if let Some(release) = addons.dependency(id) {
                     release
-                        .validate(&release.path(addons.0.context.directories()))
+                        .validate(&release.path(&addons.0.directories))
                         .await?;
                     return Ok(release);
                 }
@@ -145,7 +145,7 @@ impl Addons {
                 async_fs::create_dir_all(&payload).await?;
                 for artifact in &artifacts {
                     download_artifact(
-                        addons.0.context.downloader(),
+                        &addons.0.downloader,
                         artifact,
                         &payload.join(artifact.file_name()),
                         &progress,
