@@ -236,6 +236,7 @@ impl Profiles {
     /// Installed plugins without library capability return None; unavailable
     /// providers return an error. Calls run outside the profile write lock so
     /// storefronts remain concurrent; providers decide whether credentials are required.
+    /// Credential updates are processed before reporting an enumeration error.
     pub(crate) async fn owned_games(
         &self,
         profile_id: Uuid,
@@ -267,7 +268,11 @@ impl Profiles {
                 }
             }
         }
-        Ok(Some((provider.name().to_owned(), listed.games)))
+        let games = listed.games.map_err(|message| ProfileError::Provider {
+            provider: provider_id.clone(),
+            message,
+        })?;
+        Ok(Some((provider.name().to_owned(), games)))
     }
 
     fn require_binding(&self, profile_id: Uuid, account: &StorefrontAccount) -> Result<()> {
