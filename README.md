@@ -111,27 +111,6 @@ async fn main() -> Result<(), bottles_core::error::Error> {
 }
 ```
 
-Opening core preserves the persisted active profile. Select profiles explicitly with
-`profiles.select(id).await`; Steam account changes do not change selection. The initial
-Player profile has no linked accounts. Every profile may link one account per storefront,
-and the same account can be linked independently to multiple profiles.
-
-Steam is a built-in account provider and reads its most recent local account on demand.
-It appears alongside external storefront providers, without an installed plugin package.
-Built-in Steam takes precedence for account linking. Library capability is resolved
-independently: an external Steam library provider can serve the locally linked account.
-Native Steam game enumeration is not implemented yet; without a library provider,
-search logs the unavailable source and continues returning results from other sources.
-External plugins retain their own package lifecycle and may share one runtime across
-multiple subsystem capabilities. Switching profiles changes
-which linked accounts Bottles uses, without switching accounts in external launchers.
-
-External components must be rebuilt for the updated library-result contract; the
-plugin SDK/WIT remains at 0.1.0. Library results can carry refreshed credentials
-even when game enumeration fails; core processes
-the credential update before logging that source's error and continuing with other
-results. Traps and abandoned calls cannot deliver updates through this contract.
-
 ## Getting help
 
 Build the API documentation locally with `cargo doc -p bottles-core --open`.
