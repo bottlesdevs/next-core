@@ -25,7 +25,6 @@ pub struct Bottles {
     bottles: BottleManager,
     #[cfg(feature = "fvs")]
     programs: ProgramManager,
-    addons: Addons,
     library: Library,
     profiles: Profiles,
     plugins: Arc<Plugins>,
@@ -46,19 +45,24 @@ impl Bottles {
         let profiles = Profiles::load(&directories, plugins.clone()).await?;
         let http_client: Arc<dyn HttpClient> =
             Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
-        let context = Context::new(directories, http_client, fvs2d)?;
-        let addons = Addons::load(context.clone(), component_catalog, dependency_catalog).await?;
+        let context = Context::new(
+            directories,
+            http_client,
+            fvs2d,
+            component_catalog,
+            dependency_catalog,
+        )
+        .await?;
         #[cfg(feature = "fvs")]
-        let virgo = Arc::new(VirgoManager::new(context.clone(), addons.clone()));
+        let virgo = Arc::new(VirgoManager::new(context.clone()));
         let bottles = BottleManager::load(
             context.clone(),
-            addons.clone(),
             #[cfg(feature = "fvs")]
             virgo.clone(),
         )
         .await?;
         #[cfg(feature = "fvs")]
-        let programs = ProgramManager::load(context.clone(), addons.clone(), virgo).await?;
+        let programs = ProgramManager::load(context.clone(), virgo).await?;
         let library = Library::new(
             bottles.clone(),
             #[cfg(feature = "fvs")]
@@ -71,7 +75,6 @@ impl Bottles {
             bottles,
             #[cfg(feature = "fvs")]
             programs,
-            addons,
             library,
             profiles,
             plugins,
@@ -100,7 +103,7 @@ impl Bottles {
     }
 
     pub fn addons(&self) -> &Addons {
-        &self.addons
+        self.context.addons()
     }
 
     /// Returns the aggregate installed-program library and search entry point.

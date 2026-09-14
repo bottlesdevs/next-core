@@ -58,7 +58,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             let _control = environment.lock_control(&cancellation).await?;
             let previous = environment.state()?;
             let mut draft = previous.as_ref().clone();
-            update(draft.environment_mut(), &environment.addons)?;
+            update(draft.environment_mut(), environment.context.addons())?;
             let before = previous.environment();
             let after = draft.environment();
             let backend = previous.backend();

@@ -39,12 +39,14 @@ impl VirgoManager {
         let payload = addon.path(self.cx.directories());
         let resources = addon.resources();
         let soda = self
-            .addons
+            .cx
+            .addons()
             .component(base.id)
             .ok_or(AddonError::NotFound(base.id))?;
         let runner = soda.load_runner(self.cx.directories(), None).await?;
         let winebridge = self
-            .addons
+            .cx
+            .addons()
             .latest_component(Slot::WineBridge)
             .ok_or(EnvironmentError::ComponentNotInstalled(Slot::WineBridge))?
             .path(self.cx.directories());
