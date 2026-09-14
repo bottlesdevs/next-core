@@ -145,6 +145,14 @@ impl ProfilesInner {
         operation: impl FnOnce(&mut ProfilesConfig) -> Result<T>,
     ) -> Result<T> {
         let _write = self.write_lock.lock().await;
+        self.update_locked(operation).await
+    }
+
+    /// Caller holds write_lock, including any credential cleanup after publication.
+    async fn update_locked<T>(
+        &self,
+        operation: impl FnOnce(&mut ProfilesConfig) -> Result<T>,
+    ) -> Result<T> {
         let current = self.published.borrow().clone();
         let mut next = current.as_ref().clone();
         let value = operation(&mut next)?;
@@ -269,9 +277,10 @@ impl Profiles {
     /// Deleting the selected profile selects the first remaining profile in the
     /// same persisted update. The only remaining profile cannot be deleted.
     pub async fn delete(&self, id: Uuid) -> Result<()> {
+        let _write = self.inner.write_lock.lock().await;
         let profile = self
             .inner
-            .update(|state| {
+            .update_locked(|state| {
                 let index = state
                     .profiles
                     .iter()
@@ -297,6 +306,68 @@ impl Profiles {
             }
         }
         Ok(())
+    }
+
+    /// Read games for the binding captured by a search, without exposing credentials.
+    /// Provider calls run outside the profile write lock so storefronts remain concurrent.
+    pub(crate) async fn owned_games(
+        &self,
+        profile_id: Uuid,
+        account: &StorefrontAccount,
+    ) -> Result<(String, Vec<bottles_plugin_host::OwnedGame>)> {
+        let provider_id = &account.provider.id;
+        let plugin = self
+            .plugins
+            .contribution(provider_id, PluginKind::StorefrontLibraryProvider)
+            .ok_or_else(|| ProfileError::ProviderNotFound(provider_id.clone()))?;
+        let credential = {
+            let _write = self.inner.write_lock.lock().await;
+            self.require_binding(profile_id, account)?;
+            credentials::load(provider_id, profile_id)
+                .await?
+                .ok_or_else(|| ProfileError::Provider {
+                    provider: provider_id.clone(),
+                    message: "storefront credential is missing".into(),
+                })?
+        };
+        let listed = plugin
+            .runtime
+            .list_games(&account.identity.account_id, Some(&credential))
+            .await
+            .map_err(|message| ProfileError::Provider {
+                provider: provider_id.clone(),
+                message,
+            })?;
+        if let Some(updated) = listed.updated_credential.as_deref() {
+            let _write = self.inner.write_lock.lock().await;
+            // An in-flight request must not recreate an unlinked account's credential.
+            if self.require_binding(profile_id, account).is_ok() {
+                if let Err(error) = credentials::save(provider_id, profile_id, updated).await {
+                    tracing::warn!(provider = %provider_id, profile = %profile_id,
+                        "failed to save refreshed storefront credential: {error}");
+                }
+            }
+        }
+        Ok((plugin.manifest.name.clone(), listed.games))
+    }
+
+    fn require_binding(&self, profile_id: Uuid, account: &StorefrontAccount) -> Result<()> {
+        let state = self.snapshot();
+        let profile = state
+            .profile(profile_id)
+            .ok_or(ProfileError::NotFound(profile_id))?;
+        if profile.accounts.iter().any(|linked| {
+            linked.provider.id == account.provider.id
+                && linked.identity.account_id == account.identity.account_id
+        }) {
+            Ok(())
+        } else {
+            Err(ProfileError::AccountNotLinked {
+                profile: profile_id,
+                provider: account.provider.id.clone(),
+            }
+            .into())
+        }
     }
 
     /// Returns the storefront providers available in this process.
@@ -422,9 +493,10 @@ impl Profiles {
 
     /// Removes persisted account metadata without requiring its provider.
     pub async fn unlink_account(&self, profile_id: Uuid, provider_id: PluginId) -> Result<Profile> {
+        let _write = self.inner.write_lock.lock().await;
         let profile = self
             .inner
-            .update(|state| {
+            .update_locked(|state| {
                 let profile = state
                     .profiles
                     .iter_mut()

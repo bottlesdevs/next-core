@@ -64,7 +64,6 @@ impl Bottles {
             #[cfg(feature = "fvs")]
             programs.clone(),
             profiles.clone(),
-            plugins.clone(),
         );
 
         Ok(Self {
