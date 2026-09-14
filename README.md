@@ -14,37 +14,34 @@ Disable FVS when only conventional, directly mutable prefixes are needed:
 bottles-core = { version = "0.1", default-features = false }
 ```
 
-Without `fvs`, snapshot APIs and Virgo storage are not compiled. Standard addon
-changes always use direct writes; failed or cancelled recipes can leave partial
-prefix changes.
+Without `fvs`, snapshot APIs, Virgo storage, and standalone programs are not
+compiled. Standard addon changes always use direct writes; failed or cancelled
+recipes can leave partial prefix changes.
 
 [Source] | [Issue tracker]
 
 ## Overview
 
-The main entry points are:
+The crate is centered around six types:
 
-- `Bottles` owns the download service and provides addon, bottle, and standalone program managers.
+- `Bottles` owns the download service and provides addon, bottle, and standalone
+  program managers.
 - `Addons` publishes live collections of runners and installable addons. Item
   values are snapshots; query the manager again after a publication.
-- `BottleManager` owns bottle membership by UUID. A `Bottle` is a shared handle whose
+- `BottleManager` manages bottles by UUID. A `Bottle` is a shared handle whose
   current immutable `BottleState` can be read or watched.
-- `ProgramManager` manages standalone Virgo programs, each with its own
-  `ProgramState`, environment, and snapshot history. Both managers expose a
-  synchronous `open(id)` lookup; creation returns the newly registered handle,
-  and lookups and handle clones share its live environment.
-- `Library` combines bottle registrations and standalone programs and searches them
-  alongside games owned through the selected profile's storefront plugins.
+- `Library` combines bottle registrations and standalone programs, searching
+  them alongside games owned through the selected profile's storefront plugins.
 - `Profiles` persists named application identities and the current selection.
 - `Operation<T>` represents long-running work with progress and cooperative
   cancellation.
 
 Execution settings live in `BottleState::environment()` as an `EnvironmentState`.
 Use `Bottle::edit` for metadata, environment variables and wrappers. These settings
-apply on the next startup. Stop the environment before explicit software changes. Selection operations resolve downloaded
-addons; shared state validation checks structure, unique dependencies, and requirements. `Bottle::launch(group_id, ProgramSpec)` runs an unregistered
-program; `Bottle::launch_program(uuid)` runs a saved registration. Dropping a
-bottle handle leaves Wine running; call `stop()` to shut it down.
+apply on the next startup. Stop the environment before explicit software changes.
+`Bottle::launch(group_id, ProgramSpec)` runs an unregistered program;
+`Bottle::launch_program(uuid)` runs a saved registration. Dropping a bottle handle
+leaves Wine running; call `stop()` to shut it down.
 
 Choose a prefix backend when creating a bottle. Standard installs directly into
 a conventional Wine prefix. Virgo is experimental: it combines shared immutable
@@ -125,34 +122,3 @@ Licensed under the [GNU General Public License, version 3](LICENSE).
 
 [Source]: https://github.com/bottlesdevs/next-core
 [Issue tracker]: https://github.com/bottlesdevs/next-core/issues
-
-Bottle configuration uses version 1 in `bottle.toml`. Registration UUIDs belong
-to the bottle's program map, not to `ProgramSpec`. The shared `ProgramSpec` is
-also used by standalone programs; malformed definitions return `Error::InvalidProgram`.
-The prefix backend is stored on `BottleState` and is fixed at creation.
-
-Bottles delegate state publication, persistence and execution to one internal
-`Environment<T>`. The environment holds the coordination lock through asynchronous
-cleanup and uses `WineBridgeClient` directly. Backend release removes transient
-WineBridge discovery files, including Virgo upper files, before history capture.
-Handle identity is read from the published state and is unavailable after deletion.
-
-With the `fvs` feature and a downloaded runner UUID in `runner_id`, create
-standalone programs through `Bottles::programs()`:
-
-```rust
-let launch = ProgramSpec::new("Example", "C:/Games/example.exe")?;
-let program = bottles.programs().create(launch, runner_id).await?;
-program.edit(|edit| {
-    edit.rename("Example game");
-    edit.env_vars().insert("EXAMPLE_OPTION".into(), "1".into());
-    Ok(())
-}).await?;
-program.launch().await?;
-```
-
-Standalone programs always use Virgo and store their complete state in
-`programs/<uuid>/program.toml`. Creation saves selections without acquiring the
-application or building shared layers. Snapshots capture the owner file and
-persistent private data after stopping Wine and unmounting Virgo; shared
-artifacts and files outside the managed root are excluded.
