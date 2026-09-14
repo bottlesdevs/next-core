@@ -91,7 +91,9 @@ impl Library {
     ///
     /// The selected profile and installed programs are snapshotted when this
     /// method is called. Storefront searches start when the returned stream is
-    /// first polled, and results are emitted as their sources become ready.
+    /// first polled, and results are emitted as their sources become ready. Later
+    /// selection changes affect subsequent searches, not the captured account set.
+    /// Account-only providers are skipped; an unlinked profile searches installed entries.
     /// Storefront failures are logged and omitted so local and other storefront
     /// results remain available. An empty or whitespace-only query matches every
     /// entry, and result ordering is unspecified.
@@ -113,7 +115,8 @@ impl Library {
                     let provider_id = account.provider.id.clone();
                     let (source_name, games) =
                         match profiles.owned_games(profile_id, &account).await {
-                            Ok(listed) => listed,
+                            Ok(Some(listed)) => listed,
+                            Ok(None) => return Vec::new(),
                             Err(error) => {
                                 tracing::warn!(provider = %provider_id, profile = %profile_id,
                                 "failed to list storefront games: {error}");
@@ -153,10 +156,7 @@ impl Library {
             .filter(|entry| entry.matches(&query))
             .collect::<Vec<_>>();
 
-        stream::select(
-            storefronts.flat_map_unordered(None, stream::iter),
-            stream::iter(installed),
-        )
+        stream::select(storefronts.flat_map(stream::iter), stream::iter(installed))
     }
 }
 

@@ -109,12 +109,17 @@ impl Plugins {
         Ok(())
     }
 
-    pub(crate) fn contribution(&self, id: &PluginId, kind: PluginKind) -> Option<Plugin> {
+    pub(crate) fn get(&self, id: &PluginId) -> Option<Plugin> {
         self.loaded
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
-            .and_then(|plugin| plugin.contribution(kind))
+            .cloned()
+    }
+
+    pub(crate) fn contribution(&self, id: &PluginId, kind: PluginKind) -> Option<Plugin> {
+        self.get(id)
+            .filter(|plugin| plugin.runtime.provides().contains(&kind))
     }
 
     pub(crate) fn contributions(&self, kind: PluginKind) -> Vec<Plugin> {
@@ -180,7 +185,7 @@ impl Plugin {
         }
     }
 
-    fn contribution(&self, kind: PluginKind) -> Option<Self> {
+    pub(crate) fn contribution(&self, kind: PluginKind) -> Option<Self> {
         self.runtime
             .provides()
             .contains(&kind)

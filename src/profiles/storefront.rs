@@ -76,10 +76,13 @@ pub(crate) fn account_providers(plugins: &Plugins) -> Vec<StorefrontProvider> {
         .collect()
 }
 
-pub(crate) fn library_provider(plugins: &Plugins, id: &PluginId) -> Option<Plugin> {
+pub(crate) fn library_provider(plugins: &Plugins, id: &PluginId) -> Result<Option<Plugin>> {
     // Built-in identity takes precedence even when an external package uses this ID.
     if id == &steam::PROVIDER_ID {
-        return None;
+        return Ok(None);
     }
-    plugins.contribution(id, PluginKind::StorefrontLibraryProvider)
+    let plugin = plugins
+        .get(id)
+        .ok_or_else(|| ProfileError::ProviderNotFound(id.clone()))?;
+    Ok(plugin.contribution(PluginKind::StorefrontLibraryProvider))
 }

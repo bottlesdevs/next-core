@@ -234,27 +234,24 @@ impl Profiles {
     }
 
     /// Read games for the binding captured by a search, without exposing credentials.
-    /// Provider calls run outside the profile write lock so storefronts remain concurrent.
+    /// Account-only providers return None. Provider calls run outside the profile
+    /// write lock so storefronts remain concurrent; providers decide whether credentials are required.
     pub(crate) async fn owned_games(
         &self,
         profile_id: Uuid,
         account: &StorefrontAccount,
-    ) -> Result<(String, Vec<bottles_plugin_host::OwnedGame>)> {
+    ) -> Result<Option<(String, Vec<bottles_plugin_host::OwnedGame>)>> {
         let provider_id = &account.provider.id;
-        let plugin = storefront::library_provider(&self.inner.plugins, provider_id)
-            .ok_or_else(|| ProfileError::ProviderNotFound(provider_id.clone()))?;
+        let Some(plugin) = storefront::library_provider(&self.inner.plugins, provider_id)? else {
+            return Ok(None);
+        };
         let credential = {
             let _write = self.inner.write_lock.lock().await;
             self.require_binding(profile_id, account)?;
-            credentials::load(provider_id, profile_id)
-                .await?
-                .ok_or_else(|| ProfileError::Provider {
-                    provider: provider_id.clone(),
-                    message: "storefront credential is missing".into(),
-                })?
+            credentials::load(provider_id, profile_id).await?
         };
         let listed = plugin
-            .list_games(&account.identity.account_id, Some(&credential))
+            .list_games(&account.identity.account_id, credential.as_deref())
             .await?;
         if let Some(updated) = listed.updated_credential.as_deref() {
             let _write = self.inner.write_lock.lock().await;
@@ -266,7 +263,7 @@ impl Profiles {
                 }
             }
         }
-        Ok((plugin.manifest.name.clone(), listed.games))
+        Ok(Some((plugin.manifest.name.clone(), listed.games)))
     }
 
     fn require_binding(&self, profile_id: Uuid, account: &StorefrontAccount) -> Result<()> {
