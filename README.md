@@ -116,7 +116,11 @@ Opening core preserves the persisted active profile. Select profiles explicitly 
 Player profile has no linked accounts. Every profile may link one account per storefront,
 and the same account can be linked independently to multiple profiles.
 
-Steam linking reads its most recent local account on demand. Switching profiles changes
+Steam is a built-in account provider and reads its most recent local account on demand.
+It appears alongside external storefront providers, without an installed plugin package.
+Built-in Steam takes precedence over external storefront contributions using its ID.
+External plugins retain their own package lifecycle and may share one runtime across
+multiple subsystem capabilities. Switching profiles changes
 which linked accounts Bottles uses, without switching accounts in external launchers.
 
 ## Getting help
