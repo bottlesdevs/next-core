@@ -83,7 +83,6 @@ impl<T: EnvironmentOwnerState> Environment<T> {
                         after,
                         &environment.root,
                         &environment.context,
-                        &environment.addons,
                         &progress,
                         &cancellation,
                     )

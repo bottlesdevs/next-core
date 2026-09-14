@@ -15,7 +15,8 @@
 //!
 //! # Component removal
 //!
-//! Resources and steps are visited in reverse order. Uninstallation can restore
+//! The saved selection supplies resources and steps in reverse order; removal does
+//! not require its shared payload. Uninstallation can restore
 //! copied files and delete DLL overrides. Actions without an inverse—executing
 //! programs, extracting archives, registering DLLs,
 //! and setting registry values—are skipped. Failures while reversing supported
