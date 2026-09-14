@@ -28,7 +28,6 @@ http-client = { workspace = true, features = ["reqwest"] }
 next-config.workspace = true
 next-proto.workspace = true
 fvs-rs = { workspace = true, optional = true }
-notify.workspace = true
 keyvalues-parser.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -19,7 +19,8 @@ impl VirgoManager {
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
-        let destination = self.root().join("addons").join(id.to_string());
+        let data_dir = self.cx.directories().data_dir();
+        let destination = data_dir.join("virgo/addons").join(id.to_string());
         if let Some(artifact) = cache::load(&destination, Some(id)).await? {
             return Ok(artifact);
         }

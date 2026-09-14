@@ -41,6 +41,7 @@ pub struct PluginInfo {
     pub provides: Vec<PluginKind>,
 }
 
+/// External package lifecycle. Unloadable packages are logged and skipped on startup.
 pub struct Plugins {
     directories: Directories,
     lifecycle: Mutex<()>,
@@ -109,12 +110,17 @@ impl Plugins {
         Ok(())
     }
 
-    pub(crate) fn contribution(&self, id: &PluginId, kind: PluginKind) -> Option<Plugin> {
+    pub(crate) fn get(&self, id: &PluginId) -> Option<Plugin> {
         self.loaded
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
-            .and_then(|plugin| plugin.contribution(kind))
+            .cloned()
+    }
+
+    pub(crate) fn contribution(&self, id: &PluginId, kind: PluginKind) -> Option<Plugin> {
+        self.get(id)
+            .filter(|plugin| plugin.runtime.provides().contains(&kind))
     }
 
     pub(crate) fn contributions(&self, kind: PluginKind) -> Vec<Plugin> {
@@ -141,8 +147,15 @@ async fn discover(directory: &Path) -> Result<HashMap<PluginId, Plugin>> {
         if !entry.file_type().await?.is_dir() {
             continue;
         }
-        let plugin = Plugin::load(&entry.path()).await?;
-        loaded.insert(plugin.manifest.id.clone(), plugin);
+        let path = entry.path();
+        match Plugin::load(&path).await {
+            Ok(plugin) => {
+                loaded.insert(plugin.manifest.id.clone(), plugin);
+            }
+            Err(error) => {
+                tracing::warn!(path = %path.display(), "failed to load plugin: {error}");
+            }
+        }
     }
     Ok(loaded)
 }
@@ -180,7 +193,7 @@ impl Plugin {
         }
     }
 
-    fn contribution(&self, kind: PluginKind) -> Option<Self> {
+    pub(crate) fn contribution(&self, kind: PluginKind) -> Option<Self> {
         self.runtime
             .provides()
             .contains(&kind)

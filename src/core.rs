@@ -1,5 +1,5 @@
 #[cfg(feature = "fvs")]
-use crate::environment::VirgoManager;
+use crate::{ProgramManager, environment::VirgoManager};
 
 #[cfg(feature = "fvs")]
 use std::path::PathBuf;
@@ -23,6 +23,8 @@ pub struct Config {
 pub struct Bottles {
     context: Context,
     bottles: BottleManager,
+    #[cfg(feature = "fvs")]
+    programs: ProgramManager,
     addons: Addons,
     library: Library,
     profiles: Profiles,
@@ -52,14 +54,23 @@ impl Bottles {
             context.clone(),
             addons.clone(),
             #[cfg(feature = "fvs")]
-            virgo,
+            virgo.clone(),
         )
         .await?;
-        let library = Library::new(bottles.clone(), profiles.clone(), plugins.clone());
+        #[cfg(feature = "fvs")]
+        let programs = ProgramManager::load(context.clone(), addons.clone(), virgo).await?;
+        let library = Library::new(
+            bottles.clone(),
+            #[cfg(feature = "fvs")]
+            programs.clone(),
+            profiles.clone(),
+        );
 
         Ok(Self {
             context,
             bottles,
+            #[cfg(feature = "fvs")]
+            programs,
             addons,
             library,
             profiles,
@@ -77,6 +88,11 @@ impl Bottles {
 
     pub fn bottles(&self) -> &BottleManager {
         &self.bottles
+    }
+
+    #[cfg(feature = "fvs")]
+    pub fn programs(&self) -> &ProgramManager {
+        &self.programs
     }
 
     pub fn directories(&self) -> &Directories {

@@ -1,98 +1,16 @@
-//! Collection lifecycle and discovery for library-managed bottles.
-
+//! Bottle collection lifecycle backed by the shared environment registry.
+use super::{Bottle, BottleError, BottleState};
 #[cfg(feature = "fvs")]
 use crate::environment::VirgoManager;
-
-use std::{
-    collections::{HashMap, HashSet},
-    hash::{Hash, Hasher},
-    io,
-    pin::Pin,
-    sync::Arc,
-};
-
-use async_fs as fs;
-use futures_core::Stream;
-use futures_lite::{StreamExt, stream};
-use futures_util::stream::SelectAll;
-use tokio::sync::watch;
-use tokio_stream::wrappers::WatchStream;
-use uuid::Uuid;
-
 use crate::{
-    Context, EnvironmentConfig, Operation, PrefixBackend, Progress, Stage,
-    addons::Addons,
-    environment::Environment,
-    error::{Error, Result},
+    Addons, Context, EnvironmentState, Operation, PrefixBackend, Progress, Stage,
+    environment::{Environment, Registry},
+    error::Result,
 };
-
-use super::{
-    error::BottleError,
-    state::{Bottle, BottleState},
-};
-
-/// The shared membership registry behind [`BottleManager`] clones.
-///
-/// It interns one live [`Bottle`] handle per UUID and publishes copy-on-write
-/// snapshots to manager watchers.
-struct BottleRegistry(watch::Sender<Arc<HashMap<Uuid, Bottle>>>);
-
-enum BottleManagerEvent {
-    Membership(Arc<HashMap<Uuid, Bottle>>),
-    BottleChanged,
-}
-
-type BottleManagerEventStream = Pin<Box<dyn Stream<Item = BottleManagerEvent> + Send>>;
-
-impl BottleRegistry {
-    fn new() -> Self {
-        let (published, _) = watch::channel(Arc::new(HashMap::new()));
-        Self(published)
-    }
-
-    fn list(&self) -> Vec<Bottle> {
-        self.0.borrow().values().cloned().collect()
-    }
-
-    fn get(&self, id: Uuid) -> Option<Bottle> {
-        self.0.borrow().get(&id).cloned()
-    }
-
-    fn replace(&self, bottles: Vec<Bottle>) {
-        self.0.send_replace(Arc::new(
-            bottles
-                .into_iter()
-                .map(|bottle| (bottle.0.id, bottle))
-                .collect(),
-        ));
-    }
-
-    fn intern(&self, bottle: Bottle) -> Bottle {
-        let mut interned = bottle.clone();
-        self.0.send_if_modified(|published| {
-            if let Some(current) = published.get(&bottle.0.id) {
-                interned = current.clone();
-                return false;
-            }
-            let mut bottles = published.as_ref().clone();
-            bottles.insert(bottle.0.id, bottle);
-            *published = Arc::new(bottles);
-            true
-        });
-        interned
-    }
-
-    fn remove(&self, id: Uuid) {
-        self.0.send_if_modified(|published| {
-            let mut bottles = published.as_ref().clone();
-            if bottles.remove(&id).is_none() {
-                return false;
-            }
-            *published = Arc::new(bottles);
-            true
-        });
-    }
-}
+use futures_core::Stream;
+use futures_util::StreamExt;
+use std::{collections::HashMap, sync::Arc};
+use uuid::Uuid;
 
 /// The collection-level interface for bottles owned by one [`crate::Bottles`]
 /// context.
@@ -106,25 +24,17 @@ impl BottleRegistry {
 /// handle to the same live bottle state. The registry is loaded once from
 /// library-managed storage and is updated by manager operations; it is not a
 /// live view of external filesystem changes.
-/// Hashing identifies that shared registry and remains stable as bottles change.
 #[derive(Clone)]
 pub struct BottleManager {
     pub(super) context: Context,
     pub(super) addons: Addons,
     #[cfg(feature = "fvs")]
     virgo: Arc<VirgoManager>,
-    registry: Arc<BottleRegistry>,
-}
-
-// Allows the live handle to key iced subscriptions directly: clones must hash
-// alike, while registry changes must not restart the subscription.
-impl Hash for BottleManager {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.registry).hash(state);
-    }
+    registry: Arc<Registry<BottleState>>,
 }
 
 impl BottleManager {
+    #[cfg(test)]
     pub(crate) fn new(
         context: Context,
         addons: Addons,
@@ -135,7 +45,7 @@ impl BottleManager {
             addons,
             #[cfg(feature = "fvs")]
             virgo,
-            registry: Arc::new(BottleRegistry::new()),
+            registry: Arc::new(Registry::new()),
         }
     }
 
@@ -146,15 +56,23 @@ impl BottleManager {
         addons: Addons,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
     ) -> Result<Self> {
-        let manager = Self::new(
+        let registry = Arc::new(
+            Registry::load(
+                &context.directories().bottles(),
+                &context,
+                &addons,
+                #[cfg(feature = "fvs")]
+                &virgo,
+            )
+            .await?,
+        );
+        Ok(Self {
             context,
             addons,
+            registry,
             #[cfg(feature = "fvs")]
             virgo,
-        );
-        let bottles = manager.load_bottles().await?;
-        manager.registry.replace(bottles);
-        Ok(manager)
+        })
     }
 
     /// Creates a bottle using `runner` and the selected storage strategy.
@@ -165,9 +83,9 @@ impl BottleManager {
     /// requiring UMU also receives the newest downloaded UMU release. No addon
     /// is downloaded implicitly. The runner UUID must identify a downloaded
     /// runner component. Standard creation initializes Wine without FVS. Virgo
-    /// creation only saves selections and creates private storage directories;
-    /// artifacts and registry data are prepared before startup. Failures, and
-    /// cancellation observed while the operation remains polled, remove the
+    /// creation builds missing shared layers before creating private storage and
+    /// saving selections. Startup composes the registry and mounts existing layers.
+    /// Failures and cancellation observed while the operation remains polled remove the
     /// partially-created bottle directory on a best-effort basis. Dropping a
     /// started operation or a cleanup failure can leave a directory that a
     /// later library startup discovers.
@@ -193,36 +111,26 @@ impl BottleManager {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
             let id = Uuid::new_v4();
             let bottle_path = cx.directories().bottle(id);
-            // Initialization may retain live storage on failure; only remove after it succeeds.
-            let config = EnvironmentConfig::new(backend, runner, &addons)?;
-            Environment::initialize(&config, &bottle_path, &cx, &progress, &cancellation).await?;
-            let result = async {
-                if cancellation.is_cancelled() {
-                    return Err(Error::Cancelled);
-                }
-                let bottle = Bottle::new(
-                    id,
-                    name,
-                    config,
-                    cx.clone(),
-                    addons.clone(),
-                    #[cfg(feature = "fvs")]
-                    virgo.clone(),
-                )
-                .await?;
-                progress.send_replace(Some(Progress::new(Stage::Configuring)));
-                if cancellation.is_cancelled() {
-                    return Err(Error::Cancelled);
-                }
-                let bottle = registry.intern(bottle);
-                Ok(bottle)
-            }
-            .await;
-
-            if result.is_err() {
-                let _ = fs::remove_dir_all(bottle_path).await;
-            }
-            result
+            let state = BottleState {
+                id,
+                name,
+                backend,
+                environment: EnvironmentState::new(runner, &addons)?,
+                programs: HashMap::new(),
+            };
+            let environment = Environment::create(
+                state,
+                bottle_path,
+                cx,
+                addons,
+                #[cfg(feature = "fvs")]
+                virgo,
+                &progress,
+                &cancellation,
+            )
+            .await?;
+            registry.insert(environment.clone())?;
+            Ok(Bottle(environment))
         })
     }
 
@@ -243,29 +151,14 @@ impl BottleManager {
     pub fn delete(&self, id: Uuid) -> Operation<()> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
-            let bottle = manager.open(id).await?;
-            let _control = cancellation
-                .run_until_cancelled(bottle.0.control.lock())
-                .await
-                .ok_or(Error::Cancelled)?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            bottle.stop_locked().await?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            progress.send_replace(Some(Progress::new(Stage::Removing)));
-            let path = manager.context.directories().bottle(id);
-            fs::remove_dir_all(path).await?;
+            let bottle = manager.open(id)?;
+            bottle.0.delete(&progress, &cancellation).await?;
             manager.registry.remove(id);
-            bottle.mark_deleted();
             Ok(())
         })
     }
 
-    /// Opens the bottle identified by `id`.
+    /// Looks up the bottle identified by `id` synchronously in the registry.
     ///
     /// Repeated calls through this manager or its clones return handles to the
     /// same live state. Only bottles loaded at startup or created through this
@@ -275,9 +168,10 @@ impl BottleManager {
     /// # Errors
     ///
     /// Returns [`BottleError::NotFound`] if `id` is not in the registry.
-    pub async fn open(&self, id: Uuid) -> Result<Bottle> {
+    pub fn open(&self, id: Uuid) -> Result<Bottle> {
         self.registry
             .get(id)
+            .map(Bottle)
             .ok_or_else(|| BottleError::NotFound(id).into())
     }
 
@@ -289,7 +183,7 @@ impl BottleManager {
     /// The order is unspecified and must not be used as an identity or stable
     /// presentation order.
     pub fn list(&self) -> Vec<Bottle> {
-        self.registry.list()
+        self.registry.list().into_iter().map(Bottle).collect()
     }
 
     /// Watches this manager and every bottle currently registered in it.
@@ -302,75 +196,8 @@ impl BottleManager {
     /// List order is unspecified. The stream ends when all manager handles for
     /// this context are dropped.
     pub fn watch(&self) -> impl Stream<Item = Vec<Bottle>> + Send + 'static + use<> {
-        let mut events = SelectAll::<BottleManagerEventStream>::new();
-        events.push(Box::pin(
-            WatchStream::new(self.registry.0.subscribe()).map(BottleManagerEvent::Membership),
-        ));
-
-        stream::unfold(
-            (self.clone(), events, HashSet::new()),
-            |(manager, mut events, mut subscribed)| async move {
-                match events.next().await? {
-                    BottleManagerEvent::Membership(bottles) => {
-                        subscribed.retain(|id| bottles.contains_key(id));
-                        for (id, bottle) in bottles.iter() {
-                            if subscribed.insert(*id) {
-                                let mut previous = bottle.state().ok();
-                                events.push(Box::pin(bottle.watch().filter_map(move |state| {
-                                    let changed = previous
-                                        .as_ref()
-                                        .is_none_or(|current| !Arc::ptr_eq(current, &state));
-                                    previous = Some(state);
-                                    changed.then_some(BottleManagerEvent::BottleChanged)
-                                })));
-                            }
-                        }
-                        let bottles = bottles.values().cloned().collect();
-                        Some((bottles, (manager, events, subscribed)))
-                    }
-                    BottleManagerEvent::BottleChanged => {
-                        let bottles = manager.list();
-                        Some((bottles, (manager, events, subscribed)))
-                    }
-                }
-            },
-        )
-    }
-
-    async fn load_bottles(&self) -> Result<Vec<Bottle>> {
-        let bottles_path = self.context.directories().bottles();
-        let mut entries = match fs::read_dir(bottles_path).await {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.into()),
-        };
-        let mut paths = Vec::new();
-        while let Some(entry) = entries.try_next().await? {
-            let path = entry.path().join("bottle.toml");
-            if fs::metadata(&path).await.is_ok_and(|entry| entry.is_file()) {
-                paths.push(path);
-            }
-        }
-        let mut bottles = Vec::with_capacity(paths.len());
-        for path in paths {
-            match next_config::load::<BottleState>(path).await {
-                Ok(state) => {
-                    match Bottle::from_state(
-                        state,
-                        self.context.clone(),
-                        self.addons.clone(),
-                        #[cfg(feature = "fvs")]
-                        self.virgo.clone(),
-                    ) {
-                        Ok(bottle) => bottles.push(bottle),
-                        Err(error) => {
-                            tracing::warn!("skipping bottle with invalid runtime: {error}")
-                        }
-                    }
-                }
-                Err(error) => tracing::warn!("skipping unreadable bottle: {error}"),
-            }
-        }
-        Ok(bottles)
+        self.registry
+            .watch()
+            .map(|environments| environments.into_iter().map(Bottle).collect())
     }
 }

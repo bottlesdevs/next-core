@@ -1,18 +1,15 @@
-//! Native Steam account discovery and profile selection.
+//! Native Steam account discovery during explicit account linking.
 
 use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use bottles_plugin_host::AccountIdentity;
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    AccountIdentity, AccountLinkInteraction, LinkedAccount, ProfilesInner,
-    StorefrontAccountProvider, StorefrontProvider,
-};
+use super::{AccountLinkInteraction, LinkedAccount, StorefrontAccountProvider, StorefrontProvider};
 use crate::PluginId;
 
-pub(super) const PROVIDER_ID: PluginId = PluginId::new("steam");
+pub const PROVIDER_ID: PluginId = PluginId::new("steam");
 pub(super) const METADATA: StorefrontProvider = StorefrontProvider {
     id: PROVIDER_ID,
     name: Cow::Borrowed("Steam"),
@@ -28,32 +25,8 @@ const LOGINUSERS_PATHS: &[&str] = &[
     ".var/app/com.valvesoftware.Steam/.local/share/Steam/config/loginusers.vdf",
 ];
 
-/// Keeps Steam's local-session watcher alive.
-pub(super) struct SteamIntegration {
-    _watcher: Option<RecommendedWatcher>,
-}
-
-impl SteamIntegration {
-    pub(super) async fn open(profiles: Arc<ProfilesInner>) -> Self {
-        let watcher = match loginusers_path() {
-            Some(path) => {
-                let watcher = watch_loginusers(path, profiles.clone())
-                    .inspect_err(|error| {
-                        tracing::warn!("failed to observe Steam sessions: {error}")
-                    })
-                    .ok();
-                select_active_profile(&profiles).await;
-                watcher
-            }
-            None => {
-                tracing::debug!("Steam is not installed; session observation is disabled");
-                None
-            }
-        };
-
-        Self { _watcher: watcher }
-    }
-}
+/// Native account-link adapter.
+pub(super) struct SteamIntegration;
 
 #[async_trait]
 impl StorefrontAccountProvider for SteamIntegration {
@@ -79,51 +52,7 @@ impl StorefrontAccountProvider for SteamIntegration {
     }
 }
 
-fn watch_loginusers(
-    path: PathBuf,
-    profiles: Arc<ProfilesInner>,
-) -> notify::Result<RecommendedWatcher> {
-    let directory = path.parent().unwrap_or(path.as_path()).to_owned();
-    let observed_directory = directory.clone();
-    let mut watcher =
-        notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
-            Ok(event)
-                if event.need_rescan()
-                    || event
-                        .paths
-                        .iter()
-                        .any(|changed| changed == &path || changed == &observed_directory) =>
-            {
-                futures_lite::future::block_on(select_active_profile(&profiles));
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!("failed to observe Steam sessions: {error}");
-            }
-        })?;
-    watcher.watch(&directory, RecursiveMode::NonRecursive)?;
-    Ok(watcher)
-}
-
-async fn select_active_profile(profiles: &ProfilesInner) {
-    let account = match active_account().await {
-        Ok(account) => account,
-        Err(error) => {
-            tracing::warn!("failed to read Steam sessions: {error}");
-            return;
-        }
-    };
-    let Some(account) = account else {
-        return;
-    };
-    if let Err(error) = profiles
-        .select_account(&PROVIDER_ID, &account.account_id)
-        .await
-    {
-        tracing::warn!(account_id = %account.account_id, "failed to select Steam profile: {error}");
-    }
-}
-
+/// Read Steam's most recent local account without observing or selecting profiles.
 async fn active_account() -> io::Result<Option<AccountIdentity>> {
     let Some(path) = loginusers_path() else {
         return Ok(None);

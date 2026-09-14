@@ -1,14 +1,13 @@
-//! Resolve shared artifacts and prepare a stopped owner's Virgo composition.
+//! Load installed artifacts and prepare a stopped owner's Virgo composition.
 
 mod artifacts;
 mod registry;
 pub(crate) use artifacts::VirgoManager;
 
-use super::super::{EnvironmentConfig, history};
+use super::super::{EnvironmentState, history};
 use crate::{
     Context, Progress, Stage,
     error::{Error, Result},
-    runner::Runner,
 };
 use futures_lite::StreamExt;
 use fvs_rs::{Layer, UnmountMode};
@@ -16,19 +15,16 @@ use std::path::Path;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-/// Builds the selected Virgo composition while the owner is coordinated and stopped.
+/// Assemble installed layers while the owner is coordinated and stopped.
 pub(super) async fn prepare(
-    config: &EnvironmentConfig,
-    runner: &dyn Runner,
+    config: &EnvironmentState,
     root: &Path,
     cx: &Context,
-    virgo: &VirgoManager,
     progress: &watch::Sender<Option<Progress>>,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let artifacts::VirgoComposition { base, overlays } = virgo
-        .resolve(config, runner, progress, cancellation)
-        .await?;
+    let artifacts::VirgoComposition { base, overlays } =
+        artifacts::load(config, cx.directories()).await?;
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
@@ -50,13 +46,19 @@ pub(super) async fn prepare(
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
+        let mut layers = vec![base.layer];
+        layers.extend(overlays.into_iter().map(|artifact| artifact.layer));
+        mount(root, layers, cx).await?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
         Ok(())
     }
     .await;
-    history::recover(result, root, &checkpoint, cx, progress).await?;
-    let mut layers = vec![base.layer];
-    layers.extend(overlays.into_iter().map(|artifact| artifact.layer));
-    mount(root, layers, cx).await
+    if result.is_err() {
+        release(root, cx).await?;
+    }
+    history::recover(result, root, &checkpoint, cx, progress).await
 }
 
 /// Mount resolved layers after the environment workflow has stopped Wine.
@@ -72,20 +74,25 @@ async fn mount(root: &Path, layers: Vec<Layer>, cx: &Context) -> Result<()> {
 
 pub(super) async fn release(root: &Path, context: &Context) -> Result<()> {
     let prefix = root.join("prefix");
-    let client = context.fvs().await?;
-    if let Some(mount) = client.list_mounts().await?.into_iter().find(|mount| {
-        mount
-            .spec
-            .as_ref()
-            .is_some_and(|spec| spec.mount_point == prefix.to_string_lossy())
-    }) {
-        client
-            .unmount(&mount, UnmountMode::Normal)
-            .await
-            .map_err(|source| crate::EnvironmentError::Cleanup {
-                prefix,
-                source: Box::new(source.into()),
-            })?;
+    if crate::utils::exists(&prefix).await? {
+        let client = context.fvs().await?;
+        if let Some(mount) = client.list_mounts().await?.into_iter().find(|mount| {
+            mount
+                .spec
+                .as_ref()
+                .is_some_and(|spec| spec.mount_point == prefix.to_string_lossy())
+        }) {
+            client
+                .unmount(&mount, UnmountMode::Normal)
+                .await
+                .map_err(|source| crate::EnvironmentError::Cleanup {
+                    prefix,
+                    source: Box::new(source.into()),
+                })?;
+        }
+    }
+    for directory in ["prefix", "upper"] {
+        crate::winebridge::WineBridgeClient::clear_discovery(&root.join(directory)).await?;
     }
     Ok(())
 }
@@ -112,6 +119,9 @@ pub enum VirgoError {
     /// Virgo cannot mount a prefix over a nonempty mountpoint.
     #[error("mountpoint is not empty: {0}")]
     DirtyMountpoint(std::path::PathBuf),
+    /// A selected artifact has not been built or has been removed.
+    #[error("missing Virgo artifact: {0}")]
+    MissingArtifact(std::path::PathBuf),
     /// A published artifact has an unsupported format or incomplete installed effects.
     #[error("invalid Virgo artifact: {0}")]
     InvalidArtifact(std::path::PathBuf),

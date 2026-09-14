@@ -1,21 +1,18 @@
 //! Persisted execution settings shared by all environment owners.
 
-use super::{EnvironmentError, PrefixBackend};
+use super::EnvironmentError;
 use crate::{
     Addon, AddonError, Component, Dependency, EnvVars, Requirement, Slot, Wrappers, error::Result,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use strum::IntoEnumIterator;
 use uuid::Uuid;
 
 /// Execution settings embedded in a bottle or standalone program's saved state.
 /// Selections preserve runtime contributions independently of installation inputs.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct EnvironmentConfig {
-    /// Prefix creation and software materialization strategy.
-    #[serde(rename = "storage")]
-    pub backend: PrefixBackend,
+pub struct EnvironmentState {
     /// Component releases pinned to their occupied slots.
     pub components: HashMap<Slot, Addon<Component>>,
     /// Installed dependencies in installation order.
@@ -26,13 +23,9 @@ pub struct EnvironmentConfig {
     pub wrappers: Wrappers,
 }
 
-impl EnvironmentConfig {
+impl EnvironmentState {
     /// Resolve the downloaded runtime releases for a new environment.
-    pub(crate) fn new(
-        backend: PrefixBackend,
-        runner: Uuid,
-        addons: &crate::Addons,
-    ) -> Result<Self> {
+    pub(crate) fn new(runner: Uuid, addons: &crate::Addons) -> Result<Self> {
         let runner_component = addons
             .component(runner)
             .ok_or(crate::AddonError::NotFound(runner))?;
@@ -72,14 +65,13 @@ impl EnvironmentConfig {
         if let Some(umu) = umu {
             components.insert(Slot::Umu, Addon::from(umu.as_ref()));
         }
-        let config = EnvironmentConfig {
-            backend,
+        let config = EnvironmentState {
             components,
             dependencies: Vec::new(),
             env_vars: Default::default(),
             wrappers: Default::default(),
         };
-        config.validate_requirements()?;
+        config.validate()?;
         Ok(config)
     }
 
@@ -115,59 +107,19 @@ impl EnvironmentConfig {
         Ok(())
     }
 
-    /// Validate edited selections before runtime or prefix work.
-    pub(crate) fn validate_edit(&self, previous: &Self, addons: &crate::Addons) -> Result<()> {
-        self.validate_requirements()?;
-        if self.backend != previous.backend {
-            return Err(
-                EnvironmentError::InvalidEdit("prefix backend is fixed at creation").into(),
-            );
-        }
-        for slot in Slot::iter() {
-            let old = previous.component(slot);
-            let new = self.component(slot);
-            if old == new {
-                continue;
-            }
-            if let Some(new) = new {
-                let downloaded = addons
-                    .component(new.id())
-                    .ok_or(AddonError::NotFound(new.id()))?;
-                if Addon::from(downloaded.as_ref()) != *new {
-                    return Err(EnvironmentError::InvalidEdit(
-                        "component selection must match its downloaded release",
-                    )
-                    .into());
-                }
-            }
-        }
-        for new in &self.dependencies {
-            if self
-                .dependencies
-                .iter()
-                .filter(|addon| addon.id() == new.id())
-                .count()
-                != 1
-            {
-                return Err(EnvironmentError::InvalidEdit(
-                    "a dependency may only be selected once",
-                )
-                .into());
-            }
-            if previous.dependency(new.id()) == Some(new) {
-                continue;
-            }
-            let downloaded = addons
-                .dependency(new.id())
-                .ok_or(AddonError::NotFound(new.id()))?;
-            if Addon::from(downloaded.as_ref()) != *new {
-                return Err(EnvironmentError::InvalidEdit(
-                    "dependency selection must match its downloaded release",
-                )
-                .into());
-            }
-        }
+    pub(crate) fn remove_component(&mut self, slot: Slot) -> Result<()> {
+        self.components
+            .remove(&slot)
+            .ok_or(EnvironmentError::ComponentNotInstalled(slot))?;
+        Ok(())
+    }
 
+    /// Select a downloaded dependency unless it is already selected.
+    pub(crate) fn add_dependency(&mut self, id: Uuid, addons: &crate::Addons) -> Result<()> {
+        if self.dependency(id).is_none() {
+            let dependency = addons.dependency(id).ok_or(AddonError::NotFound(id))?;
+            self.dependencies.push(Addon::from(dependency.as_ref()));
+        }
         Ok(())
     }
 
@@ -232,7 +184,24 @@ impl EnvironmentConfig {
                 .any(|dependency| dependency.satisfies(requirement))
     }
 
-    pub(crate) fn validate_requirements(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
+        let mut dependencies = HashSet::new();
+        for addon in &self.dependencies {
+            if !dependencies.insert(addon.id()) {
+                return Err(EnvironmentError::InvalidEdit(
+                    "a dependency may only be selected once",
+                )
+                .into());
+            }
+        }
+        for (name, value) in self.env_vars.iter() {
+            if name.is_empty() || name.contains(['=', '\0']) {
+                return Err(EnvironmentError::InvalidEnvironmentName(name.into()).into());
+            }
+            if value.contains('\0') {
+                return Err(EnvironmentError::InvalidEnvironmentValue(name.into()).into());
+            }
+        }
         for (slot, component) in &self.components {
             if component.slot() != *slot {
                 return Err(EnvironmentError::InvalidComponentSlot {

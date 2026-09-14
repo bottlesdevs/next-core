@@ -1,5 +1,5 @@
 //! Owner history includes selected configuration, the registry baseline, and persistent data.
-//! Callers hold owner coordination and stop Wine and mounts before using it.
+//! Callers hold owner coordination and release runtime storage before using it.
 
 use super::prefix::FVS_BLOCK_SIZE;
 use crate::{Context, Progress, Stage, Transfer, error::Result};
@@ -39,9 +39,6 @@ pub(crate) async fn capture(
     cx: &Context,
     progress: &watch::Sender<Option<Progress>>,
 ) -> Result<Commit> {
-    for directory in ["prefix", "upper"] {
-        crate::winebridge::WineBridgeClient::clear_discovery(&root.join(directory)).await?;
-    }
     let client = cx.fvs().await?;
     if !crate::utils::exists(&root.join(".fvs2")).await? {
         client.new_repository(root, FVS_BLOCK_SIZE).await?;

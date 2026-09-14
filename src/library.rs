@@ -1,6 +1,7 @@
 //! Aggregate installed programs and one-shot library search.
 
-use std::sync::Arc;
+#[cfg(feature = "fvs")]
+use crate::{Program, ProgramManager};
 
 use futures_core::Stream;
 use futures_util::{
@@ -10,64 +11,92 @@ use futures_util::{
 use uuid::Uuid;
 
 use crate::{
-    Bottle, BottleManager, Operation, PluginId, PluginKind, Plugins, Profiles, ProgramSpec,
-    bottle::error::BottleError, credentials, error::Result,
+    Bottle, BottleManager, Operation, PluginId, Profiles, ProgramSpec, bottle::error::BottleError,
+    error::Result,
 };
 
-/// A live, non-persisted projection of programs registered in managed bottles.
+/// A live, non-persisted projection of bottle registrations and standalone programs.
 #[derive(Clone)]
 pub struct Library {
     bottles: BottleManager,
+    #[cfg(feature = "fvs")]
+    programs: ProgramManager,
     profiles: Profiles,
-    plugins: Arc<Plugins>,
 }
 
 impl Library {
-    pub(crate) fn new(bottles: BottleManager, profiles: Profiles, plugins: Arc<Plugins>) -> Self {
+    pub(crate) fn new(
+        bottles: BottleManager,
+        #[cfg(feature = "fvs")] programs: ProgramManager,
+        profiles: Profiles,
+    ) -> Self {
         Self {
             bottles,
+            #[cfg(feature = "fvs")]
+            programs,
             profiles,
-            plugins,
         }
     }
 
     /// Returns immutable handles for every currently registered program.
     ///
-    /// This reads only current in-memory bottle snapshots. Ordering is
+    /// This reads only current in-memory owner states. Ordering is
     /// unspecified, and bottles deleted during the snapshot are omitted.
     pub fn list(&self) -> Vec<LibraryItem> {
-        self.bottles
+        let items = self
+            .bottles
             .list()
             .into_iter()
             .filter_map(|bottle| bottle.state().ok().map(|state| (bottle, state)))
             .flat_map(|(bottle, state)| {
                 state
                     .programs()
-                    .map(move |program| LibraryItem {
+                    .map(move |(id, _)| LibraryItem::Bottle {
                         bottle: bottle.clone(),
-                        program_id: program.id(),
+                        program_id: id,
                     })
                     .collect::<Vec<_>>()
             })
-            .collect()
+            .collect::<Vec<_>>();
+        #[cfg(feature = "fvs")]
+        let items = {
+            let mut items = items;
+            items.extend(
+                self.programs
+                    .list()
+                    .into_iter()
+                    .filter(|program| program.state().is_ok())
+                    .map(LibraryItem::Standalone),
+            );
+            items
+        };
+        items
     }
 
-    /// Watches the bottle registry and yields the current [`list`](Self::list).
+    /// Watches both installed registries and yields the current [`list`](Self::list).
     ///
     /// The stream yields the current snapshot first. Slow consumers may miss
     /// intermediate generations and receive only the latest aggregate state.
+    /// Either registry may publish the same initial snapshot; neither initial
+    /// event is skipped because it may include changes since the other was polled.
     pub fn watch(&self) -> impl Stream<Item = Vec<LibraryItem>> + Send + 'static + use<> {
         let library = self.clone();
-        self.bottles.watch().map(move |_| library.list())
+        let changes = self.bottles.watch().map(|_| ());
+        #[cfg(feature = "fvs")]
+        let changes = stream::select(changes, self.programs.watch().map(|_| ()));
+        changes.map(move |_| library.list())
     }
 
     /// Searches installed programs and games owned by the selected profile.
     ///
     /// The selected profile and installed programs are snapshotted when this
     /// method is called. Storefront searches start when the returned stream is
-    /// first polled, and results are emitted as their sources become ready.
+    /// first polled, and results are emitted as their sources become ready. Later
+    /// selection changes affect subsequent searches, not the captured account set.
+    /// Installed account-only plugins are skipped; an unlinked profile searches installed entries.
     /// Storefront failures are logged and omitted so local and other storefront
-    /// results remain available. An empty or whitespace-only query matches every
+    /// results remain available. The same case-insensitive title/source filter
+    /// applies to all results. An empty or whitespace-only query matches every
     /// entry, and result ordering is unspecified.
     pub fn search(
         &self,
@@ -79,87 +108,34 @@ impl Library {
         let storefronts = profile
             .accounts()
             .iter()
-            .filter_map(|account| {
-                let provider_id = account.provider.id.clone();
-                let Some(plugin) = self
-                    .plugins
-                    .contribution(&provider_id, PluginKind::StorefrontLibraryProvider)
-                else {
-                    tracing::warn!(
-                        provider = %provider_id,
-                        profile = %profile_id,
-                        "storefront library provider is unavailable"
-                    );
-                    return None;
-                };
-                let account_id = account.identity.account_id.clone();
-                let source_name = plugin.manifest.name.clone();
-                let query = query.clone();
-
-                Some(async move {
-                    let credential = match credentials::load(&provider_id, profile_id).await {
-                        Ok(Some(credential)) => credential,
-                        Ok(None) => {
-                            tracing::warn!(
-                                provider = %provider_id,
-                                profile = %profile_id,
-                                "storefront credential is missing"
-                            );
-                            return Vec::new();
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                provider = %provider_id,
-                                profile = %profile_id,
-                                "failed to load storefront credential: {error}"
-                            );
-                            return Vec::new();
-                        }
-                    };
-                    let listed = match plugin
-                        .runtime
-                        .list_games(&account_id, Some(&credential))
-                        .await
-                    {
-                        Ok(listed) => listed,
-                        Err(error) => {
-                            tracing::warn!(
-                                provider = %provider_id,
-                                profile = %profile_id,
-                                "failed to list storefront games: {error}"
-                            );
-                            return Vec::new();
-                        }
-                    };
-
-                    if let Some(updated) = listed.updated_credential.as_deref()
-                        && let Err(error) =
-                            credentials::save(&provider_id, profile_id, updated).await
-                    {
-                        tracing::warn!(
-                            provider = %provider_id,
-                            profile = %profile_id,
-                            "failed to save refreshed storefront credential: {error}"
-                        );
-                    }
-
-                    listed
-                        .games
+            .cloned()
+            .map(|account| {
+                let profiles = self.profiles.clone();
+                async move {
+                    let provider_id = account.provider.id.clone();
+                    let (source_name, games) =
+                        match profiles.owned_games(profile_id, &account).await {
+                            Ok(Some(listed)) => listed,
+                            Ok(None) => return Vec::new(),
+                            Err(error) => {
+                                tracing::warn!(provider = %provider_id, profile = %profile_id,
+                                "failed to list storefront games: {error}");
+                                return Vec::new();
+                            }
+                        };
+                    games
                         .into_iter()
-                        .filter_map(|game| {
-                            let entry = SearchEntry {
-                                title: game.title,
-                                source_name: source_name.clone(),
-                                source: SearchSource::Storefront {
-                                    profile_id,
-                                    provider_id: provider_id.clone(),
-                                    game_id: game.id,
-                                },
-                            };
-                            entry.matches(&query).then_some(entry)
+                        .map(|game| SearchEntry {
+                            title: game.title,
+                            source_name: source_name.clone(),
+                            source: SearchSource::Storefront {
+                                profile_id,
+                                provider_id: provider_id.clone(),
+                                game_id: game.id,
+                            },
                         })
                         .collect()
-                })
+                }
             })
             .collect::<FuturesUnordered<_>>();
 
@@ -167,49 +143,75 @@ impl Library {
             .list()
             .into_iter()
             .filter_map(|installed| {
-                let state = installed.bottle.state().ok()?;
-                let program = state.program(installed.program_id)?;
+                let (title, source_name) = installed.summary().ok()?;
                 Some(SearchEntry {
-                    title: program.name().to_owned(),
-                    source_name: state.name().to_owned(),
+                    title,
+                    source_name,
                     source: SearchSource::Installed(installed),
                 })
             })
-            .filter(|entry| entry.matches(&query))
             .collect::<Vec<_>>();
 
-        stream::select(
-            storefronts.flat_map_unordered(None, stream::iter),
-            stream::iter(installed),
-        )
+        stream::select(storefronts.flat_map(stream::iter), stream::iter(installed))
+            .filter(move |entry| std::future::ready(entry.matches(&query)))
     }
 }
 
-/// A live reference to a registered program with actions bound to its bottle.
+/// A live installed item with actions bound to its owning environment.
 #[derive(Clone)]
-pub struct LibraryItem {
-    bottle: Bottle,
-    program_id: Uuid,
+pub enum LibraryItem {
+    Bottle {
+        bottle: Bottle,
+        program_id: Uuid,
+    },
+    #[cfg(feature = "fvs")]
+    Standalone(Program),
 }
 
 impl LibraryItem {
-    /// Returns the current launch definition.
+    /// Returns the latest launch definition, failing if the owner or registration is gone.
     pub fn program(&self) -> Result<ProgramSpec> {
-        self.bottle
-            .state()?
-            .program(self.program_id)
-            .cloned()
-            .ok_or_else(|| BottleError::ProgramNotFound(self.program_id).into())
+        match self {
+            Self::Bottle { bottle, program_id } => bottle
+                .state()?
+                .program(*program_id)
+                .cloned()
+                .ok_or_else(|| BottleError::ProgramNotFound(*program_id).into()),
+            #[cfg(feature = "fvs")]
+            Self::Standalone(program) => Ok(program.state()?.launch().clone()),
+        }
     }
 
-    /// Launches the current registration.
+    fn summary(&self) -> Result<(String, String)> {
+        match self {
+            Self::Bottle { bottle, program_id } => {
+                let state = bottle.state()?;
+                let launch = state
+                    .program(*program_id)
+                    .ok_or(BottleError::ProgramNotFound(*program_id))?;
+                Ok((launch.name().into(), state.name().into()))
+            }
+            #[cfg(feature = "fvs")]
+            Self::Standalone(program) => Ok((program.state()?.name().into(), "Standalone".into())),
+        }
+    }
+
+    /// Launch using the current definition and owning environment.
     pub fn launch(&self) -> Operation<u32> {
-        self.bottle.launch_program(self.program_id)
+        match self {
+            Self::Bottle { bottle, program_id } => bottle.launch_program(*program_id),
+            #[cfg(feature = "fvs")]
+            Self::Standalone(program) => program.launch(),
+        }
     }
 
-    /// Kills the current registration's process group.
+    /// Kill the installed item's process group without starting a stopped runtime.
     pub async fn kill(&self) -> Result<()> {
-        self.bottle.kill_program(self.program_id).await
+        match self {
+            Self::Bottle { bottle, program_id } => bottle.kill_program(*program_id).await,
+            #[cfg(feature = "fvs")]
+            Self::Standalone(program) => program.kill().await,
+        }
     }
 }
 
@@ -248,7 +250,7 @@ impl SearchEntry {
 #[derive(Clone)]
 #[non_exhaustive]
 pub enum SearchSource {
-    /// A launchable program currently registered in a bottle.
+    /// A bottle registration or standalone program currently installed.
     Installed(LibraryItem),
     /// A game owned through one linked storefront account.
     Storefront {

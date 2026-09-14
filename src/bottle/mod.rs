@@ -5,7 +5,7 @@
 //! state; [`BottleState`] values returned by those handles are immutable
 //! snapshots that do not change when the bottle is edited or deleted.
 //! [`Bottle::edit`] applies a callback to the latest state and publishes it after
-//! validation, prefix reconciliation and persistence. [`ProgramSpec`] defines
+//! validation and persistence. Software changes use explicit operations. [`crate::ProgramSpec`] defines
 //! programs registered through that callback.
 //!
 //! Bottle directories and their `bottle.toml` files are library-managed.
@@ -40,7 +40,5 @@ pub use crate::wrapper::{
     mangohud::MangoHudConfig,
 };
 pub use error::BottleError;
-#[cfg(feature = "fvs")]
-pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 pub use manager::BottleManager;
-pub use state::{Bottle, BottleState, ProgramSpec};
+pub use state::{Bottle, BottleState};

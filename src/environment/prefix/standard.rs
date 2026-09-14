@@ -2,7 +2,7 @@
 
 use super::super::runtime;
 use crate::{
-    AddonError, Addons, Context, EnvironmentConfig, EnvironmentError, Progress, Slot, Stage,
+    AddonError, Addons, Context, EnvironmentState, Progress, Slot, Stage,
     addons::{InstallInputs, execute, uninstall},
     error::Result,
 };
@@ -11,7 +11,12 @@ use strum::IntoEnumIterator;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-pub(super) async fn create(config: &EnvironmentConfig, root: &Path, cx: &Context) -> Result<()> {
+/// Successful initialization leaves no Wine processes running; failed cleanup retains data.
+pub(in crate::environment) async fn create(
+    config: &EnvironmentState,
+    root: &Path,
+    cx: &Context,
+) -> Result<()> {
     let prefix = root.join("prefix");
     async_fs::create_dir_all(&prefix).await?;
     let runner = config
@@ -21,23 +26,10 @@ pub(super) async fn create(config: &EnvironmentConfig, root: &Path, cx: &Context
     runtime::initialize(runner.as_ref(), &prefix).await
 }
 
-pub(super) fn validate_edit(
-    previous: &EnvironmentConfig,
-    candidate: &EnvironmentConfig,
-) -> Result<()> {
-    if !candidate.dependencies.starts_with(&previous.dependencies) {
-        return Err(EnvironmentError::InvalidEdit(
-            "installed dependencies cannot be removed, replaced or reordered",
-        )
-        .into());
-    }
-    Ok(())
-}
-
 /// Apply validated Standard selections directly to the stopped owner's prefix.
-pub(super) async fn apply(
-    previous: &EnvironmentConfig,
-    candidate: &EnvironmentConfig,
+pub(in crate::environment) async fn apply(
+    previous: &EnvironmentState,
+    candidate: &EnvironmentState,
     root: &Path,
     cx: &Context,
     addons: &Addons,
@@ -53,17 +45,18 @@ pub(super) async fn apply(
         if old == new {
             continue;
         }
+        if let Some(old) = old {
+            let release = addons
+                .component(old.id())
+                .ok_or(AddonError::NotFound(old.id()))?;
+            removals.push(release);
+        }
         if let Some(new) = new {
             let release = addons
                 .component(new.id())
                 .ok_or(AddonError::NotFound(new.id()))?;
             release.validate(&release.path(cx.directories())).await?;
             components.push(release);
-        } else if let Some(old) = old {
-            let release = addons
-                .component(old.id())
-                .ok_or(AddonError::NotFound(old.id()))?;
-            removals.push(release);
         }
     }
     for new in &candidate.dependencies[previous.dependencies.len()..] {

@@ -8,7 +8,7 @@ use std::sync::{
 
 use tokio::sync::{Mutex, watch};
 
-use super::state::BottleInner;
+use crate::environment::Environment;
 use crate::{
     Context, Directories, EnvironmentError, PrefixBackend,
     addons::{AddonError, Addons, CatalogError, Requirement, Slot},
@@ -29,13 +29,13 @@ async fn deleted_bottle() -> (Bottle, Directories) {
     .unwrap();
     let addons = Addons::load(context.clone(), None, None).await.unwrap();
     let (published, _) = watch::channel(None);
-    let bottle = Bottle(Arc::new(BottleInner {
+    let bottle = Bottle(Arc::new(Environment {
         published,
         control: Mutex::new(()),
-        id: uuid::Uuid::new_v4(),
+        root: directories.bottle(uuid::Uuid::new_v4()),
         #[cfg(feature = "fvs")]
         virgo: Arc::new(VirgoManager::new(context.clone(), addons.clone())),
-        cx: context,
+        context,
         addons,
     }));
     (bottle, directories)

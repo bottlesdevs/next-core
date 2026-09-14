@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     addons::InstallerError,
-    error::{Error, Result, ResultExt},
+    error::{Error, Result},
     runner::{Command, Runner, Spawnable},
     utils::{archive, exists},
     winebridge::WineBridgeClient,
@@ -22,7 +22,7 @@ use super::{InstallInputs, InstallResource, InstallStep};
 /// `backup_files` preserves displaced files for Standard removal; layered builds disable it.
 ///
 /// Cancellation is checked before the first step, after every step, while waiting for child
-/// processes, between per-DLL operations, and during extraction. Cancellation attempts to kill
+/// processes, between per-DLL operations, and before and after extraction. Cancellation attempts to kill
 /// and reap a running child; a kill failure is returned. The enclosing prefix scope stops Wine
 /// before diffing, unmounting, or restoring storage.
 pub(crate) async fn execute(
@@ -48,8 +48,8 @@ pub(crate) async fn execute(
 /// Attempts to undo a recipe in reverse resource and step order.
 ///
 /// File copies are restored or removed and DLL overrides are deleted. Runtime variable
-/// declarations are ignored. Other step kinds have no inverse and are skipped with a
-/// warning. File, bridge and override failures are logged and ignored; cancellation is returned.
+/// declarations and steps without an inverse are ignored. File, bridge and override
+/// failures are returned.
 /// The enclosing prefix scope owns Wine shutdown.
 pub(crate) async fn uninstall<'a>(
     inputs: InstallInputs<'_>,
@@ -172,24 +172,15 @@ async fn uninstall_step(
     match step {
         InstallStep::SetEnvironment { .. } => {}
         InstallStep::Copy { destination, .. } => {
-            if let Err(error) = uninstall_file(prefix, destination).await {
-                tracing::warn!(%error);
-            }
+            uninstall_file(prefix, destination).await?;
         }
         InstallStep::SetDllOverrides { dlls, .. } => {
-            let bridge = match maintenance_bridge(runner, prefix, winebridge).await {
-                Ok(bridge) => bridge,
-                Err(error) => {
-                    tracing::warn!(%error);
-                    return Ok(());
-                }
-            };
+            let bridge = maintenance_bridge(runner, prefix, winebridge).await?;
             for dll in dlls.iter().rev() {
                 check_cancellation(cancellation)?;
-                match bridge.delete_dll_override(dll.clone()).await {
-                    Err(error) if is_not_found(&error) => {}
-                    result => {
-                        result.log_warn();
+                if let Err(error) = bridge.delete_dll_override(dll.clone()).await {
+                    if !is_not_found(&error) {
+                        return Err(error);
                     }
                 }
             }
@@ -276,18 +267,23 @@ async fn install_file(
 async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
     let destination = prefix.join(relative);
     let backup = prefix.join(backup_path(relative));
-    if async_fs::metadata(&backup)
-        .await
-        .is_ok_and(|entry| entry.is_file())
-    {
-        async_fs::copy(&backup, &destination).await?;
-        async_fs::remove_file(backup).await
-    } else {
-        match async_fs::remove_file(destination).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
+    match async_fs::metadata(&backup).await {
+        Ok(entry) if entry.is_file() => {
+            async_fs::copy(&backup, &destination).await?;
+            async_fs::remove_file(backup).await
         }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            match async_fs::remove_file(destination).await {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            }
+        }
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("backup is not a regular file: {}", backup.display()),
+        )),
+        Err(error) => Err(error),
     }
 }
 
@@ -314,10 +310,9 @@ async fn extract_into(
         .join(Uuid::new_v4().to_string());
     async_fs::create_dir_all(&stage).await?;
     let work = async {
-        cancellation
-            .run_until_cancelled(archive::extract(archive, &stage))
-            .await
-            .ok_or(Error::Cancelled)??;
+        check_cancellation(cancellation)?;
+        archive::extract(archive, &stage).await?;
+        check_cancellation(cancellation)?;
         for source in archive::files(&stage).await? {
             check_cancellation(cancellation)?;
             let relative = destination.join(source.strip_prefix(&stage).map_err(|_| {

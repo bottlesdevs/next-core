@@ -18,9 +18,8 @@
 //! Resources and steps are visited in reverse order. Uninstallation can restore
 //! copied files and delete DLL overrides. Actions without an inverse—executing
 //! programs, extracting archives, registering DLLs,
-//! and setting registry values—are skipped. Consequently, a recipe is not
-//! necessarily fully reversible. Dependencies cannot be removed separately from
-//! their bottle.
+//! and setting registry values—are skipped. Failures while reversing supported
+//! steps are returned. Dependencies cannot be removed separately from their bottle.
 //!
 //! # Cancellation and cleanup
 //!
