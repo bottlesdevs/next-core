@@ -2,23 +2,28 @@
 
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
 use super::{VirgoLayer, VirgoManager, cache};
 use crate::{
-    AddonError, EnvironmentError, Progress, Slot, Stage,
-    addons::{InstallInputs, execute},
+    Addon, AddonError, EnvironmentError, Progress, Slot, Stage,
+    addons::{AddonFamily, InstallInputs, execute},
     error::{Error, Result},
 };
 
 impl VirgoManager {
-    pub(super) async fn prepare_addon(
+    /// Reuse cached effects or execute the selected frozen recipe in an isolated build.
+    /// Acquisition validates payloads; missing inputs fail when the recipe uses them.
+    pub(super) async fn prepare_addon<K: AddonFamily>(
         &self,
-        id: Uuid,
+        addon: &Addon<K>,
         base: &VirgoLayer,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let id = addon.id();
         let data_dir = self.cx.directories().data_dir();
         let destination = data_dir.join("virgo/addons").join(id.to_string());
         if let Some(artifact) = cache::load(&destination, Some(id)).await? {
@@ -31,19 +36,8 @@ impl VirgoManager {
         if let Some(artifact) = cache::load(&destination, Some(id)).await? {
             return Ok(artifact);
         }
-        let component = self.addons.component(id);
-        let dependency = self.addons.dependency(id);
-        let (payload, resources) = if let Some(release) = &component {
-            let payload = release.path(self.cx.directories());
-            release.validate(&payload).await?;
-            (payload, release.resources())
-        } else if let Some(release) = &dependency {
-            let payload = release.path(self.cx.directories());
-            release.validate(&payload).await?;
-            (payload, release.resources())
-        } else {
-            return Err(AddonError::NotFound(id).into());
-        };
+        let payload = addon.path(self.cx.directories());
+        let resources = addon.resources();
         let soda = self
             .addons
             .component(base.id)
