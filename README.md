@@ -111,6 +111,21 @@ async fn main() -> Result<(), bottles_core::error::Error> {
 }
 ```
 
+Opening core preserves the persisted active profile. Applications can opt into
+following Steam's local account using a future that they execute and stop themselves:
+
+```rust
+let follow_steam = tokio::spawn(bottles.profiles().follow_steam_profile());
+// Run the application. Only already-linked accounts select a profile.
+// When observation should stop:
+follow_steam.abort();
+let _ = follow_steam.await;
+```
+
+For custom selection policy, consume `bottles_core::steam::watch_account()` and
+call `profiles.select_account()` explicitly. Dropping the stream releases its native
+watcher. Steam account linking works without starting observation.
+
 ## Getting help
 
 Build the API documentation locally with `cargo doc -p bottles-core --open`.

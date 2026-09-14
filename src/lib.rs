@@ -36,7 +36,7 @@ pub use operation::{Operation, Progress, Stage, Transfer};
 pub use plugins::{PluginError, PluginId, PluginInfo, PluginKind, PluginManifest, Plugins};
 pub use profiles::{
     AccountIdentity, AccountLinkInteraction, Profile, ProfileError, Profiles, ProfilesConfig,
-    StorefrontAccount, StorefrontProvider,
+    StorefrontAccount, StorefrontProvider, steam,
 };
 pub use utils::directories::Directories;
 pub use utils::env_vars::EnvVars;

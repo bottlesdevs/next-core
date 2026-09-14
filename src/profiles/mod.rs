@@ -2,7 +2,7 @@
 
 mod error;
 mod plugin;
-mod steam;
+pub mod steam;
 
 pub use error::ProfileError;
 use steam::SteamIntegration;
@@ -11,6 +11,7 @@ use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use futures_core::Stream;
+use futures_util::StreamExt;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
@@ -175,7 +176,6 @@ impl ProfilesInner {
 /// Clones share one live collection.
 #[derive(Clone)]
 pub struct Profiles {
-    steam: Arc<SteamIntegration>,
     plugins: Arc<Plugins>,
     inner: Arc<ProfilesInner>,
 }
@@ -203,12 +203,7 @@ impl Profiles {
             published,
             write_lock: Mutex::new(()),
         });
-        let steam = Arc::new(SteamIntegration::open(inner.clone()).await);
-        Ok(Self {
-            steam,
-            plugins,
-            inner,
-        })
+        Ok(Self { plugins, inner })
     }
 
     /// Returns the current profile collection and selection atomically.
@@ -270,6 +265,43 @@ impl Profiles {
     /// Selects an existing profile.
     pub async fn select(&self, id: Uuid) -> Result<Profile> {
         self.inner.select(id).await
+    }
+
+    /// Select the profile already linked to this provider account, if one exists.
+    /// No matching account leaves the current selection unchanged.
+    pub async fn select_account(
+        &self,
+        provider_id: &PluginId,
+        account_id: &str,
+    ) -> Result<Option<Profile>> {
+        self.inner.select_account(provider_id, account_id).await
+    }
+
+    /// Follow Steam's local account while this future is polled by the caller.
+    /// Observations select only already-linked profiles. Errors are logged; absent or
+    /// unmatched accounts leave selection unchanged. Dropping this future drops the watcher.
+    /// This is opt-in: loading profiles never starts observation or changes selection.
+    pub fn follow_steam_profile(
+        &self,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static + use<> {
+        let profiles = self.clone();
+        async move {
+            let mut changes = Box::pin(steam::watch_account());
+            while let Some(change) = changes.next().await {
+                match change {
+                    Ok(Some(account)) => {
+                        if let Err(error) = profiles
+                            .select_account(&steam::PROVIDER_ID, &account.account_id)
+                            .await
+                        {
+                            tracing::warn!(account_id = %account.account_id, "failed to select Steam profile: {error}");
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => tracing::warn!("failed to observe Steam sessions: {error}"),
+                }
+            }
+        }
     }
 
     /// Deletes an existing profile.
@@ -399,9 +431,8 @@ impl Profiles {
                 return Err(crate::error::Error::Cancelled);
             }
             if provider_id == steam::PROVIDER_ID {
-                let provider = profiles.steam.clone();
                 return profiles
-                    .link_account_with(profile_id, provider.as_ref(), interaction, &cancellation)
+                    .link_account_with(profile_id, &SteamIntegration, interaction, &cancellation)
                     .await;
             }
 
