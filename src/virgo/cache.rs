@@ -78,7 +78,7 @@ impl LayerStore {
 
     /// The caller has committed the filesystem and written both registry files in staging.
     /// The shared build lock covers publication; published nonempty directories are never replaced.
-    pub(crate) async fn publish(
+    pub(super) async fn publish(
         &self,
         artifact: &Path,
         key: &Path,

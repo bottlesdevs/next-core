@@ -9,7 +9,6 @@ use std::{
 use download_manager::{events::Progress as DownloadProgress, manager::DownloadManager};
 use futures_core::Stream;
 use futures_util::{FutureExt, StreamExt, TryStreamExt};
-use semver::Version;
 use tokio::sync::{Mutex, watch};
 use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
@@ -17,7 +16,7 @@ use url::Url;
 use uuid::Uuid;
 
 use super::{
-    Addon, AddonError, Component, Dependency, Slot,
+    Addon, AddonError, Component, Dependency,
     catalog::{Catalog, CatalogEntry, CatalogUrls},
 };
 use crate::{
@@ -210,18 +209,6 @@ impl Addons {
             }
         }
         Ok(stage)
-    }
-
-    /// Selects the greatest semantic version among local releases for this slot.
-    pub(crate) fn latest_component(&self, slot: Slot) -> Option<Arc<Addon<Component>>> {
-        let state = self.state();
-        state
-            .components
-            .values()
-            .filter(|r| r.slot() == slot)
-            .filter_map(|r| Version::parse(r.version()).ok().map(|v| (v, r.id(), r)))
-            .max_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)))
-            .map(|(_, _, r)| r.clone())
     }
 
     async fn commit_component(

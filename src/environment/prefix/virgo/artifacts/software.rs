@@ -3,11 +3,11 @@
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::{VirgoLayer, VirgoManager};
+use super::{Reservation, VirgoLayer, VirgoManager, build, latest_component};
 use crate::{
     Addon, AddonError, EnvironmentError, Progress, Slot, Stage,
     addons::{AddonFamily, InstallInputs, execute},
-    error::{Error, Result},
+    error::Result,
 };
 
 impl VirgoManager {
@@ -20,21 +20,16 @@ impl VirgoManager {
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
         let id = addon.id();
         let destination = std::path::Path::new("addons").join(id.to_string());
-        if let Some(artifact) = self.layers.load(&destination, Some(id)).await? {
-            return Ok(artifact);
-        }
-        let _build = cancellation
-            .run_until_cancelled(self.build_lock.lock())
-            .await
-            .ok_or(Error::Cancelled)?;
-        if let Some(artifact) = self.layers.load(&destination, Some(id)).await? {
-            return Ok(artifact);
-        }
+        let build = match self
+            .layers
+            .reserve(&destination, Some(id), cancellation)
+            .await?
+        {
+            Reservation::Cached(layer) => return Ok(layer),
+            Reservation::Build(build) => build,
+        };
         let payload = addon.path(self.cx.directories());
         let resources = addon.resources();
         let soda = self
@@ -43,17 +38,21 @@ impl VirgoManager {
             .component(base.id)
             .ok_or(AddonError::NotFound(base.id))?;
         let runner = soda.load_runner(self.cx.directories(), None).await?;
-        let winebridge = self
-            .cx
-            .addons()
-            .latest_component(Slot::WineBridge)
-            .ok_or(EnvironmentError::ComponentNotInstalled(Slot::WineBridge))?
-            .path(self.cx.directories());
-        self.build(
+        let winebridge = latest_component(
+            self.cx
+                .addons()
+                .components()
+                .into_iter()
+                .filter(|addon| addon.slot() == Slot::WineBridge),
+        )
+        .ok_or(EnvironmentError::ComponentNotInstalled(Slot::WineBridge))?
+        .path(self.cx.directories());
+        build::run(
+            build,
             id,
-            &destination,
+            id.to_string(),
             runner.as_ref(),
-            base,
+            Some(base),
             cancellation,
             |prefix, runner| async move {
                 execute(
