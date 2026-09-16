@@ -31,6 +31,8 @@ pub struct Bottles {
 }
 
 impl Bottles {
+    /// Open core services and local state. With FVS enabled, connect to or start its
+    /// daemon before opening owner registries; connection failures abort startup.
     pub async fn open(config: Config) -> Result<Self> {
         let Config {
             #[cfg(feature = "fvs")]
@@ -38,17 +40,24 @@ impl Bottles {
             component_catalog,
             dependency_catalog,
         } = config;
-        #[cfg(not(feature = "fvs"))]
-        let fvs2d = None;
         let directories = Directories::new().await?;
         let plugins = Arc::new(Plugins::open(&directories).await?);
         let profiles = Profiles::load(&directories, plugins.clone()).await?;
         let http_client: Arc<dyn HttpClient> =
             Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
+        #[cfg(feature = "fvs")]
+        let fvs = Arc::new(
+            fvs_rs::Fvs2dClient::connect_or_spawn(
+                fvs_executable(fvs2d)?,
+                directories.runtime_dir().join("fvs2d.sock"),
+            )
+            .await?,
+        );
         let context = Context::new(
             directories,
             http_client,
-            fvs2d,
+            #[cfg(feature = "fvs")]
+            fvs,
             component_catalog,
             dependency_catalog,
         )
@@ -124,5 +133,23 @@ impl Bottles {
     /// Returns the HTTP transport shared by core services.
     pub fn http_client(&self) -> &Arc<dyn HttpClient> {
         self.context.http_client()
+    }
+}
+
+#[cfg(feature = "fvs")]
+fn fvs_executable(configured: Option<PathBuf>) -> Result<PathBuf> {
+    Ok(configured
+        .map(crate::utils::absolute_path)
+        .transpose()?
+        .unwrap_or_else(|| PathBuf::from("fvs2d")))
+}
+
+#[cfg(all(test, feature = "fvs"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uses_path_lookup_when_fvs2d_is_not_configured() {
+        assert_eq!(fvs_executable(None).unwrap(), PathBuf::from("fvs2d"));
     }
 }

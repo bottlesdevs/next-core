@@ -49,7 +49,6 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         Ok(self
             .context
             .fvs()
-            .await?
             .list_commits(&history::repository(&self.root))
             .await?
             .into_iter()

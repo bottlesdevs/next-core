@@ -22,12 +22,7 @@ fn test_directories() -> Directories {
 
 async fn deleted_bottle() -> (Bottle, Directories) {
     let directories = test_directories();
-    let context = Context::for_test(
-        directories.clone(),
-        Some(directories.data_dir().join("fvs2d")),
-    )
-    .await
-    .unwrap();
+    let context = Context::for_test(directories.clone()).await.unwrap();
     let (published, _) = watch::channel(None);
     let bottle = Bottle(Arc::new(Environment {
         published,
@@ -100,12 +95,7 @@ fn load_skips_corrupt_bottles() {
             "not valid toml =",
         )
         .unwrap();
-        let context = Context::for_test(
-            directories.clone(),
-            Some(directories.data_dir().join("fvs2d")),
-        )
-        .await
-        .unwrap();
+        let context = Context::for_test(directories.clone()).await.unwrap();
         #[cfg(feature = "fvs")]
         let virgo = Arc::new(VirgoManager::new(context.clone()));
         let manager = BottleManager::load(
@@ -138,12 +128,7 @@ fn create_reports_missing_runtime_requirements_before_creating_files() {
             .unwrap();
         archive.finish().await.unwrap();
         drop(archive);
-        let context = Context::for_test(
-            directories.clone(),
-            Some(directories.data_dir().join("fvs2d")),
-        )
-        .await
-        .unwrap();
+        let context = Context::for_test(directories.clone()).await.unwrap();
         let addons = context.addons().clone();
         let runner = addons
             .import_component(&runner_path, Slot::Runner, "Proton", "proton-test")
@@ -226,12 +211,7 @@ fn create_reports_missing_runtime_requirements_before_creating_files() {
                 .next()
                 .is_none()
         );
-        let reloaded = Context::for_test(
-            directories.clone(),
-            Some(directories.data_dir().join("fvs2d")),
-        )
-        .await
-        .unwrap();
+        let reloaded = Context::for_test(directories.clone()).await.unwrap();
         let reloaded_addons = reloaded.addons();
         assert_eq!(
             reloaded_addons.component(runner_id).unwrap().id(),

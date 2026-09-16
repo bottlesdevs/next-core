@@ -148,7 +148,7 @@ impl VirgoManager {
             }
             // Both copies describe this same stopped prefix, before atomic publication.
             super::registry::capture(&prefix, &registry).await?;
-            let client = self.cx.fvs().await?;
+            let client = self.cx.fvs();
             let repository = client.new_repository(&prefix, FVS_BLOCK_SIZE).await?;
             let commit = client
                 .commit(

@@ -2,11 +2,11 @@
 
 use crate::{Addons, Directories, error::Result};
 use download_manager::manager::{DownloadManager, DownloadManagerConfig};
-use http_client::HttpClient;
-use std::{path::PathBuf, sync::Arc};
-use url::Url;
 #[cfg(feature = "fvs")]
-use {crate::utils::absolute_path, fvs_rs::Fvs2dClient, tokio::sync::OnceCell};
+use fvs_rs::Fvs2dClient;
+use http_client::HttpClient;
+use std::sync::Arc;
+use url::Url;
 
 struct ContextInner {
     directories: Directories,
@@ -14,9 +14,7 @@ struct ContextInner {
     downloader: Arc<DownloadManager>,
     addons: Addons,
     #[cfg(feature = "fvs")]
-    fvs2d_executable: PathBuf,
-    #[cfg(feature = "fvs")]
-    fvs: OnceCell<Fvs2dClient>,
+    fvs: Arc<Fvs2dClient>,
 }
 
 #[derive(Clone)]
@@ -26,12 +24,10 @@ impl Context {
     pub(crate) async fn new(
         directories: Directories,
         http_client: Arc<dyn HttpClient>,
-        fvs2d_executable: Option<PathBuf>,
+        #[cfg(feature = "fvs")] fvs: Arc<Fvs2dClient>,
         component_catalog: Option<Url>,
         dependency_catalog: Option<Url>,
     ) -> Result<Self> {
-        #[cfg(not(feature = "fvs"))]
-        let _ = fvs2d_executable;
         let downloader = Arc::new(DownloadManager::new(
             http_client.clone(),
             DownloadManagerConfig::default(),
@@ -49,24 +45,39 @@ impl Context {
             downloader,
             addons,
             #[cfg(feature = "fvs")]
-            fvs2d_executable: fvs2d_executable
-                .map(absolute_path)
-                .transpose()?
-                .unwrap_or_else(|| PathBuf::from("fvs2d")),
-            #[cfg(feature = "fvs")]
-            fvs: OnceCell::new(),
+            fvs,
         })))
     }
 
     #[cfg(test)]
-    pub(crate) async fn for_test(
-        directories: Directories,
-        fvs2d_executable: Option<PathBuf>,
-    ) -> Result<Self> {
+    pub(crate) async fn for_test(directories: Directories) -> Result<Self> {
         let client = Arc::new(http_client::MockClient::new(|_| {
             Ok(http::Response::new(http_client::body([])))
         }));
-        Self::new(directories, client, fvs2d_executable, None, None).await
+        #[cfg(feature = "fvs")]
+        let fvs = {
+            // Metadata and cancellation tests never issue FVS RPCs.
+            static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> =
+                std::sync::LazyLock::new(|| {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap()
+                });
+            let _entered = RUNTIME.enter();
+            Arc::new(Fvs2dClient::from_channel(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy(),
+            ))
+        };
+        Self::new(
+            directories,
+            client,
+            #[cfg(feature = "fvs")]
+            fvs,
+            None,
+            None,
+        )
+        .await
     }
 
     /// The addon manager shared by discovery and execution workflows.
@@ -87,35 +98,7 @@ impl Context {
     }
 
     #[cfg(feature = "fvs")]
-    pub(crate) async fn fvs(&self) -> Result<&Fvs2dClient> {
-        self.0
-            .fvs
-            .get_or_try_init(|| async {
-                Ok(Fvs2dClient::connect_or_spawn(
-                    &self.0.fvs2d_executable,
-                    self.0.directories.runtime_dir().join("fvs2d.sock"),
-                )
-                .await?)
-            })
-            .await
-    }
-}
-
-#[cfg(all(test, feature = "fvs"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn uses_path_lookup_when_fvs2d_is_not_configured() {
-        futures_lite::future::block_on(async {
-            let root = std::env::temp_dir().join(format!("bottles-next-{}", uuid::Uuid::new_v4()));
-            let directories = Directories::from_path(&root).unwrap();
-            let context = Context::for_test(directories, None).await.unwrap();
-
-            assert_eq!(context.0.fvs2d_executable, PathBuf::from("fvs2d"));
-
-            drop(context);
-            std::fs::remove_dir_all(root).unwrap();
-        });
+    pub(crate) fn fvs(&self) -> &Arc<Fvs2dClient> {
+        &self.0.fvs
     }
 }

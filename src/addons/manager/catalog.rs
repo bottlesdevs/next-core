@@ -133,7 +133,7 @@ mod tests {
         futures_lite::future::block_on(async {
             let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
             let directories = Directories::from_path(&root).unwrap();
-            let context = Context::for_test(directories, None).await.unwrap();
+            let context = Context::for_test(directories).await.unwrap();
             let addons = context.addons().clone();
             let write = addons.0.write.lock().await;
             let mut refresh = addons.refresh();

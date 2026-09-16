@@ -39,7 +39,7 @@ pub(crate) async fn capture(
     cx: &Context,
     progress: &watch::Sender<Option<Progress>>,
 ) -> Result<Commit> {
-    let client = cx.fvs().await?;
+    let client = cx.fvs();
     if !crate::utils::exists(&root.join(".fvs2")).await? {
         client.new_repository(root, FVS_BLOCK_SIZE).await?;
     }
@@ -58,7 +58,6 @@ pub(crate) async fn restore(
 ) -> Result<RestoreResponse> {
     Ok(cx
         .fvs()
-        .await?
         .restore_with_progress(
             &repository(root),
             revision,
