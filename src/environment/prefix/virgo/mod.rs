@@ -66,7 +66,6 @@ async fn mount(root: &Path, layers: Vec<Layer>, cx: &Context) -> Result<()> {
     let prefix = root.join("prefix");
     ensure_empty_dir(&prefix).await?;
     cx.fvs()
-        .await?
         .mount(&prefix, layers, Some(root.join("upper")))
         .await?;
     Ok(())
@@ -75,7 +74,7 @@ async fn mount(root: &Path, layers: Vec<Layer>, cx: &Context) -> Result<()> {
 pub(super) async fn release(root: &Path, context: &Context) -> Result<()> {
     let prefix = root.join("prefix");
     if crate::utils::exists(&prefix).await? {
-        let client = context.fvs().await?;
+        let client = context.fvs();
         if let Some(mount) = client.list_mounts().await?.into_iter().find(|mount| {
             mount
                 .spec

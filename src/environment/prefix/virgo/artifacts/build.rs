@@ -36,7 +36,7 @@ impl VirgoManager {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let client = self.cx.fvs().await?;
+        let client = self.cx.fvs();
         let stage = self.staging_path();
         let artifact = stage.join("artifact");
         let upper = artifact.join("filesystem");
