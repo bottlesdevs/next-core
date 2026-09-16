@@ -9,11 +9,11 @@ use fvs_rs::UnmountMode;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::super::registry;
-use super::{VirgoLayer, VirgoManager, cache, remove_dir};
+use super::{VirgoLayer, VirgoManager, remove_dir};
+use crate::virgo::{FVS_BLOCK_SIZE, registry};
 use crate::{
     EnvironmentError,
-    environment::{prefix::FVS_BLOCK_SIZE, runtime},
+    environment::runtime,
     error::{Error, Result},
     runner::Runner,
 };
@@ -37,7 +37,7 @@ impl VirgoManager {
             return Err(Error::Cancelled);
         }
         let client = self.cx.fvs();
-        let stage = self.staging_path();
+        let stage = self.layers.staging_path();
         let artifact = stage.join("artifact");
         let upper = artifact.join("filesystem");
         let prefix = stage.join("prefix");
@@ -89,7 +89,9 @@ impl VirgoManager {
             registry::exclude_hives(&upper).await?;
             let repository = client.new_repository(&upper, FVS_BLOCK_SIZE).await?;
             let commit = client.commit(&repository, id.to_string()).await?;
-            cache::publish(&artifact, destination, id, commit.state_id, cancellation).await
+            self.layers
+                .publish(&artifact, destination, id, commit.state_id, cancellation)
+                .await
         }
         .await;
         remove_dir(stage).await;

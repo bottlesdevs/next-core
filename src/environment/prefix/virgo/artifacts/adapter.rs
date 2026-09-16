@@ -2,7 +2,7 @@
 
 use tokio_util::sync::CancellationToken;
 
-use super::{VirgoLayer, VirgoManager, cache};
+use super::{VirgoLayer, VirgoManager};
 use crate::{
     EnvironmentState,
     error::{Error, Result},
@@ -16,16 +16,15 @@ impl VirgoManager {
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
         let id = config.runner().id();
-        let data_dir = self.cx.directories().data_dir();
-        let destination = data_dir.join("virgo/adapters").join(id.to_string());
-        if let Some(artifact) = cache::load(&destination, Some(id)).await? {
+        let destination = std::path::Path::new("adapters").join(id.to_string());
+        if let Some(artifact) = self.layers.load(&destination, Some(id)).await? {
             return Ok(artifact);
         }
         let _build = cancellation
             .run_until_cancelled(self.build_lock.lock())
             .await
             .ok_or(Error::Cancelled)?;
-        if let Some(artifact) = cache::load(&destination, Some(id)).await? {
+        if let Some(artifact) = self.layers.load(&destination, Some(id)).await? {
             return Ok(artifact);
         }
         let runner = config

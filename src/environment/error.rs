@@ -5,6 +5,9 @@ use uuid::Uuid;
 /// Failures in shared execution configuration and operations.
 #[derive(Debug, Error)]
 pub enum EnvironmentError {
+    #[cfg(feature = "fvs")]
+    #[error("no locally recorded Soda runner with a valid semantic version")]
+    SodaNotDownloaded,
     #[error("environment {0} was not found")]
     NotFound(Uuid),
     #[error("environment was deleted")]

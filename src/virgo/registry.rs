@@ -28,7 +28,7 @@ pub(crate) fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -
 }
 
 /// Save the initial hives alongside the stopped base filesystem before publication.
-pub(super) async fn capture(prefix: &Path, before: &Path) -> Result<()> {
+pub(crate) async fn capture(prefix: &Path, before: &Path) -> Result<()> {
     async_fs::create_dir_all(before).await?;
     for (file, _) in registry_files() {
         async_fs::copy(prefix.join(file), before.join(file)).await?;
@@ -37,7 +37,7 @@ pub(super) async fn capture(prefix: &Path, before: &Path) -> Result<()> {
 }
 
 /// Write both forward patches after Wine has stopped, including empty changes.
-pub(super) async fn write_patches(before: &Path, prefix: &Path, patches: &Path) -> Result<()> {
+pub(crate) async fn write_patches(before: &Path, prefix: &Path, patches: &Path) -> Result<()> {
     let (before, prefix, patches) = (
         before.to_path_buf(),
         prefix.to_path_buf(),
@@ -59,7 +59,7 @@ pub(super) async fn write_patches(before: &Path, prefix: &Path, patches: &Path) 
 }
 
 /// Committed artifact layers carry registry patches separately from filesystem effects.
-pub(super) async fn exclude_hives(filesystem: &Path) -> Result<()> {
+pub(crate) async fn exclude_hives(filesystem: &Path) -> Result<()> {
     for (file, _) in registry_files() {
         match async_fs::remove_file(filesystem.join(file)).await {
             Ok(()) => {}

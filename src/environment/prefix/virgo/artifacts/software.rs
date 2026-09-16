@@ -3,7 +3,7 @@
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::{VirgoLayer, VirgoManager, cache};
+use super::{VirgoLayer, VirgoManager};
 use crate::{
     Addon, AddonError, EnvironmentError, Progress, Slot, Stage,
     addons::{AddonFamily, InstallInputs, execute},
@@ -24,16 +24,15 @@ impl VirgoManager {
             return Err(Error::Cancelled);
         }
         let id = addon.id();
-        let data_dir = self.cx.directories().data_dir();
-        let destination = data_dir.join("virgo/addons").join(id.to_string());
-        if let Some(artifact) = cache::load(&destination, Some(id)).await? {
+        let destination = std::path::Path::new("addons").join(id.to_string());
+        if let Some(artifact) = self.layers.load(&destination, Some(id)).await? {
             return Ok(artifact);
         }
         let _build = cancellation
             .run_until_cancelled(self.build_lock.lock())
             .await
             .ok_or(Error::Cancelled)?;
-        if let Some(artifact) = cache::load(&destination, Some(id)).await? {
+        if let Some(artifact) = self.layers.load(&destination, Some(id)).await? {
             return Ok(artifact);
         }
         let payload = addon.path(self.cx.directories());

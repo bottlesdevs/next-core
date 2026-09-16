@@ -248,7 +248,15 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             return Err(Error::Cancelled);
         }
         backend
-            .prepare(config, &self.root, &self.context, progress, cancellation)
+            .prepare(
+                config,
+                &self.root,
+                &self.context,
+                #[cfg(feature = "fvs")]
+                &self.virgo,
+                progress,
+                cancellation,
+            )
             .await?;
         if cancellation.is_cancelled() {
             backend.release(&self.root, &self.context).await?;
