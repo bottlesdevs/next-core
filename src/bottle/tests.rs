@@ -142,7 +142,7 @@ fn create_reports_missing_runtime_requirements_before_creating_files() {
                     .await,
                 Err(Error::Addon(AddonError::InvalidComponent(_)))
             ));
-            assert!(addons.latest_component(slot).is_none());
+            assert!(addons.components().iter().all(|addon| addon.slot() != slot));
         }
         assert_eq!(
             runner.path(&directories),
