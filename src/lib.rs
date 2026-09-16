@@ -16,6 +16,8 @@ mod program_spec;
 pub use program_spec::ProgramSpec;
 mod runner;
 mod utils;
+#[cfg(feature = "fvs")]
+mod virgo;
 mod winebridge;
 mod wrapper;
 

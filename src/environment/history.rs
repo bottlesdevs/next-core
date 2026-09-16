@@ -1,7 +1,7 @@
 //! Owner history includes selected configuration, the registry baseline, and persistent data.
 //! Callers hold owner coordination and release runtime storage before using it.
 
-use super::prefix::FVS_BLOCK_SIZE;
+use crate::virgo::FVS_BLOCK_SIZE;
 use crate::{Context, Progress, Stage, Transfer, error::Result};
 use fvs_rs::{Commit, Progress as FvsProgress, Repository, RestoreResponse};
 use std::path::Path;

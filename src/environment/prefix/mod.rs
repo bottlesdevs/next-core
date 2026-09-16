@@ -6,7 +6,7 @@ pub(super) mod standard;
 #[cfg(feature = "fvs")]
 mod virgo;
 #[cfg(feature = "fvs")]
-pub use virgo::VirgoError;
+pub use crate::virgo::VirgoError;
 #[cfg(feature = "fvs")]
 pub(crate) use virgo::VirgoManager;
 
@@ -16,9 +16,6 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-
-#[cfg(feature = "fvs")]
-pub(super) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
 /// Selects how a runnable Wine prefix is created and maintained.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Serialize)]
@@ -40,6 +37,7 @@ impl PrefixBackend {
         config: &EnvironmentState,
         root: &Path,
         cx: &Context,
+        #[cfg(feature = "fvs")] virgo: &VirgoManager,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<()> {
@@ -48,7 +46,7 @@ impl PrefixBackend {
         match self {
             Self::Standard => Ok(()),
             #[cfg(feature = "fvs")]
-            Self::Virgo => virgo::prepare(config, root, cx, progress, cancellation).await,
+            Self::Virgo => virgo::prepare(config, root, cx, virgo, progress, cancellation).await,
         }
     }
 

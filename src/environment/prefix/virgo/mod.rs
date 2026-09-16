@@ -1,7 +1,7 @@
 //! Load installed artifacts and prepare a stopped owner's Virgo composition.
 
 mod artifacts;
-mod registry;
+use crate::virgo::{VirgoError, registry};
 pub(crate) use artifacts::VirgoManager;
 
 use super::super::{EnvironmentState, history};
@@ -20,11 +20,12 @@ pub(super) async fn prepare(
     config: &EnvironmentState,
     root: &Path,
     cx: &Context,
+    manager: &VirgoManager,
     progress: &watch::Sender<Option<Progress>>,
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let artifacts::VirgoComposition { base, overlays } =
-        artifacts::load(config, cx.directories()).await?;
+        artifacts::load(config, &manager.layers).await?;
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
@@ -103,24 +104,4 @@ async fn ensure_empty_dir(path: &Path) -> Result<()> {
         return Err(VirgoError::DirtyMountpoint(path.to_path_buf()).into());
     }
     Ok(())
-}
-
-/// Virgo-specific failures carried by [`crate::error::Error::Virgo`].
-#[derive(Debug, thiserror::Error)]
-pub enum VirgoError {
-    #[error("no locally recorded Soda runner with a valid semantic version")]
-    SodaNotDownloaded,
-
-    /// Virgo cannot mount a prefix over a nonempty mountpoint.
-    #[error("mountpoint is not empty: {0}")]
-    DirtyMountpoint(std::path::PathBuf),
-    /// A selected artifact has not been built or has been removed.
-    #[error("missing Virgo artifact: {0}")]
-    MissingArtifact(std::path::PathBuf),
-    /// A published artifact has an unsupported format or incomplete installed effects.
-    #[error("invalid Virgo artifact: {0}")]
-    InvalidArtifact(std::path::PathBuf),
-    /// Registry data could not be converted while building a Virgo layer.
-    #[error("failed to process Virgo registry data: {0}")]
-    Registry(String),
 }

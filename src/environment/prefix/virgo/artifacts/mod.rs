@@ -2,17 +2,14 @@
 
 mod adapter;
 mod build;
-mod cache;
 mod software;
-pub(crate) use cache::VirgoLayer;
+use crate::virgo::{FVS_BLOCK_SIZE, LayerStore, VirgoLayer, registry};
 
-use super::VirgoError;
-use crate::environment::prefix::FVS_BLOCK_SIZE;
 use crate::{
-    Context, Directories, EnvironmentState, Progress, Slot,
+    Context, EnvironmentError, EnvironmentState, Progress, Slot,
     error::{Error, Result},
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -20,6 +17,7 @@ use uuid::Uuid;
 /// Shared artifact storage and construction for one core instance.
 pub(crate) struct VirgoManager {
     cx: Context,
+    pub(super) layers: LayerStore,
     build_lock: Mutex<()>,
 }
 
@@ -33,6 +31,7 @@ impl VirgoManager {
     /// Construct without touching storage or starting FVS.
     pub(crate) fn new(cx: Context) -> Self {
         Self {
+            layers: LayerStore::new(cx.directories().data_dir().join("virgo"), cx.fvs().clone()),
             cx,
             build_lock: Mutex::new(()),
         }
@@ -65,28 +64,20 @@ impl VirgoManager {
         }
         Ok(())
     }
-
-    fn staging_path(&self) -> PathBuf {
-        let data_dir = self.cx.directories().data_dir();
-        data_dir
-            .join("virgo/.staging")
-            .join(Uuid::new_v4().to_string())
-    }
 }
 
 /// Load published artifacts
 pub(super) async fn load(
     config: &EnvironmentState,
-    directories: &Directories,
+    store: &LayerStore,
 ) -> Result<VirgoComposition> {
-    let root = directories.data_dir().join("virgo");
-    let base = cache::require(&root.join("soda"), None).await?;
+    let base = store.require(Path::new("soda"), None).await?;
     let runner = config.runner().id();
-    let adapter = root.join("adapters").join(runner.to_string());
-    let mut overlays = vec![cache::require(&adapter, Some(runner)).await?];
+    let adapter = Path::new("adapters").join(runner.to_string());
+    let mut overlays = vec![store.require(&adapter, Some(runner)).await?];
     for id in addon_ids(config) {
-        let addon = root.join("addons").join(id.to_string());
-        overlays.push(cache::require(&addon, Some(id)).await?);
+        let addon = Path::new("addons").join(id.to_string());
+        overlays.push(store.require(&addon, Some(id)).await?);
     }
     Ok(VirgoComposition { base, overlays })
 }
@@ -102,15 +93,15 @@ impl VirgoManager {
     /// Reuse the pinned base, or build from the greatest valid local Soda version.
     /// UUID breaks version ties. Missing inputs fail without downloading or falling back.
     async fn prepare_base(&self, cancellation: &CancellationToken) -> Result<VirgoLayer> {
-        let destination = self.cx.directories().data_dir().join("virgo/soda");
-        if let Some(base) = cache::load(&destination, None).await? {
+        let destination = Path::new("soda");
+        if let Some(base) = self.layers.load(destination, None).await? {
             return Ok(base);
         }
         let _build = cancellation
             .run_until_cancelled(self.build_lock.lock())
             .await
             .ok_or(Error::Cancelled)?;
-        if let Some(base) = cache::load(&destination, None).await? {
+        if let Some(base) = self.layers.load(destination, None).await? {
             return Ok(base);
         }
         if cancellation.is_cancelled() {
@@ -131,9 +122,9 @@ impl VirgoManager {
             })
             .max_by(|(a, left), (b, right)| a.cmp(b).then_with(|| left.id().cmp(&right.id())))
             .map(|(_, addon)| addon)
-            .ok_or(VirgoError::SodaNotDownloaded)?;
+            .ok_or(EnvironmentError::SodaNotDownloaded)?;
         let runner = soda.load_runner(self.cx.directories(), None).await?;
-        let stage = self.staging_path();
+        let stage = self.layers.staging_path();
         let artifact = stage.join("artifact");
         let prefix = artifact.join("filesystem");
         let registry = artifact.join("registry");
@@ -147,7 +138,7 @@ impl VirgoManager {
                 return Err(Error::Cancelled);
             }
             // Both copies describe this same stopped prefix, before atomic publication.
-            super::registry::capture(&prefix, &registry).await?;
+            registry::capture(&prefix, &registry).await?;
             let client = self.cx.fvs();
             let repository = client.new_repository(&prefix, FVS_BLOCK_SIZE).await?;
             let commit = client
@@ -156,14 +147,15 @@ impl VirgoManager {
                     format!("Soda {} ({})", soda.version(), soda.id()),
                 )
                 .await?;
-            cache::publish(
-                &artifact,
-                &destination,
-                soda.id(),
-                commit.state_id,
-                cancellation,
-            )
-            .await
+            self.layers
+                .publish(
+                    &artifact,
+                    destination,
+                    soda.id(),
+                    commit.state_id,
+                    cancellation,
+                )
+                .await
         }
         .await;
         remove_dir(stage).await;
