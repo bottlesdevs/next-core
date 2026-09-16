@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use futures_lite::StreamExt;
 use fvs_rs::{Layer, Repository};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -74,6 +75,48 @@ impl LayerStore {
         self.load(key, id)
             .await?
             .ok_or_else(|| VirgoError::MissingArtifact(self.root.join(key)).into())
+    }
+
+    /// List immediate published children of a relative collection, without FVS RPCs.
+    /// A manifest identifies an artifact; staging and other entries are skipped.
+    /// Malformed manifests or incomplete published artifacts fail the listing.
+    #[allow(dead_code)] // Internal storage API; no public owner-facing layer API.
+    pub(crate) async fn list(&self, collection: &Path) -> Result<Vec<(PathBuf, VirgoLayer)>> {
+        let mut entries = match async_fs::read_dir(self.root.join(collection)).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut layers = Vec::new();
+        while let Some(entry) = entries.try_next().await? {
+            if entry.file_name() == ".staging" || !entry.file_type().await?.is_dir() {
+                continue;
+            }
+            if crate::utils::exists(&entry.path().join("manifest.toml")).await? {
+                let key = collection.join(entry.file_name());
+                layers.push((key.clone(), self.require(&key, None).await?));
+            }
+        }
+        layers.sort_by(|(left, _), (right, _)| left.cmp(right));
+        Ok(layers)
+    }
+
+    /// Withdraw an explicitly addressed artifact, then delete its storage.
+    /// The caller must ensure it is unmounted and no longer needed by any workspace.
+    /// Cancellation is honored before withdrawal; cleanup runs to completion afterward.
+    #[allow(dead_code)] // Internal storage API; callers own reference tracking.
+    pub(crate) async fn remove(&self, key: &Path, cancellation: &CancellationToken) -> Result<()> {
+        let _lock = cancellation
+            .run_until_cancelled(self.build_lock.lock())
+            .await
+            .ok_or(Error::Cancelled)?;
+        let stage = self.staging_path();
+        async_fs::create_dir_all(stage.parent().expect("staging has a parent")).await?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        async_fs::rename(self.root.join(key), &stage).await?;
+        Ok(async_fs::remove_dir_all(stage).await?)
     }
 
     /// The caller has committed the filesystem and written both registry files in staging.

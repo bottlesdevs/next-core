@@ -16,7 +16,7 @@ pub(super) fn registry_files() -> [(&'static str, Hive); 2] {
     ]
 }
 
-pub(super) fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -> Result<()> {
+fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -> Result<()> {
     let old =
         Registry::try_from(old, hive).map_err(|error| VirgoError::Registry(error.to_string()))?;
     let new =

@@ -4,8 +4,10 @@ The application core for managing Bottles Next Wine and Proton environments.
 
 `bottles-core` imports and installs managed components, persists bottles,
 executes Windows programs through WineBridge, and provides Virgo storage and
-snapshots through the default `fvs` feature. Standard creation, launch, and addon
-changes work without FVS even when that feature is compiled in.
+snapshots through the default `fvs` feature. With this feature enabled,
+`Bottles::open` connects to or starts FVS once and fails if initialization fails.
+`Config::fvs2d` supplies an executable path; when omitted, `fvs2d` is found through
+PATH. The socket remains in the configured runtime directory.
 
 Disable FVS when only conventional, directly mutable prefixes are needed:
 
@@ -45,16 +47,45 @@ leaves Wine running; call `stop()` to shut it down.
 
 Choose a prefix backend when creating a bottle. Standard installs directly into
 a conventional Wine prefix. Virgo is experimental: it combines shared immutable
-layers with each bottle's private writable data, preparing missing layers at
-startup. Virgo requires FVS and a downloaded Soda runner to build its base.
+layers with each bottle's private writable data. Missing layers are prepared
+before publishing owner selections; launch composes existing artifacts.
+The initial base uses the greatest valid local Soda version and remains pinned.
+Cached artifacts can be reused without their shared source payloads.
 
 Fetch addons from the component and dependency catalogs, or use
 `Addons::import_component` to import a component archive. Local releases are
 identified by UUID. Removing a release deletes its installation inputs;
-runtime executables and Standard recipe-based removal still require those files.
+runtime executables and new installations still require those files. Standard
+removal uses saved recipes and existing backups.
 
 Operations are lazy. Await them, call `cancel().await`, or spawn them and
 explicitly detach the task; dropping an operation abandons it.
+
+## Internal Wine layer storage
+
+`Context` owns the ready `Arc<Fvs2dClient>`. The shared `VirgoManager` owns a
+`LayerStore` with its artifact root, a clone of that client, and one construction
+and publication lock. The store has no Context, addon, runner, or owner knowledge.
+Virgo policy chooses Soda and build-time WineBridge, supplies relative addresses
+and layer order, and executes recipes through the existing runners.
+
+The store owns cache lookup, staging, filesystem and registry capture, immutable
+publication, composition, and workspace mounts. Bases retain their initial hives;
+overlays store registry patches separately from filesystem effects. Composition
+uses the supplied overlay order, then replays private registry changes.
+Artifact paths and manifest version 1 are unchanged.
+
+Builds must be explicitly finished or discarded after Wine has stopped.
+Execution failures and cancellation still attempt shutdown. Failed shutdown
+retains staging and mounts; failed unmount also retains storage. Dropping a build
+never performs asynchronous cleanup. Owner workflows retain coordination,
+checkpoints, recovery, and configuration publication, releasing mounts before
+restoring a failed composition.
+
+Internal listing reads immediate artifacts in a supplied collection. Removal
+withdraws an explicit address into staging under the publication lock before
+recursive cleanup. Its caller must ensure the artifact is unmounted and no
+longer needed. There is no owner tracking, garbage collection, or public layer API.
 
 ## Example
 
