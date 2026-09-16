@@ -3,7 +3,8 @@
 
 mod build;
 mod cache;
-pub(crate) mod registry;
+mod registry;
+mod workspace;
 pub(crate) use build::{LayerBuild, Reservation};
 pub(crate) use cache::VirgoLayer;
 

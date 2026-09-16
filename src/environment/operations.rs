@@ -173,7 +173,14 @@ impl<T: EnvironmentOwnerState> Environment<T> {
                 .await?;
             runtime::stop(runner.as_ref(), &prefix).await?;
         }
-        state.backend().release(&self.root, &self.context).await
+        state
+            .backend()
+            .release(
+                &self.root,
+                #[cfg(feature = "fvs")]
+                &self.virgo,
+            )
+            .await
     }
 
     pub(crate) fn dll_overrides(self: &Arc<Self>) -> Operation<Vec<DllOverride>> {
@@ -259,7 +266,13 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             )
             .await?;
         if cancellation.is_cancelled() {
-            backend.release(&self.root, &self.context).await?;
+            backend
+                .release(
+                    &self.root,
+                    #[cfg(feature = "fvs")]
+                    &self.virgo,
+                )
+                .await?;
             return Err(Error::Cancelled);
         }
         let command = config.wrappers.apply(WineBridgeClient::command(
@@ -279,7 +292,13 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             });
         if result.is_err() {
             runtime::stop(runner.as_ref(), &prefix).await?;
-            backend.release(&self.root, &self.context).await?;
+            backend
+                .release(
+                    &self.root,
+                    #[cfg(feature = "fvs")]
+                    &self.virgo,
+                )
+                .await?;
         }
         result
     }
