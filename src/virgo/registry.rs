@@ -9,14 +9,14 @@ use std::{
 };
 use uuid::Uuid;
 
-pub(crate) fn registry_files() -> [(&'static str, Hive); 2] {
+pub(super) fn registry_files() -> [(&'static str, Hive); 2] {
     [
         ("user.reg", Hive::CurrentUser),
         ("system.reg", Hive::LocalMachine),
     ]
 }
 
-pub(crate) fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -> Result<()> {
+pub(super) fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -> Result<()> {
     let old =
         Registry::try_from(old, hive).map_err(|error| VirgoError::Registry(error.to_string()))?;
     let new =
@@ -28,7 +28,7 @@ pub(crate) fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -
 }
 
 /// Save the initial hives alongside the stopped base filesystem before publication.
-pub(crate) async fn capture(prefix: &Path, before: &Path) -> Result<()> {
+pub(super) async fn capture(prefix: &Path, before: &Path) -> Result<()> {
     async_fs::create_dir_all(before).await?;
     for (file, _) in registry_files() {
         async_fs::copy(prefix.join(file), before.join(file)).await?;
@@ -37,7 +37,7 @@ pub(crate) async fn capture(prefix: &Path, before: &Path) -> Result<()> {
 }
 
 /// Write both forward patches after Wine has stopped, including empty changes.
-pub(crate) async fn write_patches(before: &Path, prefix: &Path, patches: &Path) -> Result<()> {
+pub(super) async fn write_patches(before: &Path, prefix: &Path, patches: &Path) -> Result<()> {
     let (before, prefix, patches) = (
         before.to_path_buf(),
         prefix.to_path_buf(),
@@ -59,7 +59,7 @@ pub(crate) async fn write_patches(before: &Path, prefix: &Path, patches: &Path) 
 }
 
 /// Committed artifact layers carry registry patches separately from filesystem effects.
-pub(crate) async fn exclude_hives(filesystem: &Path) -> Result<()> {
+pub(super) async fn exclude_hives(filesystem: &Path) -> Result<()> {
     for (file, _) in registry_files() {
         match async_fs::remove_file(filesystem.join(file)).await {
             Ok(()) => {}
@@ -99,10 +99,10 @@ fn merge_private(previous: &Path, upper: &Path, baseline: &Path, merged: &Path) 
     Ok(())
 }
 
-/// The owner is stopped and checkpointed. Only managed registry files are replaced;
-/// all other private files and whiteouts keep normal overlay precedence. Soda supplies
-/// starting hives; patch paths are ordered adapter first, then selected addons.
-pub(crate) async fn compose(root: &Path, initial: &Path, patches: Vec<PathBuf>) -> Result<()> {
+/// The workspace is stopped and checkpointed. Only managed registry files are replaced;
+/// all other private files and whiteouts keep normal overlay precedence. Apply patches
+/// to the initial hives in the supplied order, then replay private registry changes.
+pub(super) async fn compose(root: &Path, initial: &Path, patches: Vec<PathBuf>) -> Result<()> {
     let stage = root.join(".staging").join(Uuid::new_v4().to_string());
     let root = root.to_path_buf();
     let initial = initial.to_path_buf();

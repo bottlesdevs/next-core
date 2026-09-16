@@ -51,15 +51,17 @@ impl PrefixBackend {
     }
 
     /// Release storage and discovery files after process shutdown, before history capture.
-    pub(super) async fn release(&self, root: &Path, cx: &Context) -> Result<()> {
-        #[cfg(not(feature = "fvs"))]
-        let _ = cx;
+    pub(super) async fn release(
+        &self,
+        root: &Path,
+        #[cfg(feature = "fvs")] virgo: &VirgoManager,
+    ) -> Result<()> {
         match self {
             Self::Standard => {
                 crate::winebridge::WineBridgeClient::clear_discovery(&root.join("prefix")).await
             }
             #[cfg(feature = "fvs")]
-            Self::Virgo => virgo::release(root, cx).await,
+            Self::Virgo => virgo::release(root, virgo).await,
         }
     }
 }
