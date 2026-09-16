@@ -1,5 +1,18 @@
 //! Wine layer storage and registry mechanics, independent of owner and addon policy.
-//! A Virgo manager owns the store and shares the already-connected FVS client.
+//!
+//! One Virgo manager owns one store per artifact root. Context shares the FVS client
+//! initialized during core startup; this subsystem neither connects nor starts it.
+//! Relative artifact addresses and composition order come from prefix policy.
+//!
+//! Published filesystem revisions and registry artifacts are immutable. A cache miss
+//! reserves construction before callers resolve build inputs. Callers execute their
+//! work and stop its processes before finishing or discarding the workspace. Failed
+//! shutdown must retain staging and any mount; dropping a build performs no cleanup.
+//!
+//! Composition preserves private registry changes but does not own checkpoints or
+//! recovery. Callers release mounts before restoring a failed composition. Explicit
+//! deletion requires callers to know that an artifact is unmounted and no longer used;
+//! the store does not track owners or collect garbage.
 
 mod build;
 mod cache;
