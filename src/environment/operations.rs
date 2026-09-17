@@ -1,5 +1,7 @@
 //! Consumer-driven mutations and runtime control under one environment lock.
 
+#[cfg(feature = "fvs")]
+use super::history;
 use super::{Environment, EnvironmentOwnerState, prefix::standard, runtime};
 use crate::{
     Addon, Component, Dependency, Edit, EnvironmentError, EnvironmentState, Operation,
@@ -173,14 +175,23 @@ impl<T: EnvironmentOwnerState> Environment<T> {
                 .await?;
             runtime::stop(runner.as_ref(), &prefix).await?;
         }
-        state
-            .backend()
-            .release(
-                &self.root,
-                #[cfg(feature = "fvs")]
-                &self.virgo,
-            )
-            .await
+        self.release_storage(state.backend()).await
+    }
+
+    /// Wine is stopped before releasing mounts and their discovery files.
+    async fn release_storage(&self, backend: PrefixBackend) -> Result<()> {
+        #[cfg(feature = "fvs")]
+        if backend == PrefixBackend::Virgo {
+            self.virgo.layers.unmount_workspace(&self.root).await?;
+        }
+        #[cfg(not(feature = "fvs"))]
+        let _ = backend;
+        WineBridgeClient::clear_discovery(&self.root.join("prefix")).await?;
+        #[cfg(feature = "fvs")]
+        if backend == PrefixBackend::Virgo {
+            WineBridgeClient::clear_discovery(&self.root.join("upper")).await?;
+        }
+        Ok(())
     }
 
     pub(crate) fn dll_overrides(self: &Arc<Self>) -> Operation<Vec<DllOverride>> {
@@ -254,25 +265,38 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        backend
-            .prepare(
-                config,
+        #[cfg(feature = "fvs")]
+        if backend == PrefixBackend::Virgo {
+            let composition = self.virgo.composition(config).await?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let checkpoint = history::capture(
                 &self.root,
+                history::AUTO_CHECKPOINT_MESSAGE.into(),
+                false,
+                Stage::Checkpointing,
                 &self.context,
-                #[cfg(feature = "fvs")]
-                &self.virgo,
                 progress,
-                cancellation,
             )
             .await?;
-        if cancellation.is_cancelled() {
-            backend
-                .release(
+            let result = self
+                .virgo
+                .layers
+                .compose_and_mount(
                     &self.root,
-                    #[cfg(feature = "fvs")]
-                    &self.virgo,
+                    &composition.base,
+                    &composition.overlays,
+                    cancellation,
                 )
-                .await?;
+                .await;
+            if result.is_err() {
+                self.release_storage(backend).await?;
+            }
+            history::recover(result, &self.root, &checkpoint, &self.context, progress).await?;
+        }
+        if cancellation.is_cancelled() {
+            self.release_storage(backend).await?;
             return Err(Error::Cancelled);
         }
         let command = config.wrappers.apply(WineBridgeClient::command(
@@ -292,13 +316,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             });
         if result.is_err() {
             runtime::stop(runner.as_ref(), &prefix).await?;
-            backend
-                .release(
-                    &self.root,
-                    #[cfg(feature = "fvs")]
-                    &self.virgo,
-                )
-                .await?;
+            self.release_storage(backend).await?;
         }
         result
     }

@@ -1,6 +1,5 @@
-//! Prefix backends own initialization, software materialization, and storage release.
-//! Environment stops the owner's runtime before calling apply, prepare, or release.
-//! Backends stop their own initialization and installer processes before returning.
+//! Backend configuration and policy for initialization and software materialization.
+//! Environment owns process coordination and storage release.
 
 pub(super) mod standard;
 #[cfg(feature = "fvs")]
@@ -10,12 +9,7 @@ pub use crate::virgo::VirgoError;
 #[cfg(feature = "fvs")]
 pub(crate) use virgo::VirgoManager;
 
-use super::EnvironmentState;
-use crate::{Context, Progress, error::Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 
 /// Selects how a runnable Wine prefix is created and maintained.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Serialize)]
@@ -27,41 +21,4 @@ pub enum PrefixBackend {
     /// Virgo is experimental and requires the configured FVS service.
     #[cfg(feature = "fvs")]
     Virgo,
-}
-
-impl PrefixBackend {
-    /// Assemble a stopped prefix for execution from already-installed effects.
-    /// Backends undo partial owner materialization before returning an error.
-    pub(super) async fn prepare(
-        &self,
-        config: &EnvironmentState,
-        root: &Path,
-        cx: &Context,
-        #[cfg(feature = "fvs")] virgo: &VirgoManager,
-        progress: &watch::Sender<Option<Progress>>,
-        cancellation: &CancellationToken,
-    ) -> Result<()> {
-        #[cfg(not(feature = "fvs"))]
-        let _ = (config, root, cx, progress, cancellation);
-        match self {
-            Self::Standard => Ok(()),
-            #[cfg(feature = "fvs")]
-            Self::Virgo => virgo::prepare(config, root, cx, virgo, progress, cancellation).await,
-        }
-    }
-
-    /// Release storage and discovery files after process shutdown, before history capture.
-    pub(super) async fn release(
-        &self,
-        root: &Path,
-        #[cfg(feature = "fvs")] virgo: &VirgoManager,
-    ) -> Result<()> {
-        match self {
-            Self::Standard => {
-                crate::winebridge::WineBridgeClient::clear_discovery(&root.join("prefix")).await
-            }
-            #[cfg(feature = "fvs")]
-            Self::Virgo => virgo::release(root, virgo).await,
-        }
-    }
 }

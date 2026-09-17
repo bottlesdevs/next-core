@@ -17,13 +17,13 @@ use uuid::Uuid;
 /// Shared artifact storage and construction for one core instance.
 pub(crate) struct VirgoManager {
     cx: Context,
-    pub(super) layers: LayerStore,
+    pub(in crate::environment) layers: LayerStore,
 }
 
 /// A resolved base followed by adapter and addon effects, shared by registry and mount assembly.
-pub(super) struct VirgoComposition {
-    pub(super) base: VirgoLayer,
-    pub(super) overlays: Vec<VirgoLayer>,
+pub(in crate::environment) struct VirgoComposition {
+    pub(in crate::environment) base: VirgoLayer,
+    pub(in crate::environment) overlays: Vec<VirgoLayer>,
 }
 
 impl VirgoManager {
@@ -64,20 +64,22 @@ impl VirgoManager {
     }
 }
 
-/// Load published artifacts
-pub(super) async fn load(
-    config: &EnvironmentState,
-    store: &LayerStore,
-) -> Result<VirgoComposition> {
-    let base = store.require(Path::new("soda"), None).await?;
-    let runner = config.runner().id();
-    let adapter = Path::new("adapters").join(runner.to_string());
-    let mut overlays = vec![store.require(&adapter, Some(runner)).await?];
-    for id in addon_ids(config) {
-        let addon = Path::new("addons").join(id.to_string());
-        overlays.push(store.require(&addon, Some(id)).await?);
+impl VirgoManager {
+    /// Load published artifacts
+    pub(in crate::environment) async fn composition(
+        &self,
+        config: &EnvironmentState,
+    ) -> Result<VirgoComposition> {
+        let base = self.layers.require(Path::new("soda"), None).await?;
+        let runner = config.runner().id();
+        let adapter = Path::new("adapters").join(runner.to_string());
+        let mut overlays = vec![self.layers.require(&adapter, Some(runner)).await?];
+        for id in addon_ids(config) {
+            let addon = Path::new("addons").join(id.to_string());
+            overlays.push(self.layers.require(&addon, Some(id)).await?);
+        }
+        Ok(VirgoComposition { base, overlays })
     }
-    Ok(VirgoComposition { base, overlays })
 }
 
 fn addon_ids(config: &EnvironmentState) -> impl Iterator<Item = Uuid> + '_ {
