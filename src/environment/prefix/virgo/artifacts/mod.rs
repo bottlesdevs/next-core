@@ -1,12 +1,12 @@
 //! Shared immutable bases, runner adapters, and UUID-only addon caches.
 
 mod adapter;
-mod build;
 mod software;
-use crate::virgo::{LayerStore, Reservation, VirgoLayer};
+use crate::virgo::{LayerStore, VirgoLayer};
 
 use crate::{
     Addon, Component, Context, EnvironmentError, EnvironmentState, Progress, Slot,
+    environment::runtime,
     error::{Error, Result},
 };
 use std::{path::Path, sync::Arc};
@@ -92,25 +92,35 @@ impl VirgoManager {
     /// UUID breaks version ties. Missing inputs fail without downloading or falling back.
     async fn prepare_base(&self, cancellation: &CancellationToken) -> Result<VirgoLayer> {
         let destination = Path::new("soda");
-        let build = match self.layers.reserve(destination, None, cancellation).await? {
-            Reservation::Cached(layer) => return Ok(layer),
-            Reservation::Build(build) => build,
-        };
-        let soda = latest_component(self.cx.addons().components().into_iter().filter(|addon| {
-            addon.slot() == Slot::Runner && addon.name().eq_ignore_ascii_case("soda")
-        }))
-        .ok_or(EnvironmentError::SodaNotDownloaded)?;
-        let runner = soda.load_runner(self.cx.directories(), None).await?;
-        build::run(
-            build,
-            soda.id(),
-            format!("Soda {} ({})", soda.version(), soda.id()),
-            runner.as_ref(),
-            None,
-            cancellation,
-            |prefix, runner| async move { runner.wineboot(&prefix, "--init").await },
-        )
-        .await
+        self.layers
+            .get_or_build(destination, None, cancellation, || async {
+                let soda =
+                    latest_component(self.cx.addons().components().into_iter().filter(|addon| {
+                        addon.slot() == Slot::Runner && addon.name().eq_ignore_ascii_case("soda")
+                    }))
+                    .ok_or(EnvironmentError::SodaNotDownloaded)?;
+                let runner = soda.load_runner(self.cx.directories(), None).await?;
+                let workspace = self
+                    .layers
+                    .prepare_build(destination, None, cancellation)
+                    .await?;
+                let executed = if cancellation.is_cancelled() {
+                    Err(Error::Cancelled)
+                } else {
+                    runner.wineboot(&workspace.prefix, "--init").await
+                };
+                runtime::stop(runner.as_ref(), &workspace.prefix).await?;
+                self.layers
+                    .finish_build(
+                        workspace,
+                        soda.id(),
+                        format!("Soda {} ({})", soda.version(), soda.id()),
+                        executed,
+                        cancellation,
+                    )
+                    .await
+            })
+            .await
     }
 }
 
