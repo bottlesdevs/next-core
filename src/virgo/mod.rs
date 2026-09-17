@@ -4,10 +4,10 @@
 //! initialized during core startup; this subsystem neither connects nor starts it.
 //! Relative artifact addresses and composition order come from prefix policy.
 //!
-//! Published filesystem revisions and registry artifacts are immutable. A cache miss
-//! coordinates construction before callers resolve build inputs. Callers execute their
-//! work and stop its processes before finalizing the workspace. Failed
-//! shutdown must retain staging and any mount; dropping a build performs no cleanup.
+//! Published filesystem revisions and registry artifacts are immutable. get_or_build
+//! holds coordination through input resolution, preparation, execution and finalization.
+//! Callers stop processes before passing the execution result to finish_build. Failed
+//! shutdown retains staging and any mount; dropping a workspace performs no cleanup.
 //!
 //! Composition preserves private registry changes but does not own checkpoints or
 //! recovery. Callers release mounts before restoring a failed composition. Explicit

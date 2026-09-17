@@ -100,7 +100,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             PrefixBackend::Virgo => {
                 environment
                     .virgo
-                    .apply(state.environment(), progress, cancellation)
+                    .prepare_artifacts(state.environment(), progress, cancellation)
                     .await?;
                 async_fs::create_dir_all(environment.root.join("upper")).await?;
             }
