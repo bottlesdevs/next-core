@@ -1,165 +1,160 @@
 //! Coordinated construction of immutable filesystem and Wine registry artifacts.
 
-use std::path::{Path, PathBuf};
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+};
 
 use fvs_rs::{Mount, UnmountMode};
-use tokio::sync::MutexGuard;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{FVS_BLOCK_SIZE, LayerStore, VirgoError, VirgoLayer, registry};
 use crate::error::{Error, Result};
 
-pub(crate) enum Reservation<'a> {
-    Cached(VirgoLayer),
-    Build(LayerBuild<'a>),
-}
-
-/// Holds publication coordination until explicitly finished, discarded, or dropped.
-/// Dropping retains storage and mounts: callers must first stop processes using them.
-pub(crate) struct LayerBuild<'a> {
-    store: &'a LayerStore,
-    _lock: MutexGuard<'a, ()>,
-    key: PathBuf,
+/// Prepared storage only. Dropping retains it; finalization requires stopped processes.
+pub(crate) struct BuildWorkspace {
+    destination: PathBuf,
     stage: PathBuf,
-    base_registry: Option<PathBuf>,
-    mount: Option<Mount>,
+    pub(crate) prefix: PathBuf,
+    overlay: Option<(Mount, PathBuf)>,
 }
 
 impl LayerStore {
-    /// Reserve before resolving source inputs. Cache hits need only published metadata.
-    pub(crate) async fn reserve(
+    /// Resolve inputs and complete construction inside this scope, only after a cache miss.
+    pub(crate) async fn get_or_build<Fut>(
         &self,
         key: &Path,
         id: Option<Uuid>,
         cancellation: &CancellationToken,
-    ) -> Result<Reservation<'_>> {
+        build: impl FnOnce() -> Fut,
+    ) -> Result<VirgoLayer>
+    where
+        Fut: Future<Output = Result<VirgoLayer>>,
+    {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
         if let Some(layer) = self.load(key, id).await? {
-            return Ok(Reservation::Cached(layer));
+            return Ok(layer);
         }
-        let lock = cancellation
+        let _lock = cancellation
             .run_until_cancelled(self.build_lock.lock())
             .await
             .ok_or(Error::Cancelled)?;
         if let Some(layer) = self.load(key, id).await? {
-            return Ok(Reservation::Cached(layer));
+            return Ok(layer);
         }
-        Ok(Reservation::Build(LayerBuild {
-            store: self,
-            _lock: lock,
-            key: key.to_path_buf(),
-            stage: self.staging_path(),
-            base_registry: None,
-            mount: None,
-        }))
-    }
-}
-
-impl LayerBuild<'_> {
-    /// Prepare either a standalone base or a writable overlay over one published layer.
-    /// No processes may use the returned workspace until preparation succeeds.
-    pub(crate) async fn prepare(
-        &mut self,
-        base: Option<&VirgoLayer>,
-        cancellation: &CancellationToken,
-    ) -> Result<PathBuf> {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let filesystem = self.stage.join("artifact/filesystem");
-        async_fs::create_dir_all(&filesystem).await?;
-        if let Some(base) = base {
-            self.base_registry = Some(base.registry.clone());
-            let prefix = self.stage.join("prefix");
-            async_fs::create_dir_all(&prefix).await?;
-            self.mount = Some(
-                self.store
-                    .fvs
-                    .mount(&prefix, vec![base.layer.clone()], Some(&filesystem))
-                    .await?,
-            );
-            Ok(prefix)
-        } else {
-            Ok(filesystem)
-        }
+        build().await
     }
 
-    /// Capture and publish only after execution succeeded and its processes were stopped.
-    /// Failures release mounts before cleanup; a failed unmount retains the workspace.
-    pub(crate) async fn finish(
-        mut self,
+    /// Prepare inside get_or_build, after resolving inputs and before starting processes.
+    pub(crate) async fn prepare_build(
+        &self,
+        key: &Path,
+        base: Option<&VirgoLayer>,
+        cancellation: &CancellationToken,
+    ) -> Result<BuildWorkspace> {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let stage = self.staging_path();
+        let filesystem = stage.join("artifact/filesystem");
+        let prefix = if base.is_some() {
+            stage.join("prefix")
+        } else {
+            filesystem.clone()
+        };
+        let setup = async {
+            async_fs::create_dir_all(&filesystem).await?;
+            if base.is_some() {
+                async_fs::create_dir_all(&prefix).await?;
+            }
+            Ok::<_, Error>(())
+        }
+        .await;
+        if let Err(error) = setup {
+            let _ = async_fs::remove_dir_all(&stage).await;
+            return Err(error);
+        }
+        // A failed mount request retains staging because its outcome may be uncertain.
+        let overlay = if let Some(base) = base {
+            let mount = self
+                .fvs
+                .mount(&prefix, vec![base.layer.clone()], Some(&filesystem))
+                .await?;
+            Some((mount, base.registry.clone()))
+        } else {
+            None
+        };
+        Ok(BuildWorkspace {
+            destination: key.to_path_buf(),
+            stage,
+            prefix,
+            overlay,
+        })
+    }
+
+    /// Consume the execution result only after shutdown succeeds, within get_or_build.
+    /// Failed execution is discarded; failed unmount retains the workspace.
+    pub(crate) async fn finish_build(
+        &self,
+        workspace: BuildWorkspace,
         id: Uuid,
         message: String,
+        executed: Result<()>,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
-        let artifact = self.stage.join("artifact");
+        let artifact = workspace.stage.join("artifact");
         let filesystem = artifact.join("filesystem");
         let registry = artifact.join("registry");
         let captured = async {
+            executed?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            if let Some(base) = &self.base_registry {
-                registry::write_patches(base, &self.stage.join("prefix"), &registry).await?;
-                self.store
-                    .fvs
-                    .diff_mount(self.mount.as_ref().expect("prepared overlay"), true)
-                    .await?;
+            if let Some((mount, base)) = &workspace.overlay {
+                registry::write_patches(base, &workspace.prefix, &registry).await?;
+                self.fvs.diff_mount(mount, true).await?;
             } else {
                 registry::capture(&filesystem, &registry).await?;
             }
             Ok::<_, Error>(())
         }
         .await;
-        self.unmount().await?;
+        if let Some((mount, _)) = &workspace.overlay {
+            self.fvs
+                .unmount(mount, UnmountMode::Normal)
+                .await
+                .map_err(|source| VirgoError::Unmount {
+                    path: workspace.prefix.clone(),
+                    source,
+                })?;
+        }
         let result = async {
             captured?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            if self.base_registry.is_some() {
+            if workspace.overlay.is_some() {
                 registry::exclude_hives(&filesystem).await?;
             }
-            let repository = self
-                .store
-                .fvs
-                .new_repository(&filesystem, FVS_BLOCK_SIZE)
-                .await?;
-            let commit = self.store.fvs.commit(&repository, message).await?;
-            self.store
-                .publish(&artifact, &self.key, id, commit.state_id, cancellation)
-                .await
+            let repository = self.fvs.new_repository(&filesystem, FVS_BLOCK_SIZE).await?;
+            let commit = self.fvs.commit(&repository, message).await?;
+            self.publish(
+                &artifact,
+                &workspace.destination,
+                id,
+                commit.state_id,
+                cancellation,
+            )
+            .await
         }
         .await;
-        self.discard().await?;
+        async_fs::remove_dir_all(workspace.stage).await?;
         result
-    }
-
-    /// Call only before execution starts or after its processes have stopped successfully.
-    pub(crate) async fn discard(mut self) -> Result<()> {
-        self.unmount().await?;
-        match async_fs::remove_dir_all(&self.stage).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    async fn unmount(&mut self) -> Result<()> {
-        if let Some(mount) = &self.mount {
-            self.store
-                .fvs
-                .unmount(mount, UnmountMode::Normal)
-                .await
-                .map_err(|source| VirgoError::Unmount {
-                    path: self.stage.join("prefix"),
-                    source,
-                })?;
-            self.mount = None;
-        }
-        Ok(())
     }
 }

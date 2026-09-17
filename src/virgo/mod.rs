@@ -5,8 +5,8 @@
 //! Relative artifact addresses and composition order come from prefix policy.
 //!
 //! Published filesystem revisions and registry artifacts are immutable. A cache miss
-//! reserves construction before callers resolve build inputs. Callers execute their
-//! work and stop its processes before finishing or discarding the workspace. Failed
+//! coordinates construction before callers resolve build inputs. Callers execute their
+//! work and stop its processes before finalizing the workspace. Failed
 //! shutdown must retain staging and any mount; dropping a build performs no cleanup.
 //!
 //! Composition preserves private registry changes but does not own checkpoints or
@@ -18,7 +18,6 @@ mod build;
 mod cache;
 mod registry;
 mod workspace;
-pub(crate) use build::{LayerBuild, Reservation};
 pub(crate) use cache::VirgoLayer;
 
 use fvs_rs::Fvs2dClient;
