@@ -75,12 +75,13 @@ overlays store registry patches separately from filesystem effects. Composition
 uses the supplied overlay order, then replays private registry changes.
 Artifact paths and manifest version 1 are unchanged.
 
-Builds must be explicitly finished or discarded after Wine has stopped.
-Execution failures and cancellation still attempt shutdown. Failed shutdown
-retains staging and mounts; failed unmount also retains storage. Dropping a build
-never performs asynchronous cleanup. Owner workflows retain coordination,
-checkpoints, recovery, and configuration publication, releasing mounts before
-restoring a failed composition.
+`get_or_build` holds coordination through the complete cache-miss workflow.
+Policy resolves inputs, prepares storage, executes work, and stops Wine before
+passing the execution result to finalization. Finalization publishes successful
+work or cleans up failed work. Failed shutdown, mount creation, or unmount retains
+staging; dropping a workspace never performs asynchronous cleanup. Environment
+owns checkpoints, discovery cleanup and configuration publication, releasing
+mounts before restoring a failed composition.
 
 Internal listing reads immediate artifacts in a supplied collection. Removal
 withdraws an explicit address into staging under the publication lock before

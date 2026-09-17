@@ -3,11 +3,7 @@
 
 pub(super) mod standard;
 #[cfg(feature = "fvs")]
-mod virgo;
-#[cfg(feature = "fvs")]
-pub use crate::virgo::VirgoError;
-#[cfg(feature = "fvs")]
-pub(crate) use virgo::VirgoManager;
+pub(super) mod virgo;
 
 use serde::{Deserialize, Serialize};
 

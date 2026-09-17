@@ -1,29 +1,21 @@
-//! Shared immutable bases, runner adapters, and UUID-only addon caches.
-
-mod adapter;
-mod software;
-use crate::virgo::{LayerStore, VirgoLayer};
+//! Virgo policy: select build inputs and translate frozen selections into ordered layers.
 
 use crate::{
-    Addon, Component, Context, EnvironmentError, EnvironmentState, Progress, Slot,
+    Addon, AddonError, Component, Context, EnvironmentError, EnvironmentState, Progress, Slot,
+    Stage,
+    addons::{AddonFamily, InstallInputs, execute},
     environment::runtime,
     error::{Error, Result},
+    virgo::{LayerStore, VirgoLayer},
 };
 use std::{path::Path, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
-/// Shared artifact storage and construction for one core instance.
+/// Shared Virgo build and layer-selection policy for one core instance.
 pub(crate) struct VirgoManager {
     cx: Context,
     pub(in crate::environment) layers: LayerStore,
-}
-
-/// A resolved base followed by adapter and addon effects, shared by registry and mount assembly.
-pub(in crate::environment) struct VirgoComposition {
-    pub(in crate::environment) base: VirgoLayer,
-    pub(in crate::environment) overlays: Vec<VirgoLayer>,
 }
 
 impl VirgoManager {
@@ -38,7 +30,7 @@ impl VirgoManager {
     /// Build from complete frozen selections before the owner publishes configuration.
     /// Cached effects remain usable after shared source payloads are removed; startup
     /// only loads and composes these already published artifacts.
-    pub(in crate::environment) async fn apply(
+    pub(in crate::environment) async fn prepare_artifacts(
         &self,
         config: &EnvironmentState,
         progress: &watch::Sender<Option<Progress>>,
@@ -62,34 +54,27 @@ impl VirgoManager {
         }
         Ok(())
     }
-}
 
-impl VirgoManager {
-    /// Load published artifacts
+    /// Load the pinned base, runner adapter, components, then dependencies.
     pub(in crate::environment) async fn composition(
         &self,
         config: &EnvironmentState,
-    ) -> Result<VirgoComposition> {
+    ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
         let base = self.layers.require(Path::new("soda"), None).await?;
         let runner = config.runner().id();
         let adapter = Path::new("adapters").join(runner.to_string());
         let mut overlays = vec![self.layers.require(&adapter, Some(runner)).await?];
-        for id in addon_ids(config) {
+        for id in config
+            .ordered_components()
+            .map(Addon::id)
+            .chain(config.dependencies.iter().map(Addon::id))
+        {
             let addon = Path::new("addons").join(id.to_string());
             overlays.push(self.layers.require(&addon, Some(id)).await?);
         }
-        Ok(VirgoComposition { base, overlays })
+        Ok((base, overlays))
     }
-}
 
-fn addon_ids(config: &EnvironmentState) -> impl Iterator<Item = Uuid> + '_ {
-    config
-        .ordered_components()
-        .map(crate::Addon::id)
-        .chain(config.dependencies.iter().map(crate::Addon::id))
-}
-
-impl VirgoManager {
     /// Reuse the pinned base, or build from the greatest valid local Soda version.
     /// UUID breaks version ties. Missing inputs fail without downloading or falling back.
     async fn prepare_base(&self, cancellation: &CancellationToken) -> Result<VirgoLayer> {
@@ -120,6 +105,91 @@ impl VirgoManager {
                         executed,
                         cancellation,
                     )
+                    .await
+            })
+            .await
+    }
+
+    async fn prepare_adapter(
+        &self,
+        config: &EnvironmentState,
+        base: &VirgoLayer,
+        cancellation: &CancellationToken,
+    ) -> Result<VirgoLayer> {
+        let id = config.runner().id();
+        let destination = Path::new("adapters").join(id.to_string());
+        self.layers
+            .get_or_build(&destination, Some(id), cancellation, || async {
+                let runner = config
+                    .runner()
+                    .load_runner(self.cx.directories(), config.umu())
+                    .await?;
+                let workspace = self
+                    .layers
+                    .prepare_build(&destination, Some(base), cancellation)
+                    .await?;
+                let executed = if cancellation.is_cancelled() {
+                    Err(Error::Cancelled)
+                } else {
+                    runner.wineboot(&workspace.prefix, "--init").await
+                };
+                runtime::stop(runner.as_ref(), &workspace.prefix).await?;
+                self.layers
+                    .finish_build(workspace, id, id.to_string(), executed, cancellation)
+                    .await
+            })
+            .await
+    }
+
+    /// Reuse cached effects or execute the selected frozen recipe in an isolated build.
+    async fn prepare_addon<K: AddonFamily>(
+        &self,
+        addon: &Addon<K>,
+        base: &VirgoLayer,
+        progress: &watch::Sender<Option<Progress>>,
+        cancellation: &CancellationToken,
+    ) -> Result<VirgoLayer> {
+        let id = addon.id();
+        let destination = Path::new("addons").join(id.to_string());
+        self.layers
+            .get_or_build(&destination, Some(id), cancellation, || async {
+                let soda = self
+                    .cx
+                    .addons()
+                    .component(base.id)
+                    .ok_or(AddonError::NotFound(base.id))?;
+                let runner = soda.load_runner(self.cx.directories(), None).await?;
+                let winebridge = latest_component(
+                    self.cx
+                        .addons()
+                        .components()
+                        .into_iter()
+                        .filter(|addon| addon.slot() == Slot::WineBridge),
+                )
+                .ok_or(EnvironmentError::ComponentNotInstalled(Slot::WineBridge))?
+                .path(self.cx.directories());
+                let workspace = self
+                    .layers
+                    .prepare_build(&destination, Some(base), cancellation)
+                    .await?;
+                let executed = execute(
+                    InstallInputs {
+                        prefix: &workspace.prefix,
+                        runner: runner.as_ref(),
+                        winebridge: &winebridge,
+                    },
+                    &addon.path(self.cx.directories()),
+                    addon.resources(),
+                    false,
+                    cancellation,
+                    |_| {
+                        progress.send_replace(Some(Progress::new(Stage::Configuring)));
+                    },
+                )
+                .await;
+                runtime::stop(runner.as_ref(), &workspace.prefix).await?;
+                self.layers
+                    .finish_build(workspace, id, id.to_string(), executed, cancellation)
                     .await
             })
             .await

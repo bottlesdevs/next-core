@@ -103,7 +103,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
                 PrefixBackend::Virgo => {
                     environment
                         .virgo
-                        .apply(after, &progress, &cancellation)
+                        .prepare_artifacts(after, &progress, &cancellation)
                         .await?;
                 }
             }
@@ -267,7 +267,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         }
         #[cfg(feature = "fvs")]
         if backend == PrefixBackend::Virgo {
-            let composition = self.virgo.composition(config).await?;
+            let (base, overlays) = self.virgo.composition(config).await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
@@ -283,12 +283,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             let result = self
                 .virgo
                 .layers
-                .compose_and_mount(
-                    &self.root,
-                    &composition.base,
-                    &composition.overlays,
-                    cancellation,
-                )
+                .compose_and_mount(&self.root, &base, &overlays, cancellation)
                 .await;
             if result.is_err() {
                 self.release_storage(backend).await?;
