@@ -80,7 +80,7 @@ impl Program {
     ) -> Operation<R> {
         self.0.edit(callback)
     }
-    /// Assemble installed Virgo layers and launch using this program's UUID as its group.
+    /// Mount prepared Virgo storage and launch using this program's UUID as its group.
     pub fn launch(&self) -> Operation<u32> {
         self.0.launch(|state| Ok((state.id, state.launch.clone())))
     }

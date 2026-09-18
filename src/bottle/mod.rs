@@ -14,7 +14,7 @@
 //! persisted state until a bottle operation explicitly replaces them.
 //!
 //! With the default `fvs` feature, bottles support caller-visible snapshots.
-//! Standard history is created on demand; Virgo checkpoints materialization before execution.
+//! Standard history is created on demand; Virgo checkpoints software edits.
 //! Long-running mutations return lazy
 //! [`crate::Operation`] values and serialize with edits, stopping, snapshots,
 //! and deletion. WineBridge-backed control calls share that coordination.

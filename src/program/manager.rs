@@ -27,7 +27,7 @@ impl ProgramManager {
         })
     }
 
-    /// Build missing Virgo layers, create private storage, and save the launch definition.
+    /// Build missing Virgo layers, prepare the private registry, and save the launch definition.
     /// Requires downloaded runtime and build inputs; does not acquire the application.
     /// Callers supply every owner runtime selection, including UMU when required.
     pub fn create(
