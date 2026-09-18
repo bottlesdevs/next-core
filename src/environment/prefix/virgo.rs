@@ -22,7 +22,7 @@ impl VirgoManager {
     /// Construct without touching storage or starting FVS.
     pub(crate) fn new(cx: Context) -> Self {
         Self {
-            layers: LayerStore::new(cx.directories().data_dir().join("virgo"), cx.fvs().clone()),
+            layers: LayerStore::new(cx.directories().clone(), cx.fvs().clone()),
             cx,
         }
     }
@@ -179,6 +179,7 @@ impl VirgoManager {
                 let executed = execute(
                     InstallInputs {
                         prefix: &workspace.prefix,
+                        staging: &self.cx.directories().staging(),
                         runner: runner.as_ref(),
                         winebridge: &winebridge,
                     },

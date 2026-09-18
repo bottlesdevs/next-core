@@ -93,6 +93,11 @@ impl Directories {
         self.dependencies().join("releases")
     }
 
+    #[cfg(feature = "fvs")]
+    pub(crate) fn virgo(&self) -> PathBuf {
+        self.data_dir().join("virgo")
+    }
+
     pub(crate) fn plugins(&self) -> PathBuf {
         self.data_dir().join("plugins")
     }

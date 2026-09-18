@@ -25,6 +25,7 @@ impl LayerStore {
         async_fs::create_dir_all(root.join("upper")).await?;
         registry::compose(
             root,
+            &self.directories.staging(),
             &base.registry,
             overlays
                 .iter()

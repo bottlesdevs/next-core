@@ -20,6 +20,7 @@ mod registry;
 mod workspace;
 pub(crate) use cache::VirgoLayer;
 
+use crate::Directories;
 use fvs_rs::Fvs2dClient;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
@@ -28,23 +29,23 @@ use uuid::Uuid;
 pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
 pub(crate) struct LayerStore {
-    root: PathBuf,
+    directories: Directories,
     fvs: Arc<Fvs2dClient>,
     build_lock: Mutex<()>,
 }
 
 impl LayerStore {
     /// Construct without storage work. The caller owns connection setup.
-    pub(crate) fn new(root: PathBuf, fvs: Arc<Fvs2dClient>) -> Self {
+    pub(crate) fn new(directories: Directories, fvs: Arc<Fvs2dClient>) -> Self {
         Self {
-            root,
+            directories,
             fvs,
             build_lock: Mutex::new(()),
         }
     }
 
     fn staging_path(&self) -> PathBuf {
-        self.root.join(".staging").join(Uuid::new_v4().to_string())
+        self.directories.staging().join(Uuid::new_v4().to_string())
     }
 }
 

@@ -48,6 +48,8 @@ pub(crate) use engine::{execute, uninstall};
 pub(crate) struct InstallInputs<'a> {
     /// The prepared Wine prefix receiving recipe changes.
     pub(crate) prefix: &'a Path,
+    /// Shared disposable storage for archive extraction.
+    pub(crate) staging: &'a Path,
     /// The runner used for Windows processes. The execution workflow owns shutdown.
     pub(crate) runner: &'a dyn Runner,
     /// The WineBridge executable selected by the execution workflow.

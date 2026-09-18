@@ -1,13 +1,15 @@
 //! Compose the managed registry baseline, then replay private changes over it.
 
 use super::VirgoError;
-use crate::error::{Error, Result};
+use crate::{
+    error::{Error, Result},
+    utils::storage,
+};
 use regdiff_rs::prelude::{Diff, Hive, Registry, apply_files};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-use uuid::Uuid;
 
 pub(super) fn registry_files() -> [(&'static str, Hive); 2] {
     [
@@ -102,42 +104,45 @@ fn merge_private(previous: &Path, upper: &Path, baseline: &Path, merged: &Path) 
 /// The workspace is stopped and checkpointed. Only managed registry files are replaced;
 /// all other private files and whiteouts keep normal overlay precedence. Apply patches
 /// to the initial hives in the supplied order, then replay private registry changes.
-pub(super) async fn compose(root: &Path, initial: &Path, patches: Vec<PathBuf>) -> Result<()> {
-    let stage = root.join(".staging").join(Uuid::new_v4().to_string());
+pub(super) async fn compose(
+    root: &Path,
+    staging: &Path,
+    initial: &Path,
+    patches: Vec<PathBuf>,
+) -> Result<()> {
     let root = root.to_path_buf();
     let initial = initial.to_path_buf();
-    let scratch = stage.clone();
-    let result = blocking::unblock(move || {
-        let baseline = scratch.join("baseline");
-        fs::create_dir_all(&baseline)?;
-        for (file, _) in registry_files() {
-            fs::copy(initial.join(file), baseline.join(file))?;
-        }
-        for patch in patches {
-            for (file, hive) in registry_files() {
-                let path = baseline.join(file);
-                apply_files(&path, &patch.join(file), &path, hive)
-                    .map_err(|error| VirgoError::Registry(error.to_string()))?;
+    storage::with_stage(staging, |scratch| {
+        blocking::unblock(move || {
+            let baseline = scratch.join("baseline");
+            fs::create_dir_all(&baseline)?;
+            for (file, _) in registry_files() {
+                fs::copy(initial.join(file), baseline.join(file))?;
             }
-        }
-        let previous = root.join("registry-baseline");
-        let upper = root.join("upper");
-        let merged = scratch.join("merged");
-        merge_private(&previous, &upper, &baseline, &merged)?;
-        for (file, _) in registry_files() {
-            fs::rename(merged.join(file), upper.join(file))?;
-            let whiteout = upper.join(format!(".wh.{file}"));
-            if whiteout.exists() {
-                fs::remove_file(whiteout)?;
+            for patch in patches {
+                for (file, hive) in registry_files() {
+                    let path = baseline.join(file);
+                    apply_files(&path, &patch.join(file), &path, hive)
+                        .map_err(|error| VirgoError::Registry(error.to_string()))?;
+                }
             }
-        }
-        if previous.exists() {
-            fs::remove_dir_all(&previous)?;
-        }
-        fs::rename(baseline, previous)?;
-        Ok::<_, Error>(())
+            let previous = root.join("registry-baseline");
+            let upper = root.join("upper");
+            let merged = scratch.join("merged");
+            merge_private(&previous, &upper, &baseline, &merged)?;
+            for (file, _) in registry_files() {
+                fs::rename(merged.join(file), upper.join(file))?;
+                let whiteout = upper.join(format!(".wh.{file}"));
+                if whiteout.exists() {
+                    fs::remove_file(whiteout)?;
+                }
+            }
+            if previous.exists() {
+                fs::remove_dir_all(&previous)?;
+            }
+            fs::rename(baseline, previous)?;
+            Ok::<_, Error>(())
+        })
     })
-    .await;
-    let _ = async_fs::remove_dir_all(stage).await;
-    result
+    .await
 }
