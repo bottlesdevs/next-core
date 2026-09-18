@@ -74,7 +74,8 @@ impl ProgramManager {
             .watch()
             .map(|environments| environments.into_iter().map(Program).collect())
     }
-    /// Stop the environment and remove its managed root. Existing handles become deleted.
+    /// Stop and withdraw the managed root into trash. Existing handles become deleted;
+    /// cleanup is best effort after withdrawal.
     pub fn delete(&self, id: Uuid) -> Operation<()> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {

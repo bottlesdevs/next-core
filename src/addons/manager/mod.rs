@@ -161,7 +161,7 @@ impl Addons {
     /// Withdraws a component's release directory, then cleans it up best effort.
     /// Built Virgo artifacts and environment selections remain unchanged.
     pub async fn remove_component(&self, id: Uuid) -> Result<()> {
-        storage::with_stage(&self.0.directories.trash(), |trash| async move {
+        storage::with_temp_dir(&self.0.directories.trash(), |trash| async move {
             let _write = self.0.write.lock().await;
             let mut next = self.state().as_ref().clone();
             let release = next
@@ -187,7 +187,7 @@ impl Addons {
     /// Withdraws a dependency's release directory, then cleans it up best effort.
     /// Built Virgo artifacts and environment selections remain unchanged.
     pub async fn remove_dependency(&self, id: Uuid) -> Result<()> {
-        storage::with_stage(&self.0.directories.trash(), |trash| async move {
+        storage::with_temp_dir(&self.0.directories.trash(), |trash| async move {
             let _write = self.0.write.lock().await;
             let mut next = self.state().as_ref().clone();
             let release = next

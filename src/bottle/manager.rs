@@ -127,18 +127,18 @@ impl BottleManager {
 
     /// Stops and permanently deletes the bottle identified by `id`.
     ///
-    /// Cancellation is observed after stopping and before recursive removal
-    /// starts; removal itself is not cancellable.
+    /// Cancellation is observed after stopping and before withdrawal into trash.
+    /// Once withdrawn, deletion is published and cleanup is best effort.
     ///
     /// After successful deletion, existing [`Bottle`] handles report deletion
     /// and their state streams end. Previously obtained [`BottleState`]
-    /// snapshots remain usable. The registry is changed only after recursive
-    /// removal succeeds; partial filesystem removal is not rolled back.
+    /// snapshots remain usable. Failed withdrawal leaves the registry unchanged;
+    /// trash cleanup errors cannot invalidate deletion.
     ///
     /// # Errors
     ///
     /// The operation fails if the bottle does not exist, cannot be stopped,
-    /// cancellation is requested, or its files cannot be removed.
+    /// cancellation is requested, or its root cannot be moved into trash.
     pub fn delete(&self, id: Uuid) -> Operation<()> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {

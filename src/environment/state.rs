@@ -5,7 +5,8 @@ use super::VirgoManager;
 use super::prefix::standard;
 use crate::{
     Context, EnvironmentError, EnvironmentState, PrefixBackend, Progress, Stage,
-    error::{Error, Result},
+    error::{Error, Result, ResultExt},
+    utils::storage,
 };
 use futures_core::Stream;
 use next_config::Config;
@@ -122,7 +123,11 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         }
         .await;
         if result.is_err() {
-            let _ = async_fs::remove_dir_all(&environment.root).await;
+            storage::with_temp_dir(&environment.context.directories().trash(), |trash| {
+                async_fs::rename(&environment.root, trash.join("environment"))
+            })
+            .await
+            .log_warn();
         }
         result?;
         Ok(environment)
@@ -170,6 +175,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         Ok(guard)
     }
 
+    /// Stop and withdraw the owner before publishing deletion; trash cleanup is best effort.
     pub(crate) async fn delete(
         &self,
         progress: &watch::Sender<Option<Progress>>,
@@ -182,8 +188,14 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             return Err(Error::Cancelled);
         }
         progress.send_replace(Some(Progress::new(Stage::Removing)));
-        async_fs::remove_dir_all(&self.root).await?;
-        self.published.send_replace(None);
-        Ok(())
+        storage::with_temp_dir(&self.context.directories().trash(), |trash| async move {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            async_fs::rename(&self.root, trash.join("environment")).await?;
+            self.published.send_replace(None);
+            Ok(())
+        })
+        .await
     }
 }

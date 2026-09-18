@@ -9,7 +9,10 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{LayerStore, VirgoError, registry::registry_files};
-use crate::error::{Error, Result};
+use crate::{
+    error::{Error, Result},
+    utils::storage,
+};
 
 #[derive(Deserialize, Serialize, next_config::Config)]
 #[config(version = 1)]
@@ -102,22 +105,23 @@ impl LayerStore {
         Ok(layers)
     }
 
-    /// Withdraw an explicitly addressed artifact, then delete its storage.
+    /// Withdraw an explicitly addressed artifact into trash, then clean up best effort.
     /// The caller must ensure it is unmounted and no longer needed by any workspace.
-    /// Cancellation is honored before withdrawal; cleanup runs to completion afterward.
+    /// Cancellation is honored before withdrawal; cleanup cannot invalidate removal.
     #[allow(dead_code)] // Internal storage API; callers own reference tracking.
     pub(crate) async fn remove(&self, key: &Path, cancellation: &CancellationToken) -> Result<()> {
         let _lock = cancellation
             .run_until_cancelled(self.build_lock.lock())
             .await
             .ok_or(Error::Cancelled)?;
-        let stage = self.staging_path();
-        async_fs::create_dir_all(stage.parent().expect("staging has a parent")).await?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        async_fs::rename(self.directories.virgo().join(key), &stage).await?;
-        Ok(async_fs::remove_dir_all(stage).await?)
+        storage::with_temp_dir(&self.directories.trash(), |trash| async move {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            async_fs::rename(self.directories.virgo().join(key), trash.join("artifact")).await?;
+            Ok(())
+        })
+        .await
     }
 
     /// The caller has committed the filesystem and written both registry files in staging.

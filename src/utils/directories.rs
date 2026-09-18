@@ -106,12 +106,10 @@ impl Directories {
         self.config_dir().join("profiles.toml")
     }
 
-    fn paths(&self) -> [PathBuf; 11] {
+    fn paths(&self) -> [PathBuf; 9] {
         [
             self.config_dir().to_path_buf(),
             self.data_dir().to_path_buf(),
-            self.staging(),
-            self.trash(),
             self.runtime_dir(),
             self.bottles(),
             self.components(),
