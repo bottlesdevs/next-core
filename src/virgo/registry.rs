@@ -112,7 +112,7 @@ pub(super) async fn compose(
 ) -> Result<()> {
     let root = root.to_path_buf();
     let initial = initial.to_path_buf();
-    storage::with_stage(staging, |scratch| {
+    storage::with_temp_dir(staging, |scratch| {
         blocking::unblock(move || {
             let baseline = scratch.join("baseline");
             fs::create_dir_all(&baseline)?;

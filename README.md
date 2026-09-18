@@ -73,7 +73,7 @@ explicitly detach the task; dropping an operation abandons it.
 ## Internal Wine layer storage
 
 `Context` owns the ready `Arc<Fvs2dClient>`. The shared `VirgoManager` owns a
-`LayerStore` with its artifact root, a clone of that client, and one construction
+`LayerStore` with `Directories`, a clone of that client, and one construction
 and publication lock. The store has no Context, addon, runner, or owner knowledge.
 Virgo policy chooses Soda and build-time WineBridge, supplies relative addresses
 and layer order, and executes recipes through the existing runners.
@@ -103,8 +103,8 @@ Snapshots include the prepared registry baseline, private data and saved
 selections; restoration does not rebuild shared layers.
 
 Internal listing reads immediate artifacts in a supplied collection. Removal
-withdraws an explicit address into staging under the publication lock before
-recursive cleanup. Its caller must ensure the artifact is unmounted and no
+withdraws an explicit address into trash under the publication lock before
+best-effort cleanup. Its caller must ensure the artifact is unmounted and no
 longer needed. There is no owner tracking, garbage collection, or public layer API.
 
 ## Example

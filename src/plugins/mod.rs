@@ -14,7 +14,7 @@ use bottles_plugin_host::Plugin as WasmPlugin;
 use futures_lite::StreamExt;
 use tokio::sync::Mutex;
 
-use crate::Directories;
+use crate::{Directories, utils::storage};
 
 pub use bottles_plugin_host::PluginKind;
 pub use manifest::{PluginId, PluginManifest};
@@ -99,15 +99,21 @@ impl Plugins {
         Ok(())
     }
 
+    /// Withdraw the package before unloading it; trash cleanup cannot fail the removal.
     pub async fn uninstall(&self, id: &PluginId) -> Result<()> {
         let _lifecycle = self.lifecycle.lock().await;
-        self.loaded
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id)
-            .ok_or_else(|| PluginError::NotFound(id.clone()))?;
-        async_fs::remove_dir_all(self.package_directory(id)).await?;
-        Ok(())
+        if self.get(id).is_none() {
+            return Err(PluginError::NotFound(id.clone()));
+        }
+        storage::with_temp_dir(&self.directories.trash(), |trash| async move {
+            async_fs::rename(self.package_directory(id), trash.join("plugin")).await?;
+            self.loaded
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(id);
+            Ok(())
+        })
+        .await
     }
 
     pub(crate) fn get(&self, id: &PluginId) -> Option<Plugin> {

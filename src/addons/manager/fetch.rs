@@ -72,7 +72,7 @@ impl Addons {
                         .to_vec(),
                 ),
             ));
-            storage::with_stage(&addons.0.directories.staging(), |stage| async move {
+            storage::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
                 let downloads = stage.join("downloads");
                 async_fs::create_dir(&downloads).await?;
                 let file = downloads.join(artifact.file_name());
@@ -135,7 +135,7 @@ impl Addons {
                     })
                     .collect(),
             ));
-            storage::with_stage(&addons.0.directories.staging(), |stage| async move {
+            storage::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
                 let prepared = stage.join("release");
                 let payload = prepared.join("payload");
                 async_fs::create_dir_all(&payload).await?;

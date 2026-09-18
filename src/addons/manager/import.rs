@@ -28,7 +28,7 @@ impl Addons {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            storage::with_stage(&addons.0.directories.staging(), |stage| async move {
+            storage::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
                 let prepared = prepare_component_archive(&source, &stage, &cancellation).await?;
                 let payload = prepared.join("payload");
                 let requirements = inspect_release(slot, &payload).await?;

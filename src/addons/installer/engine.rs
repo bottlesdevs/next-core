@@ -311,7 +311,7 @@ async fn extract_into(
     backup_files: bool,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    storage::with_stage(staging, |stage| async move {
+    storage::with_temp_dir(staging, |stage| async move {
         check_cancellation(cancellation)?;
         archive::extract(archive, &stage).await?;
         check_cancellation(cancellation)?;
