@@ -41,7 +41,6 @@ impl<T: EnvironmentOwnerState> Environment<T> {
                 {
                     return Err(EnvironmentError::MustBeStopped.into());
                 }
-                environment.stop_locked().await?;
                 match previous.backend() {
                     PrefixBackend::Standard => {
                         standard::apply(

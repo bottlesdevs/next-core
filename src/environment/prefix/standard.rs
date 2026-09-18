@@ -29,6 +29,8 @@ pub(in crate::environment) async fn create(
 /// Apply frozen Standard selections directly to the stopped owner's prefix.
 /// Validate every new payload before removing anything. Removal uses the previous
 /// selection's recipe and prefix backups, without consulting shared addon storage.
+/// The caller requires a stopped owner. All work shares one maintenance session;
+/// shutdown runs once after the batch, including failure or cancellation.
 pub(in crate::environment) async fn apply(
     previous: &EnvironmentState,
     candidate: &EnvironmentState,
@@ -66,50 +68,51 @@ pub(in crate::environment) async fn apply(
         .await?;
     let prefix = root.join("prefix");
     let winebridge = candidate.winebridge().path(cx.directories());
-    for release in removals {
-        let result = uninstall(
-            InstallInputs {
-                prefix: &prefix,
-                runner: runner.as_ref(),
-                winebridge: &winebridge,
-            },
-            release.recipe(),
-            release.id(),
-            cancellation,
-            |_| {
-                progress.send_replace(Some(Progress::new(Stage::Removing)));
-            },
-        )
-        .await;
-        runtime::stop(runner.as_ref(), &prefix).await?;
-        result?;
+    let applied = async {
+        for release in removals {
+            uninstall(
+                InstallInputs {
+                    prefix: &prefix,
+                    runner: runner.as_ref(),
+                    winebridge: &winebridge,
+                },
+                release.recipe(),
+                release.id(),
+                cancellation,
+                |_| {
+                    progress.send_replace(Some(Progress::new(Stage::Removing)));
+                },
+            )
+            .await?;
+        }
+        let installations = components
+            .iter()
+            .map(|r| (r.path(cx.directories()), r.resources()))
+            .chain(
+                dependencies
+                    .iter()
+                    .map(|r| (r.path(cx.directories()), r.resources())),
+            );
+        for (payload, resources) in installations {
+            execute(
+                InstallInputs {
+                    prefix: &prefix,
+                    runner: runner.as_ref(),
+                    winebridge: &winebridge,
+                },
+                &payload,
+                resources,
+                true,
+                cancellation,
+                |_| {
+                    progress.send_replace(Some(Progress::new(Stage::Configuring)));
+                },
+            )
+            .await?;
+        }
+        Ok(())
     }
-    let installations = components
-        .iter()
-        .map(|r| (r.path(cx.directories()), r.resources()))
-        .chain(
-            dependencies
-                .iter()
-                .map(|r| (r.path(cx.directories()), r.resources())),
-        );
-    for (payload, resources) in installations {
-        let result = execute(
-            InstallInputs {
-                prefix: &prefix,
-                runner: runner.as_ref(),
-                winebridge: &winebridge,
-            },
-            &payload,
-            resources,
-            true,
-            cancellation,
-            |_| {
-                progress.send_replace(Some(Progress::new(Stage::Configuring)));
-            },
-        )
-        .await;
-        runtime::stop(runner.as_ref(), &prefix).await?;
-        result?;
-    }
-    Ok(())
+    .await;
+    runtime::stop(runner.as_ref(), &prefix).await?;
+    applied
 }
