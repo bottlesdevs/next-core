@@ -22,6 +22,7 @@ use super::{
 use crate::{
     Directories, Transfer,
     error::{Error, Result},
+    utils::storage,
 };
 
 mod catalog;
@@ -157,58 +158,56 @@ impl Addons {
         })
     }
 
-    /// Removes a component's entire release directory. Built Virgo artifacts remain.
-    /// Does not stop environments or change their selections.
+    /// Withdraws a component's release directory, then cleans it up best effort.
+    /// Built Virgo artifacts and environment selections remain unchanged.
     pub async fn remove_component(&self, id: Uuid) -> Result<()> {
-        let stage = {
+        storage::with_stage(&self.0.directories.trash(), |trash| async move {
             let _write = self.0.write.lock().await;
             let mut next = self.state().as_ref().clone();
             let release = next
                 .components
                 .remove(&id)
                 .ok_or(AddonError::NotFound(id))?;
-            let stage = self
-                .withdraw_release(&release.directory(&self.0.directories))
-                .await?;
+            match async_fs::rename(
+                release.directory(&self.0.directories),
+                trash.join("release"),
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
             self.publish(next);
-            stage
-        };
-        // Cleanup failure leaves only unpublished staging data.
-        Ok(async_fs::remove_dir_all(stage).await?)
+            Ok(())
+        })
+        .await
     }
 
-    /// Removes a dependency's entire release directory. Built Virgo artifacts remain.
-    /// Does not stop environments or change their selections.
+    /// Withdraws a dependency's release directory, then cleans it up best effort.
+    /// Built Virgo artifacts and environment selections remain unchanged.
     pub async fn remove_dependency(&self, id: Uuid) -> Result<()> {
-        let stage = {
+        storage::with_stage(&self.0.directories.trash(), |trash| async move {
             let _write = self.0.write.lock().await;
             let mut next = self.state().as_ref().clone();
             let release = next
                 .dependencies
                 .remove(&id)
                 .ok_or(AddonError::NotFound(id))?;
-            let stage = self
-                .withdraw_release(&release.directory(&self.0.directories))
-                .await?;
-            self.publish(next);
-            stage
-        };
-        // Cleanup failure leaves only unpublished staging data.
-        Ok(async_fs::remove_dir_all(stage).await?)
-    }
-
-    // Caller holds the manager write lock until the new snapshot is published.
-    async fn withdraw_release(&self, path: &Path) -> Result<PathBuf> {
-        let stage = self.create_stage().await?;
-        match async_fs::rename(path, stage.join("release")).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                let _ = async_fs::remove_dir_all(&stage).await;
-                return Err(e.into());
+            match async_fs::rename(
+                release.directory(&self.0.directories),
+                trash.join("release"),
+            )
+            .await
+            {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
-        }
-        Ok(stage)
+            self.publish(next);
+            Ok(())
+        })
+        .await
     }
 
     async fn commit_component(
@@ -293,15 +292,6 @@ impl Addons {
 
     fn state(&self) -> Arc<AddonsState> {
         self.0.published.borrow().clone()
-    }
-
-    /// Creates a unique staging directory on the same data tree as final storage.
-    async fn create_stage(&self) -> Result<PathBuf> {
-        let staging = self.0.directories.data_dir().join(".staging");
-        async_fs::create_dir_all(&staging).await?;
-        let stage = staging.join(Uuid::new_v4().to_string());
-        async_fs::create_dir_all(&stage).await?;
-        Ok(stage)
     }
 
     /// Publishes the already committed local snapshot without filesystem discovery.
