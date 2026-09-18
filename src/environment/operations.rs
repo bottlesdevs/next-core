@@ -4,8 +4,7 @@
 use super::history;
 use super::{Environment, EnvironmentOwnerState, prefix::standard, runtime};
 use crate::{
-    Addon, Component, Dependency, Edit, EnvironmentError, EnvironmentState, Operation,
-    PrefixBackend, ProgramSpec, Progress, Slot, Stage,
+    Edit, EnvironmentError, Operation, PrefixBackend, ProgramSpec, Progress, Stage,
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
     winebridge::WineBridgeClient,
@@ -21,7 +20,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         callback: impl FnOnce(&mut Edit<'_, T>) -> Result<R> + Send + 'static,
     ) -> Operation<R> {
         let environment = self.clone();
-        Operation::new(move |_, cancellation| async move {
+        Operation::new(move |progress, cancellation| async move {
             let _control = environment.lock_control(&cancellation).await?;
             let previous = environment.state()?;
             let mut draft = previous.as_ref().clone();
@@ -33,84 +32,41 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             if draft == *previous {
                 return Ok(result);
             }
-            environment.save(&draft).await?;
-            environment.publish(draft);
-            Ok(result)
-        })
-    }
-
-    pub(crate) fn set_component(self: &Arc<Self>, component: Addon<Component>) -> Operation<()> {
-        self.update_software(move |state| {
-            state.set_component(component);
-            Ok(())
-        })
-    }
-
-    pub(crate) fn remove_component(self: &Arc<Self>, slot: Slot) -> Operation<()> {
-        self.update_software(move |state| state.remove_component(slot))
-    }
-
-    pub(crate) fn install_dependency(
-        self: &Arc<Self>,
-        dependency: Addon<Dependency>,
-    ) -> Operation<()> {
-        self.update_software(move |state| {
-            state.add_dependency(dependency);
-            Ok(())
-        })
-    }
-
-    fn update_software(
-        self: &Arc<Self>,
-        update: impl FnOnce(&mut EnvironmentState) -> Result<()> + Send + 'static,
-    ) -> Operation<()> {
-        let environment = self.clone();
-        Operation::new(move |progress, cancellation| async move {
-            let _control = environment.lock_control(&cancellation).await?;
-            let previous = environment.state()?;
-            let mut draft = previous.as_ref().clone();
-            update(draft.environment_mut())?;
             let before = previous.environment();
             let after = draft.environment();
-            let backend = previous.backend();
-            after.validate()?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            if before == after {
-                return Ok(());
-            }
-            if WineBridgeClient::try_connect(&environment.root.join("prefix"))
-                .await?
-                .is_some()
-            {
-                return Err(EnvironmentError::MustBeStopped.into());
-            }
-            environment.stop_locked().await?;
-            match backend {
-                PrefixBackend::Standard => {
-                    standard::apply(
-                        before,
-                        after,
-                        &environment.root,
-                        &environment.context,
-                        &progress,
-                        &cancellation,
-                    )
-                    .await?;
+            if before.components != after.components || before.dependencies != after.dependencies {
+                if WineBridgeClient::try_connect(&environment.root.join("prefix"))
+                    .await?
+                    .is_some()
+                {
+                    return Err(EnvironmentError::MustBeStopped.into());
                 }
-                #[cfg(feature = "fvs")]
-                PrefixBackend::Virgo => {
-                    environment
-                        .virgo
-                        .prepare_artifacts(after, &progress, &cancellation)
+                environment.stop_locked().await?;
+                match previous.backend() {
+                    PrefixBackend::Standard => {
+                        standard::apply(
+                            before,
+                            after,
+                            &environment.root,
+                            &environment.context,
+                            &progress,
+                            &cancellation,
+                        )
                         .await?;
+                    }
+                    #[cfg(feature = "fvs")]
+                    PrefixBackend::Virgo => {
+                        environment
+                            .virgo
+                            .prepare_artifacts(after, &progress, &cancellation)
+                            .await?;
+                    }
                 }
             }
             // Successful application must be saved and published even if cancellation arrives.
             environment.save(&draft).await?;
             environment.publish(draft);
-            Ok(())
+            Ok(result)
         })
     }
 

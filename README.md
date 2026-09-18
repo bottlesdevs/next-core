@@ -39,8 +39,12 @@ The crate is centered around six types:
   cancellation.
 
 Execution settings live in `BottleState::environment()` as an `EnvironmentState`.
-Use `Bottle::edit` for metadata, environment variables and wrappers. These settings
-apply on the next startup. Stop the environment before explicit software changes.
+Use `Bottle::edit` or `Program::edit` to change metadata, startup settings, and
+software selections in one draft. `Edit::set_component`, `remove_component`, and
+`add_dependency` change only that draft; the final selection is validated and
+applied before saving and publishing once. Dependencies remain append-only.
+Software changes require a stopped owner. Metadata, environment variables, and
+wrappers can change while running; startup settings apply on the next launch.
 `Bottle::launch(group_id, ProgramSpec)` runs an unregistered program;
 `Bottle::launch_program(uuid)` runs a saved registration. Dropping a bottle handle
 leaves Wine running; call `stop()` to shut it down.
