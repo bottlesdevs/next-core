@@ -10,10 +10,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{FVS_BLOCK_SIZE, LayerStore, VirgoError, VirgoLayer, registry};
-use crate::{
-    error::{Error, Result},
-    utils::storage,
-};
+use crate::error::{Error, Result, ResultExt};
 
 /// Prepared storage only. Dropping retains it; finalization requires stopped processes.
 pub(crate) struct BuildWorkspace {
@@ -80,7 +77,7 @@ impl LayerStore {
         }
         .await;
         if let Err(error) = setup {
-            storage::cleanup(&stage).await;
+            async_fs::remove_dir_all(stage).await.log_warn();
             return Err(error);
         }
         // A failed mount request retains staging because its outcome may be uncertain.
@@ -157,7 +154,7 @@ impl LayerStore {
             .await
         }
         .await;
-        storage::cleanup(&workspace.stage).await;
+        async_fs::remove_dir_all(workspace.stage).await.log_warn();
         result
     }
 }

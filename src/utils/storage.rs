@@ -24,19 +24,6 @@ where
     let directory = parent.join(Uuid::new_v4().to_string());
     async_fs::create_dir_all(&directory).await?;
     let result = work(directory.clone()).await;
-    cleanup(&directory).await;
+    async_fs::remove_dir_all(directory).await.log_warn();
     result
-}
-
-/// Remove a disposable file or directory without following symlinks.
-pub(crate) async fn cleanup(path: &Path) {
-    async {
-        if async_fs::symlink_metadata(path).await?.is_dir() {
-            async_fs::remove_dir_all(path).await
-        } else {
-            async_fs::remove_file(path).await
-        }
-    }
-    .await
-    .log_warn();
 }
