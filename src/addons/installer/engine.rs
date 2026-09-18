@@ -12,7 +12,7 @@ use crate::{
     addons::InstallerError,
     error::{Error, Result},
     runner::{Command, Runner, Spawnable},
-    utils::{archive, exists},
+    utils::{archive, exists, storage},
     winebridge::WineBridgeClient,
 };
 
@@ -86,6 +86,7 @@ async fn execute_step(
 ) -> Result<()> {
     let InstallInputs {
         prefix,
+        staging,
         runner,
         winebridge,
     } = inputs;
@@ -103,7 +104,15 @@ async fn execute_step(
             install_file(&source, prefix, destination, backup_files).await?;
         }
         InstallStep::Extract { destination } => {
-            extract_into(resource, prefix, destination, backup_files, cancellation).await?;
+            extract_into(
+                resource,
+                prefix,
+                staging,
+                destination,
+                backup_files,
+                cancellation,
+            )
+            .await?;
         }
         InstallStep::Execute {
             arguments,
@@ -169,6 +178,7 @@ async fn uninstall_step(
         prefix,
         runner,
         winebridge,
+        ..
     } = inputs;
     match step {
         InstallStep::SetEnvironment { .. } => {}
@@ -293,24 +303,15 @@ async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
 /// Files are installed in sorted path order through [`install_file`], following the caller's
 /// backup policy. The staging directory is removed on a best-effort basis regardless
 /// of the operation's result; a cleanup error does not replace the extraction result.
-///
-/// # Panics
-///
-/// Panics if `prefix` has no parent directory.
 async fn extract_into(
     archive: &Path,
     prefix: &Path,
+    staging: &Path,
     destination: &Path,
     backup_files: bool,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let stage = prefix
-        .parent()
-        .expect("prefix has a parent")
-        .join(".staging")
-        .join(Uuid::new_v4().to_string());
-    async_fs::create_dir_all(&stage).await?;
-    let work = async {
+    storage::with_stage(staging, |stage| async move {
         check_cancellation(cancellation)?;
         archive::extract(archive, &stage).await?;
         check_cancellation(cancellation)?;
@@ -326,10 +327,8 @@ async fn extract_into(
         }
         check_cancellation(cancellation)?;
         Ok::<_, Error>(())
-    };
-    let result = work.await;
-    let _ = async_fs::remove_dir_all(stage).await;
-    result
+    })
+    .await
 }
 
 fn backup_path(path: &Path) -> PathBuf {
@@ -372,6 +371,7 @@ mod tests {
                 extract_into(
                     &root.join("missing.tar"),
                     &root.join("prefix"),
+                    &root.join(".staging"),
                     Path::new("drive_c"),
                     true,
                     &cancellation,

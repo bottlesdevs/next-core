@@ -68,21 +68,18 @@ pub(in crate::environment) async fn apply(
         .await?;
     let prefix = root.join("prefix");
     let winebridge = candidate.winebridge().path(cx.directories());
+    let staging = cx.directories().staging();
+    let inputs = InstallInputs {
+        prefix: &prefix,
+        staging: &staging,
+        runner: runner.as_ref(),
+        winebridge: &winebridge,
+    };
     let applied = async {
         for release in removals {
-            uninstall(
-                InstallInputs {
-                    prefix: &prefix,
-                    runner: runner.as_ref(),
-                    winebridge: &winebridge,
-                },
-                release.recipe(),
-                release.id(),
-                cancellation,
-                |_| {
-                    progress.send_replace(Some(Progress::new(Stage::Removing)));
-                },
-            )
+            uninstall(inputs, release.recipe(), release.id(), cancellation, |_| {
+                progress.send_replace(Some(Progress::new(Stage::Removing)));
+            })
             .await?;
         }
         let installations = components
@@ -94,20 +91,9 @@ pub(in crate::environment) async fn apply(
                     .map(|r| (r.path(cx.directories()), r.resources())),
             );
         for (payload, resources) in installations {
-            execute(
-                InstallInputs {
-                    prefix: &prefix,
-                    runner: runner.as_ref(),
-                    winebridge: &winebridge,
-                },
-                &payload,
-                resources,
-                true,
-                cancellation,
-                |_| {
-                    progress.send_replace(Some(Progress::new(Stage::Configuring)));
-                },
-            )
+            execute(inputs, &payload, resources, true, cancellation, |_| {
+                progress.send_replace(Some(Progress::new(Stage::Configuring)));
+            })
             .await?;
         }
         Ok(())
