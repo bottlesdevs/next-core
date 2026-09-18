@@ -1,13 +1,13 @@
-//! Controlled bottle metadata and settings edits.
+//! Controlled bottle metadata, settings, and software edits.
 use super::{Bottle, BottleState};
 use crate::{Edit, Operation, ProgramSpec, error::Result};
 use uuid::Uuid;
 
 impl Bottle {
-    /// Edit a private draft, saving changes before publishing them. Unchanged
-    /// drafts return the callback's result without saving or publishing.
-    /// Settings apply on the next startup;
-    /// software changes use explicit component and dependency operations.
+    /// Edit a private draft, validating the final state and applying software changes
+    /// before saving and publishing once. Software changes require a stopped bottle;
+    /// metadata and startup settings can change while running. Unchanged drafts
+    /// return the callback's result without saving or publishing.
     pub fn edit<R: Send + 'static>(
         &self,
         callback: impl FnOnce(&mut Edit<'_, BottleState>) -> Result<R> + Send + 'static,

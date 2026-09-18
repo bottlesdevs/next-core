@@ -9,8 +9,8 @@
 //! Obtain the shared [`Addons`] manager from [`crate::Bottles::addons`]. Catalog
 //! queries use the last successfully loaded catalog, while release queries expose
 //! downloaded or imported releases. Fetching an entry only places it in shared
-//! storage; select components with [`crate::Bottle::set_component`] and install
-//! dependencies with [`crate::Bottle::install_dependency`].
+//! storage; select components and append dependencies through the owner's
+//! [`crate::Edit`] callback.
 
 #![warn(missing_docs)]
 

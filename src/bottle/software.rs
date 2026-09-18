@@ -1,7 +1,7 @@
 //! Bottle registrations and forwarding to shared environment operations.
 use super::{Bottle, error::BottleError};
 use crate::{
-    Addon, Component, Dependency, Operation, ProgramSpec, Slot,
+    Operation, ProgramSpec,
     error::Result,
     proto::{DllOverride, DllOverrideMode, Process},
 };
@@ -45,16 +45,5 @@ impl Bottle {
     }
     pub async fn stop(&self) -> Result<()> {
         self.0.stop().await
-    }
-    /// Select a frozen component without changing any other slot.
-    pub fn set_component(&self, component: Addon<Component>) -> Operation<()> {
-        self.0.set_component(component)
-    }
-    pub fn remove_component(&self, slot: Slot) -> Operation<()> {
-        self.0.remove_component(slot)
-    }
-    /// Append a frozen dependency unless its identity is already installed.
-    pub fn install_dependency(&self, dependency: Addon<Dependency>) -> Operation<()> {
-        self.0.install_dependency(dependency)
     }
 }

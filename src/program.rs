@@ -3,8 +3,7 @@ mod manager;
 pub use manager::ProgramManager;
 
 use crate::{
-    Addon, Component, Dependency, Edit, EnvironmentState, Operation, PrefixBackend, ProgramSpec,
-    Slot, Snapshot, SnapshotSummary,
+    Edit, EnvironmentState, Operation, PrefixBackend, ProgramSpec, Snapshot, SnapshotSummary,
     environment::{Environment, EnvironmentOwnerState},
     error::Result,
     proto::{DllOverride, DllOverrideMode, Process},
@@ -72,7 +71,9 @@ impl Program {
         self.0.watch()
     }
 
-    /// Edit metadata and startup settings, saving before publication.
+    /// Edit metadata, startup settings, and software selections in one draft.
+    /// Validate the final state, apply software changes while stopped, then save
+    /// and publish once. Metadata and startup settings can change while running.
     pub fn edit<R: Send + 'static>(
         &self,
         callback: impl FnOnce(&mut Edit<'_, ProgramState>) -> Result<R> + Send + 'static,
@@ -91,17 +92,6 @@ impl Program {
     }
     pub async fn processes(&self) -> Result<Vec<Process>> {
         self.0.processes().await
-    }
-    /// Select a frozen component without changing any other slot.
-    pub fn set_component(&self, component: Addon<Component>) -> Operation<()> {
-        self.0.set_component(component)
-    }
-    pub fn remove_component(&self, slot: Slot) -> Operation<()> {
-        self.0.remove_component(slot)
-    }
-    /// Append a frozen dependency unless its identity is already installed.
-    pub fn install_dependency(&self, dependency: Addon<Dependency>) -> Operation<()> {
-        self.0.install_dependency(dependency)
     }
     pub fn dll_overrides(&self) -> Operation<Vec<DllOverride>> {
         self.0.dll_overrides()
