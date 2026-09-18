@@ -10,7 +10,7 @@ use super::{Addons, download, prepare_component_archive};
 use crate::{
     Operation, Progress, Stage,
     error::{Error, Result},
-    utils::checksum,
+    utils::{checksum, storage},
 };
 use download_manager::manager::DownloadManager;
 use std::{path::Path, sync::Arc};
@@ -72,8 +72,7 @@ impl Addons {
                         .to_vec(),
                 ),
             ));
-            let stage = addons.create_stage().await?;
-            let result = async {
+            storage::with_stage(&addons.0.directories.staging(), |stage| async move {
                 let downloads = stage.join("downloads");
                 async_fs::create_dir(&downloads).await?;
                 let file = downloads.join(artifact.file_name());
@@ -89,10 +88,8 @@ impl Addons {
                 addons
                     .commit_component(record, &prepared, &cancellation)
                     .await
-            }
-            .await;
-            let _ = async_fs::remove_dir_all(stage).await;
-            result
+            })
+            .await
         })
     }
 
@@ -138,8 +135,7 @@ impl Addons {
                     })
                     .collect(),
             ));
-            let stage = addons.create_stage().await?;
-            let result = async {
+            storage::with_stage(&addons.0.directories.staging(), |stage| async move {
                 let prepared = stage.join("release");
                 let payload = prepared.join("payload");
                 async_fs::create_dir_all(&payload).await?;
@@ -156,10 +152,8 @@ impl Addons {
                 addons
                     .commit_dependency(record, &prepared, &cancellation)
                     .await
-            }
-            .await;
-            let _ = async_fs::remove_dir_all(stage).await;
-            result
+            })
+            .await
         })
     }
 }

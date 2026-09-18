@@ -5,11 +5,11 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
 use crate::{
     Operation, Progress, Stage,
     error::{Error, Result},
+    utils::storage,
 };
 
 use super::super::{
@@ -93,10 +93,8 @@ impl Addons {
         Catalog<K>: DeserializeOwned,
     {
         let url = K::url(&self.0.catalog_urls).ok_or(CatalogError::UrlNotConfigured(K::LABEL))?;
-        let staging = self.0.directories.data_dir().join(".staging");
-        async_fs::create_dir_all(&staging).await?;
-        let downloaded = staging.join(format!("catalog-{}.json", Uuid::new_v4()));
-        let result = async {
+        storage::with_stage(&self.0.directories.staging(), |stage| async move {
+            let downloaded = stage.join("catalog.json");
             download(
                 &self.0.downloader,
                 url,
@@ -116,10 +114,8 @@ impl Addons {
             Ok(Arc::new(serde_json::from_slice::<Catalog<K>>(
                 &async_fs::read(&downloaded).await?,
             )?))
-        }
-        .await;
-        let _ = async_fs::remove_file(downloaded).await;
-        result
+        })
+        .await
     }
 }
 
@@ -127,6 +123,7 @@ impl Addons {
 mod tests {
     use super::*;
     use crate::{Context, Directories};
+    use uuid::Uuid;
 
     #[test]
     fn cancelled_refresh_does_not_wait_for_publication_lock() {

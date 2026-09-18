@@ -45,6 +45,14 @@ impl Directories {
         self.0.cache_dir()
     }
 
+    pub(crate) fn staging(&self) -> PathBuf {
+        self.data_dir().join(".staging")
+    }
+
+    pub(crate) fn trash(&self) -> PathBuf {
+        self.data_dir().join(".trash")
+    }
+
     pub(crate) fn runtime_dir(&self) -> PathBuf {
         self.0
             .runtime_dir()
@@ -93,10 +101,12 @@ impl Directories {
         self.config_dir().join("profiles.toml")
     }
 
-    fn paths(&self) -> [PathBuf; 9] {
+    fn paths(&self) -> [PathBuf; 11] {
         [
             self.config_dir().to_path_buf(),
             self.data_dir().to_path_buf(),
+            self.staging(),
+            self.trash(),
             self.runtime_dir(),
             self.bottles(),
             self.components(),

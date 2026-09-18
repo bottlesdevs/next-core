@@ -3,6 +3,7 @@ pub(crate) mod checksum;
 pub(crate) mod context;
 pub(crate) mod directories;
 pub(crate) mod env_vars;
+pub(crate) mod storage;
 
 #[cfg(feature = "fvs")]
 use std::path::PathBuf;
