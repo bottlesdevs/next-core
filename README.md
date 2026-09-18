@@ -55,7 +55,9 @@ leaves Wine running; call `stop()` to shut it down.
 Choose a prefix backend when creating a bottle. Standard installs directly into
 a conventional Wine prefix. Virgo is experimental: it combines shared immutable
 layers with each bottle's private writable data. Missing layers are prepared
-before publishing owner selections; launch composes existing artifacts.
+before publishing owner selections. Creation and software edits compose the
+owner's registry once for the final selection. Launch mounts that prepared
+storage without registry recomposition or an automatic history checkpoint.
 The initial base uses the greatest valid local Soda version and remains pinned.
 Cached artifacts can be reused without their shared source payloads.
 
@@ -80,15 +82,25 @@ The store owns cache lookup, staging, filesystem and registry capture, immutable
 publication, composition, and workspace mounts. Bases retain their initial hives;
 overlays store registry patches separately from filesystem effects. Composition
 uses the supplied overlay order, then replays private registry changes.
-Artifact paths and manifest version 1 are unchanged.
+Artifact paths and manifest version 1 are unchanged. Virgo edits release stopped
+owner storage before checkpointing, then compose registry changes and save the
+draft together. Composition or save failures restore the checkpoint before
+returning; nothing is published on failure. Shared builds retain their separate
+scratch prefixes and shutdowns. Owner edits need no Wine startup or mount.
+
+Virgo owner directories and snapshots created under the earlier launch-time
+composition lifecycle must be recreated. Schemas remain at version 1; there is
+no migration, launch fallback, or automatic deletion. Existing shared layers
+remain reusable.
 
 `get_or_build` holds coordination through the complete cache-miss workflow.
 Policy resolves inputs, prepares storage, executes work, and stops Wine before
 passing the execution result to finalization. Finalization publishes successful
 work or cleans up failed work. Failed shutdown, mount creation, or unmount retains
 staging; dropping a workspace never performs asynchronous cleanup. Environment
-owns checkpoints, discovery cleanup and configuration publication, releasing
-mounts before restoring a failed composition.
+owns edit checkpoints, discovery cleanup and configuration publication.
+Snapshots include the prepared registry baseline, private data and saved
+selections; restoration does not rebuild shared layers.
 
 Internal listing reads immediate artifacts in a supplied collection. Removal
 withdraws an explicit address into staging under the publication lock before

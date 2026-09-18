@@ -10,7 +10,7 @@
 //! shutdown retains staging and any mount; dropping a workspace performs no cleanup.
 //!
 //! Composition preserves private registry changes but does not own checkpoints or
-//! recovery. Callers release mounts before restoring a failed composition. Explicit
+//! recovery. Callers prepare stopped, unmounted workspaces before publication. Explicit
 //! deletion requires callers to know that an artifact is unmounted and no longer used;
 //! the store does not track owners or collect garbage.
 

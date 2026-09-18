@@ -75,7 +75,7 @@ impl BottleManager {
     /// requirements fail without selecting or downloading other owner components.
     /// Standard creation initializes Wine without FVS. Virgo
     /// creation builds missing shared layers before creating private storage and
-    /// saving selections. Startup composes the registry and mounts existing layers.
+    /// composing its registry and saving selections. Startup mounts prepared storage.
     /// Failures and cancellation observed while the operation remains polled remove the
     /// partially-created bottle directory on a best-effort basis. Dropping a
     /// started operation or a cleanup failure can leave a directory that a

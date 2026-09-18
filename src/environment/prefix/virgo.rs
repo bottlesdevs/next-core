@@ -28,31 +28,35 @@ impl VirgoManager {
     }
 
     /// Build from complete frozen selections before the owner publishes configuration.
-    /// Cached effects remain usable after shared source payloads are removed; startup
-    /// only loads and composes these already published artifacts.
+    /// Return the prepared layers for owner materialization. Cached effects remain
+    /// usable after shared source payloads are removed; launch only loads them.
     pub(in crate::environment) async fn prepare_artifacts(
         &self,
         config: &EnvironmentState,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
         let base = self.prepare_base(cancellation).await?;
-        self.prepare_adapter(config, &base, cancellation).await?;
+        let mut overlays = vec![self.prepare_adapter(config, &base, cancellation).await?];
         for addon in config.ordered_components() {
-            self.prepare_addon(addon, &base, progress, cancellation)
-                .await?;
+            overlays.push(
+                self.prepare_addon(addon, &base, progress, cancellation)
+                    .await?,
+            );
         }
         for addon in &config.dependencies {
-            self.prepare_addon(addon, &base, progress, cancellation)
-                .await?;
+            overlays.push(
+                self.prepare_addon(addon, &base, progress, cancellation)
+                    .await?,
+            );
         }
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        Ok(())
+        Ok((base, overlays))
     }
 
     /// Load the pinned base, runner adapter, components, then dependencies.

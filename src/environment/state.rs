@@ -98,11 +98,15 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             }
             #[cfg(feature = "fvs")]
             PrefixBackend::Virgo => {
-                environment
+                let (base, overlays) = environment
                     .virgo
                     .prepare_artifacts(state.environment(), progress, cancellation)
                     .await?;
-                async_fs::create_dir_all(environment.root.join("upper")).await?;
+                environment
+                    .virgo
+                    .layers
+                    .prepare_workspace(&environment.root, &base, &overlays, cancellation)
+                    .await?;
             }
         }
         let result = async {

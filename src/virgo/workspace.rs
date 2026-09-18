@@ -1,4 +1,4 @@
-//! Compose immutable layers with a workspace's private filesystem and registry changes.
+//! Prepare a workspace's registry on selection changes; mount it for execution.
 
 use std::path::Path;
 
@@ -10,10 +10,9 @@ use super::{LayerStore, VirgoError, VirgoLayer, registry};
 use crate::error::{Error, Result};
 
 impl LayerStore {
-    /// The caller has stopped processes, unmounted, and checkpointed this workspace.
-    /// Overlay order is used for both filesystem and registry precedence.
-    /// On failure, unmount before restoring the caller's checkpoint.
-    pub(crate) async fn compose_and_mount(
+    /// Compose registry files while stopped and unmounted. The caller checkpoints
+    /// existing workspaces and recovers failures before publishing new selections.
+    pub(crate) async fn prepare_workspace(
         &self,
         root: &Path,
         base: &VirgoLayer,
@@ -23,10 +22,7 @@ impl LayerStore {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let prefix = root.join("prefix");
-        ensure_empty_dir(&prefix).await?;
-        let upper = root.join("upper");
-        async_fs::create_dir_all(&upper).await?;
+        async_fs::create_dir_all(root.join("upper")).await?;
         registry::compose(
             root,
             &base.registry,
@@ -39,6 +35,24 @@ impl LayerStore {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
+        Ok(())
+    }
+
+    /// Mount the saved selection over its prepared private storage without changing
+    /// registry files. The caller releases any mount if mounting fails or is cancelled.
+    pub(crate) async fn mount_workspace(
+        &self,
+        root: &Path,
+        base: &VirgoLayer,
+        overlays: &[VirgoLayer],
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let prefix = root.join("prefix");
+        ensure_empty_dir(&prefix).await?;
+        let upper = root.join("upper");
         let layers = std::iter::once(base.layer.clone())
             .chain(overlays.iter().map(|layer| layer.layer.clone()))
             .collect();

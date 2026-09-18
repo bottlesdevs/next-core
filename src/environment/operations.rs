@@ -34,36 +34,65 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             }
             let before = previous.environment();
             let after = draft.environment();
-            if before.components != after.components || before.dependencies != after.dependencies {
-                if WineBridgeClient::try_connect(&environment.root.join("prefix"))
+            let software_changed =
+                before.components != after.components || before.dependencies != after.dependencies;
+            if software_changed
+                && WineBridgeClient::try_connect(&environment.root.join("prefix"))
                     .await?
                     .is_some()
-                {
-                    return Err(EnvironmentError::MustBeStopped.into());
+            {
+                return Err(EnvironmentError::MustBeStopped.into());
+            }
+            // Once application succeeds, finish saving even if cancellation arrives.
+            match (previous.backend(), software_changed) {
+                (_, false) => environment.save(&draft).await?,
+                (PrefixBackend::Standard, true) => {
+                    standard::apply(
+                        before,
+                        after,
+                        &environment.root,
+                        &environment.context,
+                        &progress,
+                        &cancellation,
+                    )
+                    .await?;
+                    environment.save(&draft).await?;
                 }
-                match previous.backend() {
-                    PrefixBackend::Standard => {
-                        standard::apply(
-                            before,
-                            after,
-                            &environment.root,
-                            &environment.context,
-                            &progress,
-                            &cancellation,
-                        )
+                #[cfg(feature = "fvs")]
+                (PrefixBackend::Virgo, true) => {
+                    environment.release_storage(PrefixBackend::Virgo).await?;
+                    let (base, overlays) = environment
+                        .virgo
+                        .prepare_artifacts(after, &progress, &cancellation)
                         .await?;
-                    }
-                    #[cfg(feature = "fvs")]
-                    PrefixBackend::Virgo => {
+                    let checkpoint = history::capture(
+                        &environment.root,
+                        history::AUTO_CHECKPOINT_MESSAGE.into(),
+                        false,
+                        Stage::Checkpointing,
+                        &environment.context,
+                        &progress,
+                    )
+                    .await?;
+                    let applied = async {
                         environment
                             .virgo
-                            .prepare_artifacts(after, &progress, &cancellation)
+                            .layers
+                            .prepare_workspace(&environment.root, &base, &overlays, &cancellation)
                             .await?;
+                        environment.save(&draft).await
                     }
+                    .await;
+                    history::recover(
+                        applied,
+                        &environment.root,
+                        &checkpoint,
+                        &environment.context,
+                        &progress,
+                    )
+                    .await?;
                 }
             }
-            // Successful application must be saved and published even if cancellation arrives.
-            environment.save(&draft).await?;
             environment.publish(draft);
             Ok(result)
         })
@@ -223,27 +252,15 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         #[cfg(feature = "fvs")]
         if backend == PrefixBackend::Virgo {
             let (base, overlays) = self.virgo.composition(config).await?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            let checkpoint = history::capture(
-                &self.root,
-                history::AUTO_CHECKPOINT_MESSAGE.into(),
-                false,
-                Stage::Checkpointing,
-                &self.context,
-                progress,
-            )
-            .await?;
-            let result = self
+            let mounted = self
                 .virgo
                 .layers
-                .compose_and_mount(&self.root, &base, &overlays, cancellation)
+                .mount_workspace(&self.root, &base, &overlays, cancellation)
                 .await;
-            if result.is_err() {
+            if mounted.is_err() {
                 self.release_storage(backend).await?;
             }
-            history::recover(result, &self.root, &checkpoint, &self.context, progress).await?;
+            mounted?;
         }
         if cancellation.is_cancelled() {
             self.release_storage(backend).await?;
