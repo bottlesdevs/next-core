@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::{LayerStore, VirgoError, registry::registry_files};
+use super::{LayerStore, VirgoError};
 use crate::{
     error::{Error, Result},
     utils::storage,
@@ -45,31 +45,17 @@ impl VirgoLayerManifest {
 impl LayerStore {
     /// Only an absent directory is a cache miss.
     /// UUID-keyed caches check the expected ID; the fixed base directory discovers its pinned ID.
+    /// Filesystem and registry contents are accessed by their consuming operations.
     pub(crate) async fn load(&self, key: &Path, id: Option<Uuid>) -> Result<Option<VirgoLayer>> {
         let root = self.directories.virgo().join(key);
         match async_fs::symlink_metadata(&root).await {
-            Ok(entry) if entry.is_dir() => {}
-            Ok(_) => return Err(VirgoError::InvalidArtifact(root.to_path_buf()).into()),
+            Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         }
         let manifest: VirgoLayerManifest = next_config::load(root.join("manifest.toml")).await?;
         if id.is_some_and(|id| manifest.id != id) || manifest.commit.is_empty() {
             return Err(VirgoError::InvalidArtifact(root.to_path_buf()).into());
-        }
-        if !async_fs::metadata(root.join("filesystem/.fvs2"))
-            .await?
-            .is_dir()
-        {
-            return Err(VirgoError::InvalidArtifact(root.to_path_buf()).into());
-        }
-        for (file, _) in registry_files() {
-            if !async_fs::metadata(root.join("registry").join(file))
-                .await?
-                .is_file()
-            {
-                return Err(VirgoError::InvalidArtifact(root.to_path_buf()).into());
-            }
         }
         Ok(Some(manifest.resolve(&root)))
     }
@@ -82,7 +68,7 @@ impl LayerStore {
 
     /// List immediate published children of a relative collection, without FVS RPCs.
     /// A manifest identifies an artifact; staging and other entries are skipped.
-    /// Malformed manifests or incomplete published artifacts fail the listing.
+    /// Malformed manifests fail the listing; artifact contents are read when used.
     #[allow(dead_code)] // Internal storage API; no public owner-facing layer API.
     pub(crate) async fn list(&self, collection: &Path) -> Result<Vec<(PathBuf, VirgoLayer)>> {
         let mut entries = match async_fs::read_dir(self.directories.virgo().join(collection)).await
