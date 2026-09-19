@@ -1,10 +1,6 @@
 //! Immutable addon definitions, frozen recipes, and their family discriminators.
 
-use std::{
-    fmt,
-    path::{Path, PathBuf},
-    str::FromStr,
-};
+use std::{fmt, path::PathBuf, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
@@ -17,7 +13,7 @@ use crate::{
 };
 
 use super::{
-    AddonError, AddonFamily,
+    AddonFamily,
     recipe::{InstallResource, InstallStep},
 };
 
@@ -123,41 +119,6 @@ impl Addon<Component> {
         }
     }
 
-    /// Validates the resource structure and component layout at a staged or published payload.
-    pub(crate) async fn validate(&self, payload: &Path) -> Result<()> {
-        if self.resources.len() != 1 || !self.resources[0].path.as_os_str().is_empty() {
-            return Err(AddonError::InvalidRelease(payload.to_path_buf()).into());
-        }
-        if !async_fs::metadata(payload).await.is_ok_and(|m| m.is_dir()) {
-            return Err(AddonError::PayloadMissing(self.id()).into());
-        }
-        let marker = match self.slot() {
-            Slot::Runner => {
-                crate::runner::detect_runner_kind(payload).await?;
-                None
-            }
-            Slot::WineBridge => Some("bottles-winebridge.exe"),
-            Slot::Umu => Some("umu-run"),
-            _ => None,
-        };
-        let sources = marker
-            .map(Path::new)
-            .into_iter()
-            .chain(self.recipe().filter_map(|step| match step {
-                InstallStep::Copy { source, .. } => Some(source.as_path()),
-                _ => None,
-            }));
-        for source in sources {
-            if !async_fs::metadata(payload.join(source))
-                .await
-                .is_ok_and(|entry| entry.is_file())
-            {
-                return Err(AddonError::InvalidComponent(payload.to_path_buf()).into());
-            }
-        }
-        Ok(())
-    }
-
     /// Returns the mutually exclusive role occupied by this component.
     pub fn slot(&self) -> Slot {
         self.kind.slot
@@ -188,12 +149,6 @@ impl Addon<Component> {
                     .ok_or(RunnerError::UmuExecutableMissing)?
                     .path(directories)
                     .join("umu-run");
-                if !async_fs::metadata(&umu)
-                    .await
-                    .is_ok_and(|entry| entry.is_file())
-                {
-                    return Err(RunnerError::RunnerExecutableNotFound(umu).into());
-                }
                 Ok(Box::new(Proton::new(&path, umu)))
             }
         }
@@ -216,23 +171,6 @@ impl Addon<Dependency> {
             kind: Dependency::default(),
             resources,
         }
-    }
-
-    /// Validates unique resource paths and files at a staged or published payload.
-    pub(crate) async fn validate(&self, payload: &Path) -> Result<()> {
-        let mut names = std::collections::HashSet::new();
-        if self.resources.is_empty() || self.resources.iter().any(|r| !names.insert(&r.path)) {
-            return Err(AddonError::InvalidRelease(payload.to_path_buf()).into());
-        }
-        for resource in &self.resources {
-            if !async_fs::metadata(payload.join(&resource.path))
-                .await
-                .is_ok_and(|m| m.is_file())
-            {
-                return Err(AddonError::PayloadMissing(self.id()).into());
-            }
-        }
-        Ok(())
     }
 
     /// Reports whether this dependency satisfies `requirement`.

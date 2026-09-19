@@ -57,8 +57,8 @@ impl Addons {
     ///
     /// Missing catalog caches are optional; read and parse failures are returned.
     /// Invalid or incomplete records are returned as errors. A known record does
-    /// not guarantee its payload is available; acquisition and installation check
-    /// the inputs they require.
+    /// not guarantee its payload is available; installation and runtime operations
+    /// access the inputs they require directly.
     pub(crate) async fn load(
         directories: Directories,
         downloader: Arc<DownloadManager>,
@@ -219,7 +219,6 @@ impl Addons {
     ) -> Result<Arc<Addon<Component>>> {
         let id = record.id();
         let destination = record.directory(&self.0.directories);
-        record.validate(&prepared.join("payload")).await?;
         let _write = cancellation
             .run_until_cancelled(self.0.write.lock())
             .await
@@ -232,7 +231,6 @@ impl Addons {
             if current != &record {
                 return Err(AddonError::InvalidRelease(destination).into());
             }
-            current.validate(&current.path(&self.0.directories)).await?;
             return Ok(current.clone());
         }
         if next.contains(id) {
@@ -259,7 +257,6 @@ impl Addons {
     ) -> Result<Arc<Addon<Dependency>>> {
         let id = record.id();
         let destination = record.directory(&self.0.directories);
-        record.validate(&prepared.join("payload")).await?;
         let _write = cancellation
             .run_until_cancelled(self.0.write.lock())
             .await
@@ -272,7 +269,6 @@ impl Addons {
             if current != &record {
                 return Err(AddonError::InvalidRelease(destination).into());
             }
-            current.validate(&current.path(&self.0.directories)).await?;
             return Ok(current.clone());
         }
         if next.contains(id) {

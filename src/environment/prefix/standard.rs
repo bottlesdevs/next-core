@@ -27,8 +27,9 @@ pub(in crate::environment) async fn create(
 }
 
 /// Apply frozen Standard selections directly to the stopped owner's prefix.
-/// Validate every new payload before removing anything. Removal uses the previous
-/// selection's recipe and prefix backups, without consulting shared addon storage.
+/// Removal uses the previous selection's recipe and prefix backups, without
+/// consulting shared addon storage. Installation accesses payloads as steps run;
+/// an input failure can leave earlier steps applied.
 /// The caller requires a stopped owner. All work shares one maintenance session;
 /// shutdown runs once after the batch, including failure or cancellation.
 pub(in crate::environment) async fn apply(
@@ -52,12 +53,8 @@ pub(in crate::environment) async fn apply(
             removals.push(old);
         }
         if let Some(new) = new {
-            new.validate(&new.path(cx.directories())).await?;
             components.push(new);
         }
-    }
-    for new in dependencies {
-        new.validate(&new.path(cx.directories())).await?;
     }
     if removals.is_empty() && components.is_empty() && dependencies.is_empty() {
         return Ok(());
