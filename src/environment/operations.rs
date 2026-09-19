@@ -36,12 +36,18 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             let after = draft.environment();
             let software_changed =
                 before.components != after.components || before.dependencies != after.dependencies;
-            if software_changed
-                && WineBridgeClient::try_connect(&environment.root.join("prefix"))
+            if software_changed {
+                if WineBridgeClient::try_connect(&environment.root.join("prefix"))
                     .await?
                     .is_some()
-            {
-                return Err(EnvironmentError::MustBeStopped.into());
+                {
+                    return Err(EnvironmentError::MustBeStopped.into());
+                }
+                progress.send_replace(Some(Progress::new(Stage::Stopping)));
+                environment.stop_locked().await?;
+                if cancellation.is_cancelled() {
+                    return Err(Error::Cancelled);
+                }
             }
             // Once application succeeds, finish saving even if cancellation arrives.
             match (previous.backend(), software_changed) {
@@ -60,7 +66,6 @@ impl<T: EnvironmentOwnerState> Environment<T> {
                 }
                 #[cfg(feature = "fvs")]
                 (PrefixBackend::Virgo, true) => {
-                    environment.release_storage(PrefixBackend::Virgo).await?;
                     let (base, overlays) = environment
                         .virgo
                         .prepare_artifacts(after, &progress, &cancellation)
