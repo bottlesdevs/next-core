@@ -33,9 +33,6 @@ impl Addons {
                     return Err(Error::Cancelled);
                 }
                 if let Some(release) = addons.component(id) {
-                    release
-                        .validate(&release.path(&addons.0.directories))
-                        .await?;
                     return Ok(release);
                 }
                 if addons.state().contains(id) {
@@ -106,9 +103,6 @@ impl Addons {
                     return Err(Error::Cancelled);
                 }
                 if let Some(release) = addons.dependency(id) {
-                    release
-                        .validate(&release.path(&addons.0.directories))
-                        .await?;
                     return Ok(release);
                 }
                 if addons.state().contains(id) {

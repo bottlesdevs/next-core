@@ -18,9 +18,10 @@ bottles-core = { version = "0.1", default-features = false }
 
 Without `fvs`, snapshot APIs, Virgo storage, and standalone programs are not
 compiled. Standard addon changes always use direct writes; failed or cancelled
-recipes can leave partial prefix changes. A software edit preflights the whole
-Standard batch, then shares one maintenance session across its removals and
-installations, stopping once afterward even on failure or cancellation.
+recipes can leave partial prefix changes. A software edit shares one maintenance
+session across its removals and installations, stopping once afterward even on
+failure or cancellation. Payloads are accessed as steps run, so missing or invalid
+inputs can fail after earlier steps have changed the prefix.
 Runtime-only selection changes do not start that session.
 
 [Source] | [Issue tracker]
