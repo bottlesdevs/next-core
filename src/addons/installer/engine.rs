@@ -189,11 +189,7 @@ async fn uninstall_step(
             let bridge = maintenance_bridge(runner, prefix, winebridge).await?;
             for dll in dlls.iter().rev() {
                 check_cancellation(cancellation)?;
-                if let Err(error) = bridge.delete_dll_override(dll.clone()).await {
-                    if !is_not_found(&error) {
-                        return Err(error);
-                    }
-                }
+                bridge.delete_dll_override(dll.clone()).await?;
             }
         }
         unsupported => {
@@ -237,10 +233,6 @@ async fn wait_for_child(
     Err(Error::Cancelled)
 }
 
-fn is_not_found(error: &Error) -> bool {
-    matches!(error, Error::Status(status) if status.code() == tonic::Code::NotFound)
-}
-
 /// Copies a file, optionally preserving the first displaced regular file for restoration.
 ///
 /// The backup is stored alongside the destination with `.bak` appended. An existing backup is
@@ -273,27 +265,18 @@ async fn install_file(
 
 /// Restores a copied file's backup, or removes the installed file when no backup exists.
 ///
-/// A restored backup is deleted after it is copied. A missing installed file is treated as an
-/// already-completed uninstall.
+/// A restored backup is deleted after it is copied. Copy and removal failures are returned.
 async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
     let destination = prefix.join(relative);
     let backup = prefix.join(backup_path(relative));
     match async_fs::metadata(&backup).await {
-        Ok(entry) if entry.is_file() => {
+        Ok(_) => {
             async_fs::copy(&backup, &destination).await?;
             async_fs::remove_file(backup).await
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            match async_fs::remove_file(destination).await {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error),
-            }
+            async_fs::remove_file(destination).await
         }
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("backup is not a regular file: {}", backup.display()),
-        )),
         Err(error) => Err(error),
     }
 }
@@ -317,12 +300,7 @@ async fn extract_into(
         check_cancellation(cancellation)?;
         for source in archive::files(&stage).await? {
             check_cancellation(cancellation)?;
-            let relative = destination.join(source.strip_prefix(&stage).map_err(|_| {
-                InstallerError::FileOutsideStage {
-                    path: source.clone(),
-                    stage: stage.clone(),
-                }
-            })?);
+            let relative = destination.join(source.strip_prefix(&stage).unwrap());
             install_file(&source, prefix, &relative, backup_files).await?;
         }
         check_cancellation(cancellation)?;
