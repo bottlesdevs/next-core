@@ -35,13 +35,10 @@ impl Bottle {
     pub async fn processes(&self) -> Result<Vec<Process>> {
         self.0.processes().await
     }
+    /// Terminate a process group without requiring a saved program registration
+    /// or starting a stopped runtime.
     pub async fn kill_program(&self, id: Uuid) -> Result<()> {
-        self.0
-            .kill(move |state| {
-                state.program(id).ok_or(BottleError::ProgramNotFound(id))?;
-                Ok(id)
-            })
-            .await
+        self.0.kill(|_| Ok(id)).await
     }
     pub async fn stop(&self) -> Result<()> {
         self.0.stop().await
