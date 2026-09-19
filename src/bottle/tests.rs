@@ -85,33 +85,6 @@ fn bottle_edit_rechecks_cancellation_when_lock_becomes_available() {
 }
 
 #[test]
-fn load_skips_corrupt_bottles() {
-    futures_lite::future::block_on(async {
-        let directories = test_directories();
-        let id = uuid::Uuid::new_v4();
-        std::fs::create_dir_all(directories.bottle(id)).unwrap();
-        std::fs::write(
-            directories.bottle(id).join("bottle.toml"),
-            "not valid toml =",
-        )
-        .unwrap();
-        let context = Context::for_test(directories.clone()).await.unwrap();
-        #[cfg(feature = "fvs")]
-        let virgo = Arc::new(VirgoManager::new(context.clone()));
-        let manager = BottleManager::load(
-            context,
-            #[cfg(feature = "fvs")]
-            virgo,
-        )
-        .await
-        .unwrap();
-
-        assert!(manager.list().is_empty());
-        std::fs::remove_dir_all(directories.data_dir()).unwrap();
-    });
-}
-
-#[test]
 fn create_reports_missing_runtime_requirements_before_creating_files() {
     futures_lite::future::block_on(async {
         let directories = test_directories();

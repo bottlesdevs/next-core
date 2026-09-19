@@ -98,8 +98,7 @@ enum Architecture {
 #[serde(deny_unknown_fields)]
 /// One validated, cached catalog document.
 ///
-/// Catalog loading is deliberately tolerant: an unavailable or invalid cache
-/// is treated as absent so local release records remain usable.
+/// A missing cache is optional; read and parse failures are returned.
 pub(crate) struct Catalog<K> {
     #[serde(deserialize_with = "deserialize_catalog_version")]
     schema_version: u32,
@@ -107,18 +106,18 @@ pub(crate) struct Catalog<K> {
 }
 
 impl<K> Catalog<K> {
-    /// Loads the cached catalog when it is both readable and valid.
-    ///
-    /// Missing, unreadable, and malformed catalogs are treated as absent so
-    /// local addons remain usable and a later refresh can replace the cache.
-    pub(crate) async fn load(directories: &Directories) -> Option<Arc<Self>>
+    /// Loads the cached catalog, returning None only when the cache is absent.
+    pub(crate) async fn load(directories: &Directories) -> Result<Option<Arc<Self>>>
     where
         K: AddonFamily,
         Self: DeserializeOwned,
     {
-        let catalog =
-            serde_json::from_slice(&async_fs::read(K::catalog(directories)).await.ok()?).ok()?;
-        Some(Arc::new(catalog))
+        let bytes = match async_fs::read(K::catalog(directories)).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Some(Arc::new(serde_json::from_slice(&bytes)?)))
     }
 
     /// Replaces the cached catalog for this family.
