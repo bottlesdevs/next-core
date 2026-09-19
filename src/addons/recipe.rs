@@ -9,8 +9,6 @@ use crate::{
     utils::env_vars::EnvVars,
 };
 
-use super::deserialize_non_empty_string;
-
 /// A local installation resource and its frozen recipe.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -82,8 +80,7 @@ pub(crate) enum InstallStep {
     /// WineBridge is started with the runner's maintenance environment when needed.
     SetRegistryValue {
         hive: RegistryHive,
-        /// Non-empty registry key path.
-        #[serde(deserialize_with = "deserialize_non_empty_string")]
+        /// Registry key path passed to WineBridge.
         key: String,
         /// Value name within the key; an empty name addresses the default value.
         name: String,

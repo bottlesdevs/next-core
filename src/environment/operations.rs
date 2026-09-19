@@ -112,7 +112,6 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             let _control = environment.lock_control(&cancellation).await?;
             let state = environment.state()?;
             let (id, launch) = select(&state)?;
-            launch.validate()?;
             let bridge = environment
                 .attach_or_start(&state, &progress, &cancellation)
                 .await?;
@@ -192,11 +191,6 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         dll: String,
         mode: DllOverrideMode,
     ) -> Operation<()> {
-        if mode == DllOverrideMode::Unspecified {
-            return Operation::new(|_, _| async {
-                Err(EnvironmentError::DllOverrideModeRequired.into())
-            });
-        }
         self.with_bridge(async move |bridge| bridge.set_dll_override(dll, mode).await)
     }
 

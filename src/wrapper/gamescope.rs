@@ -119,7 +119,7 @@ impl GamescopeConfig {
             ("-r", self.frame_rate),
             ("-o", self.unfocused_frame_rate),
         ] {
-            if let Some(value) = value.filter(|value| *value > 0) {
+            if let Some(value) = value {
                 args.extend([flag.to_string(), value.to_string()]);
             }
         }

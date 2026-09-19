@@ -9,7 +9,7 @@ use uuid::{NonNilUuid, Uuid};
 use crate::{Directories, error::Result};
 
 use super::recipe::InstallStep;
-use super::{Component, Dependency, Requirement, Slot, deserialize_non_empty_string};
+use super::{Component, Dependency, Requirement, Slot};
 
 const CATALOG_VERSION: u32 = 1;
 
@@ -17,10 +17,8 @@ const CATALOG_VERSION: u32 = 1;
 #[serde(tag = "algorithm", content = "value", rename_all = "kebab-case")]
 /// Expected digest used to verify a downloaded catalog artifact.
 ///
-/// Values are stored without validating their length or encoding. Catalog
-/// deserialization rejects an empty value but does not validate hexadecimal
-/// syntax. Verification compares the value exactly and case-sensitively with a
-/// lowercase hexadecimal digest.
+/// Values are stored without validating their length or encoding. Verification
+/// compares them exactly and case-sensitively with a lowercase hexadecimal digest.
 pub(crate) enum Checksum {
     /// Uses the `sha256` wire discriminator.
     Sha256(String),
@@ -198,13 +196,10 @@ impl AddonFamily for Dependency {
 #[serde(deny_unknown_fields)]
 pub struct CatalogEntry<K> {
     id: NonNilUuid,
-    #[serde(deserialize_with = "deserialize_non_empty_string")]
     name: String,
-    #[serde(deserialize_with = "deserialize_non_empty_string")]
     version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
-    #[serde(deserialize_with = "deserialize_non_empty_vec")]
     artifacts: Vec<CatalogArtifact>,
     #[serde(flatten)]
     kind: K,
@@ -265,9 +260,7 @@ impl CatalogEntry<Component> {
 /// Components are extracted before their recipe is applied.
 pub(crate) struct CatalogArtifact {
     url: url::Url,
-    #[serde(deserialize_with = "deserialize_non_empty_string")]
     file_name: String,
-    #[serde(deserialize_with = "deserialize_checksum")]
     checksum: Checksum,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     platform: Option<Target>,
@@ -305,27 +298,4 @@ where
         )));
     }
     Ok(version)
-}
-
-fn deserialize_checksum<'de, D>(deserializer: D) -> std::result::Result<Checksum, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let checksum = Checksum::deserialize(deserializer)?;
-    if checksum.value().is_empty() {
-        return Err(de::Error::custom("checksum cannot be empty"));
-    }
-    Ok(checksum)
-}
-
-fn deserialize_non_empty_vec<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    let value = Vec::<T>::deserialize(deserializer)?;
-    if value.is_empty() {
-        return Err(de::Error::custom("value cannot be empty"));
-    }
-    Ok(value)
 }

@@ -48,11 +48,7 @@ impl crate::environment::EnvironmentOwnerState for BottleState {
 
 impl BottleState {
     pub(crate) fn validate(&self) -> Result<()> {
-        self.environment.validate()?;
-        for launch in self.programs.values() {
-            launch.validate()?;
-        }
-        Ok(())
+        self.environment.validate()
     }
 
     /// Returns the bottle's stable identity.
