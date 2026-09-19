@@ -1,6 +1,6 @@
 //! Shared program launch definitions, independent of their owner.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
 /// A persisted Windows launch definition used by bottles and standalone programs.
@@ -25,23 +25,6 @@ pub struct ProgramSpec {
 }
 
 impl ProgramSpec {
-    pub(crate) fn validate(&self) -> Result<()> {
-        if self.name.trim().is_empty() {
-            return Err(Error::InvalidProgram("name must not be blank".into()).into());
-        }
-        if self.executable.trim().is_empty() {
-            return Err(Error::InvalidProgram("executable must not be blank".into()).into());
-        }
-        if self
-            .working_directory
-            .as_ref()
-            .is_some_and(|path| path.trim().is_empty())
-        {
-            return Err(Error::InvalidProgram("working directory must not be blank".into()).into());
-        }
-        Ok(())
-    }
-
     /// Creates a launch definition with default launch options.
     pub fn new(name: impl Into<String>, executable: impl Into<String>) -> Result<Self> {
         let name = name.into();
@@ -53,7 +36,6 @@ impl ProgramSpec {
             working_directory: None,
             new_console: false,
         };
-        program.validate()?;
         Ok(program)
     }
 
@@ -70,9 +52,6 @@ impl ProgramSpec {
     /// Sets the Windows working directory used at launch.
     pub fn with_working_directory(mut self, working_directory: impl Into<String>) -> Result<Self> {
         let working_directory = working_directory.into();
-        if working_directory.trim().is_empty() {
-            return Err(Error::InvalidProgram("working directory must not be blank".into()).into());
-        }
         self.working_directory = Some(working_directory);
         Ok(self)
     }
@@ -83,7 +62,7 @@ impl ProgramSpec {
         self
     }
 
-    /// Changes the display name; the owner validates it when saving an edit.
+    /// Changes the display name.
     pub fn rename(&mut self, name: impl Into<String>) {
         self.name = name.into();
     }

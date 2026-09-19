@@ -51,7 +51,6 @@ impl EnvironmentOwnerState for ProgramState {
         &mut self.environment
     }
     fn validate(&self) -> Result<()> {
-        self.launch.validate()?;
         self.environment.validate()
     }
 }

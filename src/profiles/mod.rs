@@ -165,7 +165,7 @@ impl Profiles {
 
     /// Creates and selects a profile with a generated UUID in one publication.
     pub async fn create(&self, name: impl Into<String>) -> Result<Profile> {
-        let name = profile_name(name)?;
+        let name = name.into().trim().to_owned();
         self.update(move |state| {
             let profile = Profile {
                 id: Uuid::new_v4(),
@@ -181,7 +181,7 @@ impl Profiles {
 
     /// Renames an existing profile.
     pub async fn rename(&self, id: Uuid, name: impl Into<String>) -> Result<Profile> {
-        let name = profile_name(name)?;
+        let name = name.into().trim().to_owned();
         self.update(move |state| {
             let profile = state
                 .profiles
@@ -378,15 +378,6 @@ fn validate_account_link(
         .into());
     }
     Ok(profile_index)
-}
-
-fn profile_name(name: impl Into<String>) -> Result<String> {
-    let name = name.into().trim().to_owned();
-    if name.is_empty() {
-        Err(ProfileError::InvalidName.into())
-    } else {
-        Ok(name)
-    }
 }
 
 /// An immutable application-profile snapshot.

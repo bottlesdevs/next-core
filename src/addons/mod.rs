@@ -14,8 +14,6 @@
 
 #![warn(missing_docs)]
 
-use serde::{Deserialize, Deserializer, de};
-
 mod addon;
 mod catalog;
 mod error;
@@ -30,17 +28,3 @@ pub(crate) use catalog::{AddonFamily, Checksum};
 pub use error::{AddonError, CatalogError, InstallerError};
 pub(crate) use installer::{InstallInputs, execute, uninstall};
 pub use manager::Addons;
-
-/// Rejects empty or whitespace-only input without trimming accepted values.
-pub(crate) fn deserialize_non_empty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = String::deserialize(deserializer)?;
-
-    if value.trim().is_empty() {
-        return Err(de::Error::custom("value cannot be empty"));
-    }
-
-    Ok(value)
-}
