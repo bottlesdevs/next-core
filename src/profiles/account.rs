@@ -78,7 +78,8 @@ impl StorefrontAccount {
 
     /// Serialize credential load, provider execution, and refresh persistence.
     /// Capability resolution stays lazy; absent credentials are passed through.
-    /// Account-only plugins return None, while unavailable providers return errors.
+    /// Account-only plugins return None; provider and credential persistence failures
+    /// are returned.
     pub(super) async fn owned_games(
         &self,
         plugins: &Plugins,
@@ -106,12 +107,7 @@ impl StorefrontAccount {
             })?;
         // Persist refreshes even when the subsequent enumeration failed.
         if let Some(updated) = listed.updated_credential.as_deref() {
-            if let Err(error) =
-                credentials::save(&self.provider.id, profile_id, updated, guard.clone()).await
-            {
-                tracing::warn!(provider = %self.provider.id, profile = %profile_id,
-                    "failed to save refreshed storefront credential: {error}");
-            }
+            credentials::save(&self.provider.id, profile_id, updated, guard.clone()).await?;
         }
         let games = listed.games.map_err(|message| ProfileError::Provider {
             provider: self.provider.id.clone(),

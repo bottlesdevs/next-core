@@ -243,7 +243,8 @@ impl Profiles {
     /// observed during authentication and while waiting for that lock. Credential
     /// preparation and profile persistence then finish cooperatively under it.
     /// Reloads do not replace the authenticating provider's metadata. A missing
-    /// credential clears any stale entry. Failed persistence awaits cleanup.
+    /// credential clears any stale entry. Failed persistence awaits cleanup and
+    /// returns any cleanup failure.
     pub fn link_account(
         &self,
         profile_id: Uuid,
@@ -290,13 +291,9 @@ impl Profiles {
                 .await;
             if result.is_err() && credential.is_some() {
                 let mut operation = account.lock().await;
-                if let Err(error) = account
+                account
                     .cleanup(profile_id, &mut operation, write.clone())
-                    .await
-                {
-                    tracing::warn!(provider = %provider_id, profile = %profile_id,
-                        "failed to delete credential after account linking failed: {error}");
-                }
+                    .await?;
             }
             result
         })

@@ -63,7 +63,7 @@ impl Plugins {
     pub fn list(&self) -> Vec<PluginInfo> {
         self.loaded
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap()
             .values()
             .map(Plugin::info)
             .collect()
@@ -76,25 +76,17 @@ impl Plugins {
         let info = plugin.info();
         self.loaded
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap()
             .insert(plugin.manifest.id.clone(), plugin);
         Ok(info)
     }
 
     pub async fn reload(&self, id: &PluginId) -> Result<()> {
         let _lifecycle = self.lifecycle.lock().await;
-        if !self
-            .loaded
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(id)
-        {
-            return Err(PluginError::NotFound(id.clone()));
-        }
         let plugin = Plugin::load(&self.package_directory(id)).await?;
         self.loaded
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap()
             .insert(plugin.manifest.id.clone(), plugin);
         Ok(())
     }
@@ -102,26 +94,16 @@ impl Plugins {
     /// Withdraw the package before unloading it; trash cleanup cannot fail the removal.
     pub async fn uninstall(&self, id: &PluginId) -> Result<()> {
         let _lifecycle = self.lifecycle.lock().await;
-        if self.get(id).is_none() {
-            return Err(PluginError::NotFound(id.clone()));
-        }
         storage::with_temp_dir(&self.directories.trash(), |trash| async move {
             async_fs::rename(self.package_directory(id), trash.join("plugin")).await?;
-            self.loaded
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(id);
+            self.loaded.write().unwrap().remove(id);
             Ok(())
         })
         .await
     }
 
     pub(crate) fn get(&self, id: &PluginId) -> Option<Plugin> {
-        self.loaded
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-            .cloned()
+        self.loaded.read().unwrap().get(id).cloned()
     }
 
     pub(crate) fn contribution(&self, id: &PluginId, kind: PluginKind) -> Option<Plugin> {
@@ -132,7 +114,7 @@ impl Plugins {
     pub(crate) fn contributions(&self, kind: PluginKind) -> Vec<Plugin> {
         self.loaded
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap()
             .values()
             .filter_map(|plugin| plugin.contribution(kind))
             .collect()
