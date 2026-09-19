@@ -74,13 +74,7 @@ impl LayerStore {
                     .as_ref()
                     .is_some_and(|spec| spec.mount_point == prefix.to_string_lossy())
             }) {
-                self.fvs
-                    .unmount(&mount, UnmountMode::Normal)
-                    .await
-                    .map_err(|source| VirgoError::Unmount {
-                        path: prefix,
-                        source,
-                    })?;
+                self.fvs.unmount(&mount, UnmountMode::Normal).await?;
             }
         }
         Ok(())

@@ -9,7 +9,7 @@ use fvs_rs::{Mount, UnmountMode};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::{FVS_BLOCK_SIZE, LayerStore, VirgoError, VirgoLayer, registry};
+use super::{FVS_BLOCK_SIZE, LayerStore, VirgoLayer, registry};
 use crate::error::{Error, Result, ResultExt};
 
 /// Prepared storage only. Dropping retains it; finalization requires stopped processes.
@@ -126,13 +126,7 @@ impl LayerStore {
         }
         .await;
         if let Some((mount, _)) = &workspace.overlay {
-            self.fvs
-                .unmount(mount, UnmountMode::Normal)
-                .await
-                .map_err(|source| VirgoError::Unmount {
-                    path: workspace.prefix.clone(),
-                    source,
-                })?;
+            self.fvs.unmount(mount, UnmountMode::Normal).await?;
         }
         let result = async {
             captured?;
