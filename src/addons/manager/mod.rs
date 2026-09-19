@@ -169,16 +169,11 @@ impl Addons {
                 .components
                 .remove(&id)
                 .ok_or(AddonError::NotFound(id))?;
-            match async_fs::rename(
+            async_fs::rename(
                 release.directory(&self.0.directories),
                 trash.join("release"),
             )
-            .await
-            {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+            .await?;
             self.publish(next);
             Ok(())
         })
@@ -195,16 +190,11 @@ impl Addons {
                 .dependencies
                 .remove(&id)
                 .ok_or(AddonError::NotFound(id))?;
-            match async_fs::rename(
+            async_fs::rename(
                 release.directory(&self.0.directories),
                 trash.join("release"),
             )
-            .await
-            {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+            .await?;
             self.publish(next);
             Ok(())
         })
