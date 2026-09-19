@@ -43,8 +43,7 @@ impl BottleManager {
         }
     }
 
-    /// Populates the shared registry, skipping unreadable bottle configuration
-    /// with a warning so one corrupt bottle does not prevent startup.
+    /// Populates the shared registry, returning bottle configuration failures.
     pub(crate) async fn load(
         context: Context,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,

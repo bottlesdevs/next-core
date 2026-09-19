@@ -55,9 +55,10 @@ struct AddonsInner {
 impl Addons {
     /// Loads cached catalogs and frozen local records independently of payload files.
     ///
-    /// An unavailable or invalid catalog cache is ignored. Invalid or incomplete
-    /// records are returned as errors. A known record does not guarantee its payload
-    /// is available; acquisition and installation check the inputs they require.
+    /// Missing catalog caches are optional; read and parse failures are returned.
+    /// Invalid or incomplete records are returned as errors. A known record does
+    /// not guarantee its payload is available; acquisition and installation check
+    /// the inputs they require.
     pub(crate) async fn load(
         directories: Directories,
         downloader: Arc<DownloadManager>,
@@ -310,8 +311,8 @@ struct AddonsState {
 impl AddonsState {
     async fn load_cached(directories: &Directories) -> Result<Self> {
         let mut state = Self {
-            component_catalog: Catalog::<Component>::load(directories).await,
-            dependency_catalog: Catalog::<Dependency>::load(directories).await,
+            component_catalog: Catalog::<Component>::load(directories).await?,
+            dependency_catalog: Catalog::<Dependency>::load(directories).await?,
             ..Self::default()
         };
         for (id, path) in release_manifests(&directories.component_releases()).await? {

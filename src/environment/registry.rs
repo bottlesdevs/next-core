@@ -46,33 +46,27 @@ impl<T: EnvironmentOwnerState> Registry<T> {
         while let Some(entry) = entries.next().await {
             let root = entry?.path();
             let file = root.join(T::FILE_NAME);
-            if !async_fs::metadata(&file)
-                .await
-                .is_ok_and(|entry| entry.is_file())
-            {
-                continue;
-            }
-            let loaded = async {
-                let state: T = next_config::load(&file).await?;
-                let id = state.id();
-                let environment = Environment::from_state(
-                    state,
-                    root,
-                    context.clone(),
-                    #[cfg(feature = "fvs")]
-                    virgo.clone(),
-                )?;
-                Ok::<_, crate::error::Error>((id, environment))
-            }
-            .await;
-            match loaded {
-                Ok((id, environment)) => {
-                    members.insert(id, environment);
+            let state: T = match next_config::load(&file).await {
+                Ok(state) => state,
+                Err(next_config::error::Error::Io(error))
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    continue;
                 }
-                Err(error) => {
-                    tracing::warn!(path = %file.display(), "skipping incompatible or unreadable environment: {error}")
-                }
-            }
+                Err(error) => return Err(error.into()),
+            };
+            let id = state.id();
+            let environment = Environment::from_state(
+                state,
+                root,
+                context.clone(),
+                #[cfg(feature = "fvs")]
+                virgo.clone(),
+            )?;
+            members.insert(id, environment);
         }
         Ok(Self(watch::channel(Arc::new(members)).0))
     }
