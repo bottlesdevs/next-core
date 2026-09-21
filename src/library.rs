@@ -11,7 +11,7 @@ use futures_util::{
 use uuid::Uuid;
 
 use crate::{
-    Bottle, BottleManager, Operation, PluginId, Profiles, ProgramSpec, bottle::error::BottleError,
+    Bottle, BottleManager, Operation, Profiles, ProgramSpec, bottle::error::BottleError,
     error::Result,
 };
 
@@ -255,7 +255,7 @@ pub enum SearchSource {
     /// A game owned through one linked storefront account.
     Storefront {
         profile_id: Uuid,
-        provider_id: PluginId,
+        provider_id: String,
         game_id: String,
     },
 }
@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn storefront_search_matches_title_and_source_without_using_them_as_identity() {
         let profile_id = Uuid::new_v4();
-        let provider_id = PluginId::new("epic-games-store");
+        let provider_id = "epic-games-store".to_owned();
         let entry = SearchEntry {
             title: "Fortnite".into(),
             source_name: "Epic Games Store".into(),

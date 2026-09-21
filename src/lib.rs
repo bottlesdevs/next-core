@@ -35,7 +35,7 @@ pub use environment::{Edit, EnvironmentError, EnvironmentState, PrefixBackend};
 pub use environment::{Snapshot, SnapshotSummary};
 pub use library::{Library, LibraryItem, SearchEntry, SearchSource};
 pub use operation::{Operation, Progress, Stage, Transfer};
-pub use plugins::{PluginError, PluginId, PluginInfo, PluginKind, PluginManifest, Plugins};
+pub use plugins::{PluginError, PluginInfo, PluginKind, PluginManifest, Plugins};
 pub use profiles::{
     AccountIdentity, AccountLinkInteraction, Profile, ProfileError, Profiles, ProfilesConfig,
     StorefrontAccount, StorefrontProvider,

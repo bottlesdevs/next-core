@@ -7,13 +7,14 @@ use bottles_plugin_host::AccountIdentity;
 use tokio_util::sync::CancellationToken;
 
 use super::{AccountLinkInteraction, LinkedAccount, StorefrontAccountProvider, StorefrontProvider};
-use crate::PluginId;
 
-pub const PROVIDER_ID: PluginId = PluginId::new("steam");
-pub(super) const METADATA: StorefrontProvider = StorefrontProvider {
-    id: PROVIDER_ID,
-    name: Cow::Borrowed("Steam"),
-};
+pub const PROVIDER_ID: &str = "steam";
+pub(super) fn metadata() -> StorefrontProvider {
+    StorefrontProvider {
+        id: PROVIDER_ID.into(),
+        name: Cow::Borrowed("Steam"),
+    }
+}
 
 #[cfg(target_os = "macos")]
 const LOGINUSERS_PATHS: &[&str] = &["Library/Application Support/Steam/config/loginusers.vdf"];
@@ -31,7 +32,7 @@ pub(super) struct SteamIntegration;
 #[async_trait]
 impl StorefrontAccountProvider for SteamIntegration {
     fn metadata(&self) -> StorefrontProvider {
-        METADATA
+        metadata()
     }
 
     async fn link_account(

@@ -16,7 +16,7 @@ use tokio::sync::{Mutex, watch};
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
-use crate::{Directories, Operation, PluginId, Plugins, error::Result};
+use crate::{Directories, Operation, Plugins, error::Result};
 use storefront::LinkedAccount;
 pub use storefront::{AccountIdentity, AccountLinkInteraction, StorefrontProvider};
 
@@ -248,7 +248,7 @@ impl Profiles {
     pub fn link_account(
         &self,
         profile_id: Uuid,
-        provider_id: PluginId,
+        provider_id: String,
         interaction: Arc<dyn AccountLinkInteraction>,
     ) -> Operation<Profile> {
         let profiles = self.clone();
@@ -303,7 +303,7 @@ impl Profiles {
     /// its provider. Waits for the account's operation before taking the profile
     /// write lock for cleanup and persistence. If either fails, the slot stays
     /// occupied and further searches are disabled; unlinking can be retried.
-    pub async fn unlink_account(&self, profile_id: Uuid, provider_id: PluginId) -> Result<Profile> {
+    pub async fn unlink_account(&self, profile_id: Uuid, provider_id: String) -> Result<Profile> {
         let account = find_account(&self.snapshot(), profile_id, &provider_id)?;
         let mut operation = account.lock().await;
         let write = Arc::new(self.inner.write_lock.clone().lock_owned().await);
@@ -334,7 +334,7 @@ impl Profiles {
 fn find_account(
     state: &ProfilesConfig,
     profile_id: Uuid,
-    provider_id: &PluginId,
+    provider_id: &String,
 ) -> Result<StorefrontAccount> {
     let profile = state
         .profile(profile_id)
@@ -356,7 +356,7 @@ fn find_account(
 fn validate_account_link(
     state: &ProfilesConfig,
     profile_id: Uuid,
-    provider_id: &PluginId,
+    provider_id: &String,
 ) -> Result<usize> {
     let profile_index = state
         .profiles
