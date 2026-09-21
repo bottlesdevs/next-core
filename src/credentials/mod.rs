@@ -1,14 +1,12 @@
 use keyring::Entry;
 use uuid::Uuid;
 
-use crate::PluginId;
-
 #[cfg(test)]
 use std::sync::{Arc, OnceLock};
 
 const SERVICE: &str = "com.usebottles.bottles-next";
 
-fn account(provider_id: &PluginId, profile_id: Uuid) -> String {
+fn account(provider_id: &String, profile_id: Uuid) -> String {
     format!("providers/{provider_id}/profiles/{profile_id}")
 }
 
@@ -39,7 +37,7 @@ fn load_entry(entry: &Entry) -> keyring::Result<Option<Vec<u8>>> {
 }
 
 pub(crate) async fn load(
-    provider_id: &PluginId,
+    provider_id: &String,
     profile_id: Uuid,
 ) -> keyring::Result<Option<Vec<u8>>> {
     let account = account(provider_id, profile_id);
@@ -58,7 +56,7 @@ fn delete_entry(entry: &Entry) -> keyring::Result<()> {
 }
 
 pub(crate) async fn save(
-    provider_id: &PluginId,
+    provider_id: &String,
     profile_id: Uuid,
     secret: &[u8],
     guard: impl Send + 'static,
@@ -74,7 +72,7 @@ pub(crate) async fn save(
 }
 
 pub(crate) async fn delete(
-    provider_id: &PluginId,
+    provider_id: &String,
     profile_id: Uuid,
     guard: impl Send + 'static,
 ) -> keyring::Result<()> {
@@ -95,9 +93,9 @@ mod tests {
         use_test_store();
         futures_lite::future::block_on(async {
             let guard = Arc::new(Arc::new(tokio::sync::Mutex::new(())).lock_owned().await);
-            let provider = PluginId::new("provider");
+            let provider = "provider".to_owned();
             let profile = Uuid::new_v4();
-            let other_provider = PluginId::new("other-provider");
+            let other_provider = "other-provider".to_owned();
             let other_profile = Uuid::new_v4();
 
             assert_eq!(load(&provider, profile).await.unwrap(), None);

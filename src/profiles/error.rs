@@ -1,8 +1,6 @@
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::PluginId;
-
 #[derive(Debug, Error)]
 pub enum ProfileError {
     /// No profile exists with the requested UUID.
@@ -16,14 +14,14 @@ pub enum ProfileError {
     LastProfile(Uuid),
     /// No available provider supplies accounts for this storefront.
     #[error("storefront account provider {0} was not found")]
-    ProviderNotFound(PluginId),
+    ProviderNotFound(String),
     /// The profile already has an account from this provider.
     #[error("profile {profile} already has an account from provider {provider}")]
-    AccountAlreadyLinked { profile: Uuid, provider: PluginId },
+    AccountAlreadyLinked { profile: Uuid, provider: String },
     /// The profile has no account from this provider.
     #[error("profile {profile} has no account from provider {provider}")]
-    AccountNotLinked { profile: Uuid, provider: PluginId },
+    AccountNotLinked { profile: Uuid, provider: String },
     /// The provider rejected or failed an account operation.
     #[error("storefront account provider {provider}: {message}")]
-    Provider { provider: PluginId, message: String },
+    Provider { provider: String, message: String },
 }

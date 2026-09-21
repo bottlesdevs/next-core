@@ -3,7 +3,7 @@
 mod plugin;
 mod steam;
 
-use crate::{PluginId, PluginKind, Plugins, ProfileError, error::Result};
+use crate::{PluginKind, Plugins, ProfileError, error::Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, sync::Arc};
@@ -15,7 +15,7 @@ pub(crate) use bottles_plugin_host::LinkedAccount;
 /// Static identity of one available storefront account provider.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StorefrontProvider {
-    pub id: PluginId,
+    pub id: String,
     pub name: Cow<'static, str>,
 }
 
@@ -52,9 +52,9 @@ pub(crate) trait StorefrontLibraryProvider: Send + Sync {
 
 pub(crate) fn account_provider(
     plugins: &Plugins,
-    id: &PluginId,
+    id: &String,
 ) -> Result<Arc<dyn StorefrontAccountProvider>> {
-    if id == &steam::PROVIDER_ID {
+    if id == steam::PROVIDER_ID {
         return Ok(Arc::new(steam::SteamIntegration));
     }
     plugins
@@ -64,7 +64,7 @@ pub(crate) fn account_provider(
 }
 
 pub(crate) fn account_providers(plugins: &Plugins) -> Vec<StorefrontProvider> {
-    std::iter::once(steam::METADATA)
+    std::iter::once(steam::metadata())
         .chain(
             plugins
                 .contributions(PluginKind::StorefrontAccountProvider)
@@ -80,7 +80,7 @@ pub(crate) fn account_providers(plugins: &Plugins) -> Vec<StorefrontProvider> {
 /// library implementation is available, searches report the source as unavailable.
 pub(crate) fn library_provider(
     plugins: &Plugins,
-    id: &PluginId,
+    id: &String,
 ) -> Result<Option<Arc<dyn StorefrontLibraryProvider>>> {
     let plugin = plugins
         .get(id)
