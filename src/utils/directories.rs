@@ -98,7 +98,7 @@ impl Directories {
         self.data_dir().join("virgo")
     }
 
-    pub(crate) fn plugins(&self) -> PathBuf {
+    pub fn plugins(&self) -> PathBuf {
         self.data_dir().join("plugins")
     }
 

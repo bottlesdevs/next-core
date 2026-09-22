@@ -7,14 +7,14 @@ use super::{
     AccountLinkInteraction, LinkedAccount, StorefrontAccountProvider, StorefrontLibraryProvider,
     StorefrontProvider,
 };
-use crate::plugins::Plugin;
+use bottles_plugin_host::LoadedPlugin;
 
 #[async_trait]
-impl StorefrontAccountProvider for Plugin {
+impl StorefrontAccountProvider for LoadedPlugin {
     fn metadata(&self) -> StorefrontProvider {
         StorefrontProvider {
-            id: self.manifest.id.clone(),
-            name: self.manifest.name.clone().into(),
+            id: self.info.manifest.id.clone(),
+            name: self.info.manifest.name.clone().into(),
         }
     }
 
@@ -29,9 +29,9 @@ impl StorefrontAccountProvider for Plugin {
 }
 
 #[async_trait]
-impl StorefrontLibraryProvider for Plugin {
+impl StorefrontLibraryProvider for LoadedPlugin {
     fn name(&self) -> &str {
-        &self.manifest.name
+        &self.info.manifest.name
     }
 
     async fn list_games(
