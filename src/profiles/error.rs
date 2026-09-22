@@ -19,8 +19,8 @@ pub enum ProfileError {
     #[error("profile {profile} already has an account from provider {provider}")]
     AccountAlreadyLinked { profile: Uuid, provider: String },
     /// The profile has no account from this provider.
-    #[error("profile {profile} has no account from provider {provider}")]
-    AccountNotLinked { profile: Uuid, provider: String },
+    #[error("profile {profile} has no account link {link}")]
+    AccountNotLinked { profile: Uuid, link: Uuid },
     /// The provider rejected or failed an account operation.
     #[error("storefront account provider {provider}: {message}")]
     Provider { provider: String, message: String },
