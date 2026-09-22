@@ -23,7 +23,9 @@ use crate::{
     error::{Error, Result},
 };
 use storefront::LinkedAccount;
-pub use storefront::{AccountIdentity, AccountLinkInteraction, StorefrontProvider};
+pub use storefront::{
+    AccountIdentity, AccountLinkInteraction, StorefrontProvider, add_plugin_imports,
+};
 
 /// One coherent persisted snapshot of every profile and the selected profile.
 ///
@@ -271,7 +273,7 @@ impl Profiles {
         profile_id: Uuid,
         account: &StorefrontAccount,
         cancellation: &CancellationToken,
-    ) -> Result<(String, Vec<bottles_plugin_host::OwnedGame>)> {
+    ) -> Result<(String, Vec<storefront::OwnedGame>)> {
         let live = self
             .account(account.link_id)
             .ok_or(ProfileError::AccountNotLinked {

@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
-use bottles_plugin_host::{AccountIdentity, Authentication, OwnedGame};
+use super::wasm::{AccountIdentity, Authentication, OwnedGame};
 use tokio_util::sync::CancellationToken;
 
 use super::{AccountLinkInteraction, LinkedAccount, Provider, StorefrontProvider};
