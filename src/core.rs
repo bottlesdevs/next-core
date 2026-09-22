@@ -33,7 +33,7 @@ pub struct Bottles {
 impl Bottles {
     /// Open core services and local state. With FVS enabled, connect to or start its
     /// daemon before opening owner registries; connection failures abort startup.
-    pub async fn open(config: Config) -> Result<Self> {
+    pub async fn open(config: Config, plugins: Arc<Plugins>) -> Result<Self> {
         let Config {
             #[cfg(feature = "fvs")]
             fvs2d,
@@ -41,7 +41,6 @@ impl Bottles {
             dependency_catalog,
         } = config;
         let directories = Directories::new().await?;
-        let plugins = Arc::new(Plugins::open(&directories).await?);
         let profiles = Profiles::load(&directories, plugins.clone()).await?;
         let http_client: Arc<dyn HttpClient> =
             Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
@@ -126,7 +125,7 @@ impl Bottles {
     }
 
     /// Returns installed plugin lifecycle management.
-    pub fn plugins(&self) -> &Plugins {
+    pub fn plugins(&self) -> &Arc<Plugins> {
         &self.plugins
     }
 

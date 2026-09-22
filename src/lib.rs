@@ -6,7 +6,6 @@ mod environment;
 pub mod error;
 mod library;
 mod operation;
-mod plugins;
 mod profiles;
 #[cfg(feature = "fvs")]
 mod program;
@@ -29,13 +28,13 @@ pub use bottle::{
     Bottle, BottleError, BottleManager, BottleState, DllOverride, DllOverrideMode, GamescopeConfig,
     GamescopeFilter, GamescopeScaler, MangoHudConfig, Process, RegistryHive, Wrappers,
 };
+pub use bottles_plugin_host::{PluginError, PluginInfo, PluginManifest, Plugins};
 pub use core::{Bottles, Config};
 pub use environment::{Edit, EnvironmentError, EnvironmentState, PrefixBackend};
 #[cfg(feature = "fvs")]
 pub use environment::{Snapshot, SnapshotSummary};
 pub use library::{Library, LibraryItem, SearchEntry, SearchSource};
 pub use operation::{Operation, Progress, Stage, Transfer};
-pub use plugins::{PluginError, PluginInfo, PluginManifest, Plugins};
 pub use profiles::{
     AccountIdentity, AccountLinkInteraction, Profile, ProfileError, Profiles, ProfilesConfig,
     StorefrontAccount, StorefrontProvider,

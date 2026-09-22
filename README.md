@@ -122,12 +122,13 @@ futures-lite = "2"
 Open the library, inspect the current bottles, and stop its download service:
 
 ```rust
-use bottles_core::{Bottles, Config, ProgramSpec, SearchSource};
+use bottles_core::{Bottles, Config, Directories, ProgramSpec, SearchSource};
 use futures_lite::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<(), bottles_core::error::Error> {
-    let bottles = Bottles::open(Config::default()).await?;
+    let plugins = bottles_plugin_host::Plugins::open(Directories::new().await?.plugins()).await?;
+    let bottles = Bottles::open(Config::default(), plugins.clone()).await?;
 
     println!("profile: {}", bottles.profiles().selected().name());
 
