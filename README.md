@@ -36,10 +36,7 @@ The crate is centered around six types:
   values are snapshots; query the manager again after a publication.
 - `BottleManager` manages bottles by UUID. A `Bottle` is a shared handle whose
   current immutable `BottleState` can be read or watched.
-- `Library` combines installed programs, explicitly refreshes remote libraries,
-  and searches caller-owned snapshots. Refresh returns games or an error for each
-  account; the caller retains the results and chooses when to refresh again.
-  Searching performs no network requests or credential writes.
+- `Library` lists and watches installed programs and provides launch handles.
 - `Profiles` persists named application identities and the current selection,
   discovers account providers, and owns account linking and credential persistence.
 - `Operation<T>` represents long-running work with progress and cooperative
@@ -128,14 +125,14 @@ futures-lite = "2"
 Open the library, inspect the current bottles, and stop its download service:
 
 ```rust
-use bottles_core::{Bottles, Config, Directories, ProgramSpec, SearchSource};
+use bottles_core::{Bottles, Config, Directories, ProgramSpec};
 use futures_lite::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<(), bottles_core::error::Error> {
-    let runtime = bottles_plugin_host::Runtime::new(bottles_plugin_host::add_plugin_imports)?;
+    let directories = Directories::new().await?;
     let plugins = bottles_plugin_host::Plugins::open(
-        Directories::new().await?.plugins(), runtime,
+        directories.plugins(), directories.staging(),
     ).await?;
     let bottles = Bottles::open(Config::default(), plugins.clone()).await?;
 
@@ -154,25 +151,6 @@ async fn main() -> Result<(), bottles_core::error::Error> {
 
     let mut installed = Box::pin(bottles.library().watch());
     println!("{} installed programs", installed.next().await.unwrap().len());
-
-    let remote = bottles.library().refresh(bottles.profiles().selected().id()).await?;
-    for source in &remote {
-        if let Err(error) = &source.games {
-            eprintln!("{}: {error}", source.account.provider.name);
-        }
-    }
-    for entry in bottles.library().search("example", &remote) {
-        println!("{} ({})", entry.title(), entry.source_name());
-        match entry.source() {
-            SearchSource::Installed(item) => {
-                println!("  launch {}", item.program()?.name());
-            }
-            SearchSource::Storefront { link_id, .. } => {
-                println!("  owned through account link {link_id}");
-            }
-            _ => {}
-        }
-    }
 
     bottles.shutdown().await
 }

@@ -2,19 +2,19 @@
 
 mod account;
 mod error;
-pub(crate) mod storefront;
+mod storefront;
 
 pub use account::StorefrontAccount;
 pub use error::ProfileError;
 
-use std::{collections::HashMap, future::Future, io, path::PathBuf, sync::Arc};
+use std::{io, path::PathBuf, sync::Arc};
 
-use bottles_plugin_host::{Authentication, Plugins};
+use bottles_plugin_host::Plugins;
 use futures_core::Stream;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
-use tokio_stream::{StreamExt, wrappers::WatchStream};
+use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -86,35 +86,8 @@ impl ProfilesConfig {
 struct ProfilesInner {
     plugins: Arc<Plugins>,
     path: PathBuf,
-    published: watch::Sender<Arc<ProfilesState>>,
+    published: watch::Sender<Arc<ProfilesConfig>>,
     write_lock: Mutex<()>,
-}
-
-// Publish the public snapshot and its credential locks as one generation.
-struct ProfilesState {
-    config: Arc<ProfilesConfig>,
-    credential_locks: HashMap<Uuid, Arc<Mutex<()>>>,
-}
-
-impl ProfilesState {
-    fn new(config: ProfilesConfig, previous: &HashMap<Uuid, Arc<Mutex<()>>>) -> Self {
-        let credential_locks = config
-            .profiles
-            .iter()
-            .flat_map(|p| &p.accounts)
-            .map(|info| {
-                let lock = previous
-                    .get(&info.link_id)
-                    .cloned()
-                    .unwrap_or_else(|| Arc::new(Mutex::new(())));
-                (info.link_id, lock)
-            })
-            .collect();
-        Self {
-            config: Arc::new(config),
-            credential_locks,
-        }
-    }
 }
 
 impl Profiles {
@@ -145,18 +118,13 @@ impl Profiles {
         operation: impl FnOnce(&mut ProfilesConfig) -> Result<T>,
     ) -> Result<T> {
         let current = self.inner.published.borrow().clone();
-        let mut next = current.config.as_ref().clone();
+        let mut next = current.as_ref().clone();
         let value = operation(&mut next)?;
-        if next == *current.config {
+        if next == *current {
             return Ok(value);
         }
         next_config::save(&self.inner.path, &next).await?;
-        self.inner
-            .published
-            .send_replace(Arc::new(ProfilesState::new(
-                next,
-                &current.credential_locks,
-            )));
+        self.inner.published.send_replace(Arc::new(next));
         Ok(value)
     }
 }
@@ -186,7 +154,7 @@ impl Profiles {
         if state.profile(state.selected).is_none() {
             return Err(ProfileError::NotFound(state.selected).into());
         }
-        let (published, _) = watch::channel(Arc::new(ProfilesState::new(state, &HashMap::new())));
+        let (published, _) = watch::channel(Arc::new(state));
         let inner = Arc::new(ProfilesInner {
             plugins,
             path,
@@ -198,7 +166,7 @@ impl Profiles {
 
     /// Returns the current profile collection and selection atomically.
     pub fn snapshot(&self) -> Arc<ProfilesConfig> {
-        self.inner.published.borrow().config.clone()
+        self.inner.published.borrow().clone()
     }
 
     /// Returns every profile in persisted order.
@@ -216,7 +184,7 @@ impl Profiles {
     /// The stream yields the current snapshot first. Slow consumers may miss
     /// intermediate changes and receive only the latest coherent snapshot.
     pub fn watch(&self) -> impl Stream<Item = Arc<ProfilesConfig>> + Send + 'static + use<> {
-        WatchStream::new(self.inner.published.subscribe()).map(|state| state.config.clone())
+        WatchStream::new(self.inner.published.subscribe())
     }
 
     /// Creates and selects a profile with a generated UUID in one publication.
@@ -277,60 +245,6 @@ impl Profiles {
             drop(write);
             self.unlink_account(account.link_id).await?;
         }
-    }
-
-    fn account_lock(&self, link_id: Uuid) -> Option<Arc<Mutex<()>>> {
-        self.inner
-            .published
-            .borrow()
-            .credential_locks
-            .get(&link_id)
-            .cloned()
-    }
-
-    /// Serialize credential refresh and persistence with unlinking for this account link.
-    pub(crate) async fn refresh_credential<F, Fut>(
-        &self,
-        profile_id: Uuid,
-        link_id: Uuid,
-        cancellation: &CancellationToken,
-        authenticate: F,
-    ) -> Result<Vec<u8>>
-    where
-        F: FnOnce(String, Option<Vec<u8>>) -> Fut,
-        Fut: Future<Output = Result<Authentication>>,
-    {
-        let lock = self
-            .account_lock(link_id)
-            .ok_or(ProfileError::AccountNotLinked {
-                profile: profile_id,
-                link: link_id,
-            })?;
-        let _guard = cancellation
-            .run_until_cancelled(lock.lock())
-            .await
-            .ok_or(Error::Cancelled)?;
-        let snapshot = self.snapshot();
-        let account = snapshot
-            .profile(profile_id)
-            .ok_or(ProfileError::NotFound(profile_id))?
-            .accounts()
-            .iter()
-            .find(|account| account.link_id == link_id)
-            .ok_or(ProfileError::AccountNotLinked {
-                profile: profile_id,
-                link: link_id,
-            })?;
-        // No cooperative cancellation between authentication and saving a rotated credential.
-        let credential = credentials::load(link_id).await?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        let auth = authenticate(account.identity.account_id.clone(), credential).await?;
-        if let Some(updated) = auth.updated_credential {
-            credentials::save(link_id, &updated).await?;
-        }
-        Ok(auth.access)
     }
 
     pub fn account_providers(&self) -> Vec<StorefrontProvider> {
@@ -406,15 +320,10 @@ impl Profiles {
         })
     }
 
-    /// Remove membership before deleting the secret. Retrying an absent UUID retries cleanup.
+    /// Remove membership before deleting the secret. An absent UUID retries cleanup.
     /// The caller must drive this future to completion once publication begins.
     pub async fn unlink_account(&self, link_id: Uuid) -> Result<()> {
-        let lock = self.account_lock(link_id);
-        let _credential = match &lock {
-            Some(lock) => Some(lock.lock().await),
-            None => None,
-        };
-        let write = self.inner.write_lock.lock().await;
+        let _write = self.inner.write_lock.lock().await;
         self.update_locked(|state| {
             for profile in &mut state.profiles {
                 profile
@@ -424,7 +333,6 @@ impl Profiles {
             Ok(())
         })
         .await?;
-        drop(write);
         credentials::delete(link_id)
             .await
             .map_err(|source| ProfileError::CredentialCleanup { link_id, source })?;

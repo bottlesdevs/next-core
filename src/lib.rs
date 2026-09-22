@@ -32,7 +32,7 @@ pub use core::{Bottles, Config};
 pub use environment::{Edit, EnvironmentError, EnvironmentState, PrefixBackend};
 #[cfg(feature = "fvs")]
 pub use environment::{Snapshot, SnapshotSummary};
-pub use library::{AccountLibrary, Library, LibraryItem, OwnedGame, SearchEntry, SearchSource};
+pub use library::{Library, LibraryItem};
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use profiles::{
     AccountIdentity, AccountLinkInteraction, Profile, ProfileError, Profiles, ProfilesConfig,

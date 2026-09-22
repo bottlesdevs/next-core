@@ -15,9 +15,6 @@ pub enum ProfileError {
     /// The profile already has an account from this provider.
     #[error("profile {profile} already has an account from provider {provider}")]
     AccountAlreadyLinked { profile: Uuid, provider: String },
-    /// The profile has no account from this provider.
-    #[error("profile {profile} has no account link {link}")]
-    AccountNotLinked { profile: Uuid, link: Uuid },
     #[error("failed to clean credentials for account link {link_id}: {source}")]
     CredentialCleanup {
         link_id: Uuid,

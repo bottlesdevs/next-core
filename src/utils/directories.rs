@@ -45,7 +45,10 @@ impl Directories {
         self.0.cache_dir()
     }
 
-    pub(crate) fn staging(&self) -> PathBuf {
+    /// Shared root for disposable workspaces.
+    /// Plugin installation by rename requires this root and [`plugins`](Self::plugins)
+    /// to be on the same filesystem.
+    pub fn staging(&self) -> PathBuf {
         self.data_dir().join(".staging")
     }
 

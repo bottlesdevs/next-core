@@ -123,7 +123,7 @@ impl fmt::Display for Stage {
 ///
 /// Dropping an operation abandons its future without requesting cancellation.
 /// Plugin calls already accepted by the host may continue, but core does not
-/// complete subsequent credential or catalog writes on the caller's behalf.
+/// complete subsequent credential writes on the caller's behalf.
 /// Asynchronous persistence and cleanup cannot finish after that drop. Use
 /// [`cancel`](Self::cancel) and await its result to stop cooperatively: account
 /// operations finish entered credential and membership writes before returning.
