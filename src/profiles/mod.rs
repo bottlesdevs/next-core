@@ -7,8 +7,9 @@ mod storefront;
 pub use account::StorefrontAccount;
 pub use error::ProfileError;
 
-use std::{collections::HashMap, io, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, future::Future, io, path::PathBuf, sync::Arc};
 
+use bottles_plugin_host::{Authentication, Plugins};
 use futures_core::Stream;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
-    Directories, Operation, Plugins, credentials,
+    Directories, Operation, credentials,
     error::{Error, Result},
 };
 use storefront::LinkedAccount;
@@ -47,7 +48,7 @@ impl ProfilesConfig {
         }
     }
 
-    fn profile(&self, id: Uuid) -> Option<&Profile> {
+    pub(crate) fn profile(&self, id: Uuid) -> Option<&Profile> {
         self.profiles.iter().find(|profile| profile.id == id)
     }
 
@@ -268,121 +269,94 @@ impl Profiles {
             .cloned()
     }
 
-    pub(crate) async fn owned_games(
+    /// Serialize credential refresh and persistence with unlinking for this account link.
+    pub(crate) async fn refresh_credential<F, Fut>(
         &self,
         profile_id: Uuid,
         link_id: Uuid,
         cancellation: &CancellationToken,
-    ) -> Result<Option<(String, Vec<storefront::OwnedGame>)>> {
+        authenticate: F,
+    ) -> Result<Vec<u8>>
+    where
+        F: FnOnce(String, Option<Vec<u8>>) -> Fut,
+        Fut: Future<Output = Result<Authentication>>,
+    {
         let lock = self
             .account_lock(link_id)
             .ok_or(ProfileError::AccountNotLinked {
                 profile: profile_id,
                 link: link_id,
             })?;
-        let guard = cancellation
+        let _guard = cancellation
             .run_until_cancelled(lock.lock())
             .await
             .ok_or(Error::Cancelled)?;
-        let state = self.snapshot();
-        let profile = state
+        let snapshot = self.snapshot();
+        let account = snapshot
             .profile(profile_id)
-            .ok_or(ProfileError::NotFound(profile_id))?;
-        let account = profile
-            .accounts
+            .ok_or(ProfileError::NotFound(profile_id))?
+            .accounts()
             .iter()
-            .find(|linked| linked.link_id == link_id)
+            .find(|account| account.link_id == link_id)
             .ok_or(ProfileError::AccountNotLinked {
                 profile: profile_id,
                 link: link_id,
             })?;
-        let provider = cancellation
-            .run_until_cancelled(storefront::get_library(
-                &self.inner.plugins,
-                &account.provider.id,
-            ))
-            .await
-            .ok_or(Error::Cancelled)??;
-        let Some(provider) = provider else {
-            return Ok(None);
-        };
-        // The caller keeps this future driven through authentication and credential persistence.
+        // No cooperative cancellation between authentication and saving a rotated credential.
         let credential = credentials::load(link_id).await?;
-        let auth = bottles_plugin_host::storefront::authenticate(
-            &provider,
-            &account.identity.account_id,
-            credential.as_deref(),
-        )
-        .await
-        .map_err(|message| ProfileError::Provider {
-            provider: account.provider.id.clone(),
-            message,
-        })?;
+        let auth = authenticate(account.identity.account_id.clone(), credential).await?;
         if let Some(updated) = auth.updated_credential {
             credentials::save(link_id, &updated).await?;
         }
-        drop(guard);
-        // The same provider/revision is retained; cancellation resumes after persistence.
-        let games = cancellation
-            .run_until_cancelled(bottles_plugin_host::storefront::list_games(
-                &provider,
-                &account.identity.account_id,
-                &auth.access,
-            ))
-            .await
-            .ok_or(Error::Cancelled)?
-            .map_err(|message| ProfileError::Provider {
-                provider: account.provider.id.clone(),
-                message,
-            })?;
-        Ok(Some((provider.info.manifest.name, games)))
+        Ok(auth.access)
     }
 
     pub fn account_providers(&self) -> Vec<StorefrontProvider> {
         storefront::list(&self.inner.plugins)
     }
 
-    /// Cancellation stops preparation; credential and membership writes finish once entered.
-    /// Use `cancel().await` to stop cooperatively. Dropping the operation abandons
-    /// its future and cannot finish asynchronous persistence or cleanup.
+    /// Linking runs only while the caller drives the operation. Cooperative cancellation
+    /// stops preparation; entered credential and membership writes finish before returning.
+    /// Dropping the operation abandons it; use `cancel().await` to finish safely.
     pub fn link_account(
         &self,
         profile_id: Uuid,
         provider_id: String,
         interaction: Arc<dyn AccountLinkInteraction>,
-    ) -> Operation<Profile> {
+    ) -> Operation<StorefrontAccount> {
         let profiles = self.clone();
-        Operation::new(move |_progress, cancellation| async move {
+        Operation::new(move |_, cancellation| async move {
             validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
             let provider = cancellation
                 .run_until_cancelled(storefront::get(&profiles.inner.plugins, &provider_id))
                 .await
                 .ok_or(Error::Cancelled)??;
-            let metadata = provider.metadata();
             let linked = cancellation
                 .run_until_cancelled(provider.link_account(interaction))
                 .await
-                .ok_or(Error::Cancelled)?;
-            let LinkedAccount {
-                identity,
-                credential,
-            } = linked.map_err(|message| ProfileError::Provider {
-                provider: provider_id.clone(),
-                message,
-            })?;
+                .ok_or(Error::Cancelled)?
+                .map_err(|message| ProfileError::Provider {
+                    provider: provider_id,
+                    message,
+                })?;
+            let provider = provider.metadata();
             let _write = cancellation
                 .run_until_cancelled(profiles.inner.write_lock.lock())
                 .await
                 .ok_or(Error::Cancelled)?;
-            let index = validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
-            let account = StorefrontAccount::new(metadata, identity);
+            let index = validate_account_link(&profiles.snapshot(), profile_id, &provider.id)?;
+            let LinkedAccount {
+                identity,
+                credential,
+            } = linked;
+            let account = StorefrontAccount::new(provider, identity);
             if let Some(secret) = credential.as_deref() {
                 credentials::save(account.link_id, secret).await?;
             }
             let result = profiles
                 .update_locked(|state| {
                     state.profiles[index].accounts.push(account.clone());
-                    Ok(state.profiles[index].clone())
+                    Ok(account.clone())
                 })
                 .await;
             if let Err(error) = result {
@@ -431,7 +405,7 @@ impl Profiles {
 fn validate_account_link(
     state: &ProfilesConfig,
     profile_id: Uuid,
-    provider_id: &String,
+    provider_id: &str,
 ) -> Result<usize> {
     let profile_index = state
         .profiles
@@ -441,11 +415,11 @@ fn validate_account_link(
     if state.profiles[profile_index]
         .accounts
         .iter()
-        .any(|account| &account.provider.id == provider_id)
+        .any(|account| account.provider.id == provider_id)
     {
         return Err(ProfileError::AccountAlreadyLinked {
             profile: profile_id,
-            provider: provider_id.clone(),
+            provider: provider_id.to_owned(),
         }
         .into());
     }

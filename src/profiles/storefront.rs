@@ -1,14 +1,14 @@
-//! Storefront implementations behind one account and library contract.
+//! Native and plugin account providers for profiles.
 mod steam;
 
-use crate::{Plugins, ProfileError, error::Result};
+use crate::{ProfileError, error::Result};
 use async_trait::async_trait;
-use bottles_plugin_host::{LoadedPlugin, PluginInterface};
+use bottles_plugin_host::{LoadedPlugin, PluginInterface, Plugins};
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, sync::Arc};
 
 pub use bottles_plugin_host::AccountLinkInteraction;
-pub(crate) use bottles_plugin_host::{LinkedAccount, OwnedGame};
+pub(super) use bottles_plugin_host::LinkedAccount;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StorefrontProvider {
@@ -54,21 +54,6 @@ pub(super) async fn get(plugins: &Plugins, id: &str) -> Result<Arc<dyn Provider>
         return Err(ProfileError::ProviderNotFound(id.into()).into());
     }
     Ok(Arc::new(plugin))
-}
-
-/// Account-only providers have no library to refresh.
-pub(super) async fn get_library(plugins: &Plugins, id: &str) -> Result<Option<LoadedPlugin>> {
-    if id == steam::metadata().id {
-        return Ok(None);
-    }
-    let package_id = id
-        .strip_prefix("plugin:")
-        .ok_or_else(|| ProfileError::ProviderNotFound(id.into()))?;
-    let plugin = plugins.load(package_id).await?;
-    Ok(plugin
-        .info
-        .exports(PluginInterface::LibraryProvider)
-        .then_some(plugin))
 }
 
 fn plugin_id(id: &str) -> String {

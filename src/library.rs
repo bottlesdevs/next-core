@@ -1,41 +1,56 @@
-//! Aggregate installed programs and one-shot library search.
+//! Installed programs, caller-driven remote refresh, and local snapshot search.
 
 #[cfg(feature = "fvs")]
 use crate::{Program, ProgramManager};
 
+use std::sync::Arc;
+
+use bottles_plugin_host::{LoadedPlugin, PluginInterface, Plugins};
 use futures_core::Stream;
-use futures_util::{
-    StreamExt,
-    stream::{self, FuturesUnordered},
-};
+#[cfg(feature = "fvs")]
+use futures_util::stream;
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
-    Bottle, BottleManager, Operation, Profiles, ProgramSpec, bottle::error::BottleError,
-    error::Result,
+    Bottle, BottleManager, Operation, ProfileError, Profiles, ProgramSpec, StorefrontAccount,
+    bottle::error::BottleError,
+    error::{Error, Result},
 };
+
+pub use bottles_plugin_host::OwnedGame;
+
+/// Remote games or a source failure for one captured account link.
+/// The caller owns this snapshot and decides when to replace it.
+pub struct AccountLibrary {
+    pub account: StorefrontAccount,
+    pub games: Result<Vec<OwnedGame>>,
+}
 
 /// A live, non-persisted projection of bottle registrations and standalone programs.
 #[derive(Clone)]
 pub struct Library {
+    profiles: Profiles,
+    plugins: Arc<Plugins>,
     bottles: BottleManager,
     #[cfg(feature = "fvs")]
     programs: ProgramManager,
-    profiles: Profiles,
 }
 
 impl Library {
     pub(crate) fn new(
+        profiles: Profiles,
+        plugins: Arc<Plugins>,
         bottles: BottleManager,
         #[cfg(feature = "fvs")] programs: ProgramManager,
-        profiles: Profiles,
     ) -> Self {
         Self {
+            profiles,
+            plugins,
             bottles,
             #[cfg(feature = "fvs")]
             programs,
-            profiles,
         }
     }
 
@@ -88,81 +103,146 @@ impl Library {
         changes.map(move |_| library.list())
     }
 
-    /// Searches installed programs and games owned by the selected profile.
-    ///
-    /// The selected profile and installed programs are snapshotted when this
-    /// method is called. Storefront searches start when the returned stream is
-    /// first polled, and results are emitted as their sources become ready. Later
-    /// selection changes affect subsequent searches, not the captured account set.
-    /// To stop safely, cancel the supplied token and drain the stream. Entered
-    /// authentication and credential persistence finish before each source stops.
-    /// Dropping the stream abandons its futures and cannot finish those writes.
-    /// Storefront failures are logged and omitted so local and other storefront
-    /// results remain available. The same case-insensitive title/source filter
-    /// applies to all results. An empty or whitespace-only query matches every
-    /// entry, and result ordering is unspecified.
-    pub fn search(
-        &self,
-        query: impl Into<String>,
-        cancellation: CancellationToken,
-    ) -> impl Stream<Item = SearchEntry> + Send + 'static {
-        let query = query.into().trim().to_lowercase();
-        let profile = self.profiles.selected();
-        let profile_id = profile.id();
-        let storefronts = profile
-            .accounts()
-            .iter()
-            .cloned()
-            .map(|account| {
-                let profiles = self.profiles.clone();
-                let cancellation = cancellation.clone();
-                async move {
-                    let provider_id = account.provider.id.clone();
-                    let (source_name, games) = match profiles
-                        .owned_games(profile_id, account.link_id, &cancellation)
-                        .await
-                    {
-                        Ok(Some(listed)) => listed,
-                        Ok(None) => return Vec::new(),
-                        Err(error) => {
-                            tracing::warn!(provider = %provider_id, profile = %profile_id,
-                                "failed to list storefront games: {error}");
-                            return Vec::new();
-                        }
-                    };
-                    games
-                        .into_iter()
-                        .map(|game| SearchEntry {
-                            title: game.title,
-                            source_name: source_name.clone(),
-                            source: SearchSource::Storefront {
-                                link_id: account.link_id,
-                                profile_id,
-                                provider_id: provider_id.clone(),
-                                game_id: game.id,
-                            },
-                        })
-                        .collect()
-                }
-            })
-            .collect::<FuturesUnordered<_>>();
-
-        let installed = self
-            .list()
-            .into_iter()
-            .filter_map(|installed| {
-                let (title, source_name) = installed.summary().ok()?;
-                Some(SearchEntry {
-                    title,
-                    source_name,
-                    source: SearchSource::Installed(installed),
+    /// Capture the profile's accounts on first poll and refresh library-capable sources.
+    /// Source errors are returned with their accounts; account-only providers are omitted.
+    /// Cancellation drains started work through credential persistence before returning.
+    /// Dropping the operation abandons that work; use `cancel().await` to finish safely.
+    pub fn refresh(&self, profile_id: Uuid) -> Operation<Vec<AccountLibrary>> {
+        let library = self.clone();
+        Operation::new(move |_, cancellation| async move {
+            let snapshot = library.profiles.snapshot();
+            let accounts = snapshot
+                .profile(profile_id)
+                .ok_or(ProfileError::NotFound(profile_id))?
+                .accounts()
+                .to_vec();
+            let mut pending = accounts
+                .into_iter()
+                .map(|account| {
+                    let library = &library;
+                    let cancellation = &cancellation;
+                    async move {
+                        let games = match library
+                            .refresh_account(profile_id, &account, cancellation)
+                            .await
+                        {
+                            Ok(Some(games)) => Ok(games),
+                            Ok(None) => return None,
+                            Err(error) => Err(error),
+                        };
+                        Some(AccountLibrary { account, games })
+                    }
                 })
-            })
-            .collect::<Vec<_>>();
-
-        stream::select(storefronts.flat_map(stream::iter), stream::iter(installed))
-            .filter(move |entry| std::future::ready(entry.matches(&query)))
+                .collect::<FuturesUnordered<_>>();
+            let mut sources = Vec::new();
+            while let Some(source) = pending.next().await {
+                if let Some(source) = source {
+                    sources.push(source);
+                }
+            }
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            Ok(sources)
+        })
     }
+
+    async fn refresh_account(
+        &self,
+        profile_id: Uuid,
+        account: &StorefrontAccount,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<Vec<OwnedGame>>> {
+        let provider = cancellation
+            .run_until_cancelled(get_library(&self.plugins, &account.provider.id))
+            .await
+            .ok_or(Error::Cancelled)??;
+        let Some(provider) = provider else {
+            return Ok(None);
+        };
+        let plugin = &provider;
+        let access = self
+            .profiles
+            .refresh_credential(
+                profile_id,
+                account.link_id,
+                cancellation,
+                |account_id, credential| async move {
+                    bottles_plugin_host::storefront::authenticate(
+                        plugin,
+                        &account_id,
+                        credential.as_deref(),
+                    )
+                    .await
+                    .map_err(|message| {
+                        ProfileError::Provider {
+                            provider: account.provider.id.clone(),
+                            message,
+                        }
+                        .into()
+                    })
+                },
+            )
+            .await?;
+        // Retain the same revision across authentication, credential persistence, and enumeration.
+        let games = cancellation
+            .run_until_cancelled(bottles_plugin_host::storefront::list_games(
+                &provider,
+                &account.identity.account_id,
+                &access,
+            ))
+            .await
+            .ok_or(Error::Cancelled)?
+            .map_err(|message| ProfileError::Provider {
+                provider: account.provider.id.clone(),
+                message,
+            })?;
+        Ok(Some(games))
+    }
+
+    /// Filter current installed programs and a caller-owned remote snapshot.
+    /// This performs no authentication, network requests, or credential writes.
+    /// Inspect each source's `games` result separately to display refresh failures.
+    pub fn search(&self, query: &str, remote: &[AccountLibrary]) -> Vec<SearchEntry> {
+        let query = query.trim().to_lowercase();
+        let installed = self.list().into_iter().filter_map(|installed| {
+            let (title, source_name) = installed.summary().ok()?;
+            Some(SearchEntry {
+                title,
+                source_name,
+                source: SearchSource::Installed(installed),
+            })
+        });
+        let remote = remote.iter().flat_map(|source| {
+            source.games.iter().flatten().map(|game| SearchEntry {
+                title: game.title.clone(),
+                source_name: source.account.provider.name.to_string(),
+                source: SearchSource::Storefront {
+                    link_id: source.account.link_id,
+                    game_id: game.id.clone(),
+                },
+            })
+        });
+        installed
+            .chain(remote)
+            .filter(|entry| entry.matches(&query))
+            .collect()
+    }
+}
+
+/// Account-only providers have no library to refresh.
+async fn get_library(plugins: &Plugins, id: &str) -> Result<Option<LoadedPlugin>> {
+    if id == "native:steam" {
+        return Ok(None);
+    }
+    let package_id = id
+        .strip_prefix("plugin:")
+        .ok_or_else(|| ProfileError::ProviderNotFound(id.into()))?;
+    let plugin = plugins.load(package_id).await?;
+    Ok(plugin
+        .info
+        .exports(PluginInterface::LibraryProvider)
+        .then_some(plugin))
 }
 
 /// A live installed item with actions bound to its owning environment.
@@ -261,12 +341,7 @@ pub enum SearchSource {
     /// A bottle registration or standalone program currently installed.
     Installed(LibraryItem),
     /// A game owned through one linked storefront account.
-    Storefront {
-        link_id: Uuid,
-        profile_id: Uuid,
-        provider_id: String,
-        game_id: String,
-    },
+    Storefront { link_id: Uuid, game_id: String },
 }
 
 #[cfg(test)]
@@ -275,16 +350,12 @@ mod tests {
 
     #[test]
     fn storefront_search_matches_title_and_source_without_using_them_as_identity() {
-        let profile_id = Uuid::new_v4();
         let link_id = Uuid::new_v4();
-        let provider_id = "epic-games-store".to_owned();
         let entry = SearchEntry {
             title: "Fortnite".into(),
             source_name: "Epic Games Store".into(),
             source: SearchSource::Storefront {
                 link_id,
-                profile_id,
-                provider_id: provider_id.clone(),
                 game_id: "fortnite".into(),
             },
         };
@@ -297,12 +368,8 @@ mod tests {
             entry.source(),
             SearchSource::Storefront {
                 link_id: actual_link,
-                profile_id: actual_profile,
-                provider_id: actual_provider,
                 game_id,
             } if *actual_link == link_id
-                && *actual_profile == profile_id
-                && actual_provider == &provider_id
                 && game_id == "fortnite"
         ));
     }

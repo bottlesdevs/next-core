@@ -1,6 +1,7 @@
 #[cfg(feature = "fvs")]
 use crate::{ProgramManager, environment::VirgoManager};
 
+use bottles_plugin_host::Plugins;
 #[cfg(feature = "fvs")]
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,9 +9,7 @@ use std::sync::Arc;
 use http_client::{HttpClient, ReqwestClient};
 use url::Url;
 
-use crate::{
-    Addons, BottleManager, Context, Directories, Library, Plugins, Profiles, error::Result,
-};
+use crate::{Addons, BottleManager, Context, Directories, Library, Profiles, error::Result};
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -27,7 +26,6 @@ pub struct Bottles {
     programs: ProgramManager,
     library: Library,
     profiles: Profiles,
-    plugins: Arc<Plugins>,
 }
 
 impl Bottles {
@@ -72,10 +70,11 @@ impl Bottles {
         #[cfg(feature = "fvs")]
         let programs = ProgramManager::load(context.clone(), virgo).await?;
         let library = Library::new(
+            profiles.clone(),
+            plugins,
             bottles.clone(),
             #[cfg(feature = "fvs")]
             programs.clone(),
-            profiles.clone(),
         );
 
         Ok(Self {
@@ -85,14 +84,13 @@ impl Bottles {
             programs,
             library,
             profiles,
-            plugins,
         })
     }
 
     /// Gracefully stops background services.
     ///
     /// Stop submitting work and finish or cooperatively cancel and await outstanding
-    /// operations/searches before shutdown. Their execution belongs to the caller.
+    /// operations before shutdown. Their execution belongs to the caller.
     /// Calling this method more than once is safe.
     pub async fn shutdown(&self) -> Result<()> {
         self.context.downloader().shutdown().await;
@@ -116,7 +114,7 @@ impl Bottles {
         self.context.addons()
     }
 
-    /// Returns the aggregate installed-program library and search entry point.
+    /// Returns installed programs, explicit remote refresh, and local search.
     pub fn library(&self) -> &Library {
         &self.library
     }
@@ -124,11 +122,6 @@ impl Bottles {
     /// Returns the persisted application profiles.
     pub fn profiles(&self) -> &Profiles {
         &self.profiles
-    }
-
-    /// Returns installed plugin lifecycle management.
-    pub fn plugins(&self) -> &Arc<Plugins> {
-        &self.plugins
     }
 
     /// Returns the HTTP transport shared by core services.
