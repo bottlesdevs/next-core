@@ -1,15 +1,14 @@
 //! Native Steam account discovery during explicit account linking.
 
-use async_trait::async_trait;
-use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
+use std::{borrow::Cow, io, path::PathBuf};
 
 use bottles_plugin_host::AccountIdentity;
 
-use super::{AccountLinkInteraction, LinkedAccount, Provider, StorefrontProvider};
+use super::{LinkedAccount, StorefrontProvider};
 
 pub(super) fn metadata() -> StorefrontProvider {
     StorefrontProvider {
-        id: "native:steam".into(),
+        id: "steam".into(),
         name: Cow::Borrowed("Steam"),
     }
 }
@@ -24,27 +23,15 @@ const LOGINUSERS_PATHS: &[&str] = &[
     ".var/app/com.valvesoftware.Steam/.local/share/Steam/config/loginusers.vdf",
 ];
 
-pub(super) struct Steam;
-
-#[async_trait]
-impl Provider for Steam {
-    fn metadata(&self) -> StorefrontProvider {
-        metadata()
-    }
-
-    async fn link_account(
-        &self,
-        _interaction: Arc<dyn AccountLinkInteraction>,
-    ) -> Result<LinkedAccount, String> {
-        let identity = active_account()
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "Steam has no active local account".to_owned())?;
-        Ok(LinkedAccount {
-            identity,
-            credential: None,
-        })
-    }
+pub(super) async fn link_account() -> Result<LinkedAccount, String> {
+    let identity = active_account()
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Steam has no active local account".to_owned())?;
+    Ok(LinkedAccount {
+        identity,
+        credential: None,
+    })
 }
 
 /// Read Steam's most recent local account without observing or selecting profiles.

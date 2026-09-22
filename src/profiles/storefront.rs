@@ -2,7 +2,6 @@
 mod steam;
 
 use crate::{ProfileError, error::Result};
-use async_trait::async_trait;
 use bottles_plugin_host::{LoadedPlugin, PluginInterface, Plugins};
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, sync::Arc};
@@ -18,13 +17,42 @@ pub struct StorefrontProvider {
 
 pub use bottles_plugin_host::AccountIdentity;
 
-#[async_trait]
-pub(super) trait Provider: Send + Sync {
-    fn metadata(&self) -> StorefrontProvider;
-    async fn link_account(
+pub(crate) enum Provider {
+    Steam,
+    Plugin(LoadedPlugin),
+}
+
+impl Provider {
+    pub(crate) fn metadata(&self) -> StorefrontProvider {
+        match self {
+            Self::Steam => steam::metadata(),
+            Self::Plugin(plugin) => StorefrontProvider {
+                id: plugin.info.manifest.id.clone(),
+                name: plugin.info.manifest.name.clone().into(),
+            },
+        }
+    }
+
+    pub(crate) async fn link_account(
         &self,
         interaction: Arc<dyn AccountLinkInteraction>,
-    ) -> std::result::Result<LinkedAccount, String>;
+    ) -> std::result::Result<LinkedAccount, String> {
+        match self {
+            Self::Steam => steam::link_account().await,
+            Self::Plugin(plugin) => {
+                bottles_plugin_host::storefront::link_account(plugin, interaction).await
+            }
+        }
+    }
+
+    pub(crate) fn library(&self) -> Option<&LoadedPlugin> {
+        match self {
+            Self::Plugin(plugin) if plugin.info.exports(PluginInterface::LibraryProvider) => {
+                Some(plugin)
+            }
+            _ => None,
+        }
+    }
 }
 
 pub(super) fn list(plugins: &Plugins) -> Vec<StorefrontProvider> {
@@ -33,46 +61,25 @@ pub(super) fn list(plugins: &Plugins) -> Vec<StorefrontProvider> {
             plugins
                 .list()
                 .into_iter()
-                .filter(|plugin| plugin.exports(PluginInterface::AccountProvider))
+                .filter(|plugin| {
+                    plugin.manifest.id != steam::metadata().id
+                        && plugin.exports(PluginInterface::AccountProvider)
+                })
                 .map(|plugin| StorefrontProvider {
-                    id: plugin_id(&plugin.manifest.id),
+                    id: plugin.manifest.id,
                     name: plugin.manifest.name.into(),
                 }),
         )
         .collect()
 }
 
-pub(super) async fn get(plugins: &Plugins, id: &str) -> Result<Arc<dyn Provider>> {
+pub(crate) async fn get(plugins: &Plugins, id: &str) -> Result<Provider> {
     if id == steam::metadata().id {
-        return Ok(Arc::new(steam::Steam));
+        return Ok(Provider::Steam);
     }
-    let package_id = id
-        .strip_prefix("plugin:")
-        .ok_or_else(|| ProfileError::ProviderNotFound(id.into()))?;
-    let plugin = plugins.load(package_id).await?;
+    let plugin = plugins.load(id).await?;
     if !plugin.info.exports(PluginInterface::AccountProvider) {
         return Err(ProfileError::ProviderNotFound(id.into()).into());
     }
-    Ok(Arc::new(plugin))
-}
-
-fn plugin_id(id: &str) -> String {
-    format!("plugin:{id}")
-}
-
-#[async_trait]
-impl Provider for LoadedPlugin {
-    fn metadata(&self) -> StorefrontProvider {
-        StorefrontProvider {
-            id: plugin_id(&self.info.manifest.id),
-            name: self.info.manifest.name.clone().into(),
-        }
-    }
-
-    async fn link_account(
-        &self,
-        interaction: Arc<dyn AccountLinkInteraction>,
-    ) -> std::result::Result<LinkedAccount, String> {
-        bottles_plugin_host::storefront::link_account(self, interaction).await
-    }
+    Ok(Provider::Plugin(plugin))
 }

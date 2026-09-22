@@ -5,7 +5,7 @@ use crate::{Program, ProgramManager};
 
 use std::sync::Arc;
 
-use bottles_plugin_host::{LoadedPlugin, PluginInterface, Plugins};
+use bottles_plugin_host::Plugins;
 use futures_core::Stream;
 #[cfg(feature = "fvs")]
 use futures_util::stream;
@@ -154,13 +154,15 @@ impl Library {
         cancellation: &CancellationToken,
     ) -> Result<Option<Vec<OwnedGame>>> {
         let provider = cancellation
-            .run_until_cancelled(get_library(&self.plugins, &account.provider.id))
+            .run_until_cancelled(crate::profiles::storefront::get(
+                &self.plugins,
+                &account.provider.id,
+            ))
             .await
             .ok_or(Error::Cancelled)??;
-        let Some(provider) = provider else {
+        let Some(plugin) = provider.library() else {
             return Ok(None);
         };
-        let plugin = &provider;
         let access = self
             .profiles
             .refresh_credential(
@@ -189,7 +191,7 @@ impl Library {
             return Err(Error::Cancelled);
         }
         let games = bottles_plugin_host::storefront::list_games(
-            &provider,
+            plugin,
             &account.identity.account_id,
             &access,
         )
@@ -232,21 +234,6 @@ impl Library {
             .filter(|entry| entry.matches(&query))
             .collect()
     }
-}
-
-/// Account-only providers have no library to refresh.
-async fn get_library(plugins: &Plugins, id: &str) -> Result<Option<LoadedPlugin>> {
-    if id == "native:steam" {
-        return Ok(None);
-    }
-    let package_id = id
-        .strip_prefix("plugin:")
-        .ok_or_else(|| ProfileError::ProviderNotFound(id.into()))?;
-    let plugin = plugins.load(package_id).await?;
-    Ok(plugin
-        .info
-        .exports(PluginInterface::LibraryProvider)
-        .then_some(plugin))
 }
 
 /// A live installed item with actions bound to its owning environment.
