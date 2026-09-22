@@ -31,8 +31,7 @@ pub struct Bottles {
 }
 
 impl Bottles {
-    /// Open core services and local state within a Tokio runtime.
-    /// With FVS enabled, connect to or start its
+    /// Open core services and local state. With FVS enabled, connect to or start its
     /// daemon before opening owner registries; connection failures abort startup.
     pub async fn open(config: Config, plugins: Arc<Plugins>) -> Result<Self> {
         let Config {
@@ -92,11 +91,10 @@ impl Bottles {
 
     /// Gracefully stops background services.
     ///
-    /// Stop submitting work before calling this method and keep the Tokio runtime
-    /// alive until it returns. Owned profile work drains before other services stop.
+    /// Stop submitting work and finish or cooperatively cancel and await outstanding
+    /// operations/searches before shutdown. Their execution belongs to the caller.
     /// Calling this method more than once is safe.
     pub async fn shutdown(&self) -> Result<()> {
-        self.profiles.shutdown().await;
         self.context.downloader().shutdown().await;
         Ok(())
     }

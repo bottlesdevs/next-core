@@ -7,17 +7,14 @@ mod storefront;
 pub use account::StorefrontAccount;
 pub use error::ProfileError;
 
-use std::{collections::HashMap, future::Future, io, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, io, path::PathBuf, sync::Arc};
 
 use futures_core::Stream;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
-use tokio::{
-    runtime::Handle,
-    sync::{Mutex, watch},
-};
+use tokio::sync::{Mutex, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
-use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
@@ -71,8 +68,6 @@ struct ProfilesInner {
     path: PathBuf,
     published: watch::Sender<Arc<ProfilesState>>,
     write_lock: Mutex<()>,
-    tasks: TaskTracker,
-    runtime: Handle,
 }
 
 // Publish the public snapshot and its credential locks as one generation.
@@ -116,39 +111,12 @@ impl Profiles {
         .await
     }
 
-    // The waiter owns cancellation; the tracker owns work that must survive its drop.
-    async fn run_owned<T: Send + 'static, Fut>(
+    async fn update<T>(
         &self,
-        cancellation: CancellationToken,
-        work: impl FnOnce(Self, CancellationToken) -> Fut + Send,
-    ) -> Result<T>
-    where
-        Fut: Future<Output = Result<T>> + Send + 'static,
-    {
-        let future = work(self.clone(), cancellation.clone());
-        let _cancel_on_drop = cancellation.drop_guard();
-        self.inner
-            .tasks
-            .spawn_on(future, &self.inner.runtime)
-            .await
-            .map_err(io::Error::other)?
-    }
-
-    async fn update<T: Send + 'static>(
-        &self,
-        operation: impl FnOnce(&mut ProfilesConfig) -> Result<T> + Send + 'static,
+        operation: impl FnOnce(&mut ProfilesConfig) -> Result<T>,
     ) -> Result<T> {
-        self.run_owned(
-            CancellationToken::new(),
-            move |profiles, cancellation| async move {
-                let _write = cancellation
-                    .run_until_cancelled(profiles.inner.write_lock.lock())
-                    .await
-                    .ok_or(Error::Cancelled)?;
-                profiles.update_locked(operation).await
-            },
-        )
-        .await
+        let _write = self.inner.write_lock.lock().await;
+        self.update_locked(operation).await
     }
 
     /// Caller holds write_lock through membership changes and credential cleanup.
@@ -183,7 +151,6 @@ pub struct Profiles {
 
 impl Profiles {
     pub(crate) async fn load(directories: &Directories, plugins: Arc<Plugins>) -> Result<Self> {
-        let runtime = Handle::try_current().map_err(io::Error::other)?;
         let path = directories.profiles();
         let state = match next_config::load(&path).await {
             Ok(state) => state,
@@ -205,15 +172,8 @@ impl Profiles {
             path,
             published,
             write_lock: Mutex::new(()),
-            tasks: TaskTracker::new(),
-            runtime,
         });
         Ok(Self { inner })
-    }
-
-    pub(crate) async fn shutdown(&self) {
-        self.inner.tasks.close();
-        self.inner.tasks.wait().await;
     }
 
     /// Returns the current profile collection and selection atomically.
@@ -275,39 +235,28 @@ impl Profiles {
     /// Deleting the selected profile selects the first remaining profile in the
     /// final persisted update. The only remaining profile cannot be deleted.
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        self.run_owned(
-            CancellationToken::new(),
-            move |profiles, cancellation| async move {
-                loop {
-                    let write = cancellation
-                        .run_until_cancelled(profiles.inner.write_lock.lock())
-                        .await
-                        .ok_or(Error::Cancelled)?;
-                    let state = profiles.snapshot();
-                    let profile = state.profile(id).ok_or(ProfileError::NotFound(id))?;
-                    if state.profiles.len() == 1 {
-                        return Err(ProfileError::LastProfile(id).into());
-                    }
-                    let account = profile.accounts.first().cloned();
-                    let Some(account) = account else {
-                        return profiles
-                            .update_locked(|state| {
-                                state.profiles.retain(|profile| profile.id != id);
-                                if state.selected == id {
-                                    state.selected = state.profiles[0].id;
-                                }
-                                Ok(())
-                            })
-                            .await;
-                    };
-                    drop(write);
-                    profiles
-                        .unlink_account_inner(account.link_id, &cancellation)
-                        .await?;
-                }
-            },
-        )
-        .await
+        loop {
+            let write = self.inner.write_lock.lock().await;
+            let state = self.snapshot();
+            let profile = state.profile(id).ok_or(ProfileError::NotFound(id))?;
+            if state.profiles.len() == 1 {
+                return Err(ProfileError::LastProfile(id).into());
+            }
+            let account = profile.accounts.first().cloned();
+            let Some(account) = account else {
+                return self
+                    .update_locked(|state| {
+                        state.profiles.retain(|profile| profile.id != id);
+                        if state.selected == id {
+                            state.selected = state.profiles[0].id;
+                        }
+                        Ok(())
+                    })
+                    .await;
+            };
+            drop(write);
+            self.unlink_account(account.link_id).await?;
+        }
     }
 
     fn account_lock(&self, link_id: Uuid) -> Option<Arc<Mutex<()>>> {
@@ -323,68 +272,57 @@ impl Profiles {
         &self,
         profile_id: Uuid,
         link_id: Uuid,
+        cancellation: &CancellationToken,
     ) -> Result<(String, Vec<storefront::OwnedGame>)> {
-        self.run_owned(
-            CancellationToken::new(),
-            move |profiles, cancellation| async move {
-                let lock =
-                    profiles
-                        .account_lock(link_id)
-                        .ok_or(ProfileError::AccountNotLinked {
-                            profile: profile_id,
-                            link: link_id,
-                        })?;
-                let guard = cancellation
-                    .run_until_cancelled(lock.lock())
-                    .await
-                    .ok_or(Error::Cancelled)?;
-                let state = profiles.snapshot();
-                let profile = state
-                    .profile(profile_id)
-                    .ok_or(ProfileError::NotFound(profile_id))?;
-                let account = profile
-                    .accounts
-                    .iter()
-                    .find(|linked| linked.link_id == link_id)
-                    .ok_or(ProfileError::AccountNotLinked {
-                        profile: profile_id,
-                        link: link_id,
-                    })?;
-                let provider = cancellation
-                    .run_until_cancelled(storefront::get(
-                        &profiles.inner.plugins,
-                        &account.provider.id,
-                    ))
-                    .await
-                    .ok_or(Error::Cancelled)??;
-                // Owned work drives authentication and persistence even if the waiter is dropped.
-                let credential = credentials::load(link_id).await?;
-                let auth = provider
-                    .authenticate(&account.identity.account_id, credential.as_deref())
-                    .await
-                    .map_err(|message| ProfileError::Provider {
-                        provider: account.provider.id.clone(),
-                        message,
-                    })?;
-                if let Some(updated) = auth.updated_credential {
-                    credentials::save(link_id, &updated).await?;
-                }
-                drop(guard);
-                // The same provider/revision is retained; cancellation resumes after persistence.
-                let games = cancellation
-                    .run_until_cancelled(
-                        provider.list_games(&account.identity.account_id, &auth.access),
-                    )
-                    .await
-                    .ok_or(Error::Cancelled)?
-                    .map_err(|message| ProfileError::Provider {
-                        provider: account.provider.id.clone(),
-                        message,
-                    })?;
-                Ok((provider.metadata().name.into_owned(), games))
-            },
-        )
-        .await
+        let lock = self
+            .account_lock(link_id)
+            .ok_or(ProfileError::AccountNotLinked {
+                profile: profile_id,
+                link: link_id,
+            })?;
+        let guard = cancellation
+            .run_until_cancelled(lock.lock())
+            .await
+            .ok_or(Error::Cancelled)?;
+        let state = self.snapshot();
+        let profile = state
+            .profile(profile_id)
+            .ok_or(ProfileError::NotFound(profile_id))?;
+        let account = profile
+            .accounts
+            .iter()
+            .find(|linked| linked.link_id == link_id)
+            .ok_or(ProfileError::AccountNotLinked {
+                profile: profile_id,
+                link: link_id,
+            })?;
+        let provider = cancellation
+            .run_until_cancelled(storefront::get(&self.inner.plugins, &account.provider.id))
+            .await
+            .ok_or(Error::Cancelled)??;
+        // The caller keeps this future driven through authentication and credential persistence.
+        let credential = credentials::load(link_id).await?;
+        let auth = provider
+            .authenticate(&account.identity.account_id, credential.as_deref())
+            .await
+            .map_err(|message| ProfileError::Provider {
+                provider: account.provider.id.clone(),
+                message,
+            })?;
+        if let Some(updated) = auth.updated_credential {
+            credentials::save(link_id, &updated).await?;
+        }
+        drop(guard);
+        // The same provider/revision is retained; cancellation resumes after persistence.
+        let games = cancellation
+            .run_until_cancelled(provider.list_games(&account.identity.account_id, &auth.access))
+            .await
+            .ok_or(Error::Cancelled)?
+            .map_err(|message| ProfileError::Provider {
+                provider: account.provider.id.clone(),
+                message,
+            })?;
+        Ok((provider.metadata().name.into_owned(), games))
     }
 
     pub fn account_providers(&self) -> Vec<StorefrontProvider> {
@@ -392,7 +330,8 @@ impl Profiles {
     }
 
     /// Cancellation stops preparation; credential and membership writes finish once entered.
-    /// Dropping the waiter requests cancellation; entered persistence continues as owned work.
+    /// Use `cancel().await` to stop cooperatively. Dropping the operation abandons
+    /// its future and cannot finish asynchronous persistence or cleanup.
     pub fn link_account(
         &self,
         profile_id: Uuid,
@@ -401,81 +340,54 @@ impl Profiles {
     ) -> Operation<Profile> {
         let profiles = self.clone();
         Operation::new(move |_progress, cancellation| async move {
-            profiles
-                .run_owned(cancellation, move |profiles, cancellation| async move {
-                    validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
-                    let provider = cancellation
-                        .run_until_cancelled(storefront::get(&profiles.inner.plugins, &provider_id))
-                        .await
-                        .ok_or(Error::Cancelled)??;
-                    let metadata = provider.metadata();
-                    let linked = cancellation
-                        .run_until_cancelled(provider.link_account(interaction))
-                        .await
-                        .ok_or(Error::Cancelled)?;
-                    let LinkedAccount {
-                        identity,
-                        credential,
-                    } = linked.map_err(|message| ProfileError::Provider {
-                        provider: provider_id.clone(),
-                        message,
-                    })?;
-                    let _write = cancellation
-                        .run_until_cancelled(profiles.inner.write_lock.lock())
-                        .await
-                        .ok_or(Error::Cancelled)?;
-                    let index =
-                        validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
-                    let account = StorefrontAccount::new(metadata, identity);
-                    if let Some(secret) = credential.as_deref() {
-                        credentials::save(account.link_id, secret).await?;
-                    }
-                    let result = profiles
-                        .update_locked(|state| {
-                            state.profiles[index].accounts.push(account.clone());
-                            Ok(state.profiles[index].clone())
-                        })
-                        .await;
-                    if result.is_err() && credential.is_some() {
-                        credentials::delete(account.link_id).await?;
-                    }
-                    result
-                })
+            validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
+            let provider = cancellation
+                .run_until_cancelled(storefront::get(&profiles.inner.plugins, &provider_id))
                 .await
+                .ok_or(Error::Cancelled)??;
+            let metadata = provider.metadata();
+            let linked = cancellation
+                .run_until_cancelled(provider.link_account(interaction))
+                .await
+                .ok_or(Error::Cancelled)?;
+            let LinkedAccount {
+                identity,
+                credential,
+            } = linked.map_err(|message| ProfileError::Provider {
+                provider: provider_id.clone(),
+                message,
+            })?;
+            let _write = cancellation
+                .run_until_cancelled(profiles.inner.write_lock.lock())
+                .await
+                .ok_or(Error::Cancelled)?;
+            let index = validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
+            let account = StorefrontAccount::new(metadata, identity);
+            if let Some(secret) = credential.as_deref() {
+                credentials::save(account.link_id, secret).await?;
+            }
+            let result = profiles
+                .update_locked(|state| {
+                    state.profiles[index].accounts.push(account.clone());
+                    Ok(state.profiles[index].clone())
+                })
+                .await;
+            if result.is_err() && credential.is_some() {
+                credentials::delete(account.link_id).await?;
+            }
+            result
         })
     }
 
     /// Remove membership before deleting the secret. Retrying an absent UUID retries cleanup.
-    /// Dropping the waiter cancels lock acquisition; entered membership and secret writes finish.
+    /// The caller must drive this future to completion once publication begins.
     pub async fn unlink_account(&self, link_id: Uuid) -> Result<()> {
-        self.run_owned(
-            CancellationToken::new(),
-            move |profiles, cancellation| async move {
-                profiles.unlink_account_inner(link_id, &cancellation).await
-            },
-        )
-        .await
-    }
-
-    async fn unlink_account_inner(
-        &self,
-        link_id: Uuid,
-        cancellation: &CancellationToken,
-    ) -> Result<()> {
         let lock = self.account_lock(link_id);
         let _credential = match &lock {
-            Some(lock) => Some(
-                cancellation
-                    .run_until_cancelled(lock.lock())
-                    .await
-                    .ok_or(Error::Cancelled)?,
-            ),
+            Some(lock) => Some(lock.lock().await),
             None => None,
         };
-        let write = cancellation
-            .run_until_cancelled(self.inner.write_lock.lock())
-            .await
-            .ok_or(Error::Cancelled)?;
+        let write = self.inner.write_lock.lock().await;
         self.update_locked(|state| {
             for profile in &mut state.profiles {
                 profile

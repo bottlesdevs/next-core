@@ -116,17 +116,15 @@ impl fmt::Display for Stage {
     }
 }
 
-/// A lazy future with progress and cooperative cancellation.
+/// A lazy, executor-independent future with progress and cooperative cancellation.
 ///
-/// Creating an operation does not start it. Work begins on its first poll.
-/// The wrapper is executor-independent; the service implementing an operation
-/// may capture a runtime for owned work.
+/// Creating an operation does not start it. Work begins on its first poll;
+/// the caller owns execution and must keep the future driven to completion.
 ///
-/// Dropping an operation drops its waiting future. Profile/account operations
-/// request cancellation and retain entered persistence segments as owned work;
-/// dropping their waiter does not abandon those writes. Other operations may
-/// abandon work on drop. Use [`cancel`](Self::cancel) and await the result to
-/// observe completion, including required asynchronous cleanup.
+/// Dropping an operation abandons its future without requesting cancellation.
+/// Asynchronous persistence and cleanup cannot finish after that drop. Use
+/// [`cancel`](Self::cancel) and await its result to stop cooperatively: account
+/// operations finish entered credential and membership writes before returning.
 #[must_use = "operations must be awaited, cancelled, or spawned by an executor"]
 pub struct Operation<T> {
     future: Pin<Box<dyn Future<Output = Result<T>> + Send + 'static>>,
