@@ -25,6 +25,25 @@ use crate::{
 use storefront::LinkedAccount;
 pub use storefront::{AccountIdentity, AccountLinkInteraction, StorefrontProvider};
 
+struct CancellableInteraction {
+    inner: Arc<dyn AccountLinkInteraction>,
+    cancellation: CancellationToken,
+}
+
+#[async_trait::async_trait]
+impl AccountLinkInteraction for CancellableInteraction {
+    async fn request_input(
+        &self,
+        url: url::Url,
+        instructions: String,
+    ) -> std::result::Result<String, String> {
+        self.cancellation
+            .run_until_cancelled(self.inner.request_input(url, instructions))
+            .await
+            .ok_or_else(|| "account linking cancelled".to_owned())?
+    }
+}
+
 /// One coherent persisted snapshot of every profile and the selected profile.
 ///
 /// The selected profile is guaranteed to be present in [`profiles`](Self::profiles).
@@ -304,6 +323,9 @@ impl Profiles {
             })?;
         // No cooperative cancellation between authentication and saving a rotated credential.
         let credential = credentials::load(link_id).await?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
         let auth = authenticate(account.identity.account_id.clone(), credential).await?;
         if let Some(updated) = auth.updated_credential {
             credentials::save(link_id, &updated).await?;
@@ -315,9 +337,9 @@ impl Profiles {
         storefront::list(&self.inner.plugins)
     }
 
-    /// Linking runs only while the caller drives the operation. Cooperative cancellation
-    /// stops preparation; entered credential and membership writes finish before returning.
-    /// Dropping the operation abandons it; use `cancel().await` to finish safely.
+    /// The caller drives linking and persistence. Cooperative cancellation resolves pending
+    /// interaction and awaits accepted guest calls; entered persistence finishes before return.
+    /// Dropping abandons core's continuation, but accepted guest calls may still finish.
     pub fn link_account(
         &self,
         profile_id: Uuid,
@@ -331,14 +353,22 @@ impl Profiles {
                 .run_until_cancelled(storefront::get(&profiles.inner.plugins, &provider_id))
                 .await
                 .ok_or(Error::Cancelled)??;
-            let linked = cancellation
-                .run_until_cancelled(provider.link_account(interaction))
-                .await
-                .ok_or(Error::Cancelled)?
-                .map_err(|message| ProfileError::Provider {
-                    provider: provider_id,
-                    message,
-                })?;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let linked = provider
+                .link_account(Arc::new(CancellableInteraction {
+                    inner: interaction,
+                    cancellation: cancellation.clone(),
+                }))
+                .await;
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let linked = linked.map_err(|message| ProfileError::Provider {
+                provider: provider_id,
+                message,
+            })?;
             let provider = provider.metadata();
             let _write = cancellation
                 .run_until_cancelled(profiles.inner.write_lock.lock())
