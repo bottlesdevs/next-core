@@ -116,17 +116,17 @@ impl fmt::Display for Stage {
     }
 }
 
-/// A lazy, executor-independent future with progress and cancellation.
+/// A lazy future with progress and cooperative cancellation.
 ///
-/// Creating an operation does not start it. Its work begins when it is first
-/// polled, either by awaiting it or by spawning it on an executor, and the
-/// operation does not require a particular async runtime.
+/// Creating an operation does not start it. Work begins on its first poll.
+/// The wrapper is executor-independent; the service implementing an operation
+/// may capture a runtime for owned work.
 ///
-/// Dropping an operation abandons it: the underlying future is dropped without
-/// requesting cancellation. Consequently, asynchronous cancellation and cleanup
-/// code cannot run. Use [`cancel`](Self::cancel) and await its result when cleanup
-/// must be driven to completion. To let an operation continue without retaining
-/// its task handle, spawn it and use the executor's explicit detach mechanism.
+/// Dropping an operation drops its waiting future. Profile/account operations
+/// request cancellation and retain entered persistence segments as owned work;
+/// dropping their waiter does not abandon those writes. Other operations may
+/// abandon work on drop. Use [`cancel`](Self::cancel) and await the result to
+/// observe completion, including required asynchronous cleanup.
 #[must_use = "operations must be awaited, cancelled, or spawned by an executor"]
 pub struct Operation<T> {
     future: Pin<Box<dyn Future<Output = Result<T>> + Send + 'static>>,
@@ -167,9 +167,9 @@ impl<T> Operation<T> {
 
     /// Returns a token that can request cancellation without consuming the operation.
     ///
-    /// Cancelling the token only signals the request; it does not poll the
-    /// operation or wait for cleanup. The operation must remain driven until it
-    /// returns a terminal result.
+    /// Cancelling the token only signals the request; it does not start an
+    /// unpolled operation or wait for cleanup. Await the operation to observe
+    /// its terminal result.
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancellation.clone()
     }
