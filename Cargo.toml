@@ -37,7 +37,7 @@ toml = "0.9.10"
 tracing.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
-tokio = { workspace = true, features = ["sync", "rt"] }
+tokio = { workspace = true, features = ["sync"] }
 directories.workspace = true
 futures-core.workspace = true
 futures-lite.workspace = true

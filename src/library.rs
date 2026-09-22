@@ -8,6 +8,7 @@ use futures_util::{
     StreamExt,
     stream::{self, FuturesUnordered},
 };
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
@@ -93,8 +94,9 @@ impl Library {
     /// method is called. Storefront searches start when the returned stream is
     /// first polled, and results are emitted as their sources become ready. Later
     /// selection changes affect subsequent searches, not the captured account set.
-    /// Dropping the stream requests cancellation. Authentication already entered
-    /// finishes and persists replacement credentials before its source stops.
+    /// To stop safely, cancel the supplied token and drain the stream. Entered
+    /// authentication and credential persistence finish before each source stops.
+    /// Dropping the stream abandons its futures and cannot finish those writes.
     /// Storefront failures are logged and omitted so local and other storefront
     /// results remain available. The same case-insensitive title/source filter
     /// applies to all results. An empty or whitespace-only query matches every
@@ -102,6 +104,7 @@ impl Library {
     pub fn search(
         &self,
         query: impl Into<String>,
+        cancellation: CancellationToken,
     ) -> impl Stream<Item = SearchEntry> + Send + 'static {
         let query = query.into().trim().to_lowercase();
         let profile = self.profiles.selected();
@@ -112,17 +115,20 @@ impl Library {
             .cloned()
             .map(|account| {
                 let profiles = self.profiles.clone();
+                let cancellation = cancellation.clone();
                 async move {
                     let provider_id = account.provider.id.clone();
-                    let (source_name, games) =
-                        match profiles.owned_games(profile_id, account.link_id).await {
-                            Ok(listed) => listed,
-                            Err(error) => {
-                                tracing::warn!(provider = %provider_id, profile = %profile_id,
+                    let (source_name, games) = match profiles
+                        .owned_games(profile_id, account.link_id, &cancellation)
+                        .await
+                    {
+                        Ok(listed) => listed,
+                        Err(error) => {
+                            tracing::warn!(provider = %provider_id, profile = %profile_id,
                                 "failed to list storefront games: {error}");
-                                return Vec::new();
-                            }
-                        };
+                            return Vec::new();
+                        }
+                    };
                     games
                         .into_iter()
                         .map(|game| SearchEntry {
