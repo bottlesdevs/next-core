@@ -93,7 +93,8 @@ impl Library {
     /// method is called. Storefront searches start when the returned stream is
     /// first polled, and results are emitted as their sources become ready. Later
     /// selection changes affect subsequent searches, not the captured account set.
-    /// Installed account-only plugins are skipped; an unlinked profile searches installed entries.
+    /// Dropping the stream requests cancellation. Authentication already entered
+    /// finishes and persists replacement credentials before its source stops.
     /// Storefront failures are logged and omitted so local and other storefront
     /// results remain available. The same case-insensitive title/source filter
     /// applies to all results. An empty or whitespace-only query matches every
@@ -113,21 +114,15 @@ impl Library {
                 let profiles = self.profiles.clone();
                 async move {
                     let provider_id = account.provider.id.clone();
-                    let (source_name, games) = match profiles
-                        .owned_games(
-                            profile_id,
-                            &account,
-                            &tokio_util::sync::CancellationToken::new(),
-                        )
-                        .await
-                    {
-                        Ok(listed) => listed,
-                        Err(error) => {
-                            tracing::warn!(provider = %provider_id, profile = %profile_id,
+                    let (source_name, games) =
+                        match profiles.owned_games(profile_id, account.link_id).await {
+                            Ok(listed) => listed,
+                            Err(error) => {
+                                tracing::warn!(provider = %provider_id, profile = %profile_id,
                                 "failed to list storefront games: {error}");
-                            return Vec::new();
-                        }
-                    };
+                                return Vec::new();
+                            }
+                        };
                     games
                         .into_iter()
                         .map(|game| SearchEntry {

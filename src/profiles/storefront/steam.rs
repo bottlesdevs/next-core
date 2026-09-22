@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
 use bottles_plugin_host::{AccountIdentity, Authentication, OwnedGame};
-use tokio_util::sync::CancellationToken;
 
 use super::{AccountLinkInteraction, LinkedAccount, Provider, StorefrontProvider};
 
@@ -36,12 +35,9 @@ impl Provider for Steam {
     async fn link_account(
         &self,
         _interaction: Arc<dyn AccountLinkInteraction>,
-        cancellation: &CancellationToken,
     ) -> Result<LinkedAccount, String> {
-        let identity = cancellation
-            .run_until_cancelled(active_account())
+        let identity = active_account()
             .await
-            .ok_or_else(|| "account linking cancelled".to_owned())?
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Steam has no active local account".to_owned())?;
         Ok(LinkedAccount {
@@ -65,7 +61,6 @@ impl Provider for Steam {
         &self,
         _account_id: &str,
         _access: &[u8],
-        _cancellation: &CancellationToken,
     ) -> Result<Vec<OwnedGame>, String> {
         Ok(Vec::new())
     }

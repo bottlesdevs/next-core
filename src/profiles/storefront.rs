@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use bottles_plugin_host::{LoadedPlugin, PluginInterface};
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, sync::Arc};
-use tokio_util::sync::CancellationToken;
 
 pub use bottles_plugin_host::AccountLinkInteraction;
 pub(crate) use bottles_plugin_host::{Authentication, LinkedAccount, OwnedGame};
@@ -25,7 +24,6 @@ pub(super) trait Provider: Send + Sync {
     async fn link_account(
         &self,
         interaction: Arc<dyn AccountLinkInteraction>,
-        cancellation: &CancellationToken,
     ) -> std::result::Result<LinkedAccount, String>;
     async fn authenticate(
         &self,
@@ -36,7 +34,6 @@ pub(super) trait Provider: Send + Sync {
         &self,
         account_id: &str,
         access: &[u8],
-        cancellation: &CancellationToken,
     ) -> std::result::Result<Vec<OwnedGame>, String>;
 }
 
@@ -85,10 +82,8 @@ impl Provider for LoadedPlugin {
     async fn link_account(
         &self,
         interaction: Arc<dyn AccountLinkInteraction>,
-        cancellation: &CancellationToken,
     ) -> std::result::Result<LinkedAccount, String> {
-        bottles_plugin_host::storefront::link_account(&self.component, interaction, cancellation)
-            .await
+        bottles_plugin_host::storefront::link_account(&self.component, interaction).await
     }
 
     async fn authenticate(
@@ -103,14 +98,7 @@ impl Provider for LoadedPlugin {
         &self,
         account_id: &str,
         access: &[u8],
-        cancellation: &CancellationToken,
     ) -> std::result::Result<Vec<OwnedGame>, String> {
-        bottles_plugin_host::storefront::list_games(
-            &self.component,
-            account_id,
-            access,
-            cancellation,
-        )
-        .await
+        bottles_plugin_host::storefront::list_games(&self.component, account_id, access).await
     }
 }
