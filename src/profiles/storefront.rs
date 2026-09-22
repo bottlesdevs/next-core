@@ -83,7 +83,7 @@ impl Provider for LoadedPlugin {
         &self,
         interaction: Arc<dyn AccountLinkInteraction>,
     ) -> std::result::Result<LinkedAccount, String> {
-        bottles_plugin_host::storefront::link_account(&self.component, interaction).await
+        bottles_plugin_host::storefront::link_account(self, interaction).await
     }
 
     async fn authenticate(
@@ -91,7 +91,7 @@ impl Provider for LoadedPlugin {
         account_id: &str,
         credential: Option<&[u8]>,
     ) -> std::result::Result<Authentication, String> {
-        bottles_plugin_host::storefront::authenticate(&self.component, account_id, credential).await
+        bottles_plugin_host::storefront::authenticate(self, account_id, credential).await
     }
 
     async fn list_games(
@@ -99,6 +99,6 @@ impl Provider for LoadedPlugin {
         account_id: &str,
         access: &[u8],
     ) -> std::result::Result<Vec<OwnedGame>, String> {
-        bottles_plugin_host::storefront::list_games(&self.component, account_id, access).await
+        bottles_plugin_host::storefront::list_games(self, account_id, access).await
     }
 }
