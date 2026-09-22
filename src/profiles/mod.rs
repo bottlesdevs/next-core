@@ -372,8 +372,18 @@ impl Profiles {
                     Ok(state.profiles[index].clone())
                 })
                 .await;
-            if result.is_err() && credential.is_some() {
-                credentials::delete(account.link_id).await?;
+            if let Err(error) = result {
+                if credential.is_some()
+                    && let Err(cleanup) = credentials::delete(account.link_id).await
+                {
+                    return Err(ProfileError::AccountLinkRollback {
+                        link_id: account.link_id,
+                        source: Box::new(error),
+                        cleanup,
+                    }
+                    .into());
+                }
+                return Err(error);
             }
             result
         })
@@ -398,7 +408,9 @@ impl Profiles {
         })
         .await?;
         drop(write);
-        credentials::delete(link_id).await?;
+        credentials::delete(link_id)
+            .await
+            .map_err(|source| ProfileError::CredentialCleanup { link_id, source })?;
         Ok(())
     }
 }

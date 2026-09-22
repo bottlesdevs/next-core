@@ -18,6 +18,17 @@ pub enum ProfileError {
     /// The profile has no account from this provider.
     #[error("profile {profile} has no account link {link}")]
     AccountNotLinked { profile: Uuid, link: Uuid },
+    #[error("failed to clean credentials for account link {link_id}: {source}")]
+    CredentialCleanup {
+        link_id: Uuid,
+        source: keyring::Error,
+    },
+    #[error("{source}; failed to clean credentials for account link {link_id}: {cleanup}")]
+    AccountLinkRollback {
+        link_id: Uuid,
+        source: Box<crate::error::Error>,
+        cleanup: keyring::Error,
+    },
     /// The provider rejected or failed an account operation.
     #[error("storefront account provider {provider}: {message}")]
     Provider { provider: String, message: String },
