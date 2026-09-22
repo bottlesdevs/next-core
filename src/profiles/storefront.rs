@@ -8,7 +8,7 @@ use crate::{Plugins, ProfileError, error::Result};
 use async_trait::async_trait;
 use bottles_plugin_host::{LoadedPlugin, PluginInterface};
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, collections::HashMap, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 /// Application-owned input interaction passed explicitly to a storefront invocation.
@@ -54,51 +54,33 @@ pub(super) trait Provider: Send + Sync {
     ) -> std::result::Result<Vec<OwnedGame>, String>;
 }
 
-/// Provider construction is confined to the storefront integration.
-pub(super) struct Storefronts {
-    plugins: Arc<Plugins>,
-    native: HashMap<String, Arc<dyn Provider>>,
+pub(super) fn list(plugins: &Plugins) -> Vec<StorefrontProvider> {
+    std::iter::once(steam::metadata())
+        .chain(
+            plugins
+                .list()
+                .into_iter()
+                .filter(|plugin| plugin.exports(PluginInterface::StorefrontProvider))
+                .map(|plugin| StorefrontProvider {
+                    id: plugin_id(&plugin.manifest.id),
+                    name: plugin.manifest.name.into(),
+                }),
+        )
+        .collect()
 }
 
-impl Storefronts {
-    pub(super) fn new(plugins: Arc<Plugins>) -> Self {
-        let steam: Arc<dyn Provider> = Arc::new(steam::Steam);
-        Self {
-            plugins,
-            native: [(steam.metadata().id, steam)].into(),
-        }
+pub(super) async fn get(plugins: &Plugins, id: &str) -> Result<Arc<dyn Provider>> {
+    if id == steam::metadata().id {
+        return Ok(Arc::new(steam::Steam));
     }
-
-    pub(super) fn list(&self) -> Vec<StorefrontProvider> {
-        self.native
-            .values()
-            .map(|p| p.metadata())
-            .chain(
-                self.plugins
-                    .list()
-                    .into_iter()
-                    .filter(|p| p.exports(PluginInterface::StorefrontProvider))
-                    .map(|p| StorefrontProvider {
-                        id: plugin_id(&p.manifest.id),
-                        name: p.manifest.name.into(),
-                    }),
-            )
-            .collect()
+    let package_id = id
+        .strip_prefix("plugin:")
+        .ok_or_else(|| ProfileError::ProviderNotFound(id.into()))?;
+    let plugin = plugins.load(package_id).await?;
+    if !plugin.info.exports(PluginInterface::StorefrontProvider) {
+        return Err(ProfileError::ProviderNotFound(id.into()).into());
     }
-
-    pub(super) async fn get(&self, id: &str) -> Result<Arc<dyn Provider>> {
-        if let Some(provider) = self.native.get(id) {
-            return Ok(provider.clone());
-        }
-        let package_id = id
-            .strip_prefix("plugin:")
-            .ok_or_else(|| ProfileError::ProviderNotFound(id.into()))?;
-        let plugin = self.plugins.load(package_id).await?;
-        if !plugin.info.exports(PluginInterface::StorefrontProvider) {
-            return Err(ProfileError::ProviderNotFound(id.into()).into());
-        }
-        Ok(Arc::new(plugin))
-    }
+    Ok(Arc::new(plugin))
 }
 
 fn plugin_id(id: &str) -> String {
