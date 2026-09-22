@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
-use bottles_plugin_host::{AccountIdentity, Authentication, OwnedGame};
+use bottles_plugin_host::AccountIdentity;
 
 use super::{AccountLinkInteraction, LinkedAccount, Provider, StorefrontProvider};
 
@@ -44,25 +44,6 @@ impl Provider for Steam {
             identity,
             credential: None,
         })
-    }
-
-    async fn authenticate(
-        &self,
-        _account_id: &str,
-        _credential: Option<&[u8]>,
-    ) -> Result<Authentication, String> {
-        Ok(Authentication {
-            access: Vec::new(),
-            updated_credential: None,
-        })
-    }
-
-    async fn list_games(
-        &self,
-        _account_id: &str,
-        _access: &[u8],
-    ) -> Result<Vec<OwnedGame>, String> {
-        Ok(Vec::new())
     }
 }
 

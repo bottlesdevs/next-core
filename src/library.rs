@@ -122,7 +122,8 @@ impl Library {
                         .owned_games(profile_id, account.link_id, &cancellation)
                         .await
                     {
-                        Ok(listed) => listed,
+                        Ok(Some(listed)) => listed,
+                        Ok(None) => return Vec::new(),
                         Err(error) => {
                             tracing::warn!(provider = %provider_id, profile = %profile_id,
                                 "failed to list storefront games: {error}");
