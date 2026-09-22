@@ -39,7 +39,7 @@ impl Bottles {
             dependency_catalog,
         } = config;
         let directories = Directories::new().await?;
-        let profiles = Profiles::load(&directories, plugins.clone()).await?;
+        let profiles = Profiles::load(&directories, plugins).await?;
         let http_client: Arc<dyn HttpClient> =
             Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
         #[cfg(feature = "fvs")]
@@ -70,8 +70,6 @@ impl Bottles {
         #[cfg(feature = "fvs")]
         let programs = ProgramManager::load(context.clone(), virgo).await?;
         let library = Library::new(
-            profiles.clone(),
-            plugins,
             bottles.clone(),
             #[cfg(feature = "fvs")]
             programs.clone(),
@@ -114,7 +112,7 @@ impl Bottles {
         self.context.addons()
     }
 
-    /// Returns installed programs, explicit remote refresh, and local search.
+    /// Returns installed, launchable programs.
     pub fn library(&self) -> &Library {
         &self.library
     }

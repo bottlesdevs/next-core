@@ -1,9 +1,6 @@
 use keyring::Entry;
 use uuid::Uuid;
 
-#[cfg(test)]
-use std::sync::{Arc, OnceLock};
-
 const SERVICE: &str = "com.usebottles.bottles-next";
 
 fn account(link_id: Uuid) -> String {
@@ -12,33 +9,12 @@ fn account(link_id: Uuid) -> String {
 
 fn entry(account: &str) -> keyring::Result<Entry> {
     #[cfg(test)]
-    if let Some(store) = TEST_STORE.get() {
+    if let Some(store) = tests::TEST_STORE.get() {
         return Ok(Entry {
             inner: store.build(SERVICE, account, None)?,
         });
     }
     Entry::new(SERVICE, account)
-}
-
-#[cfg(test)]
-static TEST_STORE: OnceLock<Arc<keyring_core::CredentialStore>> = OnceLock::new();
-
-#[cfg(test)]
-pub(crate) fn use_test_store() {
-    TEST_STORE.get_or_init(|| keyring_core::mock::Store::new().unwrap());
-}
-
-fn load_entry(entry: &Entry) -> keyring::Result<Option<Vec<u8>>> {
-    match entry.get_secret() {
-        Ok(secret) => Ok(Some(secret)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
-pub(crate) async fn load(link_id: Uuid) -> keyring::Result<Option<Vec<u8>>> {
-    let account = account(link_id);
-    blocking::unblock(move || load_entry(&entry(&account)?)).await
 }
 
 fn save_entry(entry: &Entry, secret: &[u8]) -> keyring::Result<()> {
@@ -66,6 +42,26 @@ pub(crate) async fn delete(link_id: Uuid) -> keyring::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, OnceLock};
+
+    pub(super) static TEST_STORE: OnceLock<Arc<keyring_core::CredentialStore>> = OnceLock::new();
+
+    fn use_test_store() {
+        TEST_STORE.get_or_init(|| keyring_core::mock::Store::new().unwrap());
+    }
+
+    fn load_entry(entry: &Entry) -> keyring::Result<Option<Vec<u8>>> {
+        match entry.get_secret() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn load(link_id: Uuid) -> keyring::Result<Option<Vec<u8>>> {
+        let account = account(link_id);
+        blocking::unblock(move || load_entry(&entry(&account)?)).await
+    }
 
     #[test]
     fn credential_operations_are_idempotent_and_isolated() {
