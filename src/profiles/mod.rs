@@ -67,7 +67,7 @@ impl ProfilesConfig {
 }
 
 struct ProfilesInner {
-    storefronts: storefront::Storefronts,
+    plugins: Arc<Plugins>,
     path: PathBuf,
     published: watch::Sender<Arc<ProfilesState>>,
     write_lock: Mutex<()>,
@@ -168,7 +168,7 @@ impl Profiles {
         }
         let (published, _) = watch::channel(Arc::new(ProfilesState::new(state, &HashMap::new())));
         let inner = Arc::new(ProfilesInner {
-            storefronts: storefront::Storefronts::new(plugins),
+            plugins,
             path,
             published,
             write_lock: Mutex::new(()),
@@ -301,7 +301,7 @@ impl Profiles {
         }
         let account = &live.info;
         let provider = cancellation
-            .run_until_cancelled(self.inner.storefronts.get(&account.provider.id))
+            .run_until_cancelled(storefront::get(&self.inner.plugins, &account.provider.id))
             .await
             .ok_or(Error::Cancelled)??;
         // The caller keeps this future driven through authentication and credential persistence.
@@ -334,7 +334,7 @@ impl Profiles {
     }
 
     pub fn account_providers(&self) -> Vec<StorefrontProvider> {
-        self.inner.storefronts.list()
+        storefront::list(&self.inner.plugins)
     }
 
     /// Cancellation stops preparation; credential and membership writes finish once entered.
@@ -349,7 +349,7 @@ impl Profiles {
         Operation::new(move |_progress, cancellation| async move {
             validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
             let provider = cancellation
-                .run_until_cancelled(profiles.inner.storefronts.get(&provider_id))
+                .run_until_cancelled(storefront::get(&profiles.inner.plugins, &provider_id))
                 .await
                 .ok_or(Error::Cancelled)??;
             let metadata = provider.metadata();
