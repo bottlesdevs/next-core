@@ -23,7 +23,6 @@ async-process.workspace = true
 async-trait.workspace = true
 blocking.workspace = true
 bottles-plugin-host.workspace = true
-wasmtime.workspace = true
 download-manager.workspace = true
 http-client = { workspace = true, features = ["reqwest"] }
 next-config.workspace = true

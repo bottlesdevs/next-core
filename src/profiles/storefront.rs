@@ -1,8 +1,5 @@
 //! Storefront implementations behind one account and library contract.
 mod steam;
-pub(super) mod wasm;
-pub use wasm::add_plugin_imports;
-pub(crate) use wasm::{Authentication, LinkedAccount, OwnedGame};
 
 use crate::{Plugins, ProfileError, error::Result};
 use async_trait::async_trait;
@@ -11,15 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
-/// Application-owned input interaction passed explicitly to a storefront invocation.
-#[async_trait]
-pub trait AccountLinkInteraction: Send + Sync {
-    async fn request_input(
-        &self,
-        url: url::Url,
-        instructions: String,
-    ) -> std::result::Result<String, String>;
-}
+pub use bottles_plugin_host::AccountLinkInteraction;
+pub(crate) use bottles_plugin_host::{Authentication, LinkedAccount, OwnedGame};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StorefrontProvider {
@@ -101,7 +91,8 @@ impl Provider for LoadedPlugin {
         interaction: Arc<dyn AccountLinkInteraction>,
         cancellation: &CancellationToken,
     ) -> std::result::Result<LinkedAccount, String> {
-        wasm::link_account(&self.component, interaction, cancellation).await
+        bottles_plugin_host::storefront::link_account(&self.component, interaction, cancellation)
+            .await
     }
 
     async fn authenticate(
@@ -109,7 +100,7 @@ impl Provider for LoadedPlugin {
         account_id: &str,
         credential: Option<&[u8]>,
     ) -> std::result::Result<Authentication, String> {
-        wasm::authenticate(&self.component, account_id, credential).await
+        bottles_plugin_host::storefront::authenticate(&self.component, account_id, credential).await
     }
 
     async fn list_games(
@@ -118,6 +109,12 @@ impl Provider for LoadedPlugin {
         access: &[u8],
         cancellation: &CancellationToken,
     ) -> std::result::Result<Vec<OwnedGame>, String> {
-        wasm::list_games(&self.component, account_id, access, cancellation).await
+        bottles_plugin_host::storefront::list_games(
+            &self.component,
+            account_id,
+            access,
+            cancellation,
+        )
+        .await
     }
 }

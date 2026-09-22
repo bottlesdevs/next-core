@@ -37,7 +37,7 @@ pub use library::{Library, LibraryItem, SearchEntry, SearchSource};
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use profiles::{
     AccountIdentity, AccountLinkInteraction, Profile, ProfileError, Profiles, ProfilesConfig,
-    StorefrontAccount, StorefrontProvider, add_plugin_imports,
+    StorefrontAccount, StorefrontProvider,
 };
 pub use utils::directories::Directories;
 pub use utils::env_vars::EnvVars;
