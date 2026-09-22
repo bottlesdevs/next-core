@@ -2,7 +2,7 @@
 
 mod account;
 mod error;
-mod storefront;
+pub(crate) mod storefront;
 
 pub use account::StorefrontAccount;
 pub use error::ProfileError;
