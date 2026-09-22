@@ -14,7 +14,7 @@ pub struct StorefrontAccount {
 impl StorefrontAccount {
     pub(super) fn new(
         provider: StorefrontProvider,
-        identity: bottles_plugin_host::AccountIdentity,
+        identity: super::storefront::wasm::AccountIdentity,
     ) -> Self {
         Self {
             link_id: Uuid::new_v4(),
