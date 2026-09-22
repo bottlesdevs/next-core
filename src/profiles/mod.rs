@@ -273,7 +273,7 @@ impl Profiles {
         profile_id: Uuid,
         link_id: Uuid,
         cancellation: &CancellationToken,
-    ) -> Result<(String, Vec<storefront::OwnedGame>)> {
+    ) -> Result<Option<(String, Vec<storefront::OwnedGame>)>> {
         let lock = self
             .account_lock(link_id)
             .ok_or(ProfileError::AccountNotLinked {
@@ -297,32 +297,45 @@ impl Profiles {
                 link: link_id,
             })?;
         let provider = cancellation
-            .run_until_cancelled(storefront::get(&self.inner.plugins, &account.provider.id))
+            .run_until_cancelled(storefront::get_library(
+                &self.inner.plugins,
+                &account.provider.id,
+            ))
             .await
             .ok_or(Error::Cancelled)??;
+        let Some(provider) = provider else {
+            return Ok(None);
+        };
         // The caller keeps this future driven through authentication and credential persistence.
         let credential = credentials::load(link_id).await?;
-        let auth = provider
-            .authenticate(&account.identity.account_id, credential.as_deref())
-            .await
-            .map_err(|message| ProfileError::Provider {
-                provider: account.provider.id.clone(),
-                message,
-            })?;
+        let auth = bottles_plugin_host::storefront::authenticate(
+            &provider,
+            &account.identity.account_id,
+            credential.as_deref(),
+        )
+        .await
+        .map_err(|message| ProfileError::Provider {
+            provider: account.provider.id.clone(),
+            message,
+        })?;
         if let Some(updated) = auth.updated_credential {
             credentials::save(link_id, &updated).await?;
         }
         drop(guard);
         // The same provider/revision is retained; cancellation resumes after persistence.
         let games = cancellation
-            .run_until_cancelled(provider.list_games(&account.identity.account_id, &auth.access))
+            .run_until_cancelled(bottles_plugin_host::storefront::list_games(
+                &provider,
+                &account.identity.account_id,
+                &auth.access,
+            ))
             .await
             .ok_or(Error::Cancelled)?
             .map_err(|message| ProfileError::Provider {
                 provider: account.provider.id.clone(),
                 message,
             })?;
-        Ok((provider.metadata().name.into_owned(), games))
+        Ok(Some((provider.info.manifest.name, games)))
     }
 
     pub fn account_providers(&self) -> Vec<StorefrontProvider> {
