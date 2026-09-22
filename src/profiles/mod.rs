@@ -253,7 +253,8 @@ impl Profiles {
     ) -> Operation<Profile> {
         let profiles = self.clone();
         Operation::new(move |_progress, cancellation| async move {
-            let provider = storefront::account_provider(&profiles.inner.plugins, &provider_id)?;
+            let provider =
+                storefront::account_provider(&profiles.inner.plugins, &provider_id).await?;
             let metadata = provider.metadata();
             validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
 
@@ -278,7 +279,7 @@ impl Profiles {
             }
             let index = validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
             // Revalidate availability without replacing the authenticating metadata.
-            storefront::account_provider(&profiles.inner.plugins, &provider_id)?;
+            storefront::account_provider(&profiles.inner.plugins, &provider_id).await?;
             let account = StorefrontAccount::new(metadata, identity);
             account
                 .prepare(profile_id, credential.as_deref(), write.clone())

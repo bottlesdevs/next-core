@@ -23,7 +23,8 @@ impl StorefrontAccountProvider for Plugin {
         interaction: Arc<dyn AccountLinkInteraction>,
         cancellation: &CancellationToken,
     ) -> Result<LinkedAccount, String> {
-        self.runtime.link_account(interaction, cancellation).await
+        bottles_plugin_host::storefront::link_account(&self.component, interaction, cancellation)
+            .await
     }
 }
 
@@ -38,6 +39,6 @@ impl StorefrontLibraryProvider for Plugin {
         account_id: &str,
         credential: Option<&[u8]>,
     ) -> Result<bottles_plugin_host::ListedGames, String> {
-        self.runtime.list_games(account_id, credential).await
+        bottles_plugin_host::storefront::list_games(&self.component, account_id, credential).await
     }
 }

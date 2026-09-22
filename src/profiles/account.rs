@@ -94,7 +94,7 @@ impl StorefrontAccount {
             .into());
         }
         let guard = Arc::new(guard);
-        let Some(provider) = storefront::library_provider(plugins, &self.provider.id)? else {
+        let Some(provider) = storefront::library_provider(plugins, &self.provider.id).await? else {
             return Ok(None);
         };
         let credential = credentials::load(&self.provider.id, profile_id).await?;

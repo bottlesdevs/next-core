@@ -3,8 +3,9 @@
 mod plugin;
 mod steam;
 
-use crate::{PluginKind, Plugins, ProfileError, error::Result};
+use crate::{Plugins, ProfileError, error::Result};
 use async_trait::async_trait;
+use bottles_plugin_host::PluginInterface;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, sync::Arc};
 use tokio_util::sync::CancellationToken;
@@ -50,27 +51,34 @@ pub(crate) trait StorefrontLibraryProvider: Send + Sync {
     ) -> std::result::Result<bottles_plugin_host::ListedGames, String>;
 }
 
-pub(crate) fn account_provider(
+pub(crate) async fn account_provider(
     plugins: &Plugins,
     id: &String,
 ) -> Result<Arc<dyn StorefrontAccountProvider>> {
     if id == steam::PROVIDER_ID {
         return Ok(Arc::new(steam::SteamIntegration));
     }
-    plugins
-        .contribution(id, PluginKind::StorefrontAccountProvider)
-        .map(|plugin| Arc::new(plugin) as Arc<dyn StorefrontAccountProvider>)
-        .ok_or_else(|| ProfileError::ProviderNotFound(id.clone()).into())
+    let info = plugins
+        .get(id)
+        .filter(|p| p.exports(PluginInterface::StorefrontProvider))
+        .ok_or_else(|| ProfileError::ProviderNotFound(id.clone()))?;
+    Ok(Arc::new(plugins.load(&info.manifest.id).await?))
 }
 
 pub(crate) fn account_providers(plugins: &Plugins) -> Vec<StorefrontProvider> {
     std::iter::once(steam::metadata())
         .chain(
             plugins
-                .contributions(PluginKind::StorefrontAccountProvider)
+                .list()
                 .into_iter()
-                .filter(|plugin| plugin.manifest.id != steam::PROVIDER_ID)
-                .map(|plugin| plugin.metadata()),
+                .filter(|plugin| {
+                    plugin.manifest.id != steam::PROVIDER_ID
+                        && plugin.exports(PluginInterface::StorefrontProvider)
+                })
+                .map(|plugin| StorefrontProvider {
+                    id: plugin.manifest.id,
+                    name: plugin.manifest.name.into(),
+                }),
         )
         .collect()
 }
@@ -78,14 +86,16 @@ pub(crate) fn account_providers(plugins: &Plugins) -> Vec<StorefrontProvider> {
 /// Resolve library access independently of account linking. Native Steam account
 /// discovery does not prevent an external Steam library contribution. Until a
 /// library implementation is available, searches report the source as unavailable.
-pub(crate) fn library_provider(
+pub(crate) async fn library_provider(
     plugins: &Plugins,
     id: &String,
 ) -> Result<Option<Arc<dyn StorefrontLibraryProvider>>> {
     let plugin = plugins
         .get(id)
         .ok_or_else(|| ProfileError::ProviderNotFound(id.clone()))?;
-    Ok(plugin
-        .contribution(PluginKind::StorefrontLibraryProvider)
-        .map(|plugin| Arc::new(plugin) as Arc<dyn StorefrontLibraryProvider>))
+    if plugin.exports(PluginInterface::StorefrontProvider) {
+        Ok(Some(Arc::new(plugins.load(id).await?)))
+    } else {
+        Ok(None)
+    }
 }
