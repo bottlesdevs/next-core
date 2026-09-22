@@ -23,9 +23,7 @@ use crate::{
     error::{Error, Result},
 };
 use storefront::LinkedAccount;
-pub use storefront::{
-    AccountIdentity, AccountLinkInteraction, StorefrontProvider, add_plugin_imports,
-};
+pub use storefront::{AccountIdentity, AccountLinkInteraction, StorefrontProvider};
 
 /// One coherent persisted snapshot of every profile and the selected profile.
 ///
