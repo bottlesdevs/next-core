@@ -185,18 +185,22 @@ impl Library {
             )
             .await?;
         // Retain the same revision across authentication, credential persistence, and enumeration.
-        let games = cancellation
-            .run_until_cancelled(bottles_plugin_host::storefront::list_games(
-                &provider,
-                &account.identity.account_id,
-                &access,
-            ))
-            .await
-            .ok_or(Error::Cancelled)?
-            .map_err(|message| ProfileError::Provider {
-                provider: account.provider.id.clone(),
-                message,
-            })?;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let games = bottles_plugin_host::storefront::list_games(
+            &provider,
+            &account.identity.account_id,
+            &access,
+        )
+        .await;
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let games = games.map_err(|message| ProfileError::Provider {
+            provider: account.provider.id.clone(),
+            message,
+        })?;
         Ok(Some(games))
     }
 
