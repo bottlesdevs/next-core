@@ -6,9 +6,6 @@ pub enum ProfileError {
     /// No profile exists with the requested UUID.
     #[error("profile {0} was not found")]
     NotFound(Uuid),
-    /// A profile name is empty after trimming surrounding whitespace.
-    #[error("profile name must not be blank")]
-    InvalidName,
     /// The only remaining profile cannot be deleted.
     #[error("the last profile {0} cannot be deleted")]
     LastProfile(Uuid),

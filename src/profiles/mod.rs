@@ -9,7 +9,6 @@ pub use error::ProfileError;
 
 use std::{collections::HashMap, io, path::PathBuf, sync::Arc};
 
-use account::Account;
 use futures_core::Stream;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
@@ -71,29 +70,29 @@ struct ProfilesInner {
     write_lock: Mutex<()>,
 }
 
-// Publish the public snapshot and its live account owners as one generation.
+// Publish the public snapshot and its credential locks as one generation.
 struct ProfilesState {
     config: Arc<ProfilesConfig>,
-    accounts: HashMap<Uuid, Arc<Account>>,
+    credential_locks: HashMap<Uuid, Arc<Mutex<()>>>,
 }
 
 impl ProfilesState {
-    fn new(config: ProfilesConfig, previous: &HashMap<Uuid, Arc<Account>>) -> Self {
-        let accounts = config
+    fn new(config: ProfilesConfig, previous: &HashMap<Uuid, Arc<Mutex<()>>>) -> Self {
+        let credential_locks = config
             .profiles
             .iter()
             .flat_map(|p| &p.accounts)
             .map(|info| {
-                let account = previous
+                let lock = previous
                     .get(&info.link_id)
                     .cloned()
-                    .unwrap_or_else(|| Arc::new(Account::new(info.clone())));
-                (info.link_id, account)
+                    .unwrap_or_else(|| Arc::new(Mutex::new(())));
+                (info.link_id, lock)
             })
             .collect();
         Self {
             config: Arc::new(config),
-            accounts,
+            credential_locks,
         }
     }
 }
@@ -134,7 +133,10 @@ impl Profiles {
         next_config::save(&self.inner.path, &next).await?;
         self.inner
             .published
-            .send_replace(Arc::new(ProfilesState::new(next, &current.accounts)));
+            .send_replace(Arc::new(ProfilesState::new(
+                next,
+                &current.credential_locks,
+            )));
         Ok(value)
     }
 }
@@ -257,11 +259,11 @@ impl Profiles {
         }
     }
 
-    fn account(&self, link_id: Uuid) -> Option<Arc<Account>> {
+    fn account_lock(&self, link_id: Uuid) -> Option<Arc<Mutex<()>>> {
         self.inner
             .published
             .borrow()
-            .accounts
+            .credential_locks
             .get(&link_id)
             .cloned()
     }
@@ -272,32 +274,28 @@ impl Profiles {
         account: &StorefrontAccount,
         cancellation: &CancellationToken,
     ) -> Result<(String, Vec<storefront::OwnedGame>)> {
-        let live = self
-            .account(account.link_id)
+        let lock = self
+            .account_lock(account.link_id)
             .ok_or(ProfileError::AccountNotLinked {
                 profile: profile_id,
                 link: account.link_id,
             })?;
         let guard = cancellation
-            .run_until_cancelled(live.credential.lock())
+            .run_until_cancelled(lock.lock())
             .await
             .ok_or(Error::Cancelled)?;
         let state = self.snapshot();
         let profile = state
             .profile(profile_id)
             .ok_or(ProfileError::NotFound(profile_id))?;
-        if !profile
+        let account = profile
             .accounts
             .iter()
-            .any(|a| a.link_id == live.info.link_id)
-        {
-            return Err(ProfileError::AccountNotLinked {
+            .find(|linked| linked.link_id == account.link_id)
+            .ok_or(ProfileError::AccountNotLinked {
                 profile: profile_id,
-                link: live.info.link_id,
-            }
-            .into());
-        }
-        let account = &live.info;
+                link: account.link_id,
+            })?;
         let provider = cancellation
             .run_until_cancelled(storefront::get(&self.inner.plugins, &account.provider.id))
             .await
@@ -387,9 +385,9 @@ impl Profiles {
     /// Remove membership before deleting the secret. Retrying an absent UUID retries cleanup.
     /// The caller must drive this future to completion once publication begins.
     pub async fn unlink_account(&self, link_id: Uuid) -> Result<()> {
-        let account = self.account(link_id);
-        let _credential = match &account {
-            Some(account) => Some(account.credential.lock().await),
+        let lock = self.account_lock(link_id);
+        let _credential = match &lock {
+            Some(lock) => Some(lock.lock().await),
             None => None,
         };
         let write = self.inner.write_lock.lock().await;

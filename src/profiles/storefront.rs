@@ -17,11 +17,7 @@ pub struct StorefrontProvider {
     pub name: Cow<'static, str>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct AccountIdentity {
-    pub account_id: String,
-    pub display_name: String,
-}
+pub use bottles_plugin_host::AccountIdentity;
 
 #[async_trait]
 pub(super) trait Provider: Send + Sync {
