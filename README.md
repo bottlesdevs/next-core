@@ -115,6 +115,7 @@ Add `bottles-core` and an async runtime to your application:
 ```toml
 [dependencies]
 bottles-core = "0.1"
+bottles-plugin-host = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures-lite = "2"
 ```

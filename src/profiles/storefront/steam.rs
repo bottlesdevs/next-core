@@ -1,17 +1,16 @@
 //! Native Steam account discovery during explicit account linking.
 
+use async_trait::async_trait;
 use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
-use async_trait::async_trait;
-use bottles_plugin_host::AccountIdentity;
+use bottles_plugin_host::{AccountIdentity, Authentication, OwnedGame};
 use tokio_util::sync::CancellationToken;
 
-use super::{AccountLinkInteraction, LinkedAccount, StorefrontAccountProvider, StorefrontProvider};
+use super::{AccountLinkInteraction, LinkedAccount, Provider, StorefrontProvider};
 
-pub const PROVIDER_ID: &str = "steam";
 pub(super) fn metadata() -> StorefrontProvider {
     StorefrontProvider {
-        id: PROVIDER_ID.into(),
+        id: "native:steam".into(),
         name: Cow::Borrowed("Steam"),
     }
 }
@@ -26,11 +25,10 @@ const LOGINUSERS_PATHS: &[&str] = &[
     ".var/app/com.valvesoftware.Steam/.local/share/Steam/config/loginusers.vdf",
 ];
 
-/// Native account-link adapter.
-pub(super) struct SteamIntegration;
+pub(super) struct Steam;
 
 #[async_trait]
-impl StorefrontAccountProvider for SteamIntegration {
+impl Provider for Steam {
     fn metadata(&self) -> StorefrontProvider {
         metadata()
     }
@@ -50,6 +48,26 @@ impl StorefrontAccountProvider for SteamIntegration {
             identity,
             credential: None,
         })
+    }
+
+    async fn authenticate(
+        &self,
+        _account_id: &str,
+        _credential: Option<&[u8]>,
+    ) -> Result<Authentication, String> {
+        Ok(Authentication {
+            access: Vec::new(),
+            updated_credential: None,
+        })
+    }
+
+    async fn list_games(
+        &self,
+        _account_id: &str,
+        _access: &[u8],
+        _cancellation: &CancellationToken,
+    ) -> Result<Vec<OwnedGame>, String> {
+        Ok(Vec::new())
     }
 }
 

@@ -7,16 +7,21 @@ mod storefront;
 pub use account::StorefrontAccount;
 pub use error::ProfileError;
 
-use std::{io, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, io, path::PathBuf, sync::Arc};
 
+use account::Account;
 use futures_core::Stream;
 use next_config::Config;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
-use tokio_stream::wrappers::WatchStream;
+use tokio_stream::{StreamExt, wrappers::WatchStream};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{Directories, Operation, Plugins, error::Result};
+use crate::{
+    Directories, Operation, Plugins, credentials,
+    error::{Error, Result},
+};
 use storefront::LinkedAccount;
 pub use storefront::{AccountIdentity, AccountLinkInteraction, StorefrontProvider};
 
@@ -60,10 +65,37 @@ impl ProfilesConfig {
 }
 
 struct ProfilesInner {
-    plugins: Arc<Plugins>,
+    storefronts: storefront::Storefronts,
     path: PathBuf,
-    published: watch::Sender<Arc<ProfilesConfig>>,
-    write_lock: Arc<Mutex<()>>,
+    published: watch::Sender<Arc<ProfilesState>>,
+    write_lock: Mutex<()>,
+}
+
+// Publish the public snapshot and its live account owners as one generation.
+struct ProfilesState {
+    config: Arc<ProfilesConfig>,
+    accounts: HashMap<Uuid, Arc<Account>>,
+}
+
+impl ProfilesState {
+    fn new(config: ProfilesConfig, previous: &HashMap<Uuid, Arc<Account>>) -> Self {
+        let accounts = config
+            .profiles
+            .iter()
+            .flat_map(|p| &p.accounts)
+            .map(|info| {
+                let account = previous
+                    .get(&info.link_id)
+                    .cloned()
+                    .unwrap_or_else(|| Arc::new(Account::new(info.clone())));
+                (info.link_id, account)
+            })
+            .collect();
+        Self {
+            config: Arc::new(config),
+            accounts,
+        }
+    }
 }
 
 impl Profiles {
@@ -94,13 +126,15 @@ impl Profiles {
         operation: impl FnOnce(&mut ProfilesConfig) -> Result<T>,
     ) -> Result<T> {
         let current = self.inner.published.borrow().clone();
-        let mut next = current.as_ref().clone();
+        let mut next = current.config.as_ref().clone();
         let value = operation(&mut next)?;
-        if next == *current {
+        if next == *current.config {
             return Ok(value);
         }
         next_config::save(&self.inner.path, &next).await?;
-        self.inner.published.send_replace(Arc::new(next));
+        self.inner
+            .published
+            .send_replace(Arc::new(ProfilesState::new(next, &current.accounts)));
         Ok(value)
     }
 }
@@ -130,19 +164,19 @@ impl Profiles {
         if state.profile(state.selected).is_none() {
             return Err(ProfileError::NotFound(state.selected).into());
         }
-        let (published, _) = watch::channel(Arc::new(state));
+        let (published, _) = watch::channel(Arc::new(ProfilesState::new(state, &HashMap::new())));
         let inner = Arc::new(ProfilesInner {
-            plugins,
+            storefronts: storefront::Storefronts::new(plugins),
             path,
             published,
-            write_lock: Arc::default(),
+            write_lock: Mutex::new(()),
         });
         Ok(Self { inner })
     }
 
     /// Returns the current profile collection and selection atomically.
     pub fn snapshot(&self) -> Arc<ProfilesConfig> {
-        self.inner.published.borrow().clone()
+        self.inner.published.borrow().config.clone()
     }
 
     /// Returns every profile in persisted order.
@@ -160,7 +194,7 @@ impl Profiles {
     /// The stream yields the current snapshot first. Slow consumers may miss
     /// intermediate changes and receive only the latest coherent snapshot.
     pub fn watch(&self) -> impl Stream<Item = Arc<ProfilesConfig>> + Send + 'static + use<> {
-        WatchStream::new(self.inner.published.subscribe())
+        WatchStream::new(self.inner.published.subscribe()).map(|state| state.config.clone())
     }
 
     /// Creates and selects a profile with a generated UUID in one publication.
@@ -195,8 +229,7 @@ impl Profiles {
     }
 
     /// Deletes a profile after unlinking its accounts and cleaning their credentials.
-    /// Failed cleanup keeps the affected slot occupied for retry; accounts already
-    /// unlinked remain removed if a later cleanup fails.
+    /// Failed credential cleanup leaves membership removed; retry cleanup by link UUID.
     /// Deleting the selected profile selects the first remaining profile in the
     /// final persisted update. The only remaining profile cannot be deleted.
     pub async fn delete(&self, id: Uuid) -> Result<()> {
@@ -220,31 +253,90 @@ impl Profiles {
                     .await;
             };
             drop(write);
-            self.unlink_account(id, account.provider.id).await?;
+            self.unlink_account(account.link_id).await?;
         }
+    }
+
+    fn account(&self, link_id: Uuid) -> Option<Arc<Account>> {
+        self.inner
+            .published
+            .borrow()
+            .accounts
+            .get(&link_id)
+            .cloned()
     }
 
     pub(crate) async fn owned_games(
         &self,
         profile_id: Uuid,
         account: &StorefrontAccount,
-    ) -> Result<Option<(String, Vec<bottles_plugin_host::OwnedGame>)>> {
-        account.owned_games(&self.inner.plugins, profile_id).await
+        cancellation: &CancellationToken,
+    ) -> Result<(String, Vec<bottles_plugin_host::OwnedGame>)> {
+        let live = self
+            .account(account.link_id)
+            .ok_or(ProfileError::AccountNotLinked {
+                profile: profile_id,
+                link: account.link_id,
+            })?;
+        let guard = cancellation
+            .run_until_cancelled(live.credential.lock())
+            .await
+            .ok_or(Error::Cancelled)?;
+        let state = self.snapshot();
+        let profile = state
+            .profile(profile_id)
+            .ok_or(ProfileError::NotFound(profile_id))?;
+        if !profile
+            .accounts
+            .iter()
+            .any(|a| a.link_id == live.info.link_id)
+        {
+            return Err(ProfileError::AccountNotLinked {
+                profile: profile_id,
+                link: live.info.link_id,
+            }
+            .into());
+        }
+        let account = &live.info;
+        let provider = cancellation
+            .run_until_cancelled(self.inner.storefronts.get(&account.provider.id))
+            .await
+            .ok_or(Error::Cancelled)??;
+        // The caller keeps this future driven through authentication and credential persistence.
+        let credential = credentials::load(account.link_id).await?;
+        let auth = provider
+            .authenticate(&account.identity.account_id, credential.as_deref())
+            .await
+            .map_err(|message| ProfileError::Provider {
+                provider: account.provider.id.clone(),
+                message,
+            })?;
+        if let Some(updated) = auth.updated_credential {
+            credentials::save(account.link_id, &updated).await?;
+        }
+        drop(guard);
+        // The same provider/revision is retained; cancellation resumes after persistence.
+        let games = cancellation
+            .run_until_cancelled(provider.list_games(
+                &account.identity.account_id,
+                &auth.access,
+                cancellation,
+            ))
+            .await
+            .ok_or(Error::Cancelled)?
+            .map_err(|message| ProfileError::Provider {
+                provider: account.provider.id.clone(),
+                message,
+            })?;
+        Ok((provider.metadata().name.into_owned(), games))
     }
 
-    /// Returns the storefront providers available in this process.
     pub fn account_providers(&self) -> Vec<StorefrontProvider> {
-        storefront::account_providers(&self.inner.plugins)
+        self.inner.storefronts.list()
     }
 
-    /// Links one account through an available provider.
-    ///
-    /// Authentication happens outside the profile write lock. Cancellation is
-    /// observed during authentication and while waiting for that lock. Credential
-    /// preparation and profile persistence then finish cooperatively under it.
-    /// Reloads do not replace the authenticating provider's metadata. A missing
-    /// credential clears any stale entry. Failed persistence awaits cleanup and
-    /// returns any cleanup failure.
+    /// Cancellation stops preparation; credential and membership writes finish once entered.
+    /// The application must retain and await the operation instead of aborting its future.
     pub fn link_account(
         &self,
         profile_id: Uuid,
@@ -253,14 +345,15 @@ impl Profiles {
     ) -> Operation<Profile> {
         let profiles = self.clone();
         Operation::new(move |_progress, cancellation| async move {
-            let provider =
-                storefront::account_provider(&profiles.inner.plugins, &provider_id).await?;
-            let metadata = provider.metadata();
             validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
-
+            let provider = cancellation
+                .run_until_cancelled(profiles.inner.storefronts.get(&provider_id))
+                .await
+                .ok_or(Error::Cancelled)??;
+            let metadata = provider.metadata();
             let linked = provider.link_account(interaction, &cancellation).await;
             if cancellation.is_cancelled() {
-                return Err(crate::error::Error::Cancelled);
+                return Err(Error::Cancelled);
             }
             let LinkedAccount {
                 identity,
@@ -269,21 +362,15 @@ impl Profiles {
                 provider: provider_id.clone(),
                 message,
             })?;
-            let write = cancellation
-                .run_until_cancelled(profiles.inner.write_lock.clone().lock_owned())
+            let _write = cancellation
+                .run_until_cancelled(profiles.inner.write_lock.lock())
                 .await
-                .ok_or(crate::error::Error::Cancelled)?;
-            let write = Arc::new(write);
-            if cancellation.is_cancelled() {
-                return Err(crate::error::Error::Cancelled);
-            }
+                .ok_or(Error::Cancelled)?;
             let index = validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
-            // Revalidate availability without replacing the authenticating metadata.
-            storefront::account_provider(&profiles.inner.plugins, &provider_id).await?;
             let account = StorefrontAccount::new(metadata, identity);
-            account
-                .prepare(profile_id, credential.as_deref(), write.clone())
-                .await?;
+            if let Some(secret) = credential.as_deref() {
+                credentials::save(account.link_id, secret).await?;
+            }
             let result = profiles
                 .update_locked(|state| {
                     state.profiles[index].accounts.push(account.clone());
@@ -291,67 +378,34 @@ impl Profiles {
                 })
                 .await;
             if result.is_err() && credential.is_some() {
-                let mut operation = account.lock().await;
-                account
-                    .cleanup(profile_id, &mut operation, write.clone())
-                    .await?;
+                credentials::delete(account.link_id).await?;
             }
             result
         })
     }
 
-    /// Cleans an account's credential before releasing its slot, without requiring
-    /// its provider. Waits for the account's operation before taking the profile
-    /// write lock for cleanup and persistence. If either fails, the slot stays
-    /// occupied and further searches are disabled; unlinking can be retried.
-    pub async fn unlink_account(&self, profile_id: Uuid, provider_id: String) -> Result<Profile> {
-        let account = find_account(&self.snapshot(), profile_id, &provider_id)?;
-        let mut operation = account.lock().await;
-        let write = Arc::new(self.inner.write_lock.clone().lock_owned().await);
-        let current = find_account(&self.snapshot(), profile_id, &provider_id)?;
-        if !current.same_link(&account) {
-            return Err(ProfileError::AccountNotLinked {
-                profile: profile_id,
-                provider: provider_id.clone(),
-            }
-            .into());
-        }
-        account
-            .cleanup(profile_id, &mut operation, write.clone())
-            .await?;
+    /// Remove membership before deleting the secret. Retrying an absent UUID retries cleanup.
+    /// The caller must drive this future to completion once publication begins.
+    pub async fn unlink_account(&self, link_id: Uuid) -> Result<()> {
+        let account = self.account(link_id);
+        let _credential = match &account {
+            Some(account) => Some(account.credential.lock().await),
+            None => None,
+        };
+        let write = self.inner.write_lock.lock().await;
         self.update_locked(|state| {
-            let profile = state
-                .profiles
-                .iter_mut()
-                .find(|profile| profile.id == profile_id)
-                .ok_or(ProfileError::NotFound(profile_id))?;
-            profile.accounts.retain(|other| !other.same_link(&account));
-            Ok(profile.clone())
-        })
-        .await
-    }
-}
-
-fn find_account(
-    state: &ProfilesConfig,
-    profile_id: Uuid,
-    provider_id: &String,
-) -> Result<StorefrontAccount> {
-    let profile = state
-        .profile(profile_id)
-        .ok_or(ProfileError::NotFound(profile_id))?;
-    profile
-        .accounts
-        .iter()
-        .find(|account| &account.provider.id == provider_id)
-        .cloned()
-        .ok_or_else(|| {
-            ProfileError::AccountNotLinked {
-                profile: profile_id,
-                provider: provider_id.clone(),
+            for profile in &mut state.profiles {
+                profile
+                    .accounts
+                    .retain(|account| account.link_id != link_id);
             }
-            .into()
+            Ok(())
         })
+        .await?;
+        drop(write);
+        credentials::delete(link_id).await?;
+        Ok(())
+    }
 }
 
 fn validate_account_link(

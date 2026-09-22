@@ -113,16 +113,21 @@ impl Library {
                 let profiles = self.profiles.clone();
                 async move {
                     let provider_id = account.provider.id.clone();
-                    let (source_name, games) =
-                        match profiles.owned_games(profile_id, &account).await {
-                            Ok(Some(listed)) => listed,
-                            Ok(None) => return Vec::new(),
-                            Err(error) => {
-                                tracing::warn!(provider = %provider_id, profile = %profile_id,
+                    let (source_name, games) = match profiles
+                        .owned_games(
+                            profile_id,
+                            &account,
+                            &tokio_util::sync::CancellationToken::new(),
+                        )
+                        .await
+                    {
+                        Ok(listed) => listed,
+                        Err(error) => {
+                            tracing::warn!(provider = %provider_id, profile = %profile_id,
                                 "failed to list storefront games: {error}");
-                                return Vec::new();
-                            }
-                        };
+                            return Vec::new();
+                        }
+                    };
                     games
                         .into_iter()
                         .map(|game| SearchEntry {
