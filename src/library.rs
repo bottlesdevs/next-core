@@ -135,6 +135,7 @@ impl Library {
                             title: game.title,
                             source_name: source_name.clone(),
                             source: SearchSource::Storefront {
+                                link_id: account.link_id,
                                 profile_id,
                                 provider_id: provider_id.clone(),
                                 game_id: game.id,
@@ -260,6 +261,7 @@ pub enum SearchSource {
     Installed(LibraryItem),
     /// A game owned through one linked storefront account.
     Storefront {
+        link_id: Uuid,
         profile_id: Uuid,
         provider_id: String,
         game_id: String,
@@ -273,11 +275,13 @@ mod tests {
     #[test]
     fn storefront_search_matches_title_and_source_without_using_them_as_identity() {
         let profile_id = Uuid::new_v4();
+        let link_id = Uuid::new_v4();
         let provider_id = "epic-games-store".to_owned();
         let entry = SearchEntry {
             title: "Fortnite".into(),
             source_name: "Epic Games Store".into(),
             source: SearchSource::Storefront {
+                link_id,
                 profile_id,
                 provider_id: provider_id.clone(),
                 game_id: "fortnite".into(),
@@ -291,10 +295,12 @@ mod tests {
         assert!(matches!(
             entry.source(),
             SearchSource::Storefront {
+                link_id: actual_link,
                 profile_id: actual_profile,
                 provider_id: actual_provider,
                 game_id,
-            } if *actual_profile == profile_id
+            } if *actual_link == link_id
+                && *actual_profile == profile_id
                 && actual_provider == &provider_id
                 && game_id == "fortnite"
         ));
