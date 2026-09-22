@@ -7,63 +7,71 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use bottles_plugin_host::Plugin as WasmPlugin;
+use bottles_plugin_host::{CompiledPlugin, Runtime};
 use futures_lite::StreamExt;
 use tokio::sync::Mutex;
 
 use crate::{Directories, utils::storage};
 
-pub use bottles_plugin_host::{PluginError, PluginInfo, PluginKind, PluginManifest};
+pub use bottles_plugin_host::{PluginError, PluginInfo, PluginManifest};
 
 type Result<T> = std::result::Result<T, PluginError>;
 
 /// External package lifecycle. Package loading failures abort startup.
 pub struct Plugins {
     directories: Directories,
+    runtime: Runtime,
     lifecycle: Mutex<()>,
-    loaded: RwLock<HashMap<String, Plugin>>,
+    installed: RwLock<HashMap<String, InstalledPlugin>>,
 }
 
 impl Plugins {
     pub(crate) async fn open(directories: &Directories) -> Result<Self> {
         let installed_directory = directories.plugins().join("installed");
         async_fs::create_dir_all(&installed_directory).await?;
-        let loaded = discover(&installed_directory).await?;
+        let runtime = Runtime::new().map_err(PluginError::Runtime)?;
+        let installed = discover(&installed_directory).await?;
         Ok(Self {
             directories: directories.clone(),
+            runtime,
             lifecycle: Mutex::new(()),
-            loaded: RwLock::new(loaded),
+            installed: RwLock::new(installed),
         })
     }
 
     pub fn list(&self) -> Vec<PluginInfo> {
-        self.loaded
+        self.installed
             .read()
             .unwrap()
             .values()
-            .map(Plugin::info)
+            .map(|plugin| plugin.info.clone())
             .collect()
     }
 
     pub async fn install(&self, directory: &Path) -> Result<PluginInfo> {
         let _lifecycle = self.lifecycle.lock().await;
-        let plugin = Plugin::load(directory).await?;
-        copy_package(directory, &self.package_directory(&plugin.manifest.id)).await?;
-        let info = plugin.info();
-        self.loaded
-            .write()
-            .unwrap()
-            .insert(plugin.manifest.id.clone(), plugin);
+        let info = read_info(directory).await?;
+        copy_package(directory, &self.package_directory(&info.manifest.id)).await?;
+        self.installed.write().unwrap().insert(
+            info.manifest.id.clone(),
+            InstalledPlugin {
+                info: info.clone(),
+                component: None,
+            },
+        );
         Ok(info)
     }
 
     pub async fn reload(&self, id: &String) -> Result<()> {
         let _lifecycle = self.lifecycle.lock().await;
-        let plugin = Plugin::load(&self.package_directory(id)).await?;
-        self.loaded
-            .write()
-            .unwrap()
-            .insert(plugin.manifest.id.clone(), plugin);
+        let info = read_info(&self.package_directory(id)).await?;
+        self.installed.write().unwrap().insert(
+            info.manifest.id.clone(),
+            InstalledPlugin {
+                info,
+                component: None,
+            },
+        );
         Ok(())
     }
 
@@ -72,28 +80,53 @@ impl Plugins {
         let _lifecycle = self.lifecycle.lock().await;
         storage::with_temp_dir(&self.directories.trash(), |trash| async move {
             async_fs::rename(self.package_directory(id), trash.join("plugin")).await?;
-            self.loaded.write().unwrap().remove(id);
+            self.installed.write().unwrap().remove(id);
             Ok(())
         })
         .await
     }
 
-    pub(crate) fn get(&self, id: &String) -> Option<Plugin> {
-        self.loaded.read().unwrap().get(id).cloned()
-    }
-
-    pub(crate) fn contribution(&self, id: &String, kind: PluginKind) -> Option<Plugin> {
-        self.get(id)
-            .filter(|plugin| plugin.runtime.provides().contains(&kind))
-    }
-
-    pub(crate) fn contributions(&self, kind: PluginKind) -> Vec<Plugin> {
-        self.loaded
+    pub(crate) fn get(&self, id: &str) -> Option<PluginInfo> {
+        self.installed
             .read()
             .unwrap()
-            .values()
-            .filter_map(|plugin| plugin.contribution(kind))
-            .collect()
+            .get(id)
+            .map(|plugin| plugin.info.clone())
+    }
+
+    pub(crate) async fn load(&self, id: &String) -> Result<Plugin> {
+        let _lifecycle = self.lifecycle.lock().await;
+        let (info, component) = {
+            let installed = self.installed.read().unwrap();
+            let plugin = installed
+                .get(id)
+                .ok_or_else(|| PluginError::NotFound(id.clone()))?;
+            (plugin.info.clone(), plugin.component.clone())
+        };
+        let component = match component {
+            Some(component) => component,
+            None => {
+                let bytes = async_fs::read(self.package_directory(id).join(COMPONENT_FILE)).await?;
+                let component = Arc::new(
+                    self.runtime
+                        .compile(bytes)
+                        .await
+                        .map_err(PluginError::Runtime)?,
+                );
+                // The lifecycle guard keeps this entry installed until compilation finishes.
+                self.installed
+                    .write()
+                    .unwrap()
+                    .get_mut(id)
+                    .unwrap()
+                    .component = Some(component.clone());
+                component
+            }
+        };
+        Ok(Plugin {
+            manifest: info.manifest,
+            component,
+        })
     }
 
     fn package_directory(&self, id: &String) -> PathBuf {
@@ -104,17 +137,28 @@ impl Plugins {
     }
 }
 
-async fn discover(directory: &Path) -> Result<HashMap<String, Plugin>> {
+struct InstalledPlugin {
+    info: PluginInfo,
+    component: Option<Arc<CompiledPlugin>>,
+}
+
+async fn discover(directory: &Path) -> Result<HashMap<String, InstalledPlugin>> {
     let mut directories = async_fs::read_dir(directory).await?;
-    let mut loaded = HashMap::new();
+    let mut installed = HashMap::new();
     while let Some(entry) = directories.next().await.transpose()? {
         if !entry.file_type().await?.is_dir() {
             continue;
         }
-        let plugin = Plugin::load(&entry.path()).await?;
-        loaded.insert(plugin.manifest.id.clone(), plugin);
+        let info = read_info(&entry.path()).await?;
+        installed.insert(
+            info.manifest.id.clone(),
+            InstalledPlugin {
+                info,
+                component: None,
+            },
+        );
     }
-    Ok(loaded)
+    Ok(installed)
 }
 
 async fn copy_package(source: &Path, destination: &Path) -> Result<()> {
@@ -128,34 +172,18 @@ async fn copy_package(source: &Path, destination: &Path) -> Result<()> {
 #[derive(Clone)]
 pub(crate) struct Plugin {
     pub(crate) manifest: PluginManifest,
-    pub(crate) runtime: Arc<WasmPlugin>,
+    pub(crate) component: Arc<CompiledPlugin>,
 }
 
-impl Plugin {
-    async fn load(directory: &Path) -> Result<Self> {
-        let manifest = bottles_plugin_host::parse_manifest(
-            &async_fs::read_to_string(directory.join(MANIFEST_FILE)).await?,
-        )?;
-        let component = async_fs::read(directory.join(COMPONENT_FILE)).await?;
-        let runtime = Arc::new(
-            WasmPlugin::load(&component)
-                .await
-                .map_err(PluginError::Runtime)?,
-        );
-        Ok(Self { manifest, runtime })
-    }
-
-    fn info(&self) -> PluginInfo {
-        PluginInfo {
-            manifest: self.manifest.clone(),
-            provides: self.runtime.provides().to_vec(),
-        }
-    }
-
-    pub(crate) fn contribution(&self, kind: PluginKind) -> Option<Self> {
-        self.runtime
-            .provides()
-            .contains(&kind)
-            .then(|| self.clone())
-    }
+async fn read_info(directory: &Path) -> Result<PluginInfo> {
+    let manifest = bottles_plugin_host::parse_manifest(
+        &async_fs::read_to_string(directory.join(MANIFEST_FILE)).await?,
+    )?;
+    let interfaces = bottles_plugin_host::exported_interfaces(
+        &async_fs::read(directory.join(COMPONENT_FILE)).await?,
+    )?;
+    Ok(PluginInfo {
+        manifest,
+        interfaces,
+    })
 }
