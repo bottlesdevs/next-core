@@ -144,7 +144,7 @@ async fn main() -> Result<(), bottles_core::error::Error> {
     }
 
     if let Some(bottle) = bottles.bottles().list().into_iter().next() {
-        let program = ProgramSpec::new("Example", "C:/Games/example.exe")?;
+        let program = ProgramSpec::new("Example", "C:/Games/example.exe");
         let id = bottle.edit(move |edit| Ok(edit.add_program(program))).await?;
         println!("registered {id}");
     }
