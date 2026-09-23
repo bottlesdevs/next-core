@@ -1,7 +1,7 @@
 //! Owner-root history, serialized by the same lock as edits and runtime work.
 
 use super::{
-    Environment, EnvironmentOwnerState,
+    BackendSource, Environment, State,
     history::{self, AUTO_CHECKPOINT_MESSAGE},
 };
 use crate::{
@@ -11,7 +11,10 @@ use crate::{
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 use std::sync::Arc;
 
-impl<T: EnvironmentOwnerState> Environment<T> {
+impl<T: BackendSource> Environment<T>
+where
+    State<T>: next_config::Config + Clone + PartialEq + Send + Sync,
+{
     pub(crate) fn create_snapshot(self: &Arc<Self>, message: String) -> Operation<Snapshot> {
         let environment = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -88,7 +91,8 @@ impl<T: EnvironmentOwnerState> Environment<T> {
                     &progress,
                 )
                 .await?;
-                let state: T = next_config::load(environment.root.join(T::FILE_NAME)).await?;
+                let state: State<T> =
+                    next_config::load(environment.root.join("state.toml")).await?;
                 if state.id() != current.id() {
                     return Err(EnvironmentError::IdMismatch {
                         expected: current.id(),
@@ -96,13 +100,13 @@ impl<T: EnvironmentOwnerState> Environment<T> {
                     }
                     .into());
                 }
-                if state.backend() != current.backend() {
+                if state.data.backend() != current.data.backend() {
                     return Err(EnvironmentError::InvalidEdit(
                         "snapshot backend does not match owner",
                     )
                     .into());
                 }
-                state.validate()?;
+                state.config.validate()?;
                 Ok((restored.state_id, state))
             }
             .await;

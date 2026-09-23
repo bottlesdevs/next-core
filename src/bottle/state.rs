@@ -3,91 +3,57 @@
 use std::{collections::HashMap, sync::Arc};
 
 use futures_core::Stream;
-use next_config::Config;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{EnvironmentState, PrefixBackend, ProgramSpec, error::Result};
+use crate::{PrefixBackend, ProgramSpec, State, error::Result};
 
-/// An immutable snapshot of a bottle's published configuration.
-///
-/// Snapshots are returned by [`Bottle::state`]  [`Bottle::watch`].
-/// They remain valid after the bottle changes or is deleted;
-/// their getters continue to return the values recorded when that particular
-/// snapshot was published. Obtain another snapshot to observe later changes.
-/// Component payload locations are derived from their UUIDs.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Config)]
-#[config(version = 1)]
-pub struct BottleState {
-    pub(crate) id: Uuid,
+/// Bottle-specific configuration. Execution settings live in [`State`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct BottleData {
     pub(crate) name: String,
     pub(crate) backend: PrefixBackend,
-    pub(crate) environment: EnvironmentState,
     #[serde(default)]
     pub(crate) programs: HashMap<Uuid, ProgramSpec>,
 }
 
-impl crate::environment::EnvironmentOwnerState for BottleState {
-    const FILE_NAME: &'static str = "bottle.toml";
-    fn id(&self) -> Uuid {
-        self.id
-    }
+/// An immutable snapshot of a bottle's complete published configuration.
+pub type BottleState = State<BottleData>;
+
+impl crate::environment::BackendSource for BottleData {
     fn backend(&self) -> PrefixBackend {
         self.backend
     }
-    fn environment(&self) -> &EnvironmentState {
-        &self.environment
-    }
-    fn environment_mut(&mut self) -> &mut EnvironmentState {
-        &mut self.environment
-    }
-    fn validate(&self) -> Result<()> {
-        BottleState::validate(self)
-    }
 }
 
-impl BottleState {
-    pub(crate) fn validate(&self) -> Result<()> {
-        self.environment.validate()
-    }
-
-    /// Returns the bottle's stable identity.
-    pub fn id(&self) -> Uuid {
-        self.id
-    }
-
+impl State<BottleData> {
     /// Returns the display name.
     ///
     /// Names are not identities and need not be unique.
     pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns the execution settings shared by every registration in this bottle.
-    pub fn environment(&self) -> &EnvironmentState {
-        &self.environment
+        &self.data.name
     }
 
     /// Iterates over registered programs in unspecified order.
     pub fn programs(&self) -> impl Iterator<Item = (Uuid, &ProgramSpec)> {
-        self.programs.iter().map(|(id, launch)| (*id, launch))
+        self.data.programs.iter().map(|(id, launch)| (*id, launch))
     }
 
     /// Returns the backend fixed when this bottle was created.
     pub fn backend(&self) -> PrefixBackend {
-        self.backend
+        self.data.backend
     }
 
     /// Returns the registered program with identity `id`.
     pub fn program(&self, id: Uuid) -> Option<&ProgramSpec> {
-        self.programs.get(&id)
+        self.data.programs.get(&id)
     }
 }
 
 /// A live bottle handle. Clones share state and coordination; dropping a handle
 /// does not stop Wine. Operations fail after deletion, including identity access.
 #[derive(Clone)]
-pub struct Bottle(pub(crate) Arc<crate::environment::Environment<BottleState>>);
+pub struct Bottle(pub(crate) Arc<crate::environment::Environment<BottleData>>);
 
 impl Bottle {
     pub fn id(&self) -> Result<Uuid> {

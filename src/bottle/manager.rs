@@ -1,9 +1,9 @@
 //! Bottle collection lifecycle backed by the shared environment registry.
-use super::{Bottle, BottleError, BottleState};
+use super::{Bottle, BottleData, BottleError, BottleState};
 #[cfg(feature = "fvs")]
 use crate::environment::VirgoManager;
 use crate::{
-    Addon, Component, Context, EnvironmentState, LibraryEntry, LibraryProvider, Operation,
+    Addon, Component, Context, EnvironmentConfig, LibraryEntry, LibraryProvider, Operation,
     PrefixBackend, Progress, Stage,
     environment::{Environment, Registry},
     error::{Error, Result},
@@ -30,7 +30,7 @@ pub struct BottleManager {
     pub(super) context: Context,
     #[cfg(feature = "fvs")]
     virgo: Arc<VirgoManager>,
-    registry: Arc<Registry<BottleState>>,
+    registry: Arc<Registry<BottleData>>,
 }
 
 #[async_trait::async_trait]
@@ -147,10 +147,12 @@ impl BottleManager {
             let bottle_path = cx.directories().bottle(id);
             let state = BottleState {
                 id,
-                name,
-                backend,
-                environment: EnvironmentState::new(runner, winebridge, umu)?,
-                programs: HashMap::new(),
+                config: EnvironmentConfig::new(runner, winebridge, umu)?,
+                data: BottleData {
+                    name,
+                    backend,
+                    programs: HashMap::new(),
+                },
             };
             let environment = Environment::create(
                 state,

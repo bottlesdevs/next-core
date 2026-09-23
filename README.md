@@ -43,7 +43,7 @@ The crate is centered around six types:
 - `Operation<T>` represents long-running work with progress and cooperative
   cancellation.
 
-Execution settings live in `BottleState::environment()` as an `EnvironmentState`.
+Execution settings live in `BottleState::config()` as an `EnvironmentConfig`.
 Use `Bottle::edit` or `Program::edit` to change metadata, startup settings, and
 software selections in one draft. `Edit::set_component`, `remove_component`, and
 `add_dependency` change only that draft; the final selection is validated and

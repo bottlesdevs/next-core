@@ -1,7 +1,7 @@
 //! Virgo policy: select build inputs and translate frozen selections into ordered layers.
 
 use crate::{
-    Addon, AddonError, Component, Context, EnvironmentError, EnvironmentState, Progress, Slot,
+    Addon, AddonError, Component, Context, EnvironmentConfig, EnvironmentError, Progress, Slot,
     Stage,
     addons::{AddonFamily, InstallInputs, execute},
     environment::runtime,
@@ -32,7 +32,7 @@ impl VirgoManager {
     /// usable after shared source payloads are removed; launch only loads them.
     pub(in crate::environment) async fn prepare_artifacts(
         &self,
-        config: &EnvironmentState,
+        config: &EnvironmentConfig,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
@@ -62,7 +62,7 @@ impl VirgoManager {
     /// Load the pinned base, runner adapter, components, then dependencies.
     pub(in crate::environment) async fn composition(
         &self,
-        config: &EnvironmentState,
+        config: &EnvironmentConfig,
     ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
         let base = self.layers.require(Path::new("soda"), None).await?;
         let runner = config.runner().id();
@@ -116,7 +116,7 @@ impl VirgoManager {
 
     async fn prepare_adapter(
         &self,
-        config: &EnvironmentState,
+        config: &EnvironmentConfig,
         base: &VirgoLayer,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {

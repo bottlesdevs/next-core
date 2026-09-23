@@ -3,62 +3,37 @@ mod manager;
 pub use manager::ProgramManager;
 
 use crate::{
-    Edit, EnvironmentState, Operation, PrefixBackend, ProgramSpec, Snapshot, SnapshotSummary,
-    environment::{Environment, EnvironmentOwnerState},
+    Edit, Operation, PrefixBackend, ProgramSpec, Snapshot, SnapshotSummary, State,
+    environment::{BackendSource, Environment},
     error::Result,
     proto::{DllOverride, DllOverrideMode, Process},
 };
 use futures_core::Stream;
-use next_config::Config;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
 /// Complete persisted standalone state. Its launch definition supplies its name.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, Config)]
-#[config(version = 1)]
-pub struct ProgramState {
-    pub(crate) id: Uuid,
-    pub(crate) launch: ProgramSpec,
-    pub(crate) environment: EnvironmentState,
-}
-impl ProgramState {
-    pub fn id(&self) -> Uuid {
-        self.id
-    }
+pub type ProgramState = State<ProgramSpec>;
+
+impl State<ProgramSpec> {
     pub fn name(&self) -> &str {
-        self.launch.name()
+        self.data.name()
     }
     pub fn launch(&self) -> &ProgramSpec {
-        &self.launch
-    }
-    pub fn environment(&self) -> &EnvironmentState {
-        &self.environment
+        &self.data
     }
 }
-impl EnvironmentOwnerState for ProgramState {
-    const FILE_NAME: &'static str = "program.toml";
-    fn id(&self) -> Uuid {
-        self.id
-    }
+
+impl BackendSource for ProgramSpec {
     fn backend(&self) -> PrefixBackend {
         PrefixBackend::Virgo
-    }
-    fn environment(&self) -> &EnvironmentState {
-        &self.environment
-    }
-    fn environment_mut(&mut self) -> &mut EnvironmentState {
-        &mut self.environment
-    }
-    fn validate(&self) -> Result<()> {
-        self.environment.validate()
     }
 }
 
 /// A live standalone program handle. Clones share state and coordination.
 /// Dropping a handle does not stop Wine; state access fails after deletion.
 #[derive(Clone)]
-pub struct Program(pub(crate) Arc<Environment<ProgramState>>);
+pub struct Program(pub(crate) Arc<Environment<ProgramSpec>>);
 impl Program {
     pub fn id(&self) -> Result<Uuid> {
         Ok(self.state()?.id())
@@ -75,13 +50,13 @@ impl Program {
     /// and publish once. Metadata and startup settings can change while running.
     pub fn edit<R: Send + 'static>(
         &self,
-        callback: impl FnOnce(&mut Edit<'_, ProgramState>) -> Result<R> + Send + 'static,
+        callback: impl FnOnce(&mut Edit<'_, ProgramSpec>) -> Result<R> + Send + 'static,
     ) -> Operation<R> {
         self.0.edit(callback)
     }
     /// Mount prepared Virgo storage and launch using this program's UUID as its group.
     pub fn launch(&self) -> Operation<u32> {
-        self.0.launch(|state| Ok((state.id, state.launch.clone())))
+        self.0.launch(|state| Ok((state.id, state.data.clone())))
     }
     pub async fn kill(&self) -> Result<()> {
         self.0.kill(|state| Ok(state.id)).await
@@ -101,7 +76,7 @@ impl Program {
     pub fn unset_dll_override(&self, dll: impl Into<String>) -> Operation<()> {
         self.0.unset_dll_override(dll.into())
     }
-    /// Capture `program.toml` and persistent owner files while stopped and unmounted.
+    /// Capture `state.toml` and persistent owner files while stopped and unmounted.
     /// Shared artifacts and external files are excluded; restoration does not rebuild layers.
     pub fn create_snapshot(&self, message: impl Into<String>) -> Operation<Snapshot> {
         self.0.create_snapshot(message.into())
@@ -116,11 +91,11 @@ impl Program {
         self.0.rollback(revision)
     }
 }
-impl Edit<'_, ProgramState> {
+impl Edit<'_, ProgramSpec> {
     pub fn rename(&mut self, name: impl Into<String>) {
-        self.draft.launch.rename(name);
+        self.draft.data.rename(name);
     }
     pub fn launch(&mut self) -> &mut ProgramSpec {
-        &mut self.draft.launch
+        &mut self.draft.data
     }
 }

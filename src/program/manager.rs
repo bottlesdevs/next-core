@@ -1,7 +1,7 @@
 //! Registry-backed standalone program lifecycle.
 use super::{Program, ProgramState};
 use crate::{
-    Addon, Component, Context, EnvironmentState, LibraryEntry, LibraryProvider, Operation,
+    Addon, Component, Context, EnvironmentConfig, LibraryEntry, LibraryProvider, Operation,
     ProgramSpec,
     environment::{Environment, Registry, VirgoManager},
     error::{Error, Result},
@@ -15,7 +15,7 @@ use uuid::Uuid;
 pub struct ProgramManager {
     context: Context,
     virgo: Arc<VirgoManager>,
-    registry: Arc<Registry<ProgramState>>,
+    registry: Arc<Registry<ProgramSpec>>,
 }
 
 #[async_trait::async_trait]
@@ -70,8 +70,8 @@ impl ProgramManager {
             let id = Uuid::new_v4();
             let state = ProgramState {
                 id,
-                launch,
-                environment: EnvironmentState::new(runner, winebridge, umu)?,
+                config: EnvironmentConfig::new(runner, winebridge, umu)?,
+                data: launch,
             };
             let environment = Environment::create(
                 state,

@@ -1,5 +1,5 @@
 //! Controlled bottle metadata, settings, and software edits.
-use super::{Bottle, BottleState};
+use super::{Bottle, BottleData};
 use crate::{Edit, Operation, ProgramSpec, error::Result};
 use uuid::Uuid;
 
@@ -10,29 +10,29 @@ impl Bottle {
     /// return the callback's result without saving or publishing.
     pub fn edit<R: Send + 'static>(
         &self,
-        callback: impl FnOnce(&mut Edit<'_, BottleState>) -> Result<R> + Send + 'static,
+        callback: impl FnOnce(&mut Edit<'_, BottleData>) -> Result<R> + Send + 'static,
     ) -> Operation<R> {
         self.0.edit(callback)
     }
 }
 
-impl Edit<'_, BottleState> {
+impl Edit<'_, BottleData> {
     pub fn rename(&mut self, name: impl Into<String>) {
-        self.draft.name = name.into();
+        self.draft.data.name = name.into();
     }
 
     pub fn add_program(&mut self, launch: ProgramSpec) -> Uuid {
         let id = Uuid::new_v4();
-        self.draft.programs.insert(id, launch);
+        self.draft.data.programs.insert(id, launch);
         id
     }
 
     pub fn remove_program(&mut self, id: Uuid) -> Option<ProgramSpec> {
-        self.draft.programs.remove(&id)
+        self.draft.data.programs.remove(&id)
     }
 
     /// Edit an existing launch definition without changing its registration ID.
     pub fn program(&mut self, id: Uuid) -> Option<&mut ProgramSpec> {
-        self.draft.programs.get_mut(&id)
+        self.draft.data.programs.get_mut(&id)
     }
 }
