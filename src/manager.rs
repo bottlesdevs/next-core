@@ -1,8 +1,8 @@
 //! Shared environment collection lifecycle and observation.
 
 #[cfg(feature = "fvs")]
-use super::VirgoManager;
-use super::{BackendSource, Environment, State};
+use crate::environment::VirgoManager;
+use crate::environment::{BackendSource, Environment, State};
 use crate::{
     Addon, Component, Context, EnvironmentConfig, EnvironmentError, Operation, Progress, Stage,
     error::Result,
