@@ -1,6 +1,5 @@
 //! Shared program launch definitions, independent of their owner.
 
-use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
 /// A persisted Windows launch definition used by bottles and standalone programs.
@@ -26,17 +25,14 @@ pub struct ProgramSpec {
 
 impl ProgramSpec {
     /// Creates a launch definition with default launch options.
-    pub fn new(name: impl Into<String>, executable: impl Into<String>) -> Result<Self> {
-        let name = name.into();
-        let executable = executable.into();
-        let program = Self {
-            name,
-            executable,
+    pub fn new(name: impl Into<String>, executable: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            executable: executable.into(),
             args: Vec::new(),
             working_directory: None,
             new_console: false,
-        };
-        Ok(program)
+        }
     }
 
     /// Replaces the Windows command-line fragments passed at launch.
@@ -50,10 +46,9 @@ impl ProgramSpec {
     }
 
     /// Sets the Windows working directory used at launch.
-    pub fn with_working_directory(mut self, working_directory: impl Into<String>) -> Result<Self> {
-        let working_directory = working_directory.into();
-        self.working_directory = Some(working_directory);
-        Ok(self)
+    pub fn with_working_directory(mut self, working_directory: impl Into<String>) -> Self {
+        self.working_directory = Some(working_directory.into());
+        self
     }
 
     /// Controls WineBridge's `CREATE_NEW_CONSOLE` launch option.
