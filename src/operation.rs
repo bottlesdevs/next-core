@@ -165,6 +165,25 @@ impl<T> Operation<T> {
         }
     }
 
+    /// Maps a successful result while retaining the original progress and cancellation.
+    pub fn map<U, F>(self, map: F) -> Operation<U>
+    where
+        T: Send + 'static,
+        U: Send + 'static,
+        F: FnOnce(T) -> U + Send + 'static,
+    {
+        let Self {
+            future,
+            progress,
+            cancellation,
+        } = self;
+        Operation {
+            future: Box::pin(async move { future.await.map(map) }),
+            progress,
+            cancellation,
+        }
+    }
+
     /// Returns a token that can request cancellation without consuming the operation.
     ///
     /// Cancelling the token only signals the request; it does not start an

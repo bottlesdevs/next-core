@@ -52,6 +52,8 @@ pub enum Error {
     Profile(#[from] ProfileError),
     #[error("plugin error: {0}")]
     Plugin(#[from] PluginError),
+    #[error("library provider {provider}: {message}")]
+    LibraryProvider { provider: String, message: String },
     #[error("credential error: {0}")]
     Credential(#[from] keyring::Error),
     #[error("operation cancelled")]
