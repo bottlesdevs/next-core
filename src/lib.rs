@@ -2,7 +2,6 @@ mod addons;
 mod bottle;
 mod command;
 mod core;
-mod credentials;
 mod environment;
 pub mod error;
 mod library;

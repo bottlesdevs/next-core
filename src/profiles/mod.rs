@@ -1,87 +1,22 @@
 //! Persisted application profiles and selection.
 
-mod account;
+mod accounts;
+mod credentials;
 mod error;
-mod storefront;
+mod providers;
+mod state;
 
-pub use account::AccountLink;
 pub use error::ProfileError;
+pub use providers::{AccountIdentity, AccountLinkInteraction, AccountProviderInfo};
+pub use state::{AccountLink, Profile, ProfilesState};
 
-use std::{io, path::PathBuf, sync::Arc};
-
+use crate::{Directories, error::Result};
 use bottles_plugin_host::Plugins;
 use futures_core::Stream;
-use next_config::Config;
-use serde::{Deserialize, Serialize};
+use std::{io, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, watch};
 use tokio_stream::wrappers::WatchStream;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-
-use crate::{
-    Directories, Operation, credentials,
-    error::{Error, Result},
-};
-use storefront::LinkedAccount;
-pub use storefront::{AccountIdentity, AccountLinkInteraction, AccountProviderInfo};
-
-struct CancellableInteraction {
-    inner: Arc<dyn AccountLinkInteraction>,
-    cancellation: CancellationToken,
-}
-
-#[async_trait::async_trait]
-impl AccountLinkInteraction for CancellableInteraction {
-    async fn request_input(
-        &self,
-        url: url::Url,
-        instructions: String,
-    ) -> std::result::Result<String, String> {
-        self.cancellation
-            .run_until_cancelled(self.inner.request_input(url, instructions))
-            .await
-            .ok_or_else(|| "account linking cancelled".to_owned())?
-    }
-}
-
-/// One coherent persisted snapshot of every profile and the selected profile.
-///
-/// The selected profile is guaranteed to be present in [`profiles`](Self::profiles).
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Config)]
-#[config(version = 1)]
-pub struct ProfilesState {
-    selected: Uuid,
-    profiles: Vec<Profile>,
-}
-
-impl ProfilesState {
-    fn player() -> Self {
-        let profile = Profile {
-            id: Uuid::new_v4(),
-            name: "Player".into(),
-            accounts: Vec::new(),
-        };
-        Self {
-            selected: profile.id,
-            profiles: vec![profile],
-        }
-    }
-
-    pub(crate) fn profile(&self, id: Uuid) -> Option<&Profile> {
-        self.profiles.iter().find(|profile| profile.id == id)
-    }
-
-    /// Returns every profile in persisted order.
-    pub fn profiles(&self) -> &[Profile] {
-        &self.profiles
-    }
-
-    /// Returns the selected profile from this same snapshot generation.
-    pub fn selected(&self) -> &Profile {
-        self.profile(self.selected)
-            .expect("selected profile was validated")
-    }
-}
 
 struct ProfilesInner {
     plugins: Arc<Plugins>,
@@ -245,147 +180,5 @@ impl Profiles {
             drop(write);
             self.unlink_account(account.link_id).await?;
         }
-    }
-
-    pub fn account_providers(&self) -> Vec<AccountProviderInfo> {
-        storefront::list(&self.inner.plugins)
-    }
-
-    /// The caller drives linking and persistence. Cooperative cancellation resolves pending
-    /// interaction and awaits accepted guest calls; entered persistence finishes before return.
-    /// Dropping abandons core's continuation, but accepted guest calls may still finish.
-    pub fn link_account(
-        &self,
-        profile_id: Uuid,
-        provider_id: String,
-        interaction: Arc<dyn AccountLinkInteraction>,
-    ) -> Operation<AccountLink> {
-        let profiles = self.clone();
-        Operation::new(move |_, cancellation| async move {
-            validate_account_link(&profiles.state(), profile_id, &provider_id)?;
-            let provider = cancellation
-                .run_until_cancelled(storefront::get(&profiles.inner.plugins, &provider_id))
-                .await
-                .ok_or(Error::Cancelled)??;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            let linked = provider
-                .link_account(Arc::new(CancellableInteraction {
-                    inner: interaction,
-                    cancellation: cancellation.clone(),
-                }))
-                .await;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            let linked = linked.map_err(|message| ProfileError::Provider {
-                provider: provider_id,
-                message,
-            })?;
-            let provider = provider.metadata();
-            let _write = cancellation
-                .run_until_cancelled(profiles.inner.write_lock.lock())
-                .await
-                .ok_or(Error::Cancelled)?;
-            let index = validate_account_link(&profiles.state(), profile_id, &provider.id)?;
-            let LinkedAccount {
-                identity,
-                credential,
-            } = linked;
-            let account = AccountLink::new(provider, identity);
-            if let Some(secret) = credential.as_deref() {
-                credentials::save(account.link_id, secret).await?;
-            }
-            let result = profiles
-                .update_locked(|state| {
-                    state.profiles[index].accounts.push(account.clone());
-                    Ok(account.clone())
-                })
-                .await;
-            if let Err(error) = result {
-                if credential.is_some()
-                    && let Err(cleanup) = credentials::delete(account.link_id).await
-                {
-                    return Err(ProfileError::AccountLinkRollback {
-                        link_id: account.link_id,
-                        source: Box::new(error),
-                        cleanup,
-                    }
-                    .into());
-                }
-                return Err(error);
-            }
-            result
-        })
-    }
-
-    /// Remove membership before deleting the secret. An absent UUID retries cleanup.
-    /// The caller must drive this future to completion once publication begins.
-    pub async fn unlink_account(&self, link_id: Uuid) -> Result<()> {
-        let _write = self.inner.write_lock.lock().await;
-        self.update_locked(|state| {
-            for profile in &mut state.profiles {
-                profile
-                    .accounts
-                    .retain(|account| account.link_id != link_id);
-            }
-            Ok(())
-        })
-        .await?;
-        credentials::delete(link_id)
-            .await
-            .map_err(|source| ProfileError::CredentialCleanup { link_id, source })?;
-        Ok(())
-    }
-}
-
-fn validate_account_link(
-    state: &ProfilesState,
-    profile_id: Uuid,
-    provider_id: &str,
-) -> Result<usize> {
-    let profile_index = state
-        .profiles
-        .iter()
-        .position(|profile| profile.id == profile_id)
-        .ok_or(ProfileError::NotFound(profile_id))?;
-    if state.profiles[profile_index]
-        .accounts
-        .iter()
-        .any(|account| account.provider.id == provider_id)
-    {
-        return Err(ProfileError::AccountAlreadyLinked {
-            profile: profile_id,
-            provider: provider_id.to_owned(),
-        }
-        .into());
-    }
-    Ok(profile_index)
-}
-
-/// An immutable application-profile snapshot.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Profile {
-    id: Uuid,
-    name: String,
-    #[serde(default)]
-    accounts: Vec<AccountLink>,
-}
-
-impl Profile {
-    /// Returns the profile's stable identity.
-    pub fn id(&self) -> Uuid {
-        self.id
-    }
-
-    /// Returns the profile's display name.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Returns public metadata for the storefront accounts linked to this profile.
-    pub fn accounts(&self) -> &[AccountLink] {
-        &self.accounts
     }
 }
