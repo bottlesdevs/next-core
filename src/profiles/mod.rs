@@ -4,7 +4,7 @@ mod account;
 mod error;
 mod storefront;
 
-pub use account::StorefrontAccount;
+pub use account::AccountLink;
 pub use error::ProfileError;
 
 use std::{io, path::PathBuf, sync::Arc};
@@ -23,7 +23,7 @@ use crate::{
     error::{Error, Result},
 };
 use storefront::LinkedAccount;
-pub use storefront::{AccountIdentity, AccountLinkInteraction, StorefrontProvider};
+pub use storefront::{AccountIdentity, AccountLinkInteraction, AccountProviderInfo};
 
 struct CancellableInteraction {
     inner: Arc<dyn AccountLinkInteraction>,
@@ -49,12 +49,12 @@ impl AccountLinkInteraction for CancellableInteraction {
 /// The selected profile is guaranteed to be present in [`profiles`](Self::profiles).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Config)]
 #[config(version = 1)]
-pub struct ProfilesConfig {
+pub struct ProfilesState {
     selected: Uuid,
     profiles: Vec<Profile>,
 }
 
-impl ProfilesConfig {
+impl ProfilesState {
     fn player() -> Self {
         let profile = Profile {
             id: Uuid::new_v4(),
@@ -86,7 +86,7 @@ impl ProfilesConfig {
 struct ProfilesInner {
     plugins: Arc<Plugins>,
     path: PathBuf,
-    published: watch::Sender<Arc<ProfilesConfig>>,
+    published: watch::Sender<Arc<ProfilesState>>,
     write_lock: Mutex<()>,
 }
 
@@ -106,7 +106,7 @@ impl Profiles {
 
     async fn update<T>(
         &self,
-        operation: impl FnOnce(&mut ProfilesConfig) -> Result<T>,
+        operation: impl FnOnce(&mut ProfilesState) -> Result<T>,
     ) -> Result<T> {
         let _write = self.inner.write_lock.lock().await;
         self.update_locked(operation).await
@@ -115,7 +115,7 @@ impl Profiles {
     /// Caller holds write_lock through membership changes and credential cleanup.
     async fn update_locked<T>(
         &self,
-        operation: impl FnOnce(&mut ProfilesConfig) -> Result<T>,
+        operation: impl FnOnce(&mut ProfilesState) -> Result<T>,
     ) -> Result<T> {
         let current = self.inner.published.borrow().clone();
         let mut next = current.as_ref().clone();
@@ -145,7 +145,7 @@ impl Profiles {
             Err(next_config::error::Error::Io(error))
                 if error.kind() == io::ErrorKind::NotFound =>
             {
-                let state = ProfilesConfig::player();
+                let state = ProfilesState::player();
                 next_config::save(&path, &state).await?;
                 state
             }
@@ -165,25 +165,25 @@ impl Profiles {
     }
 
     /// Returns the current profile collection and selection atomically.
-    pub fn snapshot(&self) -> Arc<ProfilesConfig> {
+    pub fn state(&self) -> Arc<ProfilesState> {
         self.inner.published.borrow().clone()
     }
 
     /// Returns every profile in persisted order.
     pub fn list(&self) -> Vec<Profile> {
-        self.snapshot().profiles().to_vec()
+        self.state().profiles().to_vec()
     }
 
     /// Returns the selected profile.
     pub fn selected(&self) -> Profile {
-        self.snapshot().selected().clone()
+        self.state().selected().clone()
     }
 
     /// Watches coherent profile collection and selection snapshots.
     ///
     /// The stream yields the current snapshot first. Slow consumers may miss
     /// intermediate changes and receive only the latest coherent snapshot.
-    pub fn watch(&self) -> impl Stream<Item = Arc<ProfilesConfig>> + Send + 'static + use<> {
+    pub fn watch(&self) -> impl Stream<Item = Arc<ProfilesState>> + Send + 'static + use<> {
         WatchStream::new(self.inner.published.subscribe())
     }
 
@@ -225,7 +225,7 @@ impl Profiles {
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         loop {
             let write = self.inner.write_lock.lock().await;
-            let state = self.snapshot();
+            let state = self.state();
             let profile = state.profile(id).ok_or(ProfileError::NotFound(id))?;
             if state.profiles.len() == 1 {
                 return Err(ProfileError::LastProfile(id).into());
@@ -247,7 +247,7 @@ impl Profiles {
         }
     }
 
-    pub fn account_providers(&self) -> Vec<StorefrontProvider> {
+    pub fn account_providers(&self) -> Vec<AccountProviderInfo> {
         storefront::list(&self.inner.plugins)
     }
 
@@ -259,10 +259,10 @@ impl Profiles {
         profile_id: Uuid,
         provider_id: String,
         interaction: Arc<dyn AccountLinkInteraction>,
-    ) -> Operation<StorefrontAccount> {
+    ) -> Operation<AccountLink> {
         let profiles = self.clone();
         Operation::new(move |_, cancellation| async move {
-            validate_account_link(&profiles.snapshot(), profile_id, &provider_id)?;
+            validate_account_link(&profiles.state(), profile_id, &provider_id)?;
             let provider = cancellation
                 .run_until_cancelled(storefront::get(&profiles.inner.plugins, &provider_id))
                 .await
@@ -288,12 +288,12 @@ impl Profiles {
                 .run_until_cancelled(profiles.inner.write_lock.lock())
                 .await
                 .ok_or(Error::Cancelled)?;
-            let index = validate_account_link(&profiles.snapshot(), profile_id, &provider.id)?;
+            let index = validate_account_link(&profiles.state(), profile_id, &provider.id)?;
             let LinkedAccount {
                 identity,
                 credential,
             } = linked;
-            let account = StorefrontAccount::new(provider, identity);
+            let account = AccountLink::new(provider, identity);
             if let Some(secret) = credential.as_deref() {
                 credentials::save(account.link_id, secret).await?;
             }
@@ -341,7 +341,7 @@ impl Profiles {
 }
 
 fn validate_account_link(
-    state: &ProfilesConfig,
+    state: &ProfilesState,
     profile_id: Uuid,
     provider_id: &str,
 ) -> Result<usize> {
@@ -370,7 +370,7 @@ pub struct Profile {
     id: Uuid,
     name: String,
     #[serde(default)]
-    accounts: Vec<StorefrontAccount>,
+    accounts: Vec<AccountLink>,
 }
 
 impl Profile {
@@ -385,7 +385,7 @@ impl Profile {
     }
 
     /// Returns public metadata for the storefront accounts linked to this profile.
-    pub fn accounts(&self) -> &[StorefrontAccount] {
+    pub fn accounts(&self) -> &[AccountLink] {
         &self.accounts
     }
 }

@@ -5,10 +5,10 @@ use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
 use bottles_plugin_host::AccountIdentity;
 
-use super::{AccountLinkInteraction, AccountProvider, LinkedAccount, StorefrontProvider};
+use super::{AccountLinkInteraction, AccountProvider, AccountProviderInfo, LinkedAccount};
 
-pub(super) fn metadata() -> StorefrontProvider {
-    StorefrontProvider {
+pub(super) fn metadata() -> AccountProviderInfo {
+    AccountProviderInfo {
         id: "steam".into(),
         name: Cow::Borrowed("Steam"),
     }
@@ -28,7 +28,7 @@ pub(super) struct Steam;
 
 #[async_trait]
 impl AccountProvider for Steam {
-    fn metadata(&self) -> StorefrontProvider {
+    fn metadata(&self) -> AccountProviderInfo {
         metadata()
     }
 

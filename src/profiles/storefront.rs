@@ -11,7 +11,7 @@ pub use bottles_plugin_host::AccountLinkInteraction;
 pub(super) use bottles_plugin_host::LinkedAccount;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct StorefrontProvider {
+pub struct AccountProviderInfo {
     pub id: String,
     pub name: Cow<'static, str>,
 }
@@ -20,14 +20,14 @@ pub use bottles_plugin_host::AccountIdentity;
 
 #[async_trait]
 pub(super) trait AccountProvider: Send + Sync {
-    fn metadata(&self) -> StorefrontProvider;
+    fn metadata(&self) -> AccountProviderInfo;
     async fn link_account(
         &self,
         interaction: Arc<dyn AccountLinkInteraction>,
     ) -> std::result::Result<LinkedAccount, String>;
 }
 
-pub(super) fn list(plugins: &Plugins) -> Vec<StorefrontProvider> {
+pub(super) fn list(plugins: &Plugins) -> Vec<AccountProviderInfo> {
     std::iter::once(steam::metadata())
         .chain(
             plugins
@@ -37,7 +37,7 @@ pub(super) fn list(plugins: &Plugins) -> Vec<StorefrontProvider> {
                     plugin.manifest.id != steam::metadata().id
                         && plugin.exports(PluginInterface::AccountProvider)
                 })
-                .map(|plugin| StorefrontProvider {
+                .map(|plugin| AccountProviderInfo {
                     id: plugin.manifest.id,
                     name: plugin.manifest.name.into(),
                 }),
@@ -54,8 +54,8 @@ pub(super) async fn get(plugins: &Plugins, id: &str) -> Result<Box<dyn AccountPr
 
 #[async_trait]
 impl AccountProvider for LoadedPlugin {
-    fn metadata(&self) -> StorefrontProvider {
-        StorefrontProvider {
+    fn metadata(&self) -> AccountProviderInfo {
+        AccountProviderInfo {
             id: self.info.manifest.id.clone(),
             name: self.info.manifest.name.clone().into(),
         }
