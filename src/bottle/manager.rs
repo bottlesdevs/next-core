@@ -8,7 +8,6 @@ use crate::{
     error::{Error, Result},
 };
 use futures_core::Stream;
-use futures_util::StreamExt;
 use std::{collections::HashMap, sync::Arc};
 use uuid::Uuid;
 
@@ -25,7 +24,7 @@ use uuid::Uuid;
 /// library-managed storage and is updated by manager operations; it is not a
 /// live view of external filesystem changes.
 #[derive(Clone)]
-pub struct BottleManager(Arc<Manager<BottleData>>);
+pub struct BottleManager(Arc<Manager<Bottle>>);
 
 #[async_trait::async_trait]
 impl LibraryProvider for BottleManager {
@@ -124,18 +123,16 @@ impl BottleManager {
         winebridge: Addon<Component>,
         umu: Option<Addon<Component>>,
     ) -> Operation<Bottle> {
-        self.0
-            .create(
-                BottleData {
-                    name: name.into(),
-                    backend,
-                    programs: HashMap::new(),
-                },
-                runner,
-                winebridge,
-                umu,
-            )
-            .map(Bottle)
+        self.0.create_environment(
+            BottleData {
+                name: name.into(),
+                backend,
+                programs: HashMap::new(),
+            },
+            runner,
+            winebridge,
+            umu,
+        )
     }
 
     /// Stops and permanently deletes the bottle identified by `id`.
@@ -167,7 +164,7 @@ impl BottleManager {
     ///
     /// Returns [`crate::EnvironmentError::NotFound`] if `id` is not in the registry.
     pub fn open(&self, id: Uuid) -> Result<Bottle> {
-        self.0.open(id).map(Bottle)
+        self.0.open(id)
     }
 
     /// Returns the bottles currently known to this manager.
@@ -178,7 +175,7 @@ impl BottleManager {
     /// The order is unspecified and must not be used as an identity or stable
     /// presentation order.
     pub fn list(&self) -> Vec<Bottle> {
-        self.0.list().into_iter().map(Bottle).collect()
+        self.0.list()
     }
 
     /// Watches this manager and every bottle currently registered in it.
@@ -191,8 +188,6 @@ impl BottleManager {
     /// List order is unspecified. The stream ends when all manager handles for
     /// this context are dropped.
     pub fn watch(&self) -> impl Stream<Item = Vec<Bottle>> + Send + 'static + use<> {
-        self.0
-            .watch()
-            .map(|environments| environments.into_iter().map(Bottle).collect())
+        self.0.watch()
     }
 }

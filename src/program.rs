@@ -4,7 +4,7 @@ pub use manager::ProgramManager;
 
 use crate::{
     Edit, Operation, PrefixBackend, ProgramSpec, Snapshot, SnapshotSummary, State,
-    environment::{BackendSource, Environment},
+    environment::{BackendSource, Environment, EnvironmentHandle},
     error::Result,
     proto::{DllOverride, DllOverrideMode, Process},
 };
@@ -34,6 +34,19 @@ impl BackendSource for ProgramSpec {
 /// Dropping a handle does not stop Wine; state access fails after deletion.
 #[derive(Clone)]
 pub struct Program(pub(crate) Arc<Environment<ProgramSpec>>);
+
+impl EnvironmentHandle for Program {
+    type Data = ProgramSpec;
+
+    fn from_environment(environment: Arc<Environment<ProgramSpec>>) -> Self {
+        Self(environment)
+    }
+
+    fn environment(&self) -> &Environment<ProgramSpec> {
+        &self.0
+    }
+}
+
 impl Program {
     pub fn id(&self) -> Result<Uuid> {
         Ok(self.state()?.id())

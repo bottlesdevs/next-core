@@ -22,7 +22,14 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
-type Members<T> = Arc<HashMap<Uuid, Arc<Environment<T>>>>;
+pub(crate) trait EnvironmentHandle {
+    type Data;
+
+    fn from_environment(environment: Arc<Environment<Self::Data>>) -> Self;
+    fn environment(&self) -> &Environment<Self::Data>;
+}
+
+type Members<T> = Arc<HashMap<Uuid, T>>;
 pub(crate) struct Manager<T> {
     root: PathBuf,
     context: Context,
@@ -36,9 +43,10 @@ enum Event<T> {
 }
 type Events<T> = Pin<Box<dyn Stream<Item = Option<Event<T>>> + Send>>;
 
-impl<T: BackendSource + Send> Manager<T>
+impl<T: EnvironmentHandle + Clone + Send + Sync + 'static> Manager<T>
 where
-    State<T>: next_config::Config + Clone + PartialEq + Send + Sync,
+    T::Data: BackendSource + Send,
+    State<T::Data>: next_config::Config + Clone + PartialEq + Send + Sync,
 {
     pub(crate) fn new(
         root: PathBuf,
@@ -74,7 +82,7 @@ where
         while let Some(entry) = entries.next().await {
             let root = entry?.path();
             let file = root.join("state.toml");
-            let state: State<T> = match next_config::load(&file).await {
+            let state: State<T::Data> = match next_config::load(&file).await {
                 Ok(state) => state,
                 Err(next_config::error::Error::Io(error))
                     if matches!(
@@ -94,19 +102,19 @@ where
                 #[cfg(feature = "fvs")]
                 manager.virgo.clone(),
             )?;
-            members.insert(id, environment);
+            members.insert(id, T::from_environment(environment));
         }
         manager.published.send_replace(Arc::new(members));
         Ok(manager)
     }
 
-    pub(crate) fn create(
+    pub(crate) fn create_environment(
         self: &Arc<Self>,
-        data: T,
+        data: T::Data,
         runner: Addon<Component>,
         winebridge: Addon<Component>,
         umu: Option<Addon<Component>>,
-    ) -> Operation<Arc<Environment<T>>> {
+    ) -> Operation<T> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
@@ -126,18 +134,19 @@ where
                 &cancellation,
             )
             .await?;
+            let handle = T::from_environment(environment);
             manager.published.send_modify(|published| {
-                Arc::make_mut(published).insert(id, environment.clone());
+                Arc::make_mut(published).insert(id, handle.clone());
             });
-            Ok(environment)
+            Ok(handle)
         })
     }
 
-    pub(crate) fn list(&self) -> Vec<Arc<Environment<T>>> {
+    pub(crate) fn list(&self) -> Vec<T> {
         self.published.borrow().values().cloned().collect()
     }
 
-    pub(crate) fn open(&self, id: Uuid) -> Result<Arc<Environment<T>>> {
+    pub(crate) fn open(&self, id: Uuid) -> Result<T> {
         self.published
             .borrow()
             .get(&id)
@@ -148,8 +157,9 @@ where
     pub(crate) fn delete(self: &Arc<Self>, id: Uuid) -> Operation<()> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
-            let environment = manager.open(id)?;
-            environment
+            let handle = manager.open(id)?;
+            handle
+                .environment()
                 .delete(&progress, &cancellation, || {
                     manager.published.send_modify(|published| {
                         Arc::make_mut(published).remove(&id);
@@ -159,9 +169,7 @@ where
         })
     }
 
-    pub(crate) fn watch(
-        &self,
-    ) -> impl Stream<Item = Vec<Arc<Environment<T>>>> + Send + 'static + use<T> {
+    pub(crate) fn watch(&self) -> impl Stream<Item = Vec<T>> + Send + 'static + use<T> {
         let published = self.published.subscribe();
         let mut events = SelectAll::<Events<T>>::new();
         // End the aggregate when the manager closes, even if callers retain handles.
@@ -177,8 +185,9 @@ where
                 match event {
                     Event::Membership(members) => {
                         subscribed.retain(|id| members.contains_key(id));
-                        for (id, environment) in members.iter() {
+                        for (id, handle) in members.iter() {
                             if subscribed.insert(*id) {
+                                let environment = handle.environment();
                                 let mut previous = environment.state().ok();
                                 events.push(Box::pin(environment.watch().filter_map(
                                     move |state| {
