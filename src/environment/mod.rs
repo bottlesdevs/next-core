@@ -20,7 +20,7 @@ pub use state::{EnvironmentConfig, State};
 use crate::{
     Context, Progress, Stage,
     error::{Error, Result, ResultExt},
-    utils::storage,
+    utils::fs,
 };
 use backend::standard;
 use futures_core::Stream;
@@ -135,7 +135,7 @@ where
         }
         .await;
         if result.is_err() {
-            storage::with_temp_dir(&environment.context.directories().trash(), |trash| {
+            fs::with_temp_dir(&environment.context.directories().trash(), |trash| {
                 async_fs::rename(&environment.root, trash.join("environment"))
             })
             .await

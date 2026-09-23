@@ -7,7 +7,7 @@
 mod proton;
 mod wine;
 
-pub(crate) use crate::wrapper::{Command, Spawnable, Wrapper};
+use crate::command::{Command, Spawnable, Wrapper};
 use async_trait::async_trait;
 use thiserror::Error;
 
@@ -120,7 +120,9 @@ pub(crate) async fn detect_runner_kind(path: &Path) -> Result<RunnerKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wrapper::{Wrappers, gamescope::GamescopeConfig, mangohud::MangoHudConfig};
+    use crate::command::wrappers::{
+        Wrappers, gamescope::GamescopeConfig, mangohud::MangoHudConfig,
+    };
 
     #[test]
     fn configured_wrappers_lower_valid_combinations() {

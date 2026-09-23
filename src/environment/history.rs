@@ -45,7 +45,7 @@ pub(crate) async fn capture(
     progress: &watch::Sender<Option<Progress>>,
 ) -> Result<Commit> {
     let client = cx.fvs();
-    if !crate::utils::exists(&root.join(".fvs2")).await? {
+    if !crate::utils::fs::exists(&root.join(".fvs2")).await? {
         client.new_repository(root, FVS_BLOCK_SIZE).await?;
     }
     Ok(client
@@ -133,7 +133,7 @@ where
     pub(crate) async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
         let _control = self.control.lock().await;
         self.state()?;
-        if !crate::utils::exists(&self.root.join(".fvs2")).await? {
+        if !crate::utils::fs::exists(&self.root.join(".fvs2")).await? {
             return Ok(Vec::new());
         }
         Ok(self

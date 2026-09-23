@@ -23,8 +23,8 @@ mod recipe;
 mod recipes;
 
 pub use addon::{Addon, Component, Dependency, Requirement, Slot};
+pub(crate) use catalog::AddonFamily;
 pub use catalog::CatalogEntry;
-pub(crate) use catalog::{AddonFamily, Checksum};
 pub use error::{AddonError, CatalogError, InstallerError};
 pub(crate) use installer::{InstallInputs, execute, uninstall};
 pub use manager::Addons;

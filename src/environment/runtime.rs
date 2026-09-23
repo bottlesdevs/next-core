@@ -69,7 +69,7 @@ where
     pub(crate) async fn stop_locked(&self) -> Result<()> {
         let state = self.state()?;
         let prefix = self.root.join("prefix");
-        if crate::utils::exists(&prefix).await? {
+        if crate::utils::fs::exists(&prefix).await? {
             let config = &state.config;
             let runner = config
                 .runner()

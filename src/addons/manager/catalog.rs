@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     Operation, Progress, Stage,
     error::{Error, Result},
-    utils::storage,
+    utils::fs,
 };
 
 use super::super::{
@@ -93,7 +93,7 @@ impl Addons {
         Catalog<K>: DeserializeOwned,
     {
         let url = K::url(&self.0.catalog_urls).ok_or(CatalogError::UrlNotConfigured(K::LABEL))?;
-        storage::with_temp_dir(&self.0.directories.staging(), |stage| async move {
+        fs::with_temp_dir(&self.0.directories.staging(), |stage| async move {
             let downloaded = stage.join("catalog.json");
             download(
                 &self.0.downloader,

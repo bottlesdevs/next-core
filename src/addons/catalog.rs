@@ -1,6 +1,12 @@
 //! Remote component and dependency catalogs and their validation rules.
 
-use std::{path::PathBuf, sync::Arc};
+use futures_lite::io::AsyncReadExt;
+use sha2::{Digest, Sha256, Sha512};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use serde::{Deserialize, Deserializer, Serialize, de, de::DeserializeOwned};
 use url::Url;
@@ -27,6 +33,28 @@ pub(crate) enum Checksum {
 }
 
 impl Checksum {
+    pub(crate) async fn verify(&self, path: &Path) -> io::Result<bool> {
+        let mut file = async_fs::File::open(path).await?;
+        let mut buffer = [0; 64 * 1024];
+        let mut sha256 = Sha256::new();
+        let mut sha512 = Sha512::new();
+        loop {
+            let read = file.read(&mut buffer).await?;
+            if read == 0 {
+                break;
+            }
+            match self {
+                Checksum::Sha256(_) => sha256.update(&buffer[..read]),
+                Checksum::Sha512(_) => sha512.update(&buffer[..read]),
+            }
+        }
+        let actual = match self {
+            Checksum::Sha256(_) => format!("{:x}", sha256.finalize()),
+            Checksum::Sha512(_) => format!("{:x}", sha512.finalize()),
+        };
+        Ok(actual == self.value())
+    }
+
     /// Exposes the unnormalized string used for exact checksum verification.
     pub(crate) fn value(&self) -> &str {
         match self {

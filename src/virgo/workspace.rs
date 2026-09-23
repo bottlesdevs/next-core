@@ -67,7 +67,7 @@ impl LayerStore {
     /// Release the workspace mount after its processes have stopped.
     pub(crate) async fn unmount_workspace(&self, root: &Path) -> Result<()> {
         let prefix = root.join("prefix");
-        if crate::utils::exists(&prefix).await? {
+        if crate::utils::fs::exists(&prefix).await? {
             if let Some(mount) = self.fvs.list_mounts().await?.into_iter().find(|mount| {
                 mount
                     .spec

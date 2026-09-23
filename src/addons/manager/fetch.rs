@@ -10,7 +10,7 @@ use super::{Addons, download, prepare_component_archive};
 use crate::{
     Operation, Progress, Stage,
     error::{Error, Result},
-    utils::{checksum, storage},
+    utils::fs,
 };
 use download_manager::manager::DownloadManager;
 use std::{path::Path, sync::Arc};
@@ -69,7 +69,7 @@ impl Addons {
                         .to_vec(),
                 ),
             ));
-            storage::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
+            fs::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
                 let downloads = stage.join("downloads");
                 async_fs::create_dir(&downloads).await?;
                 let file = downloads.join(artifact.file_name());
@@ -129,7 +129,7 @@ impl Addons {
                     })
                     .collect(),
             ));
-            storage::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
+            fs::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
                 let prepared = stage.join("release");
                 let payload = prepared.join("payload");
                 async_fs::create_dir_all(&payload).await?;
@@ -180,7 +180,7 @@ async fn download_artifact(
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
-    if !checksum::verify(destination, artifact.checksum()).await? {
+    if !artifact.checksum().verify(destination).await? {
         return Err(AddonError::ChecksumMismatch(destination.to_path_buf()).into());
     }
     Ok(())

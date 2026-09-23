@@ -139,7 +139,7 @@ impl Bottles {
 #[cfg(feature = "fvs")]
 fn fvs_executable(configured: Option<PathBuf>) -> Result<PathBuf> {
     Ok(configured
-        .map(crate::utils::absolute_path)
+        .map(crate::utils::fs::absolute_path)
         .transpose()?
         .unwrap_or_else(|| PathBuf::from("fvs2d")))
 }

@@ -3,7 +3,7 @@
 use super::VirgoError;
 use crate::{
     error::{Error, Result},
-    utils::storage,
+    utils::fs::with_temp_dir,
 };
 use regdiff_rs::prelude::{Diff, Hive, Registry, apply_files};
 use std::{
@@ -112,7 +112,7 @@ pub(super) async fn compose(
 ) -> Result<()> {
     let root = root.to_path_buf();
     let initial = initial.to_path_buf();
-    storage::with_temp_dir(staging, |scratch| {
+    with_temp_dir(staging, |scratch| {
         blocking::unblock(move || {
             let baseline = scratch.join("baseline");
             fs::create_dir_all(&baseline)?;

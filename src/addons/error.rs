@@ -5,7 +5,7 @@ use std::{path::PathBuf, process::ExitStatus};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::utils::archive::ArchiveError;
+use crate::utils::fs::archive::ArchiveError;
 
 /// Addon-specific failures carried by [`crate::error::Error::Addon`].
 #[derive(Debug, Error)]

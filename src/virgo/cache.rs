@@ -11,7 +11,7 @@ use uuid::Uuid;
 use super::{LayerStore, VirgoError};
 use crate::{
     error::{Error, Result},
-    utils::storage,
+    utils::fs,
 };
 
 #[derive(Deserialize, Serialize, next_config::Config)]
@@ -82,7 +82,7 @@ impl LayerStore {
             if entry.file_name() == ".staging" || !entry.file_type().await?.is_dir() {
                 continue;
             }
-            if crate::utils::exists(&entry.path().join("manifest.toml")).await? {
+            if crate::utils::fs::exists(&entry.path().join("manifest.toml")).await? {
                 let key = collection.join(entry.file_name());
                 layers.push((key.clone(), self.require(&key, None).await?));
             }
@@ -100,7 +100,7 @@ impl LayerStore {
             .run_until_cancelled(self.build_lock.lock())
             .await
             .ok_or(Error::Cancelled)?;
-        storage::with_temp_dir(&self.directories.trash(), |trash| async move {
+        fs::with_temp_dir(&self.directories.trash(), |trash| async move {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
