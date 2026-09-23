@@ -1,4 +1,8 @@
-//! Persisted application profiles and selection.
+//! Persistent user profiles, account links, and active-profile selection.
+//!
+//! [`Profiles`] owns the live profile collection. Mutations are serialized,
+//! saved to disk before publication, and exposed to observers as coherent
+//! [`ProfilesState`] snapshots.
 
 mod accounts;
 mod credentials;
@@ -26,7 +30,14 @@ struct ProfilesInner {
 }
 
 impl Profiles {
-    /// Selects an existing profile.
+    /// Makes the profile identified by `id` the selected profile.
+    ///
+    /// The updated selection is persisted before it is published to watchers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProfileError::NotFound`] if `id` does not identify a profile,
+    /// or an I/O error if the updated state cannot be persisted.
     pub async fn select(&self, id: Uuid) -> Result<Profile> {
         self.update(move |state| {
             let profile = state
@@ -47,7 +58,7 @@ impl Profiles {
         self.update_locked(operation).await
     }
 
-    /// Caller holds write_lock through membership changes and credential cleanup.
+    /// Applies and publishes a mutation while the caller holds `write_lock`.
     async fn update_locked<T>(
         &self,
         operation: impl FnOnce(&mut ProfilesState) -> Result<T>,
@@ -64,15 +75,33 @@ impl Profiles {
     }
 }
 
-/// The persisted collection of application profiles.
+/// Manages the persisted collection of application profiles.
 ///
-/// Clones share one live collection.
+/// Clones share the same state, write lock, and change notifications. Mutating
+/// methods persist a complete snapshot before making it visible through
+/// [`state`](Self::state) or [`watch`](Self::watch).
+///
+/// # Examples
+///
+/// ```
+/// # fn inspect(core: &bottles_core::Bottles) {
+/// let profiles = core.profiles();
+/// let selected = profiles.selected();
+/// assert_eq!(selected.id(), profiles.state().selected().id());
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct Profiles {
     inner: Arc<ProfilesInner>,
 }
 
 impl Profiles {
+    /// Loads persisted profiles or creates the initial `Player` profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if state cannot be loaded or initialized, or
+    /// [`ProfileError::NotFound`] if the persisted selection is invalid.
     pub(crate) async fn load(directories: &Directories, plugins: Arc<Plugins>) -> Result<Self> {
         let path = directories.profiles();
         let state = match next_config::load(&path).await {
@@ -99,22 +128,25 @@ impl Profiles {
         Ok(Self { inner })
     }
 
-    /// Returns the current profile collection and selection atomically.
+    /// Returns the current profile collection and selection in one snapshot.
+    ///
+    /// The returned [`Arc`] remains unchanged when later mutations are
+    /// published.
     pub fn state(&self) -> Arc<ProfilesState> {
         self.inner.published.borrow().clone()
     }
 
-    /// Returns every profile in persisted order.
+    /// Returns a copy of every profile in persisted order.
     pub fn list(&self) -> Vec<Profile> {
         self.state().profiles().to_vec()
     }
 
-    /// Returns the selected profile.
+    /// Returns a copy of the currently selected profile.
     pub fn selected(&self) -> Profile {
         self.state().selected().clone()
     }
 
-    /// Watches coherent profile collection and selection snapshots.
+    /// Streams coherent profile collection and selection snapshots.
     ///
     /// The stream yields the current snapshot first. Slow consumers may miss
     /// intermediate changes and receive only the latest coherent snapshot.
@@ -122,7 +154,14 @@ impl Profiles {
         WatchStream::new(self.inner.published.subscribe())
     }
 
-    /// Creates and selects a profile with a generated UUID in one publication.
+    /// Creates a profile and selects it in the same published update.
+    ///
+    /// Leading and trailing whitespace is removed from `name`. The profile is
+    /// assigned a new UUID and initially has no linked accounts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the updated profile state cannot be persisted.
     pub async fn create(&self, name: impl Into<String>) -> Result<Profile> {
         let name = name.into().trim().to_owned();
         self.update(move |state| {
@@ -138,7 +177,14 @@ impl Profiles {
         .await
     }
 
-    /// Renames an existing profile.
+    /// Changes the display name of the profile identified by `id`.
+    ///
+    /// Leading and trailing whitespace is removed from `name`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProfileError::NotFound`] if `id` does not identify a profile,
+    /// or an I/O error if the updated state cannot be persisted.
     pub async fn rename(&self, id: Uuid, name: impl Into<String>) -> Result<Profile> {
         let name = name.into().trim().to_owned();
         self.update(move |state| {
@@ -153,10 +199,19 @@ impl Profiles {
         .await
     }
 
-    /// Deletes a profile after unlinking its accounts and cleaning their credentials.
-    /// Failed credential cleanup leaves membership removed; retry cleanup by link UUID.
-    /// Deleting the selected profile selects the first remaining profile in the
-    /// final persisted update. The only remaining profile cannot be deleted.
+    /// Deletes the profile identified by `id`.
+    ///
+    /// Linked accounts are removed one at a time before the profile itself is
+    /// removed. If `id` is selected, the first remaining profile becomes
+    /// selected. At least one profile is always retained.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProfileError::NotFound`] when `id` is unknown,
+    /// [`ProfileError::LastProfile`] when it is the sole remaining profile, or
+    /// [`ProfileError::CredentialCleanup`] if a linked account is removed but
+    /// its stored credential cannot be deleted. Persistence failures are also
+    /// returned.
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         loop {
             let write = self.inner.write_lock.lock().await;

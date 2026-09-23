@@ -1,3 +1,8 @@
+//! Lazy asynchronous work with progress reporting and cooperative cancellation.
+//!
+//! Core mutations return [`Operation`] instead of spawning tasks. The caller
+//! chooses the executor and controls when work starts by polling the operation.
+
 use std::{
     fmt,
     future::Future,
@@ -12,11 +17,20 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::Result;
 
-/// Quantified progress within an operation stage.
+/// Counts completed work within an operation stage.
 ///
 /// The unit depends on the stage: downloads use bytes, while backend services
 /// may report their own units. `total` is absent when the amount of work is not
 /// known in advance.
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::Transfer;
+///
+/// let transfer = Transfer { current: 25, total: Some(100) };
+/// assert_eq!(transfer.total, Some(100));
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Transfer {
     /// Work reported complete in the stage's unit.
@@ -25,11 +39,23 @@ pub struct Transfer {
     pub total: Option<u64>,
 }
 
-/// The latest observable state of an [`Operation`].
+/// Describes the latest progress emitted by an [`Operation`].
 ///
 /// Progress is advisory. Operations may omit stages, and slow consumers may
 /// miss intermediate updates. Await the operation itself to determine when it
 /// has finished and whether it succeeded.
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::{Progress, Stage, Transfer};
+///
+/// let progress = Progress {
+///     stage: Stage::Downloading { file: "runner.tar.xz".into() },
+///     transfer: Some(Transfer { current: 1, total: Some(4) }),
+/// };
+/// assert_eq!(progress.fraction(), Some(0.25));
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Progress {
     /// The work currently being performed.
@@ -53,11 +79,23 @@ impl Progress {
         }
     }
 
-    /// Returns completion as a value from `0.0` through `1.0`.
+    /// Returns the completed fraction as a value from `0.0` through `1.0`.
     ///
     /// Returns `None` when no transfer is reported, its total is unknown, or
     /// its total is zero. Values beyond the reported total are clamped to
     /// `1.0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bottles_core::{Progress, Stage, Transfer};
+    ///
+    /// let progress = Progress {
+    ///     stage: Stage::Extracting,
+    ///     transfer: Some(Transfer { current: 6, total: Some(3) }),
+    /// };
+    /// assert_eq!(progress.fraction(), Some(1.0));
+    /// ```
     pub fn fraction(&self) -> Option<f32> {
         let transfer = self.transfer?;
         let total = transfer.total.filter(|total| *total > 0)?;
@@ -65,32 +103,56 @@ impl Progress {
     }
 }
 
-/// A phase of work reported by an [`Operation`].
+/// Identifies a phase of work reported by an [`Operation`].
 ///
 /// An operation is not required to emit every phase or follow the order in
 /// which the variants are declared.
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::Stage;
+///
+/// assert_eq!(Stage::Preparing.to_string(), "Preparing");
+/// assert_eq!(
+///     Stage::Downloading { file: "runner".into() }.to_string(),
+///     "Downloading runner",
+/// );
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Stage {
+    /// Resolves inputs and validates prerequisites.
     Preparing,
+    /// Stops an active environment before mutation.
     Stopping,
+    /// Downloads a named artifact.
     Downloading {
         /// The file name or caller-facing label of the current download.
         file: String,
     },
+    /// Verifies a named artifact.
     Verifying {
         /// The file name or caller-facing label of the item being verified.
         file: String,
     },
+    /// Extracts an archive.
     Extracting,
+    /// Initializes a Wine prefix.
     CreatingPrefix,
     #[cfg(feature = "fvs")]
+    /// Records an FVS revision before a change.
     Checkpointing,
     #[cfg(feature = "fvs")]
+    /// Restores an FVS revision.
     Restoring,
+    /// Reconstructs environment state after a selection changes.
     Rebuilding,
+    /// Applies configuration to an environment.
     Configuring,
+    /// Removes installed data.
     Removing,
     #[cfg(feature = "fvs")]
+    /// Publishes an immutable FVS layer.
     Committing,
 }
 
@@ -116,7 +178,7 @@ impl fmt::Display for Stage {
     }
 }
 
-/// A lazy, executor-independent future with progress and cooperative cancellation.
+/// A lazy future with progress reporting and cooperative cancellation.
 ///
 /// Creating an operation does not start it. Work begins on its first poll;
 /// the caller owns execution and must keep the future driven to completion.
@@ -127,6 +189,17 @@ impl fmt::Display for Stage {
 /// Asynchronous persistence and cleanup cannot finish after that drop. Use
 /// [`cancel`](Self::cancel) and await its result to stop cooperatively: account
 /// operations finish entered credential and membership writes before returning.
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::Operation;
+///
+/// # async fn finish(operation: Operation<u32>) -> Result<u32, bottles_core::error::Error> {
+/// let value = operation.await?;
+/// # Ok(value)
+/// # }
+/// ```
 #[must_use = "operations must be awaited, cancelled, or spawned by an executor"]
 pub struct Operation<T> {
     future: Pin<Box<dyn Future<Output = Result<T>> + Send + 'static>>,
@@ -165,7 +238,19 @@ impl<T> Operation<T> {
         }
     }
 
-    /// Maps a successful result while retaining the original progress and cancellation.
+    /// Maps a successful result while preserving progress and cancellation.
+    ///
+    /// Errors pass through unchanged and do not invoke `map`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bottles_core::Operation;
+    ///
+    /// # fn discard_pid(operation: Operation<u32>) -> Operation<()> {
+    /// operation.map(|_| ())
+    /// # }
+    /// ```
     pub fn map<U, F>(self, map: F) -> Operation<U>
     where
         T: Send + 'static,
@@ -189,6 +274,19 @@ impl<T> Operation<T> {
     /// Cancelling the token only signals the request; it does not start an
     /// unpolled operation or wait for cleanup. Await the operation to observe
     /// its terminal result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bottles_core::Operation;
+    ///
+    /// # async fn example(operation: Operation<()>) -> Result<(), bottles_core::error::Error> {
+    /// let cancellation = operation.cancellation_token();
+    /// cancellation.cancel();
+    /// let _ = operation.await;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancellation.clone()
     }
@@ -201,16 +299,46 @@ impl<T> Operation<T> {
     /// first. Slow consumers may see updates coalesced. The stream does not drive
     /// or retain the operation and ends when the operation's progress sender is
     /// dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bottles_core::Operation;
+    /// use futures_lite::StreamExt;
+    ///
+    /// # async fn example(operation: Operation<()>) {
+    /// let mut progress = operation.progress();
+    /// while let Some(update) = progress.next().await {
+    ///     println!("{}", update.stage);
+    /// }
+    /// # }
+    /// ```
     pub fn progress(&self) -> impl Stream<Item = Progress> + Send + 'static {
         WatchStream::new(self.progress.clone()).filter_map(|progress| progress)
     }
 
-    /// Requests cancellation and continues driving the operation to its terminal result.
+    /// Requests cancellation and drives the operation to its terminal result.
     ///
     /// Cancellation is cooperative and may only be observed at operation-specific
     /// checkpoints. If the work has passed its cancellation boundary, this may
     /// return its successful result or another error instead of
     /// [`Error::Cancelled`](crate::error::Error::Cancelled).
+    ///
+    /// # Errors
+    ///
+    /// Returns the operation's terminal error. Cooperative work commonly returns
+    /// [`Error::Cancelled`](crate::error::Error::Cancelled), but work that has
+    /// crossed its cancellation boundary may return another result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bottles_core::Operation;
+    ///
+    /// # async fn cancel(operation: Operation<()>) {
+    /// let _terminal_result = operation.cancel().await;
+    /// # }
+    /// ```
     pub async fn cancel(mut self) -> Result<T> {
         self.cancellation.cancel();
         (&mut self).await

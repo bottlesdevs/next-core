@@ -1,4 +1,8 @@
-//! Shared addon ownership, queries, and publication.
+//! Shared catalog and acquired-release state.
+//!
+//! [`Addons`] publishes immutable snapshots behind a cheap cloneable handle.
+//! Catalog refreshes, release commits, and removals replace the snapshot; downloads
+//! happen outside the publication lock.
 
 mod acquire;
 mod download;
@@ -18,17 +22,29 @@ use tokio_stream::wrappers::WatchStream;
 use url::Url;
 use uuid::Uuid;
 
-/// The shared manager for addon catalogs and local storage.
+/// Provides access to addon catalogs and acquired releases.
 ///
-/// Remote releases are exposed as [`CatalogEntry`] values. Fetching one adds an
-/// [`Addon`] and its payload to shared storage. Bottles and standalone programs
-/// clone that complete record when selecting a component or installing a dependency.
-/// Fetching alone does not modify any bottle.
+/// Catalog entries describe remote releases, while [`Addon`] values describe
+/// releases already stored locally. Fetching a catalog entry only acquires its
+/// payload; it does not select the addon for any environment.
 ///
-/// Clones refer to the same manager state. Returned [`CatalogEntry`] values and
-/// [`Addon`] handles are snapshots: they do not change after a refresh,
-/// fetch, or removal. Query the manager again, or use [`watch`](Self::watch), to
-/// observe a later publication.
+/// Cloned managers share the same state. Values returned from query methods are
+/// snapshots and remain unchanged after refreshes or storage changes. Query again,
+/// or subscribe with [`watch`](Self::watch), to observe a later snapshot.
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::{Addons, CatalogEntry, Component, Slot};
+///
+/// fn supported_runners(addons: &Addons) -> Vec<CatalogEntry<Component>> {
+///     addons
+///         .component_entries()
+///         .into_iter()
+///         .filter(|entry| entry.slot() == Slot::Runner && entry.is_supported())
+///         .collect()
+/// }
+/// ```
 #[derive(Clone)]
 pub struct Addons(Arc<AddonsInner>);
 
@@ -56,12 +72,17 @@ impl AddonsState {
 }
 
 impl Addons {
-    /// Loads cached catalogs and frozen local records independently of payload files.
+    /// Opens the manager from cached catalogs and local release manifests.
     ///
-    /// Missing catalog caches are optional; read and parse failures are returned.
-    /// Invalid or incomplete records are returned as errors. A known record does
-    /// not guarantee its payload is available; installation and runtime operations
-    /// access the inputs they require directly.
+    /// A missing catalog cache is allowed. Release manifests are loaded independently
+    /// of payload contents, so a returned manager can still contain a record whose
+    /// payload was modified outside the manager.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a present catalog or release manifest cannot be read or
+    /// parsed, a manifest UUID differs from its directory name, or duplicate UUIDs
+    /// are found across addon families.
     pub(crate) async fn load(
         directories: Directories,
         downloader: Arc<DownloadManager>,
@@ -82,9 +103,10 @@ impl Addons {
         })))
     }
 
-    /// Returns the component releases in current catalog order.
+    /// Returns component entries in their current catalog order.
     ///
-    /// The result is empty when no valid component catalog has been loaded.
+    /// The result is empty until a component catalog has been loaded from cache or
+    /// published by [`refresh`](Self::refresh).
     pub fn component_entries(&self) -> Vec<CatalogEntry<Component>> {
         self.state()
             .component_catalog
@@ -93,9 +115,10 @@ impl Addons {
             .collect()
     }
 
-    /// Returns the dependency releases in current catalog order.
+    /// Returns dependency entries in their current catalog order.
     ///
-    /// The result is empty when no valid dependency catalog has been loaded.
+    /// The result is empty until a dependency catalog has been loaded from cache or
+    /// published by [`refresh`](Self::refresh).
     pub fn dependency_entries(&self) -> Vec<CatalogEntry<Dependency>> {
         self.state()
             .dependency_catalog
@@ -104,30 +127,31 @@ impl Addons {
             .collect()
     }
 
-    /// Returns downloaded or imported component releases.
+    /// Returns all locally acquired component releases.
     ///
     /// The order is unspecified.
     pub fn components(&self) -> Vec<Arc<Addon<Component>>> {
         self.state().components.values().cloned().collect()
     }
 
-    /// Returns downloaded dependency releases.
-    /// The order is unspecified.
+    /// Returns all locally acquired dependency releases.
+    ///
+    /// The result order is unspecified.
     pub fn dependencies(&self) -> Vec<Arc<Addon<Dependency>>> {
         self.state().dependencies.values().cloned().collect()
     }
 
-    /// Returns the known component with this release identifier.
+    /// Returns the locally acquired component with UUID `id`, if present.
     pub fn component(&self, id: Uuid) -> Option<Arc<Addon<Component>>> {
         self.state().components.get(&id).cloned()
     }
 
-    /// Returns the known dependency with this release identifier.
+    /// Returns the locally acquired dependency with UUID `id`, if present.
     pub fn dependency(&self, id: Uuid) -> Option<Arc<Addon<Dependency>>> {
         self.state().dependencies.get(&id).cloned()
     }
 
-    /// Returns the current component catalog entry with this identifier.
+    /// Returns the component catalog entry with UUID `id`.
     ///
     /// Returns `None` when no valid component catalog is loaded or the release
     /// is absent from it.
@@ -139,7 +163,7 @@ impl Addons {
             .cloned()
     }
 
-    /// Returns the current dependency catalog entry with this identifier.
+    /// Returns the dependency catalog entry with UUID `id`.
     ///
     /// Returns `None` when no valid dependency catalog is loaded or the release
     /// is absent from it.
@@ -151,10 +175,12 @@ impl Addons {
             .cloned()
     }
 
-    /// Watches changes to catalogs and local releases.
+    /// Returns a stream that observes published addon-state changes.
     ///
-    /// The stream yields immediately and may coalesce publications for slow
-    /// consumers. Each value is a live manager handle; query it for current data.
+    /// The first item is available immediately. Later items follow successful
+    /// catalog refreshes, release acquisitions, imports, and removals. Slow
+    /// consumers may observe several publications as one item. Each item is a
+    /// manager handle; call its query methods to read the current snapshot.
     pub fn watch(&self) -> impl Stream<Item = Self> + Send + 'static + use<> {
         let addons = self.clone();
         tokio_stream::StreamExt::map(WatchStream::new(self.0.published.subscribe()), move |_| {

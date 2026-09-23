@@ -1,4 +1,4 @@
-//! Catalog refresh and cache replacement.
+//! Remote catalog refresh and publication.
 
 use std::sync::Arc;
 
@@ -19,18 +19,18 @@ use super::super::{
 use super::{Addons, download::download};
 
 impl Addons {
-    /// Refreshes the two configured catalogs independently.
+    /// Downloads and validates the component and dependency catalogs.
     ///
-    /// Each successful catalog is validated, cached, and published even if the
-    /// other family fails. A failed family keeps its previously loaded catalog.
-    /// If either family fails, the operation returns [`CatalogError::Refresh`]
-    /// after publishing every successful result.
+    /// Download and validation are attempted independently for both families. Once
+    /// both attempts finish, each successful catalog is cached and a single state
+    /// snapshot is published; a failed family retains its previous catalog. The
+    /// operation then reports [`CatalogError::Refresh`] if either attempt failed.
     ///
     /// # Errors
     ///
-    /// The operation fails when a URL is not configured, a download or catalog
-    /// validation fails, a successful catalog cannot be cached, refreshed state
-    /// cannot be loaded, or cancellation is requested before publication.
+    /// The operation fails if cancellation is requested; either URL is missing;
+    /// downloading, parsing, or validating a catalog fails; or a successful catalog
+    /// cannot be written to its cache. Cache-write failure stops publication.
     pub fn refresh(&self) -> Operation<()> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -82,7 +82,13 @@ impl Addons {
         })
     }
 
-    /// Downloads and validates one catalog through a best-effort temporary file.
+    /// Downloads and parses one family catalog in temporary storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the family URL is absent, the operation is cancelled,
+    /// the transfer or temporary storage fails, or the document does not match the
+    /// current catalog schema.
     async fn download_catalog<K>(
         &self,
         progress: watch::Sender<Option<Progress>>,

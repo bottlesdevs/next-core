@@ -1,4 +1,8 @@
-//! Storage for complete immutable bases, addons, and runner adapters.
+//! Loads and publishes immutable Virgo artifacts.
+//!
+//! Each published directory contains a manifest, an FVS-backed `filesystem`
+//! repository, and registry data. Absence is the only cache miss; malformed or
+//! mismatched entries fail rather than being silently rebuilt over.
 
 use std::path::{Path, PathBuf};
 
@@ -21,10 +25,16 @@ struct VirgoLayerManifest {
     commit: String,
 }
 
-/// Resolved installed effects, independent of build inputs and artifact kind.
+/// Resolves an artifact's filesystem layer and registry effects.
+///
+/// The artifact kind and original build inputs are encoded by its cache key,
+/// outside this value.
 pub(crate) struct VirgoLayer {
+    /// Immutable addon or component identifier recorded by the manifest.
     pub(crate) id: Uuid,
+    /// FVS filesystem revision used during composition.
     pub(crate) layer: Layer,
+    /// Directory containing the artifact's registry baseline or patches.
     pub(crate) registry: PathBuf,
 }
 
@@ -43,9 +53,15 @@ impl VirgoLayerManifest {
 }
 
 impl LayerStore {
-    /// Only an absent directory is a cache miss.
-    /// UUID-keyed caches check the expected ID; the fixed base directory discovers its pinned ID.
-    /// Filesystem and registry contents are accessed by their consuming operations.
+    /// Loads a published artifact, treating only an absent directory as a cache miss.
+    ///
+    /// When `id` is supplied, the manifest must record that exact identifier. The
+    /// filesystem and registry contents remain lazily validated by their consumers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for filesystem or manifest failures, an identity mismatch,
+    /// or an empty FVS commit identifier.
     pub(crate) async fn load(&self, key: &Path, id: Option<Uuid>) -> Result<Option<VirgoLayer>> {
         let root = self.directories.virgo().join(key);
         match async_fs::symlink_metadata(&root).await {
@@ -60,15 +76,26 @@ impl LayerStore {
         Ok(Some(manifest.resolve(&root)))
     }
 
+    /// Loads an artifact and rejects a cache miss.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VirgoError::MissingArtifact`] when `key` is absent, plus every
+    /// error described by [`Self::load`].
     pub(crate) async fn require(&self, key: &Path, id: Option<Uuid>) -> Result<VirgoLayer> {
         self.load(key, id)
             .await?
             .ok_or_else(|| VirgoError::MissingArtifact(self.directories.virgo().join(key)).into())
     }
 
-    /// List immediate published children of a relative collection, without FVS RPCs.
-    /// A manifest identifies an artifact; staging and other entries are skipped.
-    /// Malformed manifests fail the listing; artifact contents are read when used.
+    /// Lists immediate published children of a collection without FVS requests.
+    ///
+    /// A manifest identifies an artifact. Staging, files, and directories without
+    /// a manifest are skipped; results are sorted by relative key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error while reading the collection or any discovered manifest.
     #[allow(dead_code)] // Internal storage API; no public owner-facing layer API.
     pub(crate) async fn list(&self, collection: &Path) -> Result<Vec<(PathBuf, VirgoLayer)>> {
         let mut entries = match async_fs::read_dir(self.directories.virgo().join(collection)).await
@@ -91,9 +118,14 @@ impl LayerStore {
         Ok(layers)
     }
 
-    /// Withdraw an explicitly addressed artifact into trash, then clean up best effort.
-    /// The caller must ensure it is unmounted and no longer needed by any workspace.
-    /// Cancellation is honored before withdrawal; cleanup cannot invalidate removal.
+    /// Withdraws an explicitly addressed artifact into trash.
+    ///
+    /// The caller must ensure it is unmounted and unused by every workspace.
+    /// Cancellation is honored before the rename; cleanup afterward is best effort.
+    ///
+    /// # Errors
+    ///
+    /// Returns cancellation or filesystem errors before withdrawal completes.
     #[allow(dead_code)] // Internal storage API; callers own reference tracking.
     pub(crate) async fn remove(&self, key: &Path, cancellation: &CancellationToken) -> Result<()> {
         let _lock = cancellation
@@ -110,8 +142,15 @@ impl LayerStore {
         .await
     }
 
-    /// The caller has committed the filesystem and written both registry files in staging.
-    /// The shared build lock covers publication; published nonempty directories are never replaced.
+    /// Publishes a completed staged artifact at its immutable cache key.
+    ///
+    /// The caller must hold the build lock and provide a committed filesystem plus
+    /// both registry files. Existing destination directories are never replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manifest cannot be saved, the destination parent
+    /// cannot be created, cancellation arrives before the rename, or publication fails.
     pub(super) async fn publish(
         &self,
         artifact: &Path,

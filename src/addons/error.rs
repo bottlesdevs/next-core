@@ -1,4 +1,4 @@
-//! Addon-specific errors exposed through the crate's top-level error type.
+//! Error types for catalog access, release acquisition, and recipe execution.
 
 use std::{path::PathBuf, process::ExitStatus};
 
@@ -7,95 +7,99 @@ use uuid::Uuid;
 
 use crate::utils::fs::archive::ArchiveError;
 
-/// Addon-specific failures carried by [`crate::error::Error::Addon`].
+/// Reports a failure while managing, acquiring, or applying an addon.
+///
+/// Catalog and installer failures remain available through their source variants,
+/// while filesystem, configuration, and cancellation failures may be returned by
+/// the crate's top-level [`crate::error::Error`] directly.
 #[derive(Debug, Error)]
 pub enum AddonError {
-    /// A catalog could not be loaded, validated, or refreshed.
+    /// Wraps a catalog configuration, validation, or compatibility failure.
     #[error(transparent)]
     Catalog(#[from] CatalogError),
-    /// An installation recipe could not be executed safely or successfully.
+    /// Wraps a failure reported by an installation recipe.
     #[error(transparent)]
     Installer(#[from] InstallerError),
-    /// An addon archive could not be read or safely extracted.
+    /// Wraps archive validation or extraction failure.
     #[error(transparent)]
     Archive(#[from] ArchiveError),
-    /// An addon download could not be started or completed.
+    /// Wraps a download-manager failure.
     #[error(transparent)]
     Download(#[from] download_manager::error::Error),
-    /// The requested release is unknown or not present on disk for removal.
+    /// No locally acquired release has the requested UUID.
     #[error("addon {0} was not found")]
     NotFound(Uuid),
-    /// A local release is incomplete or its payload was removed outside the manager.
+    /// The acquired record exists, but its shared payload is unavailable.
     #[error("source payload is missing for addon {0}")]
     PayloadMissing(Uuid),
-    /// Local storage contains more than one addon with the same immutable identifier.
+    /// The UUID is already used by another local addon family or record.
     #[error("local storage contains duplicate addon {0}")]
     Duplicate(Uuid),
-    /// A downloaded file did not match its catalog checksum.
+    /// A downloaded artifact did not match its catalog digest.
     #[error("checksum mismatch for {0}")]
     ChecksumMismatch(PathBuf),
-    /// A component archive did not contain exactly one top-level directory.
+    /// An imported or downloaded component archive has no single top-level directory.
     #[error("an extracted artifact must contain exactly one top-level directory")]
     InvalidComponentArchive,
-    /// A component directory lacks the marker required by its slot.
+    /// A component payload is structurally invalid or contains an escaping link.
     #[error("component could not be identified: {0}")]
     InvalidComponent(PathBuf),
-    /// A release record contains inconsistent or unsafe metadata.
+    /// A persisted release record conflicts with its storage location or identity.
     #[error("release record is invalid: {0}")]
     InvalidRelease(PathBuf),
-    /// A component download would overwrite an existing release directory.
+    /// Committing a release would overwrite an unmanaged filesystem entry.
     #[error("addon target already exists: {0}")]
     TargetExists(PathBuf),
 }
 
-/// Failures caused by catalog configuration, contents, or compatibility.
+/// Reports invalid catalog configuration, contents, or platform compatibility.
 #[derive(Debug, Error)]
 pub enum CatalogError {
-    /// The requested release is absent from the current catalog.
+    /// The requested UUID is absent from the currently published catalog.
     #[error("catalog addon {0} was not found")]
     NotFound(Uuid),
-    /// One or both catalogs failed to refresh after any successful catalog was published.
+    /// At least one catalog failed during a two-family refresh.
     #[error("catalog refresh failed (components: {components:?}, dependencies: {dependencies:?})")]
     Refresh {
-        /// The component-catalog failure, or `None` when it refreshed successfully.
+        /// Text of the component-catalog failure, or `None` after success.
         components: Option<String>,
-        /// The dependency-catalog failure, or `None` when it refreshed successfully.
+        /// Text of the dependency-catalog failure, or `None` after success.
         dependencies: Option<String>,
     },
-    /// No URL was configured for one of the catalogs.
+    /// No remote URL is configured for the named addon family.
     #[error("{0} catalog URL is not configured")]
     UrlNotConfigured(&'static str),
-    /// No catalog artifact supports this platform.
+    /// The release has no artifact for the current build target.
     #[error("no artifact supports this system for addon {0}")]
     Unsupported(Uuid),
-    /// More than one artifact matched a component release on this platform.
+    /// A component has more than one artifact for the current build target.
     #[error("component {addon} has {count} matching artifacts; expected exactly one")]
     InvalidComponentArtifactCount {
-        /// The component release containing the ambiguous artifacts.
+        /// UUID of the component with ambiguous artifacts.
         addon: Uuid,
-        /// The number of artifacts matching the current platform.
+        /// Number of artifacts that matched the current target.
         count: usize,
     },
-    /// A catalog entry contains a path that is unsafe for managed storage.
+    /// A catalog entry contains a file name unsafe for managed storage.
     #[error("catalog entry contains an invalid storage path: {0}")]
     InvalidEntry(Uuid),
 }
 
-/// Failures caused by executing an addon's installation recipe.
+/// Reports a recipe step that could not be completed safely or successfully.
 #[derive(Debug, Error)]
 pub enum InstallerError {
-    /// A recipe-provided executable returned an unsuccessful exit status.
+    /// A recipe executable exited unsuccessfully.
     #[error("installer exited with status {0}")]
     InstallerFailed(ExitStatus),
-    /// Registering a DLL with `regsvr32` returned an unsuccessful exit status.
+    /// A `regsvr32` child for a DLL-registration step exited unsuccessfully.
     #[error("regsvr32 exited with status {0}")]
     RegisterDllFailed(ExitStatus),
-    /// An extracted file resolved outside its staging directory.
+    /// An extracted file resolved outside the temporary staging tree.
     #[error("staged file {path} is outside staging directory {stage}")]
     FileOutsideStage {
-        /// The extracted path that escaped the staging directory.
+        /// Resolved file path outside the staging tree.
         path: PathBuf,
-        /// The staging directory that should have contained the path.
+        /// Staging root that should have contained `path`.
         stage: PathBuf,
     },
 }

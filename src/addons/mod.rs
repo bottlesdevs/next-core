@@ -1,16 +1,18 @@
-//! Cataloging, downloading, and selecting bottle addons.
+//! Catalogs, acquires, and describes software used by Bottles environments.
 //!
-//! Addons have two representations:
+//! Addons have two lifecycle representations:
 //!
-//! - [`CatalogEntry`] describes a release advertised by a remote catalog.
-//! - [`Addon`] is a frozen definition containing metadata and a complete recipe,
-//!   stored alongside the shared payload and embedded in owner state.
+//! - [`CatalogEntry`] advertises a remote release and its platform artifacts.
+//! - [`Addon`] describes a locally acquired release with a frozen installation
+//!   recipe.
 //!
-//! Obtain the shared [`Addons`] manager from [`crate::Bottles::addons`]. Catalog
-//! queries use the last successfully loaded catalog, while release queries expose
-//! downloaded or imported releases. Fetching an entry only places it in shared
-//! storage; select components and append dependencies through the owner's
-//! [`crate::Edit`] callback.
+//! [`Component`] releases occupy mutually exclusive [`Slot`]s; [`Dependency`]
+//! releases are appended in installation order. A release may declare
+//! [`Requirement`]s that environment validation must satisfy.
+//!
+//! Use [`crate::Bottles::addons`] to access the shared [`Addons`] manager. Acquiring
+//! a release only places it in shared storage. Selection remains an explicit owner
+//! edit through [`crate::Edit::set_component`] or [`crate::Edit::add_dependency`].
 
 #![warn(missing_docs)]
 

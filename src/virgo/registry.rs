@@ -1,4 +1,9 @@
-//! Compose the managed registry baseline, then replay private changes over it.
+//! Captures, diffs, and composes Wine registry state for Virgo layers.
+//!
+//! Artifact layers keep registry changes separate from filesystem revisions.
+//! Composition applies selected artifact patches to the immutable base and then
+//! replays the workspace's private changes, preserving user state across selection
+//! changes without allowing overlay precedence to hide the managed hives.
 
 use super::VirgoError;
 use crate::{
@@ -11,6 +16,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Returns the managed Wine registry filenames and their semantic hives.
 pub(super) fn registry_files() -> [(&'static str, Hive); 2] {
     [
         ("user.reg", Hive::CurrentUser),
@@ -18,6 +24,12 @@ pub(super) fn registry_files() -> [(&'static str, Hive); 2] {
     ]
 }
 
+/// Serializes the forward registry difference from `old` to `new`.
+///
+/// # Errors
+///
+/// Returns [`VirgoError::Registry`] if either hive cannot be parsed or the
+/// resulting difference cannot be serialized.
 fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -> Result<()> {
     let old =
         Registry::try_from(old, hive).map_err(|error| VirgoError::Registry(error.to_string()))?;
@@ -29,7 +41,12 @@ fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -> Result<()
     Ok(())
 }
 
-/// Save the initial hives alongside the stopped base filesystem before publication.
+/// Copies initial hives from a stopped base prefix into artifact storage.
+///
+/// # Errors
+///
+/// Returns an I/O error if the destination cannot be created or either managed
+/// hive cannot be copied.
 pub(super) async fn capture(prefix: &Path, before: &Path) -> Result<()> {
     async_fs::create_dir_all(before).await?;
     for (file, _) in registry_files() {
@@ -38,7 +55,15 @@ pub(super) async fn capture(prefix: &Path, before: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write both forward patches after Wine has stopped, including empty changes.
+/// Writes forward patches for both managed hives after Wine has stopped.
+///
+/// Empty differences are still serialized so every published artifact has a
+/// complete registry representation.
+///
+/// # Errors
+///
+/// Returns an I/O or [`VirgoError::Registry`] error while reading, diffing, or
+/// serializing either hive.
 pub(super) async fn write_patches(before: &Path, prefix: &Path, patches: &Path) -> Result<()> {
     let (before, prefix, patches) = (
         before.to_path_buf(),
@@ -60,7 +85,13 @@ pub(super) async fn write_patches(before: &Path, prefix: &Path, patches: &Path) 
     .await
 }
 
-/// Committed artifact layers carry registry patches separately from filesystem effects.
+/// Removes managed hive files from a layer's filesystem before committing it.
+///
+/// Missing hive files are accepted because registry effects are carried separately.
+///
+/// # Errors
+///
+/// Returns an I/O error other than a missing file while removing a hive.
 pub(super) async fn exclude_hives(filesystem: &Path) -> Result<()> {
     for (file, _) in registry_files() {
         match async_fs::remove_file(filesystem.join(file)).await {
@@ -72,6 +103,11 @@ pub(super) async fn exclude_hives(filesystem: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Replays private registry changes from the prior baseline onto a new baseline.
+///
+/// # Errors
+///
+/// Returns an I/O or [`VirgoError::Registry`] error while producing either hive.
 fn merge_private(previous: &Path, upper: &Path, baseline: &Path, merged: &Path) -> Result<()> {
     fs::create_dir_all(merged)?;
     for (file, hive) in registry_files() {
@@ -101,9 +137,17 @@ fn merge_private(previous: &Path, upper: &Path, baseline: &Path, merged: &Path) 
     Ok(())
 }
 
-/// The workspace is stopped and checkpointed. Only managed registry files are replaced;
-/// all other private files and whiteouts keep normal overlay precedence. Apply patches
-/// to the initial hives in the supplied order, then replay private registry changes.
+/// Replaces managed hives with a newly composed baseline plus private changes.
+///
+/// The caller must provide a stopped, checkpointed workspace. Artifact `patches`
+/// are applied to `initial` in order, then changes made privately since the prior
+/// baseline are replayed. Other upper files and whiteouts retain normal overlay
+/// precedence.
+///
+/// # Errors
+///
+/// Returns an I/O or [`VirgoError::Registry`] error while copying, parsing,
+/// diffing, applying, or replacing registry files.
 pub(super) async fn compose(
     root: &Path,
     staging: &Path,

@@ -1,4 +1,8 @@
-//! Host command composition and spawning.
+//! Internal command construction, wrapper composition, and process spawning.
+//!
+//! A [`Command`] owns an executable, its arguments, and environment overrides.
+//! Wrappers prepend another command without invoking a shell, so argument and
+//! environment boundaries remain explicit.
 
 use crate::EnvVars;
 use async_process::{Child, Command as AsyncCommand};
@@ -9,6 +13,11 @@ pub(crate) mod wrappers;
 pub(crate) use wrapper::Wrapper;
 
 pub(crate) trait Spawnable: Into<Command> + Sized {
+    /// Converts this value into a command and starts the child process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the process cannot be spawned.
     fn spawn(self) -> std::io::Result<Child> {
         let command = self.into();
         AsyncCommand::new(command.executable)
@@ -18,6 +27,7 @@ pub(crate) trait Spawnable: Into<Command> + Sized {
     }
 }
 
+/// An owned process invocation before it is spawned.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Command {
     executable: OsString,
@@ -26,6 +36,7 @@ pub(crate) struct Command {
 }
 
 impl Command {
+    /// Creates a command for `executable` with no arguments or overrides.
     pub(crate) fn new(executable: impl AsRef<OsStr>) -> Self {
         Self {
             executable: executable.as_ref().to_os_string(),
@@ -34,23 +45,27 @@ impl Command {
         }
     }
 
+    /// Appends one argument.
     pub(crate) fn arg(mut self, arg: impl AsRef<OsStr>) -> Self {
         self.args.push(arg.as_ref().to_os_string());
         self
     }
 
+    /// Appends each supplied argument in iteration order.
     pub(crate) fn args<A: AsRef<OsStr>>(mut self, args: impl IntoIterator<Item = A>) -> Self {
         self.args
             .extend(args.into_iter().map(|arg| arg.as_ref().to_os_string()));
         self
     }
 
+    /// Sets an environment override, replacing an existing value for `key`.
     pub(crate) fn env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
         self.env_vars
             .insert(key.as_ref().to_os_string(), value.as_ref().to_os_string());
         self
     }
 
+    /// Extends the environment overrides from `(key, value)` pairs.
     pub(crate) fn envs<K: AsRef<OsStr>, V: AsRef<OsStr>>(
         mut self,
         envs: impl IntoIterator<Item = (K, V)>,
@@ -62,6 +77,10 @@ impl Command {
         self
     }
 
+    /// Appends `inner` as the command executed by this wrapper.
+    ///
+    /// The inner executable becomes the next argument, followed by its
+    /// arguments. Inner environment values take precedence on duplicate keys.
     fn append(mut self, inner: Command) -> Command {
         self.args.push(inner.executable);
         self.args.extend(inner.args);

@@ -1,4 +1,4 @@
-//! Local release discovery, commit, and removal.
+//! Discovery, atomic commit, and removal of acquired releases.
 
 use super::{Addons, AddonsState};
 use crate::{
@@ -16,8 +16,17 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 impl Addons {
-    /// Withdraws a component's release directory, then cleans it up best effort.
-    /// Built Virgo artifacts and environment selections remain unchanged.
+    /// Removes an acquired component from shared release storage.
+    ///
+    /// The release directory is first moved to temporary trash, then the new state
+    /// is published and cleanup is attempted. Existing environment selections and
+    /// already-built Virgo artifacts retain their embedded release records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AddonError::NotFound`] if `id` is not an acquired component, or
+    /// returns an I/O error if temporary trash cannot be prepared or the release
+    /// directory cannot be moved.
     pub async fn remove_component(&self, id: Uuid) -> Result<()> {
         fs::with_temp_dir(&self.0.directories.trash(), |trash| async move {
             let _write = self.0.write.lock().await;
@@ -37,8 +46,17 @@ impl Addons {
         .await
     }
 
-    /// Withdraws a dependency's release directory, then cleans it up best effort.
-    /// Built Virgo artifacts and environment selections remain unchanged.
+    /// Removes an acquired dependency from shared release storage.
+    ///
+    /// The release directory is first moved to temporary trash, then the new state
+    /// is published and cleanup is attempted. Existing environment selections and
+    /// already-built Virgo artifacts retain their embedded release records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AddonError::NotFound`] if `id` is not an acquired dependency, or
+    /// returns an I/O error if temporary trash cannot be prepared or the release
+    /// directory cannot be moved.
     pub async fn remove_dependency(&self, id: Uuid) -> Result<()> {
         fs::with_temp_dir(&self.0.directories.trash(), |trash| async move {
             let _write = self.0.write.lock().await;
@@ -58,6 +76,16 @@ impl Addons {
         .await
     }
 
+    /// Publishes a prepared component release under its immutable UUID.
+    ///
+    /// An already-published identical record is returned unchanged. The write lock
+    /// is cancellation-aware and covers validation, the final rename, and snapshot
+    /// publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on cancellation, UUID collision, conflicting local record,
+    /// occupied destination, manifest serialization, or filesystem failure.
     pub(super) async fn commit_component(
         &self,
         record: Arc<Addon<Component>>,
@@ -96,6 +124,16 @@ impl Addons {
         Ok(record)
     }
 
+    /// Publishes a prepared dependency release under its immutable UUID.
+    ///
+    /// An already-published identical record is returned unchanged. The write lock
+    /// is cancellation-aware and covers validation, the final rename, and snapshot
+    /// publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on cancellation, UUID collision, conflicting local record,
+    /// occupied destination, manifest serialization, or filesystem failure.
     pub(super) async fn commit_dependency(
         &self,
         record: Arc<Addon<Dependency>>,
@@ -136,6 +174,12 @@ impl Addons {
 }
 
 impl AddonsState {
+    /// Loads cached catalogs and release manifests into the initial snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a catalog or manifest cannot be read, a manifest UUID
+    /// does not match its parent directory, or UUIDs collide across local releases.
     pub(super) async fn load_cached(directories: &Directories) -> Result<Self> {
         let mut state = Self {
             component_catalog: Catalog::<Component>::load(directories).await?,
@@ -166,6 +210,13 @@ impl AddonsState {
     }
 }
 
+/// Finds release manifests stored below UUID-named directories in `root`.
+///
+/// Non-directory entries and directories without UUID names are ignored.
+///
+/// # Errors
+///
+/// Returns an error if the release root or an entry's metadata cannot be read.
 async fn release_manifests(root: &Path) -> Result<Vec<(Uuid, PathBuf)>> {
     let mut manifests = Vec::new();
     let mut entries = async_fs::read_dir(root).await?;

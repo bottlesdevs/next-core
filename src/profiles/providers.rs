@@ -1,4 +1,8 @@
-//! Native and plugin account providers for profiles.
+//! Provider discovery and the internal provider abstraction.
+//!
+//! The built-in Steam provider is combined with plugins that export the
+//! account-provider interface. Only public provider metadata crosses into
+//! persisted profile state.
 mod steam;
 
 use crate::error::Result;
@@ -10,23 +14,45 @@ use std::{borrow::Cow, sync::Arc};
 pub use bottles_plugin_host::AccountLinkInteraction;
 pub(super) use bottles_plugin_host::LinkedAccount;
 
+/// Display metadata for an account provider available to [`Profiles`].
+///
+/// [`Profiles`]: super::Profiles
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::AccountProviderInfo;
+/// use std::borrow::Cow;
+///
+/// let provider = AccountProviderInfo {
+///     id: "example".into(),
+///     name: Cow::Borrowed("Example Store"),
+/// };
+/// assert_eq!(provider.id, "example");
+/// ```
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AccountProviderInfo {
+    /// Stable provider identifier used for linking and persistence.
     pub id: String,
+    /// Human-readable provider name.
     pub name: Cow<'static, str>,
 }
 
 pub use bottles_plugin_host::AccountIdentity;
 
+/// Provider implementation used by native and plugin account linking.
 #[async_trait]
 pub(super) trait AccountProvider: Send + Sync {
+    /// Returns stable public metadata for this provider.
     fn metadata(&self) -> AccountProviderInfo;
+    /// Runs the provider's account-identification or authentication flow.
     async fn link_account(
         &self,
         interaction: Arc<dyn AccountLinkInteraction>,
     ) -> std::result::Result<LinkedAccount, String>;
 }
 
+/// Lists the native provider followed by eligible installed plugins.
 pub(super) fn list(plugins: &Plugins) -> Vec<AccountProviderInfo> {
     std::iter::once(steam::metadata())
         .chain(
@@ -45,6 +71,11 @@ pub(super) fn list(plugins: &Plugins) -> Vec<AccountProviderInfo> {
         .collect()
 }
 
+/// Resolves and loads an account provider by identifier.
+///
+/// # Errors
+///
+/// Returns a plugin-host error if a non-native provider cannot be loaded.
 pub(super) async fn get(plugins: &Plugins, id: &str) -> Result<Box<dyn AccountProvider>> {
     if id == steam::metadata().id {
         return Ok(Box::new(steam::Steam));

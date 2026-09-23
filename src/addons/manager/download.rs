@@ -1,4 +1,4 @@
-//! Shared download progress and cancellation handling.
+//! Download progress adaptation and cooperative cancellation.
 
 use crate::{
     Transfer,
@@ -10,7 +10,15 @@ use std::path::Path;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-/// Drives a download, translating its latest byte counts and cancellation result.
+/// Downloads `url` to `destination` and reports transfer snapshots.
+///
+/// If cancellation wins the race, the underlying transfer is cancelled before
+/// [`Error::Cancelled`] is returned.
+///
+/// # Errors
+///
+/// Returns an error if the transfer cannot be created or completed, cancelling the
+/// transfer fails, or `cancellation` is triggered.
 pub(super) async fn download(
     downloader: &DownloadManager,
     url: Url,

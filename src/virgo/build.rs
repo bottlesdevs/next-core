@@ -1,4 +1,8 @@
-//! Coordinated construction of immutable filesystem and Wine registry artifacts.
+//! Builds immutable filesystem and Wine registry artifacts in isolated staging.
+//!
+//! A build may start from an empty filesystem or an FVS mount over an existing
+//! base layer. Execution and Wine shutdown are completed by the caller before
+//! [`LayerStore::finish_build`] captures registry effects and publishes the result.
 
 use std::{
     future::Future,
@@ -12,16 +16,28 @@ use uuid::Uuid;
 use super::{FVS_BLOCK_SIZE, LayerStore, VirgoLayer, registry};
 use crate::error::{Error, Result, ResultExt};
 
-/// Prepared storage only. Dropping retains it; finalization requires stopped processes.
+/// Holds staging paths and an optional base mount for one artifact build.
+///
+/// Dropping this value performs no cleanup. Callers must stop every process and
+/// pass the workspace to [`LayerStore::finish_build`] so mount release and
+/// publication occur in the required order.
 pub(crate) struct BuildWorkspace {
     destination: PathBuf,
     stage: PathBuf,
+    /// Prefix in which the build recipe executes.
     pub(crate) prefix: PathBuf,
     overlay: Option<(Mount, PathBuf)>,
 }
 
 impl LayerStore {
-    /// Resolve inputs and complete construction inside this scope, only after a cache miss.
+    /// Returns a cached artifact or serializes one cache-miss build.
+    ///
+    /// The cache is checked before and after acquiring the global build lock. The
+    /// `build` callback therefore runs only when the artifact is still absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Cancelled`], cache loading errors, or the callback's error.
     pub(crate) async fn get_or_build<Fut>(
         &self,
         key: &Path,
@@ -51,7 +67,16 @@ impl LayerStore {
         build().await
     }
 
-    /// Prepare inside get_or_build, after resolving inputs and before starting processes.
+    /// Creates isolated staging for a build, optionally mounted over `base`.
+    ///
+    /// This must run inside [`Self::get_or_build`] after all inputs are resolved
+    /// and before any process starts.
+    ///
+    /// # Errors
+    ///
+    /// Returns cancellation, filesystem, or FVS mount errors. Failed directory
+    /// setup is removed best effort; a failed mount request retains staging because
+    /// the mount outcome may be uncertain.
     pub(crate) async fn prepare_build(
         &self,
         key: &Path,
@@ -98,8 +123,16 @@ impl LayerStore {
         })
     }
 
-    /// Consume the execution result only after shutdown succeeds, within get_or_build.
-    /// Failed execution is discarded; failed unmount retains the workspace.
+    /// Captures, unmounts, commits, and publishes a completed build.
+    ///
+    /// The caller must stop build processes before calling this method inside
+    /// [`Self::get_or_build`]. A failed recipe is discarded after a successful
+    /// unmount; an unmount failure retains the workspace and returns immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns the recipe error, cancellation, registry processing, FVS, filesystem,
+    /// or publication errors. Staging cleanup after a settled unmount is best effort.
     pub(crate) async fn finish_build(
         &self,
         workspace: BuildWorkspace,

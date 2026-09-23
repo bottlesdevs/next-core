@@ -1,39 +1,13 @@
-//! Execution and reversal of frozen addon recipes.
+//! Execution and partial reversal of frozen addon recipes.
 //!
-//! Each local release stores its installation recipes together with its source payload.
-//! Built-in recipes supply component defaults during import and download.
+//! Installation walks resources and steps in declaration order. Removal walks the
+//! saved steps in reverse, restoring copied files and deleting DLL overrides; steps
+//! without a defined inverse are logged and skipped. Completed changes are not
+//! rolled back if a later step fails.
 //!
-//! # Installation
-//!
-//! Resources and steps are applied in declaration order. Steps may copy or
-//! extract files, run installers, register DLLs, update the registry, or configure
-//! DLL overrides. Launch variables are derived from frozen `SetEnvironment`
-//! declarations, which are ignored during installation and uninstall. Installer
-//! commands declare their own variables. Changes made by completed steps remain
-//! if a later step fails; the bottle storage layer is responsible
-//! for any transaction-level rollback.
-//!
-//! # Component removal
-//!
-//! The saved selection supplies resources and steps in reverse order; removal does
-//! not require its shared payload. Uninstallation can restore
-//! copied files and delete DLL overrides. Actions without an inverse—executing
-//! programs, extracting archives, registering DLLs,
-//! and setting registry values—are skipped. Failures while reversing supported
-//! steps are returned. Dependencies cannot be removed separately from their bottle.
-//!
-//! # Cancellation and cleanup
-//!
-//! Cancellation is cooperative. It is checked between steps and during
-//! supported long-running work. Running child processes are killed and reaped
-//! when possible; WineBridge calls already in flight are not interrupted.
-//! The enclosing prefix scope stops WineBridge and the prefix runner before
-//! releasing storage.
-//!
-//! # Path handling
-//!
-//! Recipe paths are not checked for containment. Catalog data must therefore be
-//! trusted.
+//! Cancellation is cooperative between steps and during child processes and archive
+//! work. Recipe paths are joined directly to payload and prefix roots, so recipes
+//! must originate from trusted catalog data.
 
 use std::{
     io,
@@ -54,26 +28,31 @@ use crate::{
 
 use crate::addons::recipe::{InstallResource, InstallStep};
 
-/// Execution inputs for a recipe in an owner prefix or shared build.
+/// Groups the runtime services and directories needed to apply a recipe.
 #[derive(Clone, Copy)]
 pub(crate) struct InstallInputs<'a> {
-    /// The prepared Wine prefix receiving recipe changes.
+    /// Wine prefix that receives recipe changes.
     pub(crate) prefix: &'a Path,
-    /// Shared disposable storage for archive extraction.
+    /// Parent directory for temporary archive extraction.
     pub(crate) staging: &'a Path,
-    /// The runner used for Windows processes. The execution workflow owns shutdown.
+    /// Runner used for Windows child processes.
     pub(crate) runner: &'a dyn Runner,
-    /// The WineBridge executable selected by the execution workflow.
+    /// Root of the WineBridge component used for registry operations.
     pub(crate) winebridge: &'a Path,
 }
 
-/// Applies every resource and step sequentially, reporting each step before it starts.
-/// `backup_files` preserves displaced files for Standard removal; layered builds disable it.
+/// Applies all resource steps in declaration order.
 ///
-/// Cancellation is checked before the first step, after every step, while waiting for child
-/// processes, between per-DLL operations, and before and after extraction. Cancellation attempts to kill
-/// and reap a running child; a kill failure is returned. The enclosing prefix scope stops Wine
-/// before diffing, unmounting, or restoring storage.
+/// `on_step` runs immediately before each step. If `backup_files` is `true`, a
+/// displaced regular file is preserved once for later removal; layered builds pass
+/// `false` because their lower layer retains the original.
+///
+/// # Errors
+///
+/// Returns an error if cancellation is requested or any filesystem, archive,
+/// process, runner, or WineBridge operation fails. An unsuccessful installer or
+/// DLL-registration child is reported as [`InstallerError`]. Earlier steps are not
+/// rolled back.
 pub(crate) async fn execute(
     inputs: InstallInputs<'_>,
     payload_root: &Path,
@@ -94,12 +73,16 @@ pub(crate) async fn execute(
     Ok(())
 }
 
-/// Attempts to undo a recipe in reverse resource and step order.
+/// Reverses supported steps in reverse recipe order.
 ///
-/// File copies are restored or removed and DLL overrides are deleted. Runtime variable
-/// declarations and steps without an inverse are ignored. File, bridge and override
-/// failures are returned.
-/// The enclosing prefix scope owns Wine shutdown.
+/// Copied files are restored from backups or removed, and DLL overrides are deleted.
+/// Environment declarations are ignored; executable, extraction, DLL-registration,
+/// and registry-write steps are logged and skipped because they have no inverse.
+///
+/// # Errors
+///
+/// Returns an error if cancellation is requested or restoring files or deleting DLL
+/// overrides fails. Changes reversed before the failure remain reversed.
 pub(crate) async fn uninstall<'a>(
     inputs: InstallInputs<'_>,
     steps: impl DoubleEndedIterator<Item = &'a InstallStep>,
@@ -259,11 +242,15 @@ fn check_cancellation(cancellation: &CancellationToken) -> Result<()> {
     }
 }
 
-/// Waits for a child to exit, or attempts to kill and reap it when cancellation wins the race.
+/// Waits for a child to exit, killing and reaping it if cancellation wins.
 ///
-/// An already-exited child may reject the kill with [`io::ErrorKind::InvalidInput`]; this is
-/// ignored before the child is reaped and cancellation is returned. Other kill failures are
-/// returned without another reap attempt.
+/// [`io::ErrorKind::InvalidInput`] from killing an already-exited child is ignored;
+/// the child is still reaped before cancellation is returned.
+///
+/// # Errors
+///
+/// Returns an error if waiting for or killing the child fails, or returns
+/// [`Error::Cancelled`] after cancellation and successful cleanup.
 async fn wait_for_child(
     mut child: async_process::Child,
     cancellation: &CancellationToken,
@@ -281,10 +268,16 @@ async fn wait_for_child(
     Err(Error::Cancelled)
 }
 
-/// Copies a file, optionally preserving the first displaced regular file for restoration.
+/// Copies `source` into the prefix and optionally preserves the displaced file.
 ///
-/// The backup is stored alongside the destination with `.bak` appended. An existing backup is
-/// never overwritten. `relative` is joined directly to `prefix` without containment validation.
+/// The backup is stored beside the destination with `.bak` appended and is never
+/// overwritten. `relative` is joined directly to `prefix` without containment
+/// validation.
+///
+/// # Errors
+///
+/// Returns an error if destination directories cannot be created, metadata cannot
+/// be inspected, or a copy fails.
 ///
 /// # Panics
 ///
@@ -311,9 +304,13 @@ async fn install_file(
     Ok(())
 }
 
-/// Restores a copied file's backup, or removes the installed file when no backup exists.
+/// Restores a copied file's backup or removes the installed file.
 ///
-/// A restored backup is deleted after it is copied. Copy and removal failures are returned.
+/// A restored backup is removed after it has been copied over the destination.
+///
+/// # Errors
+///
+/// Returns an error if backup inspection, restoration, or removal fails.
 async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
     let destination = prefix.join(relative);
     let backup = prefix.join(backup_path(relative));
@@ -329,11 +326,15 @@ async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
     }
 }
 
-/// Extracts an archive into an isolated staging directory, then installs its files.
+/// Extracts an archive into temporary storage and installs its regular files.
 ///
-/// Files are installed in sorted path order through [`install_file`], following the caller's
-/// backup policy. The staging directory is removed on a best-effort basis regardless
-/// of the operation's result; a cleanup error does not replace the extraction result.
+/// Files are copied in sorted path order through [`install_file`] using the caller's
+/// backup policy. Temporary storage is cleaned up on a best-effort basis.
+///
+/// # Errors
+///
+/// Returns an error on cancellation, unsafe or unsupported archive contents, or a
+/// staging or installation filesystem failure.
 async fn extract_into(
     archive: &Path,
     prefix: &Path,

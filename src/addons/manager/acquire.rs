@@ -1,4 +1,8 @@
-//! Acquire complete immutable releases from catalogs or local archives.
+//! Acquisition of immutable releases from catalogs and local archives.
+//!
+//! Downloaded artifacts are prepared in temporary storage, verified, and then
+//! committed atomically to the family release directory. A committed release
+//! includes both its payload and the recipe resolved during acquisition.
 
 use super::super::{
     Addon, AddonError, CatalogError, Component, Dependency, Requirement, Slot,
@@ -24,8 +28,19 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 impl Addons {
-    /// Returns an existing local component or downloads the selected catalog release.
-    /// Catalog refreshes never replace a local release's metadata or recipe.
+    /// Acquires the component identified by `id`.
+    ///
+    /// The returned [`Operation`] reuses an identical local release when present.
+    /// Otherwise it selects the single artifact for the current platform, verifies
+    /// its checksum, extracts its one top-level directory, and stores the resulting
+    /// immutable release. A later catalog refresh does not alter that stored record.
+    ///
+    /// # Errors
+    ///
+    /// The operation fails if it is cancelled; `id` is missing, unsupported, or
+    /// collides with another addon; the component has anything other than one
+    /// matching artifact; download or checksum verification fails; the archive is
+    /// invalid; or the release cannot be committed to local storage.
     pub fn fetch_component(&self, id: Uuid) -> Operation<Arc<Addon<Component>>> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -95,7 +110,17 @@ impl Addons {
         })
     }
 
-    /// Returns an existing local dependency or downloads the selected catalog release.
+    /// Acquires the dependency identified by `id`.
+    ///
+    /// The returned [`Operation`] reuses an identical local release when present.
+    /// Otherwise every artifact matching the current platform is downloaded,
+    /// verified, and stored as the dependency payload in catalog order.
+    ///
+    /// # Errors
+    ///
+    /// The operation fails if it is cancelled; `id` is missing, unsupported, or
+    /// collides with another addon; a download or checksum verification fails; or
+    /// the release cannot be committed to local storage.
     pub fn fetch_dependency(&self, id: Uuid) -> Operation<Arc<Addon<Dependency>>> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -156,7 +181,19 @@ impl Addons {
         })
     }
 
-    /// Imports a local tar, tar.gz/tgz, or tar.xz/txz.Assigns a fresh UUID and freezes the bundled recipe. The source archive is unchanged; directories are not supported.
+    /// Imports a component from a local tar archive.
+    ///
+    /// Supported inputs are `.tar`, `.tar.gz`/`.tgz`, and `.tar.xz`/`.txz` files
+    /// containing exactly one top-level directory. The returned [`Operation`]
+    /// assigns a fresh UUID, infers built-in requirements for `slot`, freezes the
+    /// slot's default recipe, and leaves the source archive unchanged.
+    ///
+    /// # Errors
+    ///
+    /// The operation fails if it is cancelled; the path is not a supported archive;
+    /// extraction fails; the archive does not contain exactly one top-level
+    /// directory; a symbolic link escapes that directory; the runner payload cannot
+    /// be identified; or the new release cannot be committed to local storage.
     pub fn import_component(
         &self,
         path: impl AsRef<Path>,

@@ -1,8 +1,9 @@
-//! Runner discovery, command lowering, and prefix lifecycle control.
+//! Adapts Wine-compatible runtimes to a common command and lifecycle interface.
 //!
-//! A [`Runner`] converts a Windows command into the host process that executes
-//! it for one prefix. [`RunnerCommand`] marks that this lowering has happened so
-//! host wrappers can be added without bypassing runner-specific environment.
+//! A [`Runner`] lowers guest commands into the host process required by either a
+//! direct Wine installation or UMU-backed Proton. [`RunnerCommand`] marks the
+//! lowered form so host wrappers can be composed without skipping runner-specific
+//! arguments or environment variables.
 
 mod proton;
 mod wine;
@@ -20,45 +21,47 @@ use std::{
     process::ExitStatus,
 };
 
-/// The launch protocol and installed layout of a runner component.
+/// Classifies the invocation protocol implied by an installed runner layout.
 ///
-/// This identifies how next-core invokes the component, not a distribution or
-/// version of Wine.
+/// The value identifies how next-core invokes a component, not its Wine
+/// distribution or version.
 #[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
 pub(crate) enum RunnerKind {
-    /// A direct Wine layout selected by `bin/wine`; server control expects its
-    /// sibling `wineserver`.
+    /// Uses `bin/wine` directly and its sibling `bin/wineserver` for server control.
     Wine,
-    /// A Proton layout launched through a separately managed UMU executable.
+    /// Uses a root-level `proton` marker and launches through a paired UMU executable.
     Proton,
 }
 
-/// Failures while discovering or controlling a runner.
+/// Describes runner discovery, configuration, and process failures.
 ///
 /// Process variants retain unsuccessful exit statuses. Failures to spawn or
 /// wait for those processes are reported as [`crate::error::Error::Io`] instead.
 #[derive(Debug, Error)]
 pub enum RunnerError {
+    /// `wineboot` exited with a non-success status.
     #[error("wineboot exited unsuccessfully: {0}")]
     WinebootFailed(ExitStatus),
+    /// `wineserver` exited with a status not accepted by the selected runner.
     #[error("wineserver exited unsuccessfully: {0}")]
     WineserverFailed(ExitStatus),
-    /// No UMU component was paired with the selected Proton component.
+    /// A Proton component was selected without a paired UMU component.
     #[error("Proton runner requires an UMU executable")]
     UmuExecutableMissing,
-    /// The component layout was unsupported or disagreed with its recorded kind.
+    /// The component directory contains no supported runner marker.
     #[error("no supported runner executable was found in {0}")]
     RunnerNotFound(PathBuf),
-    /// A paired component did not contain its expected regular executable file.
+    /// A selected runner or launcher path is not a regular executable file.
     #[error("runner executable was not found: {0}")]
     RunnerExecutableNotFound(PathBuf),
 }
 
-/// A host command that has been lowered through a [`Runner`].
+/// Wraps a host command that has already been lowered through a [`Runner`].
 #[derive(Debug)]
 pub(crate) struct RunnerCommand(Command);
 
 impl RunnerCommand {
+    /// Places one host wrapper around the lowered command.
     pub(crate) fn wrapped_by(self, wrapper: impl Wrapper) -> Self {
         Self(wrapper.wrap(self.0).into())
     }
@@ -72,13 +75,18 @@ impl From<RunnerCommand> for Command {
 
 impl Spawnable for RunnerCommand {}
 
-/// Runner-specific command construction and prefix lifecycle operations.
+/// Defines command lowering and Wine prefix lifecycle control for one runner kind.
 #[async_trait]
 pub(crate) trait Runner: Send + Sync {
-    /// Lowers a Windows command into a host command targeting `prefix`.
+    /// Lowers a guest `inner` command into a host command targeting `prefix`.
     fn command(&self, prefix: &Path, inner: Command) -> RunnerCommand;
 
     /// Runs `wineboot` through this runner and requires a successful exit status.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the process cannot be spawned or waited for, or
+    /// [`RunnerError::WinebootFailed`] when it exits unsuccessfully.
     async fn wineboot(&self, prefix: &Path, arg: &str) -> Result<()> {
         let status = self
             .command(prefix, Command::new("wineboot").arg(arg))
@@ -93,14 +101,23 @@ pub(crate) trait Runner: Send + Sync {
         Ok(())
     }
 
-    /// Runs runner-specific server control, including any status normalization.
+    /// Runs runner-specific server control, including accepted status normalization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when the process cannot be spawned or waited for, or
+    /// [`RunnerError::WineserverFailed`] for an unaccepted exit status.
     async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()>;
 }
 
-/// Classifies a component by its regular-file markers.
+/// Classifies an installed component by its regular-file markers.
 ///
-/// `proton` takes precedence over `bin/wine` when both exist. Missing markers
-/// and marker metadata failures are reported as [`RunnerError::RunnerNotFound`].
+/// A root-level `proton` marker takes precedence over `bin/wine` when both exist.
+///
+/// # Errors
+///
+/// Returns [`RunnerError::RunnerNotFound`] when neither marker is a regular file.
+/// Metadata failures are treated the same as missing or non-file markers.
 pub(crate) async fn detect_runner_kind(path: &Path) -> Result<RunnerKind> {
     if async_fs::metadata(path.join("proton"))
         .await

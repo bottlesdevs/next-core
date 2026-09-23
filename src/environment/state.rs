@@ -1,4 +1,8 @@
-//! Persisted execution settings shared by all environment owners.
+//! Persisted environment snapshots and executable configuration.
+//!
+//! [`EnvironmentConfig`] freezes addon selections, ordering, environment
+//! overrides, and command wrappers. [`State`] pairs that configuration with the
+//! owner-specific data stored by a bottle or standalone program.
 
 use super::EnvironmentError;
 use crate::{Addon, Component, Dependency, EnvVars, Requirement, Slot, Wrappers, error::Result};
@@ -8,22 +12,26 @@ use std::collections::{HashMap, HashSet};
 use strum::IntoEnumIterator;
 use uuid::Uuid;
 
-/// Execution settings embedded in a bottle or standalone program's saved state.
-/// Selections preserve complete frozen recipes independently of shared payloads.
+/// Describes the software and launch behavior of one environment.
+///
+/// Component and dependency entries are frozen [`Addon`] records. They preserve
+/// the selected recipe even if the shared catalog later changes.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EnvironmentConfig {
-    /// Component releases pinned to their occupied slots.
+    /// Component release selected for each occupied [`Slot`].
     pub components: HashMap<Slot, Addon<Component>>,
-    /// Installed dependencies in installation order.
+    /// Dependency releases in installation order.
     pub dependencies: Vec<Addon<Dependency>>,
+    /// Owner-level environment variables applied after addon variables.
     #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
     pub env_vars: EnvVars,
+    /// Host command wrappers applied when WineBridge is started.
     #[serde(default)]
     pub wrappers: Wrappers,
 }
 
 impl EnvironmentConfig {
-    /// Construct a selection from caller-supplied runtime records.
+    /// Creates the initial configuration from its required runtime components.
     pub(crate) fn new(
         runner: Addon<Component>,
         winebridge: Addon<Component>,
@@ -42,7 +50,10 @@ impl EnvironmentConfig {
         }
     }
 
-    /// Change only the supplied component's slot, preserving an already-selected identity.
+    /// Replaces the component in its declared slot.
+    ///
+    /// Selecting the same addon identifier is a no-op, preserving the frozen
+    /// record already stored in the environment.
     pub(crate) fn set_component(&mut self, component: Addon<Component>) {
         if self
             .component(component.slot())
@@ -53,6 +64,11 @@ impl EnvironmentConfig {
         self.components.insert(component.slot(), component);
     }
 
+    /// Removes the component occupying `slot`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EnvironmentError::ComponentNotInstalled`] when `slot` is empty.
     pub(crate) fn remove_component(&mut self, slot: Slot) -> Result<()> {
         self.components
             .remove(&slot)
@@ -60,22 +76,25 @@ impl EnvironmentConfig {
         Ok(())
     }
 
-    /// Append the supplied dependency unless its identity is already selected.
+    /// Appends a dependency unless the same addon identifier is already selected.
     pub(crate) fn add_dependency(&mut self, dependency: Addon<Dependency>) {
         if self.dependency(dependency.id()).is_none() {
             self.dependencies.push(dependency);
         }
     }
 
-    /// Prefix-contributing components in fixed slot order.
+    /// Iterates prefix-contributing components in [`Slot`] declaration order.
     pub(crate) fn ordered_components(&self) -> impl Iterator<Item = &Addon<Component>> {
         Slot::iter()
             .filter(|slot| !slot.is_runtime())
             .filter_map(|slot| self.component(slot))
     }
 
-    /// Apply all components in slot order, then dependencies in installation order,
-    /// then owner overrides. Later declarations win.
+    /// Resolves the environment variables used to start WineBridge.
+    ///
+    /// Component variables are applied in slot order, followed by dependencies
+    /// in installation order and finally [`Self::env_vars`]. Later declarations
+    /// override earlier values.
     pub(crate) fn effective_env_vars(&self) -> EnvVars {
         let mut vars = EnvVars::default();
         for addon in Slot::iter().filter_map(|slot| self.component(slot)) {
@@ -88,31 +107,39 @@ impl EnvironmentConfig {
         vars
     }
 
-    /// Returns the runner recorded when this snapshot was published.
+    /// Returns the runner frozen into this configuration.
     ///
     /// Catalog refreshes do not replace this value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an unvalidated configuration does not contain [`Slot::Runner`].
     pub fn runner(&self) -> &Addon<Component> {
         self.component(Slot::Runner)
             .expect("persisted environment configuration is validated")
     }
 
-    /// Returns the exact WineBridge release selected for this environment.
+    /// Returns the WineBridge release frozen into this configuration.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an unvalidated configuration does not contain [`Slot::WineBridge`].
     pub fn winebridge(&self) -> &Addon<Component> {
         self.component(Slot::WineBridge)
             .expect("persisted environment configuration is validated")
     }
 
-    /// Returns the selected UMU release, if this runtime uses one.
+    /// Returns the selected UMU launcher, if the runner uses one.
     pub fn umu(&self) -> Option<&Addon<Component>> {
         self.component(Slot::Umu)
     }
 
-    /// Returns the component occupying `slot`, if any.
+    /// Returns the component occupying `slot`, if the slot is selected.
     pub fn component(&self, slot: Slot) -> Option<&Addon<Component>> {
         self.components.get(&slot)
     }
 
-    /// Returns the installed dependency with this release identifier.
+    /// Returns the dependency with the requested addon `id`, if selected.
     pub fn dependency(&self, id: Uuid) -> Option<&Addon<Dependency>> {
         self.dependencies
             .iter()
@@ -129,6 +156,13 @@ impl EnvironmentConfig {
                 .any(|dependency| dependency.satisfies(requirement))
     }
 
+    /// Verifies placement, uniqueness, required runtimes, and addon requirements.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EnvironmentError::InvalidEdit`] for duplicate dependencies,
+    /// [`EnvironmentError::InvalidComponentSlot`] for a misplaced component, or
+    /// [`EnvironmentError::RequiresAddon`] for any unsatisfied requirement.
     pub(crate) fn validate(&self) -> Result<()> {
         let mut dependencies = HashSet::new();
         for addon in &self.dependencies {
@@ -189,20 +223,27 @@ impl EnvironmentConfig {
     }
 }
 
-/// Complete persisted configuration for one bottle or standalone program.
-/// Published snapshots remain usable after later edits or deletion.
+/// Captures one immutable, published view of an environment.
+///
+/// `T` is owner-specific state such as bottle metadata or a standalone program
+/// specification. Acquired snapshots remain readable after later edits or deletion.
 #[derive(Clone, Debug, serde::Deserialize, PartialEq, serde::Serialize)]
 pub struct State<T> {
+    /// Stable identifier, which must match the environment directory name.
     pub(crate) id: Uuid,
+    /// Frozen executable configuration for this publication.
     pub(crate) config: EnvironmentConfig,
+    /// Bottle- or program-specific state published with the configuration.
     pub(crate) data: T,
 }
 
 impl<T> State<T> {
+    /// Returns the stable environment identifier.
     pub fn id(&self) -> Uuid {
         self.id
     }
 
+    /// Returns the executable configuration stored in this snapshot.
     pub fn config(&self) -> &EnvironmentConfig {
         &self.config
     }

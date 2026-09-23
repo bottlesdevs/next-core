@@ -6,6 +6,7 @@ authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository = "https://github.com/bottlesdevs/next-core/"
+readme = "README.md"
 homepage = ""
 categories = [""]
 keywords = [""]
@@ -57,3 +58,6 @@ async-executor.workspace = true
 http.workspace = true
 keyring-core.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "time"] }
+
+[package.metadata.docs.rs]
+all-features = true

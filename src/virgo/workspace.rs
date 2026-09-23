@@ -1,4 +1,8 @@
-//! Prepare a workspace's registry on selection changes; mount it for execution.
+//! Prepares private registry state and mounts a Virgo workspace for execution.
+//!
+//! Registry composition occurs only while the environment is stopped and
+//! unmounted. Runtime startup then mounts the selected filesystem layers over the
+//! private upper directory without changing the composed registry files.
 
 use std::path::Path;
 
@@ -10,8 +14,14 @@ use super::{LayerStore, VirgoError, VirgoLayer, registry};
 use crate::error::{Error, Result};
 
 impl LayerStore {
-    /// Compose registry files while stopped and unmounted. The caller checkpoints
-    /// existing workspaces and recovers failures before publishing new selections.
+    /// Composes selected registry effects into a stopped, unmounted workspace.
+    ///
+    /// The caller is responsible for checkpointing an existing owner and recovering
+    /// failures before publishing a new selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns cancellation, filesystem, registry parsing, or patch application errors.
     pub(crate) async fn prepare_workspace(
         &self,
         root: &Path,
@@ -39,8 +49,15 @@ impl LayerStore {
         Ok(())
     }
 
-    /// Mount the saved selection over its prepared private storage without changing
-    /// registry files. The caller releases any mount if mounting fails or is cancelled.
+    /// Mounts selected filesystem layers over the prepared private upper directory.
+    ///
+    /// Registry files are not recomposed here. The caller must release storage if
+    /// mounting fails or cancellation arrives after FVS creates the mount.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VirgoError::DirtyMountpoint`] when the prefix contains files,
+    /// [`Error::Cancelled`], or a filesystem/FVS error.
     pub(crate) async fn mount_workspace(
         &self,
         root: &Path,
@@ -64,7 +81,13 @@ impl LayerStore {
         Ok(())
     }
 
-    /// Release the workspace mount after its processes have stopped.
+    /// Releases this workspace's active mount after its processes have stopped.
+    ///
+    /// An absent prefix or unregistered mount is a successful no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if prefix inspection, mount discovery, or unmounting fails.
     pub(crate) async fn unmount_workspace(&self, root: &Path) -> Result<()> {
         let prefix = root.join("prefix");
         if crate::utils::fs::exists(&prefix).await? {
@@ -81,7 +104,12 @@ impl LayerStore {
     }
 }
 
-/// Refuse to mount over existing contents, which would otherwise be hidden.
+/// Creates an empty mountpoint or rejects contents that mounting would hide.
+///
+/// # Errors
+///
+/// Returns [`VirgoError::DirtyMountpoint`] for a nonempty directory, or an I/O
+/// error while creating or reading it.
 async fn ensure_empty_dir(path: &Path) -> Result<()> {
     async_fs::create_dir_all(path).await?;
     if async_fs::read_dir(path).await?.try_next().await?.is_some() {

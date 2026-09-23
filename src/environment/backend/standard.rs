@@ -1,4 +1,8 @@
-//! Initialize and mutate a conventional Wine prefix directly.
+//! Materializes software directly into a conventional Wine prefix.
+//!
+//! Creation initializes Wine and leaves no processes running. Later software
+//! edits uninstall replaced components before installing their replacements and
+//! newly appended dependencies in one maintenance session.
 
 use super::super::runtime;
 use crate::{
@@ -11,7 +15,12 @@ use strum::IntoEnumIterator;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-/// Successful initialization leaves no Wine processes running; failed cleanup retains data.
+/// Creates the prefix directory, initializes Wine, and stops its processes.
+///
+/// # Errors
+///
+/// Returns an error if directory creation, runner loading, Wine initialization,
+/// or shutdown fails. A shutdown failure retains the prefix for diagnosis.
 pub(in crate::environment) async fn create(
     config: &EnvironmentConfig,
     root: &Path,
@@ -26,12 +35,19 @@ pub(in crate::environment) async fn create(
     runtime::initialize(runner.as_ref(), &prefix).await
 }
 
-/// Apply frozen Standard selections directly to the stopped owner's prefix.
-/// Removal uses the previous selection's recipe and prefix backups, without
-/// consulting shared addon storage. Installation accesses payloads as steps run;
-/// an input failure can leave earlier steps applied.
-/// The caller requires a stopped owner. All work shares one maintenance session;
-/// shutdown runs once after the batch, including failure or cancellation.
+/// Applies the difference between two frozen selections to a stopped prefix.
+///
+/// Removed components use the previous selection's embedded recipe and prefix
+/// backups. Replacements and newly appended dependencies read their payloads as
+/// each recipe runs, so a late failure can leave earlier steps applied. The
+/// caller must stop the owner first; this function performs one final shutdown
+/// after the batch whether application succeeds or fails.
+///
+/// # Errors
+///
+/// Returns an error if runner loading, uninstalling, installing, cancellation,
+/// or the final Wine shutdown fails. A shutdown error takes precedence over the
+/// application result.
 pub(in crate::environment) async fn apply(
     previous: &EnvironmentConfig,
     candidate: &EnvironmentConfig,

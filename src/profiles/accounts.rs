@@ -1,4 +1,7 @@
-//! Account provider discovery, linking, and credential coordination.
+//! Account-provider discovery and profile-link lifecycle management.
+//!
+//! Account metadata is persisted with the profile, while provider credentials
+//! are kept in the platform credential store and keyed by link UUID.
 
 use super::providers::LinkedAccount;
 use super::{
@@ -33,13 +36,33 @@ impl AccountLinkInteraction for CancellableInteraction {
 }
 
 impl Profiles {
+    /// Returns the built-in and installed-plugin account providers.
+    ///
+    /// The built-in Steam provider appears first. A plugin that uses the
+    /// reserved `steam` identifier is omitted.
     pub fn account_providers(&self) -> Vec<AccountProviderInfo> {
         providers::list(&self.inner.plugins)
     }
 
-    /// The caller drives linking and persistence. Cooperative cancellation resolves pending
-    /// interaction and awaits accepted guest calls; entered persistence finishes before return.
-    /// Dropping abandons core's continuation, but accepted guest calls may still finish.
+    /// Starts linking an account provider to a profile.
+    ///
+    /// The returned [`Operation`] must be driven by the caller. It validates
+    /// the profile and provider membership, asks the provider to identify or
+    /// authenticate an account, stores any returned credential, and finally
+    /// publishes the new [`AccountLink`]. A profile can have at most one link
+    /// for each provider.
+    ///
+    /// Cancellation is cooperative. Pending interaction requests are
+    /// cancelled, but a provider call already accepted by a plugin may finish
+    /// in the background after the operation is dropped.
+    ///
+    /// # Errors
+    ///
+    /// When driven, the operation returns [`ProfileError::NotFound`] for an
+    /// unknown profile, [`ProfileError::AccountAlreadyLinked`] for a duplicate
+    /// provider, or [`ProfileError::Provider`] when the provider rejects the
+    /// request. Plugin loading, credential storage, persistence, cancellation,
+    /// and rollback failures are also returned.
     pub fn link_account(
         &self,
         profile_id: Uuid,
@@ -106,8 +129,17 @@ impl Profiles {
         })
     }
 
-    /// Remove membership before deleting the secret. An absent UUID retries cleanup.
-    /// The caller must drive this future to completion once publication begins.
+    /// Removes an account link and deletes its stored credential.
+    ///
+    /// Link membership is persisted before credential deletion. An unknown
+    /// `link_id` therefore still attempts credential deletion, making the
+    /// method suitable for retrying cleanup after a partial failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error if the changed profile state cannot be
+    /// saved, or [`ProfileError::CredentialCleanup`] if the credential store
+    /// cannot delete the secret. A missing credential is treated as success.
     pub async fn unlink_account(&self, link_id: Uuid) -> Result<()> {
         let _write = self.inner.write_lock.lock().await;
         self.update_locked(|state| {
