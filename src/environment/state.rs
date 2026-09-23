@@ -195,27 +195,28 @@ where
         Ok(guard)
     }
 
-    /// Stop and withdraw the owner before publishing deletion; trash cleanup is best effort.
+    /// Stop and move the owner into global trash, then publish deletion.
+    /// Notify the manager synchronously before awaiting best-effort cleanup.
     pub(crate) async fn delete(
         &self,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
+        on_deleted: impl FnOnce(),
     ) -> Result<()> {
         let _control = self.lock_control(cancellation).await?;
         progress.send_replace(Some(Progress::new(Stage::Stopping)));
         self.stop_locked().await?;
+        let trash = self.context.directories().trash();
+        async_fs::create_dir_all(&trash).await?;
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
         progress.send_replace(Some(Progress::new(Stage::Removing)));
-        storage::with_temp_dir(&self.context.directories().trash(), |trash| async move {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            async_fs::rename(&self.root, trash.join("environment")).await?;
-            self.published.send_replace(None);
-            Ok(())
-        })
-        .await
+        let destination = trash.join(Uuid::new_v4().to_string());
+        async_fs::rename(&self.root, &destination).await?;
+        self.published.send_replace(None);
+        on_deleted();
+        async_fs::remove_dir_all(destination).await.log_warn();
+        Ok(())
     }
 }
