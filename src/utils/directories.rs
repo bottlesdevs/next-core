@@ -2,8 +2,6 @@ use std::path::{Path, PathBuf};
 
 use ::directories::ProjectDirs;
 
-use uuid::Uuid;
-
 use crate::{bottle::error::BottleError, error::Result};
 
 #[derive(Clone, Debug)]
@@ -67,19 +65,10 @@ impl Directories {
         self.data_dir().join("bottles")
     }
 
-    pub(crate) fn bottle(&self, id: Uuid) -> PathBuf {
-        self.bottles().join(id.to_string())
-    }
-
     #[cfg(feature = "fvs")]
     pub(crate) fn programs(&self) -> PathBuf {
         self.data_dir().join("programs")
     }
-    #[cfg(feature = "fvs")]
-    pub(crate) fn program(&self, id: Uuid) -> PathBuf {
-        self.programs().join(id.to_string())
-    }
-
     pub(crate) fn components(&self) -> PathBuf {
         self.data_dir().join("components")
     }

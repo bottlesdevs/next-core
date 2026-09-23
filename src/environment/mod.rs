@@ -5,11 +5,11 @@ mod edit;
 mod error;
 #[cfg(feature = "fvs")]
 pub(crate) mod history;
+mod manager;
 mod operations;
 mod prefix;
-mod registry;
 mod runtime;
-pub(crate) use registry::Registry;
+pub(crate) use manager::Manager;
 #[cfg(feature = "fvs")]
 mod snapshot;
 mod state;

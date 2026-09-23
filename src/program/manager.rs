@@ -1,9 +1,8 @@
 //! Registry-backed standalone program lifecycle.
-use super::{Program, ProgramState};
+use super::Program;
 use crate::{
-    Addon, Component, Context, EnvironmentConfig, LibraryEntry, LibraryProvider, Operation,
-    ProgramSpec,
-    environment::{Environment, Registry, VirgoManager},
+    Addon, Component, Context, LibraryEntry, LibraryProvider, Operation, ProgramSpec,
+    environment::{Manager, VirgoManager},
     error::{Error, Result},
 };
 use futures_core::Stream;
@@ -12,11 +11,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Clone)]
-pub struct ProgramManager {
-    context: Context,
-    virgo: Arc<VirgoManager>,
-    registry: Arc<Registry<ProgramSpec>>,
-}
+pub struct ProgramManager(Arc<Manager<ProgramSpec>>);
 
 #[async_trait::async_trait]
 impl LibraryProvider for ProgramManager {
@@ -46,13 +41,9 @@ impl LibraryProvider for ProgramManager {
 }
 impl ProgramManager {
     pub(crate) async fn load(context: Context, virgo: Arc<VirgoManager>) -> Result<Self> {
-        let registry =
-            Arc::new(Registry::load(&context.directories().programs(), &context, &virgo).await?);
-        Ok(Self {
-            context,
-            virgo,
-            registry,
-        })
+        Ok(Self(
+            Manager::load(context.directories().programs(), context, virgo).await?,
+        ))
     }
 
     /// Build missing Virgo layers, prepare the private registry, and save the launch definition.
@@ -65,52 +56,26 @@ impl ProgramManager {
         winebridge: Addon<Component>,
         umu: Option<Addon<Component>>,
     ) -> Operation<Program> {
-        let manager = self.clone();
-        Operation::new(move |progress, cancellation| async move {
-            let id = Uuid::new_v4();
-            let state = ProgramState {
-                id,
-                config: EnvironmentConfig::new(runner, winebridge, umu)?,
-                data: launch,
-            };
-            let environment = Environment::create(
-                state,
-                manager.context.directories().program(id),
-                manager.context,
-                manager.virgo,
-                &progress,
-                &cancellation,
-            )
-            .await?;
-            manager.registry.insert(environment.clone())?;
-            Ok(Program(environment))
-        })
+        self.0.create(launch, runner, winebridge, umu).map(Program)
     }
+
     /// Look up an already-known program synchronously, without filesystem or runtime work.
     pub fn open(&self, id: Uuid) -> Result<Program> {
-        self.registry
-            .get(id)
-            .map(Program)
-            .ok_or_else(|| crate::EnvironmentError::NotFound(id).into())
+        self.0.open(id).map(Program)
     }
+
     pub fn list(&self) -> Vec<Program> {
-        self.registry.list().into_iter().map(Program).collect()
+        self.0.list().into_iter().map(Program).collect()
     }
     /// Observe membership and state changes; ends when the manager is dropped.
     pub fn watch(&self) -> impl Stream<Item = Vec<Program>> + Send + 'static + use<> {
-        self.registry
+        self.0
             .watch()
             .map(|environments| environments.into_iter().map(Program).collect())
     }
     /// Stop and withdraw the managed root into trash. Existing handles become deleted;
     /// cleanup is best effort after withdrawal.
     pub fn delete(&self, id: Uuid) -> Operation<()> {
-        let manager = self.clone();
-        Operation::new(move |progress, cancellation| async move {
-            let program = manager.open(id)?;
-            program.0.delete(&progress, &cancellation).await?;
-            manager.registry.remove(id);
-            Ok(())
-        })
+        self.0.delete(id)
     }
 }
