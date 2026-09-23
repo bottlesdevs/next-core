@@ -36,7 +36,8 @@ The crate is centered around six types:
   values are snapshots; query the manager again after a publication.
 - `BottleManager` manages bottles by UUID. A `Bottle` is a shared handle whose
   current immutable `BottleState` can be read or watched.
-- `Library` lists and watches installed programs and provides launch handles.
+- `Library` asynchronously lists launchable entries from registered `LibraryProvider`
+  implementations and provides launch handles. Call `list()` again to refresh.
 - `Profiles` persists named application identities and the current selection,
   discovers account providers, and owns account linking and credential persistence.
 - `Operation<T>` represents long-running work with progress and cooperative
@@ -126,7 +127,6 @@ Open the library, inspect the current bottles, and stop its download service:
 
 ```rust
 use bottles_core::{Bottles, Config, Directories, ProgramSpec};
-use futures_lite::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<(), bottles_core::error::Error> {
@@ -149,8 +149,8 @@ async fn main() -> Result<(), bottles_core::error::Error> {
         println!("registered {id}");
     }
 
-    let mut installed = Box::pin(bottles.library().watch());
-    println!("{} installed programs", installed.next().await.unwrap().len());
+    let installed = bottles.library().list().await?;
+    println!("{} installed programs", installed.len());
 
     bottles.shutdown().await
 }

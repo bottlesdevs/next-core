@@ -1,9 +1,10 @@
 //! Registry-backed standalone program lifecycle.
 use super::{Program, ProgramState};
 use crate::{
-    Addon, Component, Context, EnvironmentState, Operation, ProgramSpec,
+    Addon, Component, Context, EnvironmentState, LibraryEntry, LibraryProvider, Operation,
+    ProgramSpec,
     environment::{Environment, Registry, VirgoManager},
-    error::Result,
+    error::{Error, Result},
 };
 use futures_core::Stream;
 use futures_util::StreamExt;
@@ -15,6 +16,33 @@ pub struct ProgramManager {
     context: Context,
     virgo: Arc<VirgoManager>,
     registry: Arc<Registry<ProgramState>>,
+}
+
+#[async_trait::async_trait]
+impl LibraryProvider for ProgramManager {
+    fn id(&self) -> &str {
+        "programs"
+    }
+
+    async fn list_entries(&self) -> Result<Vec<LibraryEntry>> {
+        Ok(self
+            .list()
+            .into_iter()
+            .filter_map(|program| program.state().ok())
+            .map(|state| LibraryEntry {
+                id: state.id().to_string(),
+                title: state.name().to_owned(),
+            })
+            .collect())
+    }
+
+    fn launch(&self, entry_id: &str) -> Result<Operation<()>> {
+        let id = Uuid::parse_str(entry_id).map_err(|error| Error::LibraryProvider {
+            provider: self.id().to_owned(),
+            message: error.to_string(),
+        })?;
+        Ok(self.open(id)?.launch().map(|_| ()))
+    }
 }
 impl ProgramManager {
     pub(crate) async fn load(context: Context, virgo: Arc<VirgoManager>) -> Result<Self> {

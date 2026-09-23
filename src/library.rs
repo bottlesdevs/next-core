@@ -1,128 +1,91 @@
-//! Installed, launchable programs.
+//! Installed, launchable entries supplied by native and plugin providers.
 
-#[cfg(feature = "fvs")]
-use crate::{Program, ProgramManager};
+mod plugin;
 
-use futures_core::Stream;
-use futures_util::StreamExt;
-#[cfg(feature = "fvs")]
-use futures_util::stream;
-use uuid::Uuid;
-
-use crate::{
-    Bottle, BottleManager, Operation, ProgramSpec, bottle::error::BottleError, error::Result,
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
 };
 
-/// A live, non-persisted projection of bottle registrations and standalone programs.
-#[derive(Clone)]
+pub use bottles_plugin_host::LibraryEntry;
+
+use crate::{Operation, error::Result};
+pub use plugin::LibraryProvider;
+
+/// An explicitly refreshed collection of installed, launchable entries.
+///
+/// Clones share provider registrations. This collection owns neither provider
+/// storage nor background refresh tasks.
+#[derive(Clone, Default)]
 pub struct Library {
-    bottles: BottleManager,
-    #[cfg(feature = "fvs")]
-    programs: ProgramManager,
+    providers: Arc<RwLock<HashMap<String, Arc<dyn LibraryProvider>>>>,
 }
 
 impl Library {
-    pub(crate) fn new(
-        bottles: BottleManager,
-        #[cfg(feature = "fvs")] programs: ProgramManager,
-    ) -> Self {
-        Self {
-            bottles,
-            #[cfg(feature = "fvs")]
-            programs,
-        }
+    /// Registers a provider, replacing any registration with the same ID.
+    ///
+    /// Call after installing or reloading a plugin to register its loaded handle.
+    /// Existing items retain their original provider; refresh to obtain new items.
+    pub fn register_provider(&self, provider: Arc<dyn LibraryProvider>) {
+        let id = provider.id().to_owned();
+        self.providers.write().unwrap().insert(id, provider);
     }
 
-    /// Returns immutable handles for every currently registered program.
+    /// Removes a provider from subsequent listings without invalidating existing items.
+    /// Plugin unloading or reloading separately retires its old host handles.
+    pub fn remove_provider(&self, provider_id: &str) {
+        self.providers.write().unwrap().remove(provider_id);
+    }
+
+    /// Queries each registered provider and combines its current entries.
     ///
-    /// This reads only current in-memory owner states. Ordering is
-    /// unspecified, and bottles deleted during the snapshot are omitted.
-    pub fn list(&self) -> Vec<LibraryItem> {
-        let items = self
-            .bottles
-            .list()
-            .into_iter()
-            .filter_map(|bottle| bottle.state().ok().map(|state| (bottle, state)))
-            .flat_map(|(bottle, state)| {
-                state
-                    .programs()
-                    .map(move |(id, _)| LibraryItem::Bottle {
-                        bottle: bottle.clone(),
-                        program_id: id,
-                    })
-                    .collect::<Vec<_>>()
-            })
+    /// Providers are captured before enumeration; registration changes affect the
+    /// next listing. Ordering is unspecified. The first provider error is returned.
+    pub async fn list(&self) -> Result<Vec<LibraryItem>> {
+        let providers = self
+            .providers
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
             .collect::<Vec<_>>();
-        #[cfg(feature = "fvs")]
-        let items = {
-            let mut items = items;
+        let mut items = Vec::new();
+        for provider in providers {
             items.extend(
-                self.programs
-                    .list()
+                provider
+                    .list_entries()
+                    .await?
                     .into_iter()
-                    .filter(|program| program.state().is_ok())
-                    .map(LibraryItem::Standalone),
+                    .map(|entry| LibraryItem {
+                        entry,
+                        provider: provider.clone(),
+                    }),
             );
-            items
-        };
-        items
-    }
-
-    /// Watches both installed registries and yields the current [`list`](Self::list).
-    ///
-    /// The stream yields the current snapshot first. Slow consumers may miss
-    /// intermediate generations and receive only the latest aggregate state.
-    /// Either registry may publish the same initial snapshot; neither initial
-    /// event is skipped because it may include changes since the other was polled.
-    pub fn watch(&self) -> impl Stream<Item = Vec<LibraryItem>> + Send + 'static + use<> {
-        let library = self.clone();
-        let changes = self.bottles.watch().map(|_| ());
-        #[cfg(feature = "fvs")]
-        let changes = stream::select(changes, self.programs.watch().map(|_| ()));
-        changes.map(move |_| library.list())
+        }
+        Ok(items)
     }
 }
 
-/// A live installed item with actions bound to its owning environment.
+/// Display metadata captured during listing, with launch bound to its original provider.
 #[derive(Clone)]
-pub enum LibraryItem {
-    Bottle {
-        bottle: Bottle,
-        program_id: Uuid,
-    },
-    #[cfg(feature = "fvs")]
-    Standalone(Program),
+pub struct LibraryItem {
+    entry: LibraryEntry,
+    provider: Arc<dyn LibraryProvider>,
 }
 
 impl LibraryItem {
-    /// Returns the latest launch definition, failing if the owner or registration is gone.
-    pub fn program(&self) -> Result<ProgramSpec> {
-        match self {
-            Self::Bottle { bottle, program_id } => bottle
-                .state()?
-                .program(*program_id)
-                .cloned()
-                .ok_or_else(|| BottleError::ProgramNotFound(*program_id).into()),
-            #[cfg(feature = "fvs")]
-            Self::Standalone(program) => Ok(program.state()?.launch().clone()),
-        }
+    /// Returns the metadata captured during listing; list again to refresh it.
+    pub fn entry(&self) -> &LibraryEntry {
+        &self.entry
     }
 
-    /// Launch using the current definition and owning environment.
-    pub fn launch(&self) -> Operation<u32> {
-        match self {
-            Self::Bottle { bottle, program_id } => bottle.launch_program(*program_id),
-            #[cfg(feature = "fvs")]
-            Self::Standalone(program) => program.launch(),
-        }
+    /// Returns the source key: `bottles`, `programs`, or the plugin's manifest ID.
+    pub fn provider_id(&self) -> &str {
+        self.provider.id()
     }
 
-    /// Kill the installed item's process group without starting a stopped runtime.
-    pub async fn kill(&self) -> Result<()> {
-        match self {
-            Self::Bottle { bottle, program_id } => bottle.kill_program(*program_id).await,
-            #[cfg(feature = "fvs")]
-            Self::Standalone(program) => program.kill().await,
-        }
+    /// Resolves the entry through its provider and prepares a caller-driven launch.
+    pub fn launch(&self) -> Result<Operation<()>> {
+        self.provider.launch(&self.entry.id)
     }
 }

@@ -3,9 +3,10 @@ use super::{Bottle, BottleError, BottleState};
 #[cfg(feature = "fvs")]
 use crate::environment::VirgoManager;
 use crate::{
-    Addon, Component, Context, EnvironmentState, Operation, PrefixBackend, Progress, Stage,
+    Addon, Component, Context, EnvironmentState, LibraryEntry, LibraryProvider, Operation,
+    PrefixBackend, Progress, Stage,
     environment::{Environment, Registry},
-    error::Result,
+    error::{Error, Result},
 };
 use futures_core::Stream;
 use futures_util::StreamExt;
@@ -30,6 +31,48 @@ pub struct BottleManager {
     #[cfg(feature = "fvs")]
     virgo: Arc<VirgoManager>,
     registry: Arc<Registry<BottleState>>,
+}
+
+#[async_trait::async_trait]
+impl LibraryProvider for BottleManager {
+    fn id(&self) -> &str {
+        "bottles"
+    }
+
+    async fn list_entries(&self) -> Result<Vec<LibraryEntry>> {
+        let mut entries = Vec::new();
+        for state in self
+            .list()
+            .into_iter()
+            .filter_map(|bottle| bottle.state().ok())
+        {
+            entries.extend(state.programs().map(|(id, program)| LibraryEntry {
+                id: format!("{}/{id}", state.id()),
+                title: program.name().to_owned(),
+            }));
+        }
+        Ok(entries)
+    }
+
+    fn launch(&self, entry_id: &str) -> Result<Operation<()>> {
+        let (bottle_id, program_id) =
+            entry_id
+                .split_once('/')
+                .ok_or_else(|| Error::LibraryProvider {
+                    provider: self.id().to_owned(),
+                    message: "expected bottle UUID/program UUID".into(),
+                })?;
+        let parse_id = |id| {
+            Uuid::parse_str(id).map_err(|error| Error::LibraryProvider {
+                provider: self.id().to_owned(),
+                message: error.to_string(),
+            })
+        };
+        Ok(self
+            .open(parse_id(bottle_id)?)?
+            .launch_program(parse_id(program_id)?)
+            .map(|_| ()))
+    }
 }
 
 impl BottleManager {

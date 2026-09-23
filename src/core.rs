@@ -1,7 +1,7 @@
 #[cfg(feature = "fvs")]
 use crate::{ProgramManager, environment::VirgoManager};
 
-use bottles_plugin_host::Plugins;
+use bottles_plugin_host::{PluginInterface, Plugins};
 #[cfg(feature = "fvs")]
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -31,6 +31,7 @@ pub struct Bottles {
 impl Bottles {
     /// Open core services and local state. With FVS enabled, connect to or start its
     /// daemon before opening owner registries; connection failures abort startup.
+    /// Installed library providers are loaded and registered; loading failures are returned.
     pub async fn open(config: Config, plugins: Arc<Plugins>) -> Result<Self> {
         let Config {
             #[cfg(feature = "fvs")]
@@ -39,7 +40,7 @@ impl Bottles {
             dependency_catalog,
         } = config;
         let directories = Directories::new().await?;
-        let profiles = Profiles::load(&directories, plugins).await?;
+        let profiles = Profiles::load(&directories, plugins.clone()).await?;
         let http_client: Arc<dyn HttpClient> =
             Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
         #[cfg(feature = "fvs")]
@@ -69,11 +70,15 @@ impl Bottles {
         .await?;
         #[cfg(feature = "fvs")]
         let programs = ProgramManager::load(context.clone(), virgo).await?;
-        let library = Library::new(
-            bottles.clone(),
-            #[cfg(feature = "fvs")]
-            programs.clone(),
-        );
+        let library = Library::default();
+        library.register_provider(Arc::new(bottles.clone()));
+        #[cfg(feature = "fvs")]
+        library.register_provider(Arc::new(programs.clone()));
+        for plugin in plugins.list() {
+            if plugin.exports(PluginInterface::LibraryProvider) {
+                library.register_provider(Arc::new(plugins.load(&plugin.manifest.id).await?));
+            }
+        }
 
         Ok(Self {
             context,
