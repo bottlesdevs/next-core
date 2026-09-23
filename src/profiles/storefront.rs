@@ -1,7 +1,7 @@
 //! Native and plugin account providers for profiles.
 mod steam;
 
-use crate::{ProfileError, error::Result};
+use crate::error::Result;
 use async_trait::async_trait;
 use bottles_plugin_host::{Authentication, LoadedPlugin, OwnedGame, PluginInterface, Plugins};
 use serde::{Deserialize, Serialize};
@@ -65,11 +65,7 @@ pub(super) async fn get(plugins: &Plugins, id: &str) -> Result<Box<dyn AccountPr
     if id == steam::metadata().id {
         return Ok(Box::new(steam::Steam));
     }
-    let plugin = plugins.load(id).await?;
-    if !plugin.info.exports(PluginInterface::AccountProvider) {
-        return Err(ProfileError::ProviderNotFound(id.into()).into());
-    }
-    Ok(Box::new(plugin))
+    Ok(Box::new(plugins.load(id).await?))
 }
 
 #[async_trait]

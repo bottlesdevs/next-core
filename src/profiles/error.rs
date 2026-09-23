@@ -9,9 +9,6 @@ pub enum ProfileError {
     /// The only remaining profile cannot be deleted.
     #[error("the last profile {0} cannot be deleted")]
     LastProfile(Uuid),
-    /// No available provider supplies accounts for this storefront.
-    #[error("storefront account provider {0} was not found")]
-    ProviderNotFound(String),
     /// The profile already has an account from this provider.
     #[error("profile {profile} already has an account from provider {provider}")]
     AccountAlreadyLinked { profile: Uuid, provider: String },
