@@ -55,7 +55,7 @@ impl State<BottleData> {
 #[derive(Clone)]
 pub struct Bottle(pub(crate) Arc<crate::environment::Environment<BottleData>>);
 
-impl crate::environment::EnvironmentHandle for Bottle {
+impl crate::environment::Managed for Bottle {
     type Data = BottleData;
 
     fn from_environment(environment: Arc<crate::environment::Environment<BottleData>>) -> Self {

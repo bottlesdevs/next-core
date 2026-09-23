@@ -3,7 +3,7 @@ mod manager;
 
 use crate::{
     Edit, Operation, PrefixBackend, ProgramSpec, Snapshot, SnapshotSummary, State,
-    environment::{BackendSource, Environment, EnvironmentHandle},
+    environment::{BackendSource, Environment, Managed},
     error::Result,
     proto::{DllOverride, DllOverrideMode, Process},
 };
@@ -34,7 +34,7 @@ impl BackendSource for ProgramSpec {
 #[derive(Clone)]
 pub struct Program(pub(crate) Arc<Environment<ProgramSpec>>);
 
-impl EnvironmentHandle for Program {
+impl Managed for Program {
     type Data = ProgramSpec;
 
     fn from_environment(environment: Arc<Environment<ProgramSpec>>) -> Self {

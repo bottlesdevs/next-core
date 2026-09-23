@@ -22,7 +22,7 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
-pub(crate) trait EnvironmentHandle {
+pub(crate) trait Managed {
     type Data;
 
     fn from_environment(environment: Arc<Environment<Self::Data>>) -> Self;
@@ -83,7 +83,7 @@ impl<T: Clone> Manager<T> {
 
 // Only core handles supply environment access; the adapter stays private.
 #[allow(private_bounds)]
-impl<T: EnvironmentHandle + Clone + Send + Sync + 'static> Manager<T>
+impl<T: Managed + Clone + Send + Sync + 'static> Manager<T>
 where
     T::Data: BackendSource + Send,
     State<T::Data>: next_config::Config + Clone + PartialEq + Send + Sync,

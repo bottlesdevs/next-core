@@ -32,8 +32,8 @@ pub use environment::{Snapshot, SnapshotSummary};
 pub use library::{Library, LibraryEntry, LibraryItem, LibraryProvider};
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use profiles::{
-    AccountIdentity, AccountLinkInteraction, Profile, ProfileError, Profiles, ProfilesConfig,
-    StorefrontAccount, StorefrontProvider,
+    AccountIdentity, AccountLink, AccountLinkInteraction, AccountProviderInfo, Profile,
+    ProfileError, Profiles, ProfilesState,
 };
 pub use proto::{DllOverride, DllOverrideMode, Process, RegistryHive};
 pub use utils::directories::Directories;
