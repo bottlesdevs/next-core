@@ -6,12 +6,6 @@ use uuid::Uuid;
 /// Bottle-specific failures carried by [`crate::error::Error::Bottle`].
 #[derive(Debug, Error)]
 pub enum BottleError {
-    /// No platform-specific application data directory could be determined.
-    #[error("application directories are unavailable on this platform")]
-    ProjectDirectoriesUnavailable,
-    /// No persisted bottle exists for the requested UUID.
-    #[error("bottle {0} was not found")]
-    NotFound(Uuid),
     /// No program is registered with the requested UUID.
     #[error("program {0} was not found")]
     ProgramNotFound(Uuid),

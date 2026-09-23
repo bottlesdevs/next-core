@@ -7,10 +7,10 @@ use std::ffi::{OsStr, OsString};
 
 use crate::{runner::RunnerCommand, utils::env_vars::EnvVars};
 
-use self::{
-    gamescope::{Gamescope, GamescopeConfig},
-    mangohud::{MangoHud, MangoHudConfig},
-};
+pub use gamescope::{Filter as GamescopeFilter, GamescopeConfig, Scaler as GamescopeScaler};
+pub use mangohud::MangoHudConfig;
+
+use self::{gamescope::Gamescope, mangohud::MangoHud};
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]

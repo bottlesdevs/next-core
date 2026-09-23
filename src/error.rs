@@ -19,6 +19,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Error, Debug)]
 pub enum Error {
+    #[error("application directories are unavailable on this platform")]
+    ProjectDirectoriesUnavailable,
     /// A launch definition is malformed, regardless of its owner.
     #[error("invalid program: {0}")]
     InvalidProgram(String),

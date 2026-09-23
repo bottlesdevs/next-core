@@ -24,11 +24,7 @@ pub use addons::{
     Addon, AddonError, Addons, CatalogEntry, CatalogError, Component, Dependency, InstallerError,
     Requirement, Slot,
 };
-pub use bottle::{
-    Bottle, BottleData, BottleError, BottleManager, BottleState, DllOverride, DllOverrideMode,
-    GamescopeConfig, GamescopeFilter, GamescopeScaler, MangoHudConfig, Process, RegistryHive,
-    Wrappers,
-};
+pub use bottle::{Bottle, BottleData, BottleError, BottleManager, BottleState};
 pub use core::{Bottles, Config};
 pub use environment::{Edit, EnvironmentConfig, EnvironmentError, PrefixBackend, State};
 #[cfg(feature = "fvs")]
@@ -39,8 +35,10 @@ pub use profiles::{
     AccountIdentity, AccountLinkInteraction, Profile, ProfileError, Profiles, ProfilesConfig,
     StorefrontAccount, StorefrontProvider,
 };
+pub use proto::{DllOverride, DllOverrideMode, Process, RegistryHive};
 pub use utils::directories::Directories;
 pub use utils::env_vars::EnvVars;
+pub use wrapper::{GamescopeConfig, GamescopeFilter, GamescopeScaler, MangoHudConfig, Wrappers};
 
 pub(crate) use next_proto::winebridge as proto;
 pub(crate) use utils::context::Context;
