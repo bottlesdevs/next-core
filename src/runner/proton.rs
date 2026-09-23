@@ -8,7 +8,8 @@
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 
-use super::{Command, Runner, RunnerCommand, RunnerError, Spawnable, Wrapper};
+use super::{Runner, RunnerCommand, RunnerError};
+use crate::command::{Command, Spawnable, Wrapper};
 use crate::error::Result;
 
 #[derive(Debug)]

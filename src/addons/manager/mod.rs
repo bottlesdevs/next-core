@@ -22,7 +22,7 @@ use super::{
 use crate::{
     Directories, Transfer,
     error::{Error, Result},
-    utils::storage,
+    utils::fs,
 };
 
 mod catalog;
@@ -162,7 +162,7 @@ impl Addons {
     /// Withdraws a component's release directory, then cleans it up best effort.
     /// Built Virgo artifacts and environment selections remain unchanged.
     pub async fn remove_component(&self, id: Uuid) -> Result<()> {
-        storage::with_temp_dir(&self.0.directories.trash(), |trash| async move {
+        fs::with_temp_dir(&self.0.directories.trash(), |trash| async move {
             let _write = self.0.write.lock().await;
             let mut next = self.state().as_ref().clone();
             let release = next
@@ -183,7 +183,7 @@ impl Addons {
     /// Withdraws a dependency's release directory, then cleans it up best effort.
     /// Built Virgo artifacts and environment selections remain unchanged.
     pub async fn remove_dependency(&self, id: Uuid) -> Result<()> {
-        storage::with_temp_dir(&self.0.directories.trash(), |trash| async move {
+        fs::with_temp_dir(&self.0.directories.trash(), |trash| async move {
             let _write = self.0.write.lock().await;
             let mut next = self.state().as_ref().clone();
             let release = next
@@ -226,7 +226,7 @@ impl Addons {
         if next.contains(id) {
             return Err(AddonError::Duplicate(id).into());
         }
-        if crate::utils::exists(&destination).await? {
+        if crate::utils::fs::exists(&destination).await? {
             return Err(AddonError::TargetExists(destination).into());
         }
         next_config::save(prepared.join("release.toml"), record.as_ref()).await?;
@@ -264,7 +264,7 @@ impl Addons {
         if next.contains(id) {
             return Err(AddonError::Duplicate(id).into());
         }
-        if crate::utils::exists(&destination).await? {
+        if crate::utils::fs::exists(&destination).await? {
             return Err(AddonError::TargetExists(destination).into());
         }
         next_config::save(prepared.join("release.toml"), record.as_ref()).await?;
@@ -340,7 +340,7 @@ async fn prepare_component_archive(
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
-    crate::utils::archive::extract(archive, &extracted).await?;
+    crate::utils::fs::archive::extract(archive, &extracted).await?;
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
@@ -375,7 +375,7 @@ async fn check_component_links(root: &Path, cancellation: &CancellationToken) ->
                 pending.push(path);
             } else if kind.is_symlink() {
                 let target = async_fs::read_link(&path).await?;
-                crate::utils::archive::safe_symlink_target(
+                crate::utils::fs::archive::safe_symlink_target(
                     path.strip_prefix(&root).unwrap(),
                     target,
                 )?;

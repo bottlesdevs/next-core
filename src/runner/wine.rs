@@ -4,7 +4,8 @@
 //! set to the bottle prefix and `WINEARCH=win64`. Server control bypasses Wine
 //! and uses the sibling `wineserver` executable with the same environment.
 
-use super::{Command, Runner, RunnerCommand, RunnerError, Spawnable, Wrapper};
+use super::{Runner, RunnerCommand, RunnerError};
+use crate::command::{Command, Spawnable, Wrapper};
 use crate::error::Result;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};

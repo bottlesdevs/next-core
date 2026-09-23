@@ -1,4 +1,4 @@
-use crate::runner::{Command, Wrapper};
+use crate::command::{Command, Wrapper};
 use serde::{Deserialize, Serialize};
 
 pub(crate) struct Gamescope {

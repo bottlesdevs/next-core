@@ -9,7 +9,7 @@ pub use crate::{
     environment::EnvironmentError,
     profiles::ProfileError,
     runner::RunnerError,
-    utils::archive::ArchiveError,
+    utils::fs::archive::ArchiveError,
     winebridge::BridgeError,
 };
 #[cfg(feature = "fvs")]

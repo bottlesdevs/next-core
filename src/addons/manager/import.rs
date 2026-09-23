@@ -8,7 +8,7 @@ use crate::{
     Operation, Progress, Stage,
     error::Result,
     runner::{RunnerKind, detect_runner_kind},
-    utils::storage,
+    utils::fs,
 };
 use std::{path::Path, sync::Arc};
 use uuid::Uuid;
@@ -28,7 +28,7 @@ impl Addons {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            storage::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
+            fs::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
                 let prepared = prepare_component_archive(&source, &stage, &cancellation).await?;
                 let payload = prepared.join("payload");
                 let requirements = inspect_release(slot, &payload).await?;

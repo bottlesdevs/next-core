@@ -1,5 +1,6 @@
 mod addons;
 mod bottle;
+mod command;
 mod core;
 mod credentials;
 mod environment;
@@ -19,13 +20,15 @@ mod utils;
 #[cfg(feature = "fvs")]
 mod virgo;
 mod winebridge;
-mod wrapper;
 
 pub use addons::{
     Addon, AddonError, Addons, CatalogEntry, CatalogError, Component, Dependency, InstallerError,
     Requirement, Slot,
 };
 pub use bottle::{Bottle, BottleData, BottleError, BottleState};
+pub use command::wrappers::{
+    GamescopeConfig, GamescopeFilter, GamescopeScaler, MangoHudConfig, Wrappers,
+};
 pub use core::{Bottles, Config};
 pub use environment::{Edit, EnvironmentConfig, EnvironmentError, PrefixBackend, State};
 #[cfg(feature = "fvs")]
@@ -40,7 +43,6 @@ pub use profiles::{
 pub use proto::{DllOverride, DllOverrideMode, Process, RegistryHive};
 pub use utils::directories::Directories;
 pub use utils::env_vars::EnvVars;
-pub use wrapper::{GamescopeConfig, GamescopeFilter, GamescopeScaler, MangoHudConfig, Wrappers};
 
 pub(crate) use next_proto::winebridge as proto;
 pub(crate) use utils::context::Context;

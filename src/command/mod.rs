@@ -1,57 +1,12 @@
-pub(crate) mod gamescope;
-pub(crate) mod mangohud;
+//! Host command composition and spawning.
 
+use crate::EnvVars;
 use async_process::{Child, Command as AsyncCommand};
-use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
 
-use crate::{runner::RunnerCommand, utils::env_vars::EnvVars};
-
-pub use gamescope::{Filter as GamescopeFilter, GamescopeConfig, Scaler as GamescopeScaler};
-pub use mangohud::MangoHudConfig;
-
-use self::{gamescope::Gamescope, mangohud::MangoHud};
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(default)]
-pub struct Wrappers {
-    #[serde(default)]
-    pub gamescope: GamescopeConfig,
-    #[serde(default)]
-    pub mangohud: MangoHudConfig,
-}
-
-impl Wrappers {
-    pub(crate) fn apply(&self, command: RunnerCommand) -> RunnerCommand {
-        match (self.gamescope.enabled, self.mangohud.enabled) {
-            (false, false) => command,
-            (false, true) => command.wrapped_by(MangoHud::from(self.mangohud.clone())),
-            (true, false) => command.wrapped_by(Gamescope::from(self.gamescope.clone())),
-            (true, true) => {
-                command.wrapped_by(Gamescope::from(self.gamescope.clone()).with_mangoapp())
-            }
-        }
-    }
-}
-
-pub(crate) trait Wrapper: Into<Command> + Sized {
-    fn wrap<I: Into<Command>>(self, inner: I) -> Wrapped<Self, I> {
-        Wrapped { outer: self, inner }
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct Wrapped<O: Wrapper, I: Into<Command>> {
-    outer: O,
-    inner: I,
-}
-
-impl<O: Wrapper, I: Into<Command>> Wrapper for Wrapped<O, I> {}
-impl<O: Wrapper, I: Into<Command>> From<Wrapped<O, I>> for Command {
-    fn from(wrapped: Wrapped<O, I>) -> Self {
-        wrapped.outer.into().append(wrapped.inner.into())
-    }
-}
+mod wrapper;
+pub(crate) mod wrappers;
+pub(crate) use wrapper::Wrapper;
 
 pub(crate) trait Spawnable: Into<Command> + Sized {
     fn spawn(self) -> std::io::Result<Child> {
@@ -63,16 +18,12 @@ pub(crate) trait Spawnable: Into<Command> + Sized {
     }
 }
 
-impl<O: Wrapper, I: Spawnable> Spawnable for Wrapped<O, I> {}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Command {
     executable: OsString,
     args: Vec<OsString>,
     env_vars: EnvVars<OsString>,
 }
-
-impl Wrapper for Command {}
 
 impl Command {
     pub(crate) fn new(executable: impl AsRef<OsStr>) -> Self {

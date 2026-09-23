@@ -10,9 +10,10 @@ use uuid::Uuid;
 
 use crate::{
     addons::InstallerError,
+    command::{Command, Spawnable},
     error::{Error, Result},
-    runner::{Command, Runner, Spawnable},
-    utils::{archive, exists, storage},
+    runner::Runner,
+    utils::fs::{self, archive, exists},
     winebridge::WineBridgeClient,
 };
 
@@ -294,7 +295,7 @@ async fn extract_into(
     backup_files: bool,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    storage::with_temp_dir(staging, |stage| async move {
+    fs::with_temp_dir(staging, |stage| async move {
         check_cancellation(cancellation)?;
         archive::extract(archive, &stage).await?;
         check_cancellation(cancellation)?;
