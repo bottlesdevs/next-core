@@ -1,33 +1,22 @@
-//! Shared addon state, queries, publication, and storage removal.
+//! Shared addon ownership, queries, and publication.
 
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
-
-use download_manager::{events::Progress as DownloadProgress, manager::DownloadManager};
-use futures_core::Stream;
-use futures_util::{FutureExt, StreamExt, TryStreamExt};
-use tokio::sync::{Mutex, watch};
-use tokio_stream::wrappers::WatchStream;
-use tokio_util::sync::CancellationToken;
-use url::Url;
-use uuid::Uuid;
+mod acquire;
+mod download;
+mod refresh;
+mod storage;
 
 use super::{
-    Addon, AddonError, Component, Dependency,
+    Addon, Component, Dependency,
     catalog::{Catalog, CatalogEntry, CatalogUrls},
 };
-use crate::{
-    Directories, Transfer,
-    error::{Error, Result},
-    utils::fs,
-};
-
-mod catalog;
-mod fetch;
-mod import;
+use crate::{Directories, error::Result};
+use download_manager::manager::DownloadManager;
+use futures_core::Stream;
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::{Mutex, watch};
+use tokio_stream::wrappers::WatchStream;
+use url::Url;
+use uuid::Uuid;
 
 /// The shared manager for addon catalogs and local storage.
 ///
@@ -50,6 +39,20 @@ struct AddonsInner {
     published: watch::Sender<Arc<AddonsState>>,
     /// Serializes filesystem commits and state publication, not transfers.
     write: Mutex<()>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct AddonsState {
+    component_catalog: Option<Arc<Catalog<Component>>>,
+    dependency_catalog: Option<Arc<Catalog<Dependency>>>,
+    components: HashMap<Uuid, Arc<Addon<Component>>>,
+    dependencies: HashMap<Uuid, Arc<Addon<Dependency>>>,
+}
+
+impl AddonsState {
+    fn contains(&self, id: Uuid) -> bool {
+        self.components.contains_key(&id) || self.dependencies.contains_key(&id)
+    }
 }
 
 impl Addons {
@@ -159,124 +162,6 @@ impl Addons {
         })
     }
 
-    /// Withdraws a component's release directory, then cleans it up best effort.
-    /// Built Virgo artifacts and environment selections remain unchanged.
-    pub async fn remove_component(&self, id: Uuid) -> Result<()> {
-        fs::with_temp_dir(&self.0.directories.trash(), |trash| async move {
-            let _write = self.0.write.lock().await;
-            let mut next = self.state().as_ref().clone();
-            let release = next
-                .components
-                .remove(&id)
-                .ok_or(AddonError::NotFound(id))?;
-            async_fs::rename(
-                release.directory(&self.0.directories),
-                trash.join("release"),
-            )
-            .await?;
-            self.publish(next);
-            Ok(())
-        })
-        .await
-    }
-
-    /// Withdraws a dependency's release directory, then cleans it up best effort.
-    /// Built Virgo artifacts and environment selections remain unchanged.
-    pub async fn remove_dependency(&self, id: Uuid) -> Result<()> {
-        fs::with_temp_dir(&self.0.directories.trash(), |trash| async move {
-            let _write = self.0.write.lock().await;
-            let mut next = self.state().as_ref().clone();
-            let release = next
-                .dependencies
-                .remove(&id)
-                .ok_or(AddonError::NotFound(id))?;
-            async_fs::rename(
-                release.directory(&self.0.directories),
-                trash.join("release"),
-            )
-            .await?;
-            self.publish(next);
-            Ok(())
-        })
-        .await
-    }
-
-    async fn commit_component(
-        &self,
-        record: Arc<Addon<Component>>,
-        prepared: &Path,
-        cancellation: &CancellationToken,
-    ) -> Result<Arc<Addon<Component>>> {
-        let id = record.id();
-        let destination = record.directory(&self.0.directories);
-        let _write = cancellation
-            .run_until_cancelled(self.0.write.lock())
-            .await
-            .ok_or(Error::Cancelled)?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        let mut next = self.state().as_ref().clone();
-        if let Some(current) = next.components.get(&id) {
-            if current != &record {
-                return Err(AddonError::InvalidRelease(destination).into());
-            }
-            return Ok(current.clone());
-        }
-        if next.contains(id) {
-            return Err(AddonError::Duplicate(id).into());
-        }
-        if crate::utils::fs::exists(&destination).await? {
-            return Err(AddonError::TargetExists(destination).into());
-        }
-        next_config::save(prepared.join("release.toml"), record.as_ref()).await?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        async_fs::rename(prepared, destination).await?;
-        next.components.insert(id, record.clone());
-        self.publish(next);
-        Ok(record)
-    }
-
-    async fn commit_dependency(
-        &self,
-        record: Arc<Addon<Dependency>>,
-        prepared: &Path,
-        cancellation: &CancellationToken,
-    ) -> Result<Arc<Addon<Dependency>>> {
-        let id = record.id();
-        let destination = record.directory(&self.0.directories);
-        let _write = cancellation
-            .run_until_cancelled(self.0.write.lock())
-            .await
-            .ok_or(Error::Cancelled)?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        let mut next = self.state().as_ref().clone();
-        if let Some(current) = next.dependencies.get(&id) {
-            if current != &record {
-                return Err(AddonError::InvalidRelease(destination).into());
-            }
-            return Ok(current.clone());
-        }
-        if next.contains(id) {
-            return Err(AddonError::Duplicate(id).into());
-        }
-        if crate::utils::fs::exists(&destination).await? {
-            return Err(AddonError::TargetExists(destination).into());
-        }
-        next_config::save(prepared.join("release.toml"), record.as_ref()).await?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        async_fs::rename(prepared, destination).await?;
-        next.dependencies.insert(id, record.clone());
-        self.publish(next);
-        Ok(record)
-    }
-
     fn state(&self) -> Arc<AddonsState> {
         self.0.published.borrow().clone()
     }
@@ -284,159 +169,5 @@ impl Addons {
     /// Publishes the already committed local snapshot without filesystem discovery.
     fn publish(&self, state: AddonsState) {
         self.0.published.send_replace(Arc::new(state));
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct AddonsState {
-    component_catalog: Option<Arc<Catalog<Component>>>,
-    dependency_catalog: Option<Arc<Catalog<Dependency>>>,
-    components: HashMap<Uuid, Arc<Addon<Component>>>,
-    dependencies: HashMap<Uuid, Arc<Addon<Dependency>>>,
-}
-impl AddonsState {
-    async fn load_cached(directories: &Directories) -> Result<Self> {
-        let mut state = Self {
-            component_catalog: Catalog::<Component>::load(directories).await?,
-            dependency_catalog: Catalog::<Dependency>::load(directories).await?,
-            ..Self::default()
-        };
-        for (id, path) in release_manifests(&directories.component_releases()).await? {
-            let record: Addon<Component> = next_config::load(&path).await?;
-            if record.id() != id {
-                return Err(AddonError::InvalidRelease(path).into());
-            }
-            if state.contains(id) {
-                return Err(AddonError::Duplicate(id).into());
-            }
-            state.components.insert(id, Arc::new(record));
-        }
-        for (id, path) in release_manifests(&directories.dependency_releases()).await? {
-            let record: Addon<Dependency> = next_config::load(&path).await?;
-            if record.id() != id {
-                return Err(AddonError::InvalidRelease(path).into());
-            }
-            if state.contains(id) {
-                return Err(AddonError::Duplicate(id).into());
-            }
-            state.dependencies.insert(id, Arc::new(record));
-        }
-        Ok(state)
-    }
-
-    fn contains(&self, id: Uuid) -> bool {
-        self.components.contains_key(&id) || self.dependencies.contains_key(&id)
-    }
-}
-
-// Component archives have one top-level directory, which becomes the payload.
-async fn prepare_component_archive(
-    archive: &Path,
-    stage: &Path,
-    cancellation: &CancellationToken,
-) -> Result<PathBuf> {
-    let extracted = stage.join("extracted");
-    async_fs::create_dir(&extracted).await?;
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancelled);
-    }
-    crate::utils::fs::archive::extract(archive, &extracted).await?;
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancelled);
-    }
-    let mut entries = async_fs::read_dir(&extracted).await?;
-    let Some(entry) = entries.try_next().await? else {
-        return Err(AddonError::InvalidComponentArchive.into());
-    };
-    if entries.try_next().await?.is_some() || !entry.file_type().await?.is_dir() {
-        return Err(AddonError::InvalidComponentArchive.into());
-    }
-    let source = entry.path();
-    check_component_links(&source, cancellation).await?;
-    let prepared = stage.join("release");
-    async_fs::create_dir(&prepared).await?;
-    async_fs::rename(source, prepared.join("payload")).await?;
-    Ok(prepared)
-}
-
-// Component links must stay inside the component tree after it leaves staging.
-async fn check_component_links(root: &Path, cancellation: &CancellationToken) -> Result<()> {
-    let root = async_fs::canonicalize(root).await?;
-    let mut pending = vec![root.clone()];
-    while let Some(directory) = pending.pop() {
-        let mut entries = async_fs::read_dir(directory).await?;
-        while let Some(entry) = entries.try_next().await? {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            let path = entry.path();
-            let kind = entry.file_type().await?;
-            if kind.is_dir() {
-                pending.push(path);
-            } else if kind.is_symlink() {
-                let target = async_fs::read_link(&path).await?;
-                crate::utils::fs::archive::safe_symlink_target(
-                    path.strip_prefix(&root).unwrap(),
-                    target,
-                )?;
-                if !async_fs::canonicalize(&path).await?.starts_with(&root) {
-                    return Err(AddonError::InvalidComponent(path).into());
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn release_manifests(root: &Path) -> Result<Vec<(Uuid, PathBuf)>> {
-    let mut manifests = Vec::new();
-    let mut entries = async_fs::read_dir(root).await?;
-    while let Some(entry) = entries.try_next().await? {
-        if !entry.file_type().await?.is_dir() {
-            continue;
-        }
-        if let Ok(id) = Uuid::parse_str(&entry.file_name().to_string_lossy()) {
-            manifests.push((id, entry.path().join("release.toml")));
-        }
-    }
-    Ok(manifests)
-}
-
-/// Drives a download, translating its latest byte counts and cancellation result.
-async fn download(
-    downloader: &DownloadManager,
-    url: Url,
-    destination: &Path,
-    cancellation: &CancellationToken,
-    mut on_progress: impl FnMut(Transfer),
-) -> Result<()> {
-    let download = downloader.download(url, destination)?;
-    let mut updates = Box::pin(
-        download
-            .progress()
-            .chain(futures_util::stream::pending::<DownloadProgress>()),
-    );
-    let result = download.clone().fuse();
-    let cancelled = cancellation.cancelled().fuse();
-    futures_util::pin_mut!(result, cancelled);
-
-    loop {
-        futures_util::select_biased! {
-            result = result => {
-                result?;
-                return Ok(());
-            },
-            _ = cancelled => {
-                download.cancel().await?;
-                return Err(Error::Cancelled);
-            }
-            update = updates.next().fuse() => {
-                let update = update.expect("progress stream is chained with pending");
-                on_progress(Transfer {
-                    current: update.bytes_downloaded(),
-                    total: update.total_bytes(),
-                });
-            }
-        }
     }
 }

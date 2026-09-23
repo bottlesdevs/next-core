@@ -16,7 +16,7 @@ use super::super::{
     CatalogError, Component, Dependency,
     catalog::{AddonFamily, Catalog},
 };
-use super::{Addons, download};
+use super::{Addons, download::download};
 
 impl Addons {
     /// Refreshes the two configured catalogs independently.

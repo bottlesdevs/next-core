@@ -16,11 +16,11 @@
 
 mod addon;
 mod catalog;
+mod defaults;
 mod error;
 mod installer;
 mod manager;
 mod recipe;
-mod recipes;
 
 pub use addon::{Addon, Component, Dependency, Requirement, Slot};
 pub(crate) use catalog::AddonFamily;
