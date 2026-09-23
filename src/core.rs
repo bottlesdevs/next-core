@@ -1,3 +1,9 @@
+//! Initialization and shared services for a Bottles application.
+//!
+//! [`Bottles`] is the root object for this crate. It loads persisted state and
+//! plugins once, then provides borrowed access to the managers that share that
+//! state.
+
 #[cfg(feature = "fvs")]
 use crate::{Program, environment::VirgoManager};
 
@@ -11,14 +17,50 @@ use url::Url;
 
 use crate::{Addons, Bottle, Context, Directories, Library, Manager, Profiles, error::Result};
 
+/// Startup options for [`Bottles::open`].
+///
+/// Leaving a catalog URL unset keeps that catalog local-only. With the `fvs`
+/// feature enabled, an unset daemon path uses `fvs2d` from `PATH`.
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::Config;
+///
+/// let config = Config::default();
+/// assert!(config.component_catalog.is_none());
+/// assert!(config.dependency_catalog.is_none());
+/// ```
 #[derive(Clone, Debug, Default)]
 pub struct Config {
+    /// Explicit path to the `fvs2d` executable, or `None` to search `PATH`.
     #[cfg(feature = "fvs")]
     pub fvs2d: Option<PathBuf>,
+    /// Remote component catalog used by [`Addons::refresh`](crate::Addons::refresh).
     pub component_catalog: Option<Url>,
+    /// Remote dependency catalog used by [`Addons::refresh`](crate::Addons::refresh).
     pub dependency_catalog: Option<Url>,
 }
 
+/// Owns the services and persisted collections used by Bottles Next.
+///
+/// Create one instance with [`Bottles::open`], borrow its managers for the
+/// lifetime of the application, then call [`Bottles::shutdown`] after all
+/// outstanding [`Operation`](crate::Operation) values have completed.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use std::sync::Arc;
+/// # use bottles_core::{Bottles, Config};
+/// # use bottles_plugin_host::Plugins;
+/// # async fn example(plugins: Arc<Plugins>) -> Result<(), bottles_core::error::Error> {
+/// let core = Bottles::open(Config::default(), plugins).await?;
+/// println!("{} bottles", core.bottles().list().len());
+/// core.shutdown().await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct Bottles {
     context: Context,
     bottles: Manager<Bottle>,
@@ -29,9 +71,32 @@ pub struct Bottles {
 }
 
 impl Bottles {
-    /// Open core services and local state. With FVS enabled, connect to or start its
-    /// daemon before opening owner registries; connection failures abort startup.
-    /// Installed library providers are loaded and registered; loading failures are returned.
+    /// Opens the application core and loads persisted state.
+    ///
+    /// This discovers application directories, loads profiles and environment
+    /// registries, initializes addon catalogs, and registers native and plugin
+    /// library providers. With the `fvs` feature, it also connects to or starts
+    /// `fvs2d` before loading Virgo-backed environments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if application directories are unavailable, persisted
+    /// configuration cannot be read, a required service cannot start, an FVS
+    /// connection fails, or an exported plugin provider cannot be loaded.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use bottles_core::{Bottles, Config};
+    /// # use bottles_plugin_host::Plugins;
+    /// # async fn example(plugins: Arc<Plugins>) -> Result<(), bottles_core::error::Error> {
+    /// let core = Bottles::open(Config::default(), plugins).await?;
+    /// assert!(!core.profiles().selected().name().is_empty());
+    /// core.shutdown().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn open(config: Config, plugins: Arc<Plugins>) -> Result<Self> {
         let Config {
             #[cfg(feature = "fvs")]
@@ -93,44 +158,131 @@ impl Bottles {
         })
     }
 
-    /// Gracefully stops background services.
+    /// Stops the background download service.
     ///
     /// Stop submitting work and finish or cooperatively cancel and await outstanding
     /// operations before shutdown. Their execution belongs to the caller.
     /// Calling this method more than once is safe.
+    ///
+    /// # Errors
+    ///
+    /// This implementation currently always succeeds; the [`Result`](crate::error::Result)
+    /// return type allows shutdown failures to be added without changing the API.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use bottles_core::Bottles;
+    /// # async fn example(core: &Bottles) -> Result<(), bottles_core::error::Error> {
+    /// core.shutdown().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn shutdown(&self) -> Result<()> {
         self.context.downloader().shutdown().await;
         Ok(())
     }
 
+    /// Returns the manager for persisted [`Bottle`] environments.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::Bottles;
+    /// # fn example(core: &Bottles) {
+    /// let known_bottles = core.bottles().list();
+    /// # let _ = known_bottles;
+    /// # }
+    /// ```
     pub fn bottles(&self) -> &Manager<Bottle> {
         &self.bottles
     }
 
     #[cfg(feature = "fvs")]
+    /// Returns the manager for standalone Virgo [`Program`] environments.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::Bottles;
+    /// # fn example(core: &Bottles) {
+    /// let known_programs = core.programs().list();
+    /// # let _ = known_programs;
+    /// # }
+    /// ```
     pub fn programs(&self) -> &Manager<Program> {
         &self.programs
     }
 
+    /// Returns the resolved application directories.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::Bottles;
+    /// # fn example(core: &Bottles) {
+    /// println!("{}", core.directories().data_dir().display());
+    /// # }
+    /// ```
     pub fn directories(&self) -> &Directories {
         self.context.directories()
     }
 
+    /// Returns the shared addon catalog and installation manager.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::Bottles;
+    /// # fn example(core: &Bottles) {
+    /// println!("{} components", core.addons().components().len());
+    /// # }
+    /// ```
     pub fn addons(&self) -> &Addons {
         self.context.addons()
     }
 
-    /// Returns installed, launchable programs.
+    /// Returns the registry of installed, launchable library providers.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::Bottles;
+    /// # async fn example(core: &Bottles) -> Result<(), bottles_core::error::Error> {
+    /// let entries = core.library().list().await?;
+    /// # let _ = entries;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn library(&self) -> &Library {
         &self.library
     }
 
     /// Returns the persisted application profiles.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::Bottles;
+    /// # fn example(core: &Bottles) {
+    /// println!("{}", core.profiles().selected().name());
+    /// # }
+    /// ```
     pub fn profiles(&self) -> &Profiles {
         &self.profiles
     }
 
     /// Returns the HTTP transport shared by core services.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::Bottles;
+    /// # fn example(core: &Bottles) {
+    /// let client = core.http_client().clone();
+    /// # let _ = client;
+    /// # }
+    /// ```
     pub fn http_client(&self) -> &Arc<dyn HttpClient> {
         self.context.http_client()
     }

@@ -1,4 +1,7 @@
-//! Shared services and addon ownership for one core instance.
+//! Shared service ownership for one core instance.
+//!
+//! [`Context`] keeps service lifetimes aligned and lets managers cheaply clone
+//! access to directories, HTTP transport, downloads, addons, and optional FVS.
 
 use crate::{Addons, Directories, error::Result};
 use download_manager::manager::{DownloadManager, DownloadManagerConfig};
@@ -17,10 +20,17 @@ struct ContextInner {
     fvs: Arc<Fvs2dClient>,
 }
 
+/// Reference-counted services shared across core managers.
 #[derive(Clone)]
 pub(crate) struct Context(Arc<ContextInner>);
 
 impl Context {
+    /// Constructs shared services and loads addon catalogs.
+    ///
+    /// # Errors
+    ///
+    /// Returns download-manager initialization errors or errors encountered
+    /// while loading the addon catalogs.
     pub(crate) async fn new(
         directories: Directories,
         http_client: Arc<dyn HttpClient>,
@@ -50,6 +60,7 @@ impl Context {
     }
 
     #[cfg(test)]
+    /// Constructs a context backed by a successful empty HTTP mock.
     pub(crate) async fn for_test(directories: Directories) -> Result<Self> {
         let client = Arc::new(http_client::MockClient::new(|_| {
             Ok(http::Response::new(http_client::body([])))
@@ -80,24 +91,28 @@ impl Context {
         .await
     }
 
-    /// The addon manager shared by discovery and execution workflows.
+    /// Returns the addon manager shared by discovery and execution workflows.
     pub(crate) fn addons(&self) -> &Addons {
         &self.0.addons
     }
 
+    /// Returns the resolved application directories.
     pub(crate) fn directories(&self) -> &Directories {
         &self.0.directories
     }
 
+    /// Returns the shared download manager.
     pub(crate) fn downloader(&self) -> &DownloadManager {
         &self.0.downloader
     }
 
+    /// Returns the shared HTTP transport.
     pub(crate) fn http_client(&self) -> &Arc<dyn HttpClient> {
         &self.0.http_client
     }
 
     #[cfg(feature = "fvs")]
+    /// Returns the shared FVS client.
     pub(crate) fn fvs(&self) -> &Arc<Fvs2dClient> {
         &self.0.fvs
     }

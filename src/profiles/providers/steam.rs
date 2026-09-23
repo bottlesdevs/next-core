@@ -1,4 +1,7 @@
-//! Native Steam account discovery during explicit account linking.
+//! Built-in Steam account discovery.
+//!
+//! Linking reads Steam's local `loginusers.vdf` and selects the entry marked
+//! `MostRecent`. It never changes Steam's active user and stores no credential.
 
 use async_trait::async_trait;
 use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
@@ -7,6 +10,7 @@ use bottles_plugin_host::AccountIdentity;
 
 use super::{AccountLinkInteraction, AccountProvider, AccountProviderInfo, LinkedAccount};
 
+/// Returns the native Steam provider's stable metadata.
 pub(super) fn metadata() -> AccountProviderInfo {
     AccountProviderInfo {
         id: "steam".into(),
@@ -24,6 +28,7 @@ const LOGINUSERS_PATHS: &[&str] = &[
     ".var/app/com.valvesoftware.Steam/.local/share/Steam/config/loginusers.vdf",
 ];
 
+/// Native provider that links Steam's most recently used local account.
 pub(super) struct Steam;
 
 #[async_trait]
@@ -47,7 +52,7 @@ impl AccountProvider for Steam {
     }
 }
 
-/// Read Steam's most recent local account without observing or selecting profiles.
+/// Reads Steam's most recent local account without changing Steam state.
 async fn active_account() -> io::Result<Option<AccountIdentity>> {
     let Some(path) = loginusers_path() else {
         return Ok(None);

@@ -1,8 +1,8 @@
-//! Direct Wine command lowering.
+//! Lowers commands through a direct Wine installation.
 //!
-//! Windows commands run through the configured Wine executable with `WINEPREFIX`
-//! set to the bottle prefix and `WINEARCH=win64`. Server control bypasses Wine
-//! and uses the sibling `wineserver` executable with the same environment.
+//! Guest commands run through the configured executable with `WINEPREFIX` set
+//! to the target prefix and `WINEARCH=win64`. Server control uses the sibling
+//! `wineserver` executable with the same environment.
 
 use super::{Runner, RunnerCommand, RunnerError};
 use crate::command::{Command, Spawnable, Wrapper};
@@ -10,12 +10,14 @@ use crate::error::Result;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 
+/// Stores the direct Wine executable used for command lowering.
 #[derive(Debug)]
 pub(crate) struct Wine {
     executable: PathBuf,
 }
 
 impl Wine {
+    /// Creates a runner without validating the executable path.
     pub fn new(executable: impl AsRef<Path>) -> Self {
         Self {
             executable: executable.as_ref().to_path_buf(),

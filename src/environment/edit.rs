@@ -1,4 +1,8 @@
-//! Draft edits applied together by the owner's coordinated operation.
+//! Transactional edits to an environment configuration.
+//!
+//! An owner exposes [`Edit`] only inside its edit callback. Changes are made to
+//! a private draft, validated as a whole, applied to storage, persisted, and
+//! published only after the callback succeeds.
 
 use crate::{Addon, Component, Dependency, EnvVars, Slot, Wrappers, error::Result};
 
@@ -11,36 +15,51 @@ use crate::{
 };
 use std::sync::Arc;
 
-/// A draft available only during an owner's edit callback.
-/// Requirements are validated after the callback; identity and backend stay fixed.
+/// Provides mutable access to an environment's editable configuration.
+///
+/// Changes remain private until the owner operation completes. The environment
+/// identifier, owner data, and [`PrefixBackend`] cannot be changed through this API.
 pub struct Edit<'a, T> {
     pub(crate) draft: &'a mut State<T>,
 }
 
 impl<T> Edit<'_, T> {
-    /// Select a frozen component without changing other slots. The same UUID is a no-op.
+    /// Selects `component` for the slot declared by that component.
+    ///
+    /// Other slots are unchanged. Selecting the same addon identifier preserves
+    /// the frozen record already stored in the draft.
     pub fn set_component(&mut self, component: Addon<Component>) {
         self.draft.config.set_component(component);
     }
 
-    /// Remove a selected component. An absent slot returns an error; requirements
-    /// may be temporarily unsatisfied until the callback finishes.
+    /// Removes the component selected in `slot`.
+    ///
+    /// Requirement validation is deferred until the edit callback returns, so a
+    /// caller may remove and replace a required component in one edit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EnvironmentError::ComponentNotInstalled`] if `slot` is empty.
     pub fn remove_component(&mut self, slot: Slot) -> Result<()> {
         self.draft.config.remove_component(slot)
     }
 
-    /// Append a frozen dependency unless its UUID is already selected.
-    /// Dependencies cannot be removed or reordered.
+    /// Appends `dependency` in installation order if it is not already selected.
+    ///
+    /// Duplicate addon identifiers are ignored. Dependencies cannot be removed
+    /// or reordered through the edit API.
     pub fn add_dependency(&mut self, dependency: Addon<Dependency>) {
         self.draft.config.add_dependency(dependency);
     }
 
-    /// Environment overrides used on the next startup.
+    /// Returns owner-level environment variables used on the next startup.
+    ///
+    /// These values override variables contributed by components and dependencies.
     pub fn env_vars(&mut self) -> &mut EnvVars {
         &mut self.draft.config.env_vars
     }
 
-    /// Command wrappers used on the next startup.
+    /// Returns host command wrappers used on the next startup.
     pub fn wrappers(&mut self) -> &mut Wrappers {
         &mut self.draft.config.wrappers
     }
@@ -50,6 +69,17 @@ impl<T: BackendSource> Environment<T>
 where
     State<T>: next_config::Config + Clone + PartialEq + Send + Sync,
 {
+    /// Runs a coordinated edit and publishes it only after application succeeds.
+    ///
+    /// Software changes require a stopped environment. Standard prefixes are
+    /// changed in place; Virgo environments checkpoint and recover the owner if
+    /// workspace preparation or persistence fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the callback rejects the draft, validation fails,
+    /// the environment is running during a software change, cancellation arrives
+    /// before application is committed, or backend application/persistence fails.
     pub(crate) fn edit<R: Send + 'static>(
         self: &Arc<Self>,
         callback: impl FnOnce(&mut Edit<'_, T>) -> Result<R> + Send + 'static,

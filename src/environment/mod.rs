@@ -1,4 +1,10 @@
-//! Shared ownership, publication and persistence for environment-backed handles.
+//! Coordinates environment state, persistence, runtime control, and storage.
+//!
+//! Bottles and standalone programs share this internal owner implementation.
+//! Readers receive immutable [`State`] snapshots, while mutating operations are
+//! serialized by one control lock and publish a replacement snapshot only after
+//! their durable work succeeds. Deletion closes the publication stream without
+//! invalidating snapshots already held by callers.
 
 mod backend;
 mod edit;
@@ -31,16 +37,24 @@ use tokio_stream::{StreamExt, wrappers::WatchStream};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// Exposes the immutable prefix backend stored in owner-specific state.
 pub(crate) trait BackendSource {
+    /// Returns the storage backend selected when the owner was created.
     fn backend(&self) -> PrefixBackend;
 }
 
+/// Owns the coordinated state and filesystem root behind a public environment handle.
 pub(crate) struct Environment<T> {
+    /// Latest immutable snapshot, or `None` after deletion.
     pub(crate) published: watch::Sender<Option<Arc<State<T>>>>,
+    /// Serializes mutations and runtime lifecycle work.
     pub(crate) control: Mutex<()>,
+    /// UUID-named directory containing state and prefix storage.
     pub(crate) root: PathBuf,
+    /// Shared services and storage directories.
     pub(crate) context: Context,
     #[cfg(feature = "fvs")]
+    /// Shared artifact manager used by Virgo-backed owners.
     pub(crate) virgo: Arc<VirgoManager>,
 }
 
@@ -48,6 +62,12 @@ impl<T: BackendSource> Environment<T>
 where
     State<T>: Config + Clone + PartialEq + Send + Sync,
 {
+    /// Constructs an owner around already-loaded state without touching storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the configuration is invalid, `root` is not named by
+    /// a UUID, or that UUID differs from [`State::id`].
     pub(crate) fn from_state(
         state: State<T>,
         root: PathBuf,
@@ -83,7 +103,16 @@ where
         }))
     }
 
-    /// Creation is private until initialization and persistence both succeed.
+    /// Initializes storage and persists a new owner before returning it.
+    ///
+    /// The owner remains private until both backend initialization and saving
+    /// `state.toml` succeed. A failed final save moves the partially created root
+    /// to trash on a best-effort basis.
+    ///
+    /// # Errors
+    ///
+    /// Returns configuration, cancellation, runner, storage, backend, or
+    /// persistence errors encountered during initialization.
     pub(crate) async fn create(
         state: State<T>,
         root: PathBuf,
@@ -145,6 +174,11 @@ where
         Ok(environment)
     }
 
+    /// Returns the currently published state snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EnvironmentError::Deleted`] after deletion has been published.
     pub(crate) fn state(&self) -> Result<Arc<State<T>>> {
         self.published
             .borrow()
@@ -152,12 +186,14 @@ where
             .ok_or_else(|| EnvironmentError::Deleted.into())
     }
 
+    /// Streams the current state and later distinct publications until deletion.
     pub(crate) fn watch(&self) -> impl Stream<Item = Arc<State<T>>> + Send + 'static + use<T> {
         WatchStream::new(self.published.subscribe())
             .take_while(Option::is_some)
             .filter_map(|state| state)
     }
 
+    /// Publishes `state` when it differs from the current snapshot.
     pub(crate) fn publish(&self, state: State<T>) {
         let next = Arc::new(state);
         self.published.send_if_modified(|published| {
@@ -169,10 +205,21 @@ where
         });
     }
 
+    /// Atomically saves `state` as the owner's `state.toml`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or filesystem persistence fails.
     pub(crate) async fn save(&self, state: &State<T>) -> Result<()> {
         Ok(next_config::save(self.root.join("state.toml"), state).await?)
     }
 
+    /// Acquires mutation coordination unless cancellation wins the wait.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Cancelled`] if `cancellation` fires before or immediately
+    /// after the lock is acquired.
     pub(crate) async fn lock_control(
         &self,
         cancellation: &CancellationToken,
@@ -187,8 +234,15 @@ where
         Ok(guard)
     }
 
-    /// Stop and move the owner into global trash, then publish deletion.
-    /// Notify the manager synchronously before awaiting best-effort cleanup.
+    /// Stops the runtime, withdraws the root into trash, and publishes deletion.
+    ///
+    /// `on_deleted` runs synchronously after the durable rename and publication,
+    /// before best-effort removal of the trashed directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns cancellation, runtime shutdown, or filesystem errors that occur
+    /// before the root has been withdrawn. Cleanup errors after withdrawal are logged.
     pub(crate) async fn delete(
         &self,
         progress: &watch::Sender<Option<Progress>>,

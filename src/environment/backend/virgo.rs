@@ -1,4 +1,8 @@
-//! Virgo policy: select build inputs and translate frozen selections into ordered layers.
+//! Selects, builds, and orders immutable Virgo artifacts for an environment.
+//!
+//! The manager converts frozen addon selections into a base layer, a runner
+//! adapter, component layers, and dependency layers. Artifact construction is
+//! delegated to [`LayerStore`]; this module owns catalog lookup and build policy.
 
 use crate::{
     Addon, AddonError, Component, Context, EnvironmentConfig, EnvironmentError, Progress, Slot,
@@ -12,14 +16,15 @@ use std::{path::Path, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-/// Shared Virgo build and layer-selection policy for one core instance.
+/// Shares Virgo artifact policy and storage across one core instance.
 pub(crate) struct VirgoManager {
     cx: Context,
+    /// Shared immutable artifact store used by environment lifecycle operations.
     pub(in crate::environment) layers: LayerStore,
 }
 
 impl VirgoManager {
-    /// Construct without touching storage or starting FVS.
+    /// Creates a manager without touching storage or connecting to FVS.
     pub(crate) fn new(cx: Context) -> Self {
         Self {
             layers: LayerStore::new(cx.directories().clone(), cx.fvs().clone()),
@@ -27,9 +32,14 @@ impl VirgoManager {
         }
     }
 
-    /// Build from complete frozen selections before the owner publishes configuration.
-    /// Return the prepared layers for owner materialization. Cached effects remain
-    /// usable after shared source payloads are removed; launch only loads them.
+    /// Ensures every artifact needed by `config` exists and returns composition order.
+    ///
+    /// Cached artifacts remain usable after their source payloads are removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns cancellation, catalog, runner, installer, FVS, registry, or
+    /// filesystem errors encountered while resolving or building an artifact.
     pub(in crate::environment) async fn prepare_artifacts(
         &self,
         config: &EnvironmentConfig,
@@ -59,7 +69,15 @@ impl VirgoManager {
         Ok((base, overlays))
     }
 
-    /// Load the pinned base, runner adapter, components, then dependencies.
+    /// Loads the exact cached composition recorded by `config`.
+    ///
+    /// Layers are ordered as base, runner adapter, components in slot order, and
+    /// dependencies in installation order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::virgo::VirgoError::MissingArtifact`] for an absent cache
+    /// entry, or an error when a manifest is unreadable or invalid.
     pub(in crate::environment) async fn composition(
         &self,
         config: &EnvironmentConfig,
@@ -79,8 +97,15 @@ impl VirgoManager {
         Ok((base, overlays))
     }
 
-    /// Reuse the pinned base, or build from the greatest valid local Soda version.
-    /// UUID breaks version ties. Missing inputs fail without downloading or falling back.
+    /// Reuses the pinned base or builds it from the newest valid local Soda runner.
+    ///
+    /// Semantic version determines recency and UUID breaks version ties. Missing
+    /// inputs fail without downloading or selecting a different runner family.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EnvironmentError::SodaNotDownloaded`] when no eligible local
+    /// runner exists, plus cancellation, runner, FVS, registry, or filesystem errors.
     async fn prepare_base(&self, cancellation: &CancellationToken) -> Result<VirgoLayer> {
         let destination = Path::new("soda");
         self.layers
@@ -114,6 +139,12 @@ impl VirgoManager {
             .await
     }
 
+    /// Reuses or builds the selected runner's initialization delta over the base.
+    ///
+    /// # Errors
+    ///
+    /// Returns cancellation, runner loading, Wine initialization, FVS, registry,
+    /// filesystem, or publication errors.
     async fn prepare_adapter(
         &self,
         config: &EnvironmentConfig,
@@ -145,7 +176,12 @@ impl VirgoManager {
             .await
     }
 
-    /// Reuse cached effects or execute the selected frozen recipe in an isolated build.
+    /// Reuses cached addon effects or executes the frozen recipe in an isolated build.
+    ///
+    /// # Errors
+    ///
+    /// Returns errors for missing build inputs, cancellation, runner loading,
+    /// recipe execution, FVS, registry processing, filesystem work, or publication.
     async fn prepare_addon<K: AddonFamily>(
         &self,
         addon: &Addon<K>,
@@ -201,7 +237,7 @@ impl VirgoManager {
     }
 }
 
-/// Internal build policy only: version order followed by immutable UUID identity.
+/// Selects the greatest valid semantic version, using UUID as a stable tie-breaker.
 fn latest_component(
     addons: impl Iterator<Item = Arc<Addon<Component>>>,
 ) -> Option<Arc<Addon<Component>>> {

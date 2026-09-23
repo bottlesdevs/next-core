@@ -1,18 +1,14 @@
-//! Wine layer storage and registry mechanics, independent of owner and addon policy.
+//! Stores immutable Wine filesystem layers and their registry effects.
 //!
-//! One Virgo manager owns one store per artifact root. Context shares the FVS client
-//! initialized during core startup; this subsystem neither connects nor starts it.
-//! Relative artifact addresses and composition order come from prefix policy.
+//! [`LayerStore`] uses a shared FVS client supplied by the core. Artifact policy
+//! chooses relative cache keys and composition order elsewhere; this subsystem
+//! coordinates cache misses, isolated builds, publication, registry composition,
+//! workspace mounting, and explicit removal.
 //!
-//! Published filesystem revisions and registry artifacts are immutable. get_or_build
-//! holds coordination through input resolution, preparation, execution and finalization.
-//! Callers stop processes before passing the execution result to finish_build. Failed
-//! shutdown retains staging and any mount; dropping a workspace performs no cleanup.
-//!
-//! Composition preserves private registry changes but does not own checkpoints or
-//! recovery. Callers prepare stopped, unmounted workspaces before publication. Explicit
-//! deletion requires callers to know that an artifact is unmounted and no longer used;
-//! the store does not track owners or collect garbage.
+//! Published artifacts are immutable. Build staging and mounts are intentionally
+//! retained when cleanup has an uncertain outcome, allowing diagnosis instead of
+//! risking hidden data loss. The store does not track references or collect unused
+//! artifacts, so callers must prove an artifact is unmounted and unused before removal.
 
 mod build;
 mod cache;
@@ -26,8 +22,10 @@ use std::{path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+/// FVS repository block size used for Virgo artifacts and environment history.
 pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
+/// Coordinates immutable artifact storage and workspace mounts.
 pub(crate) struct LayerStore {
     directories: Directories,
     fvs: Arc<Fvs2dClient>,
@@ -35,7 +33,7 @@ pub(crate) struct LayerStore {
 }
 
 impl LayerStore {
-    /// Construct without storage work. The caller owns connection setup.
+    /// Creates a store without touching storage or connecting the FVS client.
     pub(crate) fn new(directories: Directories, fvs: Arc<Fvs2dClient>) -> Self {
         Self {
             directories,
@@ -44,30 +42,33 @@ impl LayerStore {
         }
     }
 
+    /// Allocates a collision-resistant path within the shared staging directory.
     fn staging_path(&self) -> PathBuf {
         self.directories.staging().join(Uuid::new_v4().to_string())
     }
 }
 
-/// Virgo-specific failures carried by [`crate::error::Error::Virgo`].
+/// Describes invalid artifacts and workspace lifecycle failures in Virgo storage.
 #[derive(Debug, thiserror::Error)]
 pub enum VirgoError {
-    /// Virgo cannot mount a prefix over a nonempty mountpoint.
+    /// Mounting would hide files already present at the prefix mountpoint.
     #[error("mountpoint is not empty: {0}")]
     DirtyMountpoint(std::path::PathBuf),
-    /// A selected artifact has not been built or has been removed.
+    /// A selected artifact is absent from the cache.
     #[error("missing Virgo artifact: {0}")]
     MissingArtifact(std::path::PathBuf),
-    /// A published artifact has an unsupported format or incomplete installed effects.
+    /// A published artifact has an invalid manifest or incomplete identity.
     #[error("invalid Virgo artifact: {0}")]
     InvalidArtifact(std::path::PathBuf),
-    /// Registry data could not be converted while building a Virgo layer.
+    /// Registry parsing, diffing, or patch application failed.
     #[error("failed to process Virgo registry data: {0}")]
     Registry(String),
-    /// Storage is retained when its mount cannot be released.
+    /// A mount could not be released, so its workspace was retained.
     #[error("could not unmount {path}; workspace retained: {source}")]
     Unmount {
+        /// Workspace path retained for recovery or diagnosis.
         path: PathBuf,
+        /// Error returned by FVS while unmounting.
         #[source]
         source: fvs_rs::error::Error,
     },

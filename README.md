@@ -1,171 +1,94 @@
 # bottles-core
 
-The application core for managing Bottles Next Wine and Proton environments.
+`bottles-core` is the application library behind Bottles Next. It manages Wine
+and Proton environments, installable runtime components, saved Windows launch
+definitions, user profiles, and launchable library entries.
 
-`bottles-core` imports and installs managed components, persists bottles,
-executes Windows programs through WineBridge, and provides Virgo storage and
-snapshots through the default `fvs` feature. With this feature enabled,
-`Bottles::open` connects to or starts FVS once and fails if initialization fails.
-`Config::fvs2d` supplies an executable path; when omitted, `fvs2d` is found through
-PATH. The socket remains in the configured runtime directory.
+The main entry point is [`Bottles`]. Opening it discovers persisted bottles,
+loads configured plugins, and exposes the managers used by the rest of the
+application. Long-running changes return an [`Operation`]: a lazy future with
+progress reporting and cooperative cancellation.
 
-Disable FVS when only conventional, directly mutable prefixes are needed:
+## Quick start
+
+Launch settings can be built without opening local services:
+
+```rust
+use bottles_core::ProgramSpec;
+
+let program = ProgramSpec::new("Notepad", r"C:\windows\notepad.exe")
+    .with_args([r"C:\notes.txt"])
+    .with_new_console(true);
+
+assert_eq!(program.name(), "Notepad");
+assert_eq!(program.args(), &[r"C:\notes.txt"]);
+assert!(program.new_console());
+```
+
+A complete application opens the core once, keeps it alive while managers and
+operations are in use, and shuts down its background download service before
+exiting:
+
+```rust,no_run
+use std::sync::Arc;
+
+use bottles_core::{Bottles, Config};
+use bottles_plugin_host::Plugins;
+
+# async fn run(plugins: Arc<Plugins>) -> Result<(), bottles_core::error::Error> {
+let core = Bottles::open(Config::default(), plugins).await?;
+
+for bottle in core.bottles().list() {
+    println!("{}", bottle.state()?.name());
+}
+
+core.shutdown().await?;
+# Ok(())
+# }
+```
+
+## Core concepts
+
+- [`Bottles`] owns the shared services and top-level managers.
+- [`Manager`] provides the current collection of [`Bottle`] handles and, with
+  the `fvs` feature, standalone `Program` handles.
+- [`State`] values are immutable snapshots. Handle watchers publish later
+  snapshots without mutating earlier ones.
+- [`Edit`] collects a draft configuration change and publishes it only after
+  validation and persistence succeed.
+- [`Addons`] lists, downloads, imports, and removes Wine runners and other
+  managed components.
+- [`Library`] combines launchable entries from bottles, standalone programs,
+  and plugins.
+- [`Profiles`] stores application profiles and their linked external accounts.
+
+## Operations and cancellation
+
+An [`Operation`] does not start until it is polled. Await it directly, spawn it
+on an executor, or call [`Operation::cancel`] and await the result. Dropping an
+operation merely stops polling it; it does not guarantee cleanup or cancellation.
+Progress is advisory and intermediate updates may be coalesced.
+
+## Features
+
+- `fvs` (enabled by default) adds Virgo layered-prefix storage, environment
+  history and rollback, and standalone `Program` environments. It also starts
+  or connects to an `fvs2d` process during [`Bottles::open`].
+
+Disable default features when an application only needs conventional mutable
+Wine prefixes:
 
 ```toml
 [dependencies]
 bottles-core = { version = "0.1", default-features = false }
 ```
 
-Without `fvs`, snapshot APIs, Virgo storage, and standalone programs are not
-compiled. Standard addon changes always use direct writes; failed or cancelled
-recipes can leave partial prefix changes. A software edit shares one maintenance
-session across its removals and installations, stopping once afterward even on
-failure or cancellation. Payloads are accessed as steps run, so missing or invalid
-inputs can fail after earlier steps have changed the prefix.
-Runtime-only selection changes do not start that session.
+## Minimum supported Rust version
 
-[Source] | [Issue tracker]
-
-## Overview
-
-The crate is centered around six types:
-
-- `Bottles` owns the download service and provides addon, bottle, and standalone
-  program managers.
-- `Addons` publishes live collections of runners and installable addons. Item
-  values are snapshots; query the manager again after a publication.
-- `Manager<Bottle>` and `Manager<Program>` manage their respective collections by
-  UUID. Each returned handle exposes its current immutable state for reading or
-  watching. Manager clones share membership and watch both membership and state
-  changes.
-- `Library` asynchronously lists launchable entries from registered `LibraryProvider`
-  implementations and provides launch handles. Call `list()` again to refresh.
-- `Profiles` persists named application identities and the current selection,
-  discovers account providers, and owns account linking and credential persistence.
-- `Operation<T>` represents long-running work with progress and cooperative
-  cancellation.
-
-Execution settings live in `BottleState::config()` as an `EnvironmentConfig`.
-Use `Bottle::edit` or `Program::edit` to change metadata, startup settings, and
-software selections in one draft. `Edit::set_component`, `remove_component`, and
-`add_dependency` change only that draft; the final selection is validated and
-applied before saving and publishing once. Dependencies remain append-only.
-Software changes require a stopped owner. Metadata, environment variables, and
-wrappers can change while running; startup settings apply on the next launch.
-`Bottle::launch(group_id, ProgramSpec)` runs an unregistered program;
-`Bottle::launch_program(uuid)` runs a saved registration. Dropping a bottle handle
-leaves Wine running; call `stop()` to shut it down.
-
-Choose a prefix backend when creating a bottle. Standard installs directly into
-a conventional Wine prefix. Virgo is experimental: it combines shared immutable
-layers with each bottle's private writable data. Missing layers are prepared
-before publishing owner selections. Creation and software edits compose the
-owner's registry once for the final selection. Launch mounts that prepared
-storage without registry recomposition or an automatic history checkpoint.
-The initial base uses the greatest valid local Soda version and remains pinned.
-Cached artifacts can be reused without their shared source payloads.
-
-Fetch addons from the component and dependency catalogs, or use
-`Addons::import_component` to import a component archive. Local releases are
-identified by UUID. Removing a release deletes its installation inputs;
-runtime executables and new installations still require those files. Standard
-removal uses saved recipes and existing backups.
-
-Operations are lazy. Await them, call `cancel().await`, or spawn them and
-await the spawned task; dropping an operation abandons it. Account operations
-finish entered credential writes during cooperative cancellation. Core does not
-track these tasks or schedule automatic refreshes.
-
-## Internal Wine layer storage
-
-`Context` owns the ready `Arc<Fvs2dClient>`. The shared `VirgoManager` owns a
-`LayerStore` with `Directories`, a clone of that client, and one construction
-and publication lock. The store has no Context, addon, runner, or owner knowledge.
-Virgo policy chooses Soda and build-time WineBridge, supplies relative addresses
-and layer order, and executes recipes through the existing runners.
-
-The store owns cache lookup, staging, filesystem and registry capture, immutable
-publication, composition, and workspace mounts. Bases retain their initial hives;
-overlays store registry patches separately from filesystem effects. Composition
-uses the supplied overlay order, then replays private registry changes.
-Artifact paths and manifest version 1 are unchanged. Virgo edits release stopped
-owner storage before checkpointing, then compose registry changes and save the
-draft together. Composition or save failures restore the checkpoint before
-returning; nothing is published on failure. Shared builds retain their separate
-scratch prefixes and shutdowns. Owner edits need no Wine startup or mount.
-
-Virgo owner directories and snapshots created under the earlier launch-time
-composition lifecycle must be recreated. Schemas remain at version 1; there is
-no migration, launch fallback, or automatic deletion. Existing shared layers
-remain reusable.
-
-`get_or_build` holds coordination through the complete cache-miss workflow.
-Policy resolves inputs, prepares storage, executes work, and stops Wine before
-passing the execution result to finalization. Finalization publishes successful
-work or cleans up failed work. Failed shutdown, mount creation, or unmount retains
-staging; dropping a workspace never performs asynchronous cleanup. Environment
-owns edit checkpoints, discovery cleanup and configuration publication.
-Snapshots include the prepared registry baseline, private data and saved
-selections; restoration does not rebuild shared layers.
-
-Internal listing reads immediate artifacts in a supplied collection. Removal
-withdraws an explicit address into trash under the publication lock before
-best-effort cleanup. Its caller must ensure the artifact is unmounted and no
-longer needed. There is no owner tracking, garbage collection, or public layer API.
-
-## Example
-
-Add `bottles-core` and an async runtime to your application:
-
-```toml
-[dependencies]
-bottles-core = "0.1"
-bottles-plugin-host = "0.1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-futures-lite = "2"
-```
-
-Open the library, inspect the current bottles, and stop its download service:
-
-```rust
-use bottles_core::{Bottles, Config, Directories, ProgramSpec};
-
-#[tokio::main]
-async fn main() -> Result<(), bottles_core::error::Error> {
-    let directories = Directories::new().await?;
-    let plugins = bottles_plugin_host::Plugins::open(
-        directories.plugins(), directories.staging(),
-    ).await?;
-    let bottles = Bottles::open(Config::default(), plugins.clone()).await?;
-
-    println!("profile: {}", bottles.profiles().selected().name());
-
-    for bottle in bottles.bottles().list() {
-        let state = bottle.state()?;
-        println!("{}\t{}", state.id(), state.name());
-    }
-
-    if let Some(bottle) = bottles.bottles().list().into_iter().next() {
-        let program = ProgramSpec::new("Example", "C:/Games/example.exe");
-        let id = bottle.edit(move |edit| Ok(edit.add_program(program))).await?;
-        println!("registered {id}");
-    }
-
-    let installed = bottles.library().list().await?;
-    println!("{} installed programs", installed.len());
-
-    bottles.shutdown().await
-}
-```
-
-## Getting help
-
-Build the API documentation locally with `cargo doc -p bottles-core --open`.
-Report bugs through the [issue tracker].
+This crate does not currently declare an MSRV. Use the current stable Rust
+toolchain; future releases may adopt an explicit policy.
 
 ## License
 
-Licensed under the [GNU General Public License, version 3](LICENSE).
-
-[Source]: https://github.com/bottlesdevs/next-core
-[Issue tracker]: https://github.com/bottlesdevs/next-core/issues
+Licensed under the GNU General Public License, version 3. See `LICENSE` in the
+source distribution.

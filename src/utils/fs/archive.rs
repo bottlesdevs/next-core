@@ -1,3 +1,9 @@
+//! Safe extraction and inspection of tar-based component archives.
+//!
+//! Extraction accepts uncompressed tar plus gzip- and xz-compressed tar files.
+//! Entry and symlink paths are checked lexically to prevent writes outside the
+//! destination tree.
+
 use std::{
     io,
     path::{Component, Path, PathBuf},
@@ -11,20 +17,39 @@ use futures_lite::{
 use smol_tar::{TarEntry, TarReader};
 use thiserror::Error;
 
+/// A tar archive could not be validated, read, or extracted.
 #[derive(Debug, Error)]
 pub enum ArchiveError {
+    /// An archive or destination filesystem operation failed.
     #[error(transparent)]
     Io(#[from] io::Error),
+    /// The archive file name could not be interpreted as UTF-8.
     #[error("archive name is not valid UTF-8: {0}")]
     InvalidName(PathBuf),
+    /// The file extension does not identify a supported tar format.
     #[error("unsupported archive: {0}")]
     Unsupported(PathBuf),
+    /// An entry or symlink target resolves outside the destination tree.
     #[error("archive entry escaped the staging directory: {0}")]
     EntryOutsideDestination(PathBuf),
+    /// The archive contains an entry type other than a file, directory, or symlink.
     #[error("unsupported archive entry: {0}")]
     UnsupportedEntry(PathBuf),
 }
 
+/// Extracts a supported tar archive into `destination`.
+///
+/// Existing files may be overwritten. Parent directories are created as
+/// needed, and archived Unix permission bits are restored after content is
+/// written.
+///
+/// # Errors
+///
+/// Returns [`ArchiveError::InvalidName`] for a non-UTF-8 file name,
+/// [`ArchiveError::Unsupported`] for an unrecognized extension,
+/// [`ArchiveError::EntryOutsideDestination`] for an escaping path,
+/// [`ArchiveError::UnsupportedEntry`] for an unsupported tar entry, or
+/// [`ArchiveError::Io`] for filesystem and decoding failures.
 pub(crate) async fn extract(archive: &Path, destination: &Path) -> Result<(), ArchiveError> {
     let name = archive
         .file_name()
@@ -42,6 +67,7 @@ pub(crate) async fn extract(archive: &Path, destination: &Path) -> Result<(), Ar
     }
 }
 
+/// Unpacks validated tar entries and restores directory modes after children.
 async fn unpack(
     reader: impl AsyncRead + Send + 'static,
     destination: &Path,
@@ -92,6 +118,7 @@ async fn unpack(
     Ok(())
 }
 
+/// Lexically normalizes a relative archive path and rejects escapes.
 fn safe_path(path: impl AsRef<Path>) -> Result<PathBuf, ArchiveError> {
     let path = path.as_ref();
     let mut result = PathBuf::new();
@@ -108,6 +135,15 @@ fn safe_path(path: impl AsRef<Path>) -> Result<PathBuf, ArchiveError> {
     Ok(result)
 }
 
+/// Verifies that a symlink target remains within the extraction root.
+///
+/// `link` is the symlink's destination-relative path; `target` is interpreted
+/// relative to its parent.
+///
+/// # Errors
+///
+/// Returns [`ArchiveError::EntryOutsideDestination`] if resolving `target`
+/// would leave the extraction root.
 pub(crate) fn safe_symlink_target(
     link: &Path,
     target: impl AsRef<Path>,
@@ -116,12 +152,19 @@ pub(crate) fn safe_symlink_target(
     Ok(())
 }
 
+/// Applies archived Unix permission bits to `path`.
 async fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     async_fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await
 }
 
+/// Recursively lists regular files below `root` in path order.
+///
+/// # Errors
+///
+/// Returns [`ArchiveError::UnsupportedEntry`] if a non-file, non-directory
+/// entry is encountered, or [`ArchiveError::Io`] when traversal fails.
 pub(crate) async fn files(root: &Path) -> Result<Vec<PathBuf>, ArchiveError> {
     let mut directories = vec![root.to_path_buf()];
     let mut files = Vec::new();

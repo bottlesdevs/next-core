@@ -1,3 +1,9 @@
+//! WineBridge discovery, process supervision, and gRPC requests.
+//!
+//! Environments use the internal client in this module to start or reconnect
+//! to one WineBridge server per Wine prefix. Public callers encounter failures
+//! through [`BridgeError`].
+
 use std::{
     io,
     path::{Path, PathBuf},
@@ -30,20 +36,37 @@ use crate::proto::{
     ServiceStartType, WinebootMode, registry_value::Value as RegistryValue,
 };
 
+/// Failures specific to starting or supervising WineBridge.
+///
+/// Protocol transport and status failures use the corresponding variants of
+/// [`crate::error::Error`].
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::error::BridgeError;
+///
+/// assert!(BridgeError::Timeout.to_string().contains("startup timeout"));
+/// ```
 #[derive(Error, Debug)]
 pub enum BridgeError {
+    /// The child process exited before the health service became ready.
     #[error(
         "The WineBridge process exited with status {0} before it reported readiness over gRPC."
     )]
     BridgeExited(ExitStatus),
+    /// Startup exceeded the WineBridge readiness deadline.
     #[error("WineBridge did not report readiness before the startup timeout elapsed.")]
     Timeout,
+    /// A discovery file exists, but its endpoint cannot be reached.
     #[error(
         "WineBridge discovery exists but the runtime is unreachable at {0}; call stop() and retry"
     )]
     Unavailable(PathBuf),
+    /// WineBridge did not terminate within the shutdown deadline.
     #[error("WineBridge did not stop before the shutdown timeout elapsed.")]
     ShutdownTimeout,
+    /// WineBridge returned a response that violated the expected protocol shape.
     #[error("WineBridge returned an invalid response: {0}")]
     InvalidResponse(&'static str),
 }

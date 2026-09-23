@@ -1,13 +1,15 @@
-//! Generic command wrappers and their composition.
+//! Type-safe composition of nested process wrappers.
 
 use super::{Command, Spawnable};
 
 pub(crate) trait Wrapper: Into<Command> + Sized {
+    /// Places `self` outside `inner` without spawning either command.
     fn wrap<I: Into<Command>>(self, inner: I) -> Wrapped<Self, I> {
         Wrapped { outer: self, inner }
     }
 }
 
+/// A wrapper command paired with the command it will launch.
 #[derive(Debug)]
 pub(crate) struct Wrapped<O: Wrapper, I: Into<Command>> {
     outer: O,

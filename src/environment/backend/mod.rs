@@ -1,5 +1,8 @@
-//! Backend configuration and policy for initialization and software materialization.
-//! Environment owns process coordination and storage release.
+//! Prefix storage strategies.
+//!
+//! [`PrefixBackend`] records whether an environment owns a conventional,
+//! directly modified Wine prefix or a Virgo workspace assembled from immutable
+//! layers. Runtime coordination remains the responsibility of the environment.
 
 pub(super) mod standard;
 #[cfg(feature = "fvs")]
@@ -7,14 +10,22 @@ pub(super) mod virgo;
 
 use serde::{Deserialize, Serialize};
 
-/// Selects how a runnable Wine prefix is created and maintained.
+/// Selects how an environment stores and materializes its Wine prefix.
+///
+/// This choice is persisted with the owner and cannot be changed by an edit.
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::PrefixBackend;
+///
+/// assert_eq!(PrefixBackend::Standard, PrefixBackend::Standard);
+/// ```
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Serialize)]
 pub enum PrefixBackend {
-    /// Initialize and mutate a conventional prefix directly.
-    /// Explicit snapshots may use FVS; ordinary mutations use direct writes.
+    /// Stores installed software and user data together in one mutable prefix.
     Standard,
-    /// Build immutable artifacts and compose them with a private writable upper.
-    /// Virgo is experimental and requires the configured FVS service.
+    /// Composes immutable FVS layers over a private writable upper directory.
     #[cfg(feature = "fvs")]
     Virgo,
 }

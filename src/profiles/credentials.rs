@@ -1,3 +1,8 @@
+//! Platform credential-store access for linked accounts.
+//!
+//! Each secret is stored under a UUID-derived account name within the Bottles
+//! service namespace. Blocking keyring calls run off the async executor.
+
 use keyring::Entry;
 use uuid::Uuid;
 
@@ -28,12 +33,23 @@ fn delete_entry(entry: &Entry) -> keyring::Result<()> {
     }
 }
 
+/// Stores or replaces the credential associated with `link_id`.
+///
+/// # Errors
+///
+/// Returns a keyring error if the platform credential entry cannot be opened
+/// or updated.
 pub(crate) async fn save(link_id: Uuid, secret: &[u8]) -> keyring::Result<()> {
     let account = account(link_id);
     let secret = secret.to_vec();
     blocking::unblock(move || save_entry(&entry(&account)?, &secret)).await
 }
 
+/// Deletes the credential associated with `link_id` if it exists.
+///
+/// # Errors
+///
+/// Returns a keyring error other than a missing entry.
 pub(crate) async fn delete(link_id: Uuid) -> keyring::Result<()> {
     let account = account(link_id);
     blocking::unblock(move || delete_entry(&entry(&account)?)).await

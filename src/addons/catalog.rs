@@ -1,4 +1,12 @@
-//! Remote component and dependency catalogs and their validation rules.
+//! Cached remote catalogs and platform-specific release artifacts.
+//!
+//! Catalogs advertise releases without installing them. A [`CatalogEntry`]
+//! becomes an [`Addon`](super::Addon) only after the manager downloads and
+//! verifies the artifact selected for the current [`Target`].
+//!
+//! Artifact file names and recipe paths are not containment-checked before they
+//! are joined to managed roots. Catalog documents must therefore come from a
+//! trusted source.
 
 use futures_lite::io::AsyncReadExt;
 use sha2::{Digest, Sha256, Sha512};
@@ -21,18 +29,24 @@ const CATALOG_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "algorithm", content = "value", rename_all = "kebab-case")]
-/// Expected digest used to verify a downloaded catalog artifact.
+/// Stores the expected digest for a downloadable artifact.
 ///
-/// Values are stored without validating their length or encoding. Verification
-/// compares them exactly and case-sensitively with a lowercase hexadecimal digest.
+/// Digest strings are accepted as catalog data without normalization. Verification
+/// therefore requires an exact, case-sensitive match with the lowercase hexadecimal
+/// digest produced for the downloaded file.
 pub(crate) enum Checksum {
-    /// Uses the `sha256` wire discriminator.
+    /// Verifies the artifact with SHA-256.
     Sha256(String),
-    /// Uses the `sha512` wire discriminator.
+    /// Verifies the artifact with SHA-512.
     Sha512(String),
 }
 
 impl Checksum {
+    /// Computes the selected digest for `path` and compares it with the catalog value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened or read.
     pub(crate) async fn verify(&self, path: &Path) -> io::Result<bool> {
         let mut file = async_fs::File::open(path).await?;
         let mut buffer = [0; 64 * 1024];
@@ -55,7 +69,7 @@ impl Checksum {
         Ok(actual == self.value())
     }
 
-    /// Exposes the unnormalized string used for exact checksum verification.
+    /// Returns the catalog value used for exact digest comparison.
     pub(crate) fn value(&self) -> &str {
         match self {
             Self::Sha256(value) | Self::Sha512(value) => value,
@@ -65,10 +79,9 @@ impl Checksum {
 
 #[derive(Debug, Clone, Copy, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-/// Host operating-system and architecture pair used by catalog artifacts.
+/// Identifies an operating-system and architecture pair used by catalog artifacts.
 ///
-/// Matching is exact; the library does not infer compatibility between OS or
-/// architecture variants.
+/// Matching is exact; no compatibility is inferred between platform variants.
 pub(crate) struct Target {
     os: OperatingSystem,
     arch: Architecture,
@@ -79,7 +92,7 @@ impl Target {
         Self { os, arch }
     }
 
-    /// Maps the compile target into the subset represented by this type.
+    /// Returns the current build target when its OS and architecture are supported.
     pub(crate) fn current() -> Option<Self> {
         let os = if cfg!(target_os = "linux") {
             OperatingSystem::Linux
@@ -122,9 +135,10 @@ enum Architecture {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-/// One validated, cached catalog document.
+/// Contains the cached entries for one addon family.
 ///
-/// A missing cache is optional; read and parse failures are returned.
+/// Deserialization accepts only [`CATALOG_VERSION`], preventing a cache written
+/// with an incompatible schema from being used.
 pub(crate) struct Catalog<K> {
     #[serde(deserialize_with = "deserialize_catalog_version")]
     schema_version: u32,
@@ -132,7 +146,14 @@ pub(crate) struct Catalog<K> {
 }
 
 impl<K> Catalog<K> {
-    /// Loads the cached catalog, returning None only when the cache is absent.
+    /// Loads the cached catalog for `K`.
+    ///
+    /// Returns `None` only when the catalog file does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cache cannot be read or is not a valid catalog for
+    /// the current schema.
     pub(crate) async fn load(directories: &Directories) -> Result<Option<Arc<Self>>>
     where
         K: AddonFamily,
@@ -146,7 +167,11 @@ impl<K> Catalog<K> {
         Ok(Some(Arc::new(serde_json::from_slice(&bytes)?)))
     }
 
-    /// Replaces the cached catalog for this family.
+    /// Serializes this catalog over the cache for `K`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or writing the cache fails.
     pub(crate) async fn save(&self, directories: &Directories) -> Result<()>
     where
         K: AddonFamily,
@@ -156,30 +181,37 @@ impl<K> Catalog<K> {
         Ok(())
     }
 
+    /// Returns entries in their catalog-defined order.
     pub(crate) fn entries(&self) -> &[CatalogEntry<K>] {
         &self.entries
     }
 
+    /// Finds the entry with UUID `id`.
     pub(crate) fn entry(&self, id: Uuid) -> Option<&CatalogEntry<K>> {
         self.entries.iter().find(|entry| entry.id() == id)
     }
 }
 
-/// Optional remote endpoints for the two supported addon families.
+/// Holds the optional remote endpoint for each addon family.
 pub(crate) struct CatalogUrls {
+    /// Component catalog endpoint.
     pub(crate) components: Option<Url>,
+    /// Dependency catalog endpoint.
     pub(crate) dependencies: Option<Url>,
 }
 
-/// Maps a family discriminator to its catalog URL and managed storage files.
+/// Maps an addon family to its endpoint, catalog cache, and release directory.
 ///
-/// Keeping this mapping on the two runtime families lets catalog
-/// persistence share generic code without introducing per-slot component types.
+/// This trait is implemented only by [`Component`] and [`Dependency`].
 pub(crate) trait AddonFamily {
+    /// Human-readable family name used in progress and errors.
     const LABEL: &'static str;
 
+    /// Selects this family's configured remote endpoint.
     fn url(urls: &CatalogUrls) -> Option<Url>;
+    /// Returns this family's catalog cache path.
     fn catalog(directories: &Directories) -> PathBuf;
+    /// Returns this family's managed release directory.
     fn releases(directories: &Directories) -> PathBuf;
 }
 
@@ -215,11 +247,13 @@ impl AddonFamily for Dependency {
     }
 }
 
-/// A release advertised by a remote addon catalog.
+/// Describes a release advertised by a remote addon catalog.
 ///
-/// `K` is [`Component`] or [`Dependency`]. A catalog entry describes what can
-/// be fetched; it does not imply that the release supports the current platform
-/// or is present in shared storage.
+/// `K` identifies the release as a [`Component`] or [`Dependency`]. An entry is
+/// only metadata: use [`Addons::fetch_component`](super::Addons::fetch_component)
+/// or [`Addons::fetch_dependency`](super::Addons::fetch_dependency) to acquire
+/// its payload. Check [`is_supported`](Self::is_supported) before offering it for
+/// the current platform.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogEntry<K> {
@@ -234,35 +268,36 @@ pub struct CatalogEntry<K> {
 }
 
 impl<K> CatalogEntry<K> {
-    /// Returns the identifier used to correlate this release with a local release.
+    /// Returns the non-nil identifier shared with the acquired release.
     pub fn id(&self) -> Uuid {
         self.id.get()
     }
 
-    /// Returns the catalog label.
+    /// Returns the human-readable release name.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Returns the catalog version string.
+    /// Returns the catalog-provided version string.
     pub fn version(&self) -> &str {
         &self.version
     }
 
-    /// Requirements owned by this release definition, for either addon family.
+    /// Returns the constraints that an environment must satisfy for this release.
     pub fn requirements(&self) -> &[Requirement] {
         &self.requirements
     }
 
-    /// Reports whether at least one artifact matches the current build target.
+    /// Returns whether at least one artifact matches the current build target.
     ///
     /// Platform matching is exact. An artifact without a platform restriction
-    /// matches every represented target. Builds on an unrepresented operating
-    /// system or architecture report every entry as unsupported.
+    /// matches any target represented by this crate. If the current OS or
+    /// architecture is not represented, every entry is reported as unsupported.
     pub fn is_supported(&self) -> bool {
         Target::current().is_some_and(|target| self.artifacts_for_target(target).next().is_some())
     }
 
+    /// Iterates over artifacts compatible with `target` in catalog order.
     pub(crate) fn artifacts_for_target(
         &self,
         target: Target,
@@ -274,7 +309,7 @@ impl<K> CatalogEntry<K> {
 }
 
 impl CatalogEntry<Component> {
-    /// Returns the component slot occupied by this release.
+    /// Returns the environment slot occupied by this component release.
     pub fn slot(&self) -> Slot {
         self.kind.slot
     }
@@ -282,10 +317,11 @@ impl CatalogEntry<Component> {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-/// One downloadable file and the recipe associated with it.
+/// Describes one downloadable file and its optional installation recipe.
 ///
-/// Both component and dependency recipes become part of the immutable release.
-/// Components are extracted before their recipe is applied.
+/// Matching artifacts are downloaded in catalog order. Their recipes are copied
+/// into the acquired [`Addon`](super::Addon), so later catalog changes do not
+/// affect the local release.
 pub(crate) struct CatalogArtifact {
     url: url::Url,
     file_name: String,
@@ -297,15 +333,19 @@ pub(crate) struct CatalogArtifact {
 }
 
 impl CatalogArtifact {
+    /// Returns the artifact download URL.
     pub(crate) fn url(&self) -> &Url {
         &self.url
     }
+    /// Returns the payload file name used in local release storage.
     pub(crate) fn file_name(&self) -> &str {
         &self.file_name
     }
+    /// Returns the digest required for the downloaded file.
     pub(crate) fn checksum(&self) -> &Checksum {
         &self.checksum
     }
+    /// Returns the recipe override supplied by the catalog, if any.
     pub(crate) fn steps(&self) -> Option<&[InstallStep]> {
         self.steps.as_deref()
     }

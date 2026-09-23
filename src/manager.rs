@@ -1,4 +1,8 @@
-//! Shared environment collection lifecycle and observation.
+//! Live collections of persisted environments.
+//!
+//! A [`Manager`] is loaded once by [`crate::Bottles`] and then updated by create,
+//! edit, rollback, and delete operations. It does not poll the filesystem for
+//! changes made outside this crate.
 
 #[cfg(feature = "fvs")]
 use crate::environment::VirgoManager;
@@ -31,8 +35,7 @@ pub(crate) trait Managed {
 
 type Members<T> = Arc<HashMap<Uuid, T>>;
 
-/// The collection-level interface for bottles or standalone programs owned by
-/// one [`crate::Bottles`] context.
+/// Provides collection-level access to bottles or standalone programs.
 ///
 /// Obtain `Manager<Bottle>` from [`crate::Bottles::bottles`], or
 /// `Manager<Program>` from `Bottles::programs` with the `fvs` feature enabled.
@@ -43,6 +46,19 @@ type Members<T> = Arc<HashMap<Uuid, T>>;
 /// returns handles to the same live state. The collection is loaded once from
 /// library-managed storage and updated by manager operations; it does not
 /// observe external filesystem changes.
+///
+/// # Examples
+///
+/// ```
+/// # use bottles_core::{Bottle, Manager};
+/// # fn inspect(manager: &Manager<Bottle>) {
+/// for bottle in manager.list() {
+///     if let Ok(state) = bottle.state() {
+///         println!("{}", state.name());
+///     }
+/// }
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct Manager<T> {
     root: PathBuf,
@@ -58,20 +74,41 @@ enum Event<T> {
 type Events<T> = Pin<Box<dyn Stream<Item = Option<Event<T>>> + Send>>;
 
 impl<T: Clone> Manager<T> {
-    /// Returns the currently known members as a new vector of cloned handles.
+    /// Returns cloned handles for the currently known members.
     /// Configuration changes do not change collection membership.
     /// Order is unspecified and must not be used as an identity or stable
     /// presentation order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::{Bottle, Manager};
+    /// # fn count(manager: &Manager<Bottle>) -> usize {
+    /// manager.list().len()
+    /// # }
+    /// ```
     pub fn list(&self) -> Vec<T> {
         self.published.borrow().values().cloned().collect()
     }
 
-    /// Looks up a member synchronously without filesystem or runtime work.
+    /// Looks up a member without filesystem or runtime work.
     /// Repeated calls through this manager or its clones return handles to the
     /// same live state. Only members loaded at startup or created through this
     /// manager are opened.
     ///
+    /// # Errors
+    ///
     /// Returns [`EnvironmentError::NotFound`] if `id` is not in the collection.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::{Bottle, Manager};
+    /// # use uuid::Uuid;
+    /// # fn open(manager: &Manager<Bottle>, id: Uuid) -> Result<Bottle, bottles_core::error::Error> {
+    /// manager.open(id)
+    /// # }
+    /// ```
     pub fn open(&self, id: Uuid) -> Result<T> {
         self.published
             .borrow()
@@ -182,7 +219,7 @@ where
         })
     }
 
-    /// Stops and permanently deletes the member identified by `id`.
+    /// Creates an operation that stops and permanently deletes a member.
     ///
     /// Cancellation is observed after stopping and before withdrawal into trash.
     /// Once withdrawn, deletion and removal from the collection are published
@@ -191,8 +228,20 @@ where
     /// Failed withdrawal leaves membership unchanged, and trash cleanup errors
     /// cannot invalidate deletion.
     ///
-    /// The operation fails if the member does not exist, cannot be stopped,
-    /// cancellation is requested, or its root cannot be moved into trash.
+    /// # Errors
+    ///
+    /// Awaiting the operation fails if the member does not exist, cannot be
+    /// stopped, observes cancellation, or cannot move its root into trash.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::{Bottle, Manager, Operation};
+    /// # use uuid::Uuid;
+    /// # fn prepare(manager: &Manager<Bottle>, id: Uuid) -> Operation<()> {
+    /// manager.delete(id)
+    /// # }
+    /// ```
     pub fn delete(&self, id: Uuid) -> Operation<()> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -215,6 +264,20 @@ where
     /// Order is unspecified. The stream ends when all manager clones and
     /// operations retaining this collection are dropped, even if item handles
     /// remain alive.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::{Bottle, Manager};
+    /// # use futures_lite::StreamExt;
+    /// # async fn observe(manager: &Manager<Bottle>) {
+    /// let updates = manager.watch();
+    /// futures_lite::pin!(updates);
+    /// if let Some(bottles) = updates.next().await {
+    ///     println!("{} bottles", bottles.len());
+    /// }
+    /// # }
+    /// ```
     pub fn watch(&self) -> impl Stream<Item = Vec<T>> + Send + 'static + use<T> {
         let published = self.published.subscribe();
         let mut events = SelectAll::<Events<T>>::new();

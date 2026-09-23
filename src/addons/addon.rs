@@ -1,4 +1,9 @@
-//! Immutable addon definitions, frozen recipes, and their family discriminators.
+//! Installed addon records and the constraints between them.
+//!
+//! An [`Addon`] is the durable form of a release: it combines catalog metadata
+//! with the installation recipe resolved when the release was acquired. The
+//! [`Component`] and [`Dependency`] marker types keep the two addon families
+//! distinct at compile time.
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
@@ -17,14 +22,26 @@ use super::{
     recipe::{InstallResource, InstallStep},
 };
 
-/// An immutable addon definition with its complete installation recipe.
+/// Describes an acquired addon and its frozen installation recipe.
 ///
-/// `K` is [`Component`] or [`Dependency`]. The same record is stored alongside its
-/// shared payload and embedded in bottle or standalone program state. Recipes are
-/// resolved during acquisition and never reconstructed from the catalog on load.
-/// A changed definition must have a new UUID; payload availability is separate.
-/// Owner operations trust supplied records without checking manager membership.
-/// Callers deserializing records must preserve immutable UUID identity.
+/// `K` identifies the release as a [`Component`] or [`Dependency`]. Records are
+/// stored next to their shared payload and copied into environment state when the
+/// addon is selected. Because the recipe is frozen at acquisition time, later
+/// catalog refreshes do not alter existing records.
+///
+/// The UUID returned by [`id`](Self::id) is the record's stable identity. Code
+/// that creates serialized records must assign a new UUID whenever the record's
+/// definition changes.
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::Addon;
+///
+/// fn release_label<K>(addon: &Addon<K>) -> String {
+///     format!("{} {}", addon.name(), addon.version())
+/// }
+/// ```
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     deny_unknown_fields,
@@ -42,36 +59,38 @@ pub struct Addon<K> {
 }
 
 impl<K> Addon<K> {
-    /// Returns the release identifier shared by its catalog, release, and bottle records.
+    /// Returns the stable identifier shared by the catalog and acquired record.
     pub fn id(&self) -> Uuid {
         self.id
     }
 
-    /// Returns the release label.
+    /// Returns the human-readable release name.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Returns the release version string.
+    /// Returns the catalog-provided version string.
     pub fn version(&self) -> &str {
         &self.version
     }
 
-    /// Returns the addons that must coexist with this selection.
+    /// Returns the constraints that an environment must satisfy for this addon.
     pub fn requirements(&self) -> &[Requirement] {
         &self.requirements
     }
 
-    /// Derives launch variables from the frozen recipe in resource and step order.
+    /// Collects launch environment variables declared by the frozen recipe.
     ///
-    /// Later declarations win. Command-local variables are excluded. Environment
-    /// configuration combines addon contributions and applies owner overrides last.
+    /// Recipe resources and steps are visited in declaration order, so a later
+    /// declaration with the same name replaces an earlier one. Variables scoped
+    /// to installer commands are not included.
     pub fn env_vars(&self) -> EnvVars {
         let mut env_vars = EnvVars::default();
         self.extend_env_vars(&mut env_vars);
         env_vars
     }
 
+    /// Applies this addon's runtime environment declarations to `env_vars`.
     pub(crate) fn extend_env_vars(&self, env_vars: &mut EnvVars) {
         for step in self.recipe() {
             if let InstallStep::SetEnvironment { name, value } = step {
@@ -80,27 +99,32 @@ impl<K> Addon<K> {
         }
     }
 
+    /// Returns the shared payload directory for this release.
     pub(crate) fn path(&self, directories: &Directories) -> PathBuf
     where
         K: AddonFamily,
     {
         self.directory(directories).join("payload")
     }
+    /// Returns the managed directory containing this release's manifest and payload.
     pub(super) fn directory(&self, directories: &Directories) -> PathBuf
     where
         K: AddonFamily,
     {
         K::releases(directories).join(self.id().to_string())
     }
+    /// Returns the frozen installation resources in execution order.
     pub(crate) fn resources(&self) -> &[InstallResource] {
         &self.resources
     }
+    /// Iterates over all frozen recipe steps in execution order.
     pub(crate) fn recipe(&self) -> impl DoubleEndedIterator<Item = &InstallStep> {
         self.resources.iter().flat_map(|r| &r.steps)
     }
 }
 
 impl Addon<Component> {
+    /// Creates a component record from resolved catalog or import metadata.
     pub(crate) fn new_component(
         id: Uuid,
         name: String,
@@ -119,15 +143,15 @@ impl Addon<Component> {
         }
     }
 
-    /// Returns the mutually exclusive role occupied by this component.
+    /// Returns the mutually exclusive environment role occupied by the component.
     pub fn slot(&self) -> Slot {
         self.kind.slot
     }
 
-    /// Reports whether this component satisfies `requirement`.
+    /// Returns whether this component satisfies `requirement`.
     ///
-    /// Name and identifier matching is exact. Slot requirements match the
-    /// component's slot.
+    /// Names and identifiers are compared exactly; a [`Requirement::Slot`]
+    /// matches this component's [`slot`](Self::slot).
     pub fn satisfies(&self, requirement: &Requirement) -> bool {
         match requirement {
             Requirement::Name(name) => self.name == *name,
@@ -136,6 +160,14 @@ impl Addon<Component> {
         }
     }
 
+    /// Constructs the runner represented by this component's payload.
+    ///
+    /// Proton runners require an acquired UMU component supplied through `umu`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runner kind cannot be detected or Proton is selected
+    /// without an UMU component.
     pub(crate) async fn load_runner(
         &self,
         directories: &Directories,
@@ -156,6 +188,7 @@ impl Addon<Component> {
 }
 
 impl Addon<Dependency> {
+    /// Creates a dependency record from resolved catalog metadata.
     pub(crate) fn new_dependency(
         id: Uuid,
         name: String,
@@ -173,10 +206,10 @@ impl Addon<Dependency> {
         }
     }
 
-    /// Reports whether this dependency satisfies `requirement`.
+    /// Returns whether this dependency satisfies `requirement`.
     ///
-    /// Name and identifier matching is exact. Dependencies never satisfy slot
-    /// requirements because slots are occupied only by components.
+    /// Names and identifiers are compared exactly. A dependency never satisfies
+    /// [`Requirement::Slot`], because only components occupy slots.
     pub fn satisfies(&self, requirement: &Requirement) -> bool {
         match requirement {
             Requirement::Name(name) => self.name == *name,
@@ -190,25 +223,41 @@ impl<K: Serialize + serde::de::DeserializeOwned + 'static> next_config::Config f
     const VERSION: u32 = 1;
 }
 
-/// A mutually exclusive component role within a bottle.
+/// Identifies a mutually exclusive component role in an environment.
 ///
-/// Bottle state can select at most one component for each slot.
-#[allow(missing_docs)]
+/// Environment state can select at most one [`Component`] for each slot. The
+/// string representation is the canonical spelling used by catalogs and storage.
 #[derive(Clone, Copy, Debug, Deserialize, EnumIter, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Slot {
+    /// The Bottles WineBridge service executable.
     #[serde(rename = "winebridge")]
     WineBridge,
+    /// The Wine or Proton runtime used to launch Windows programs.
     Runner,
+    /// The `umu-run` compatibility launcher required by Proton runners.
     Umu,
+    /// The DXVK Direct3D 8–11 translation layer.
     Dxvk,
+    /// The VKD3D-Proton Direct3D 12 translation layer.
     Vkd3d,
+    /// The DXVK-NVAPI implementation used by supported NVIDIA workloads.
     Nvapi,
+    /// The LatencyFleX Vulkan layer and Wine integration.
     LatencyFlex,
 }
 
 impl Slot {
-    /// Returns the canonical catalog and filesystem spelling.
+    /// Returns the canonical catalog and storage spelling of the slot.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bottles_core::Slot;
+    ///
+    /// assert_eq!(Slot::WineBridge.as_str(), "winebridge");
+    /// assert_eq!(Slot::LatencyFlex.as_str(), "latency-flex");
+    /// ```
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::WineBridge => "winebridge",
@@ -221,6 +270,7 @@ impl Slot {
         }
     }
 
+    /// Returns whether this slot supplies runtime tooling rather than prefix changes.
     pub(crate) fn is_runtime(self) -> bool {
         matches!(self, Self::WineBridge | Self::Runner | Self::Umu)
     }
@@ -249,29 +299,43 @@ impl FromStr for Slot {
     }
 }
 
-/// A constraint that must be satisfied by another addon in the bottle.
+/// Describes another addon that must be present in an environment.
 ///
-/// Name and identifier requirements may be satisfied by either components or
-/// dependencies. Slot requirements can be satisfied only by components.
+/// Name and identifier constraints may be satisfied by either addon family;
+/// slot constraints may be satisfied only by a [`Component`]. Use
+/// [`Addon::<Component>::satisfies`] or [`Addon::<Dependency>::satisfies`] to
+/// test a candidate.
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::{Requirement, Slot};
+///
+/// let requirement = Requirement::Slot(Slot::Runner);
+/// assert!(matches!(requirement, Requirement::Slot(Slot::Runner)));
+/// ```
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Requirement {
-    /// Any addon with this exact, case-sensitive name.
+    /// Requires an addon with this exact, case-sensitive name.
     Name(String),
-    /// The component occupying this slot.
+    /// Requires a component that occupies the given slot.
     Slot(Slot),
-    /// One exact addon release.
+    /// Requires the addon with this exact release UUID.
     Id(Uuid),
 }
 
-/// Type discriminator for component catalog, release, and bottle records.
+/// Marks an addon as a component that occupies one [`Slot`].
+///
+/// Components are mutually exclusive by slot when selected in an environment.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
+    /// Environment role occupied by the component.
     pub(crate) slot: Slot,
 }
 
-/// Type discriminator for dependency catalog, release, and bottle records.
+/// Marks an addon as a dependency that may coexist with other dependencies.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dependency {}

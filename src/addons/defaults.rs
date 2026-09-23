@@ -1,5 +1,8 @@
-//! Default component recipes for imports and catalog entries without recipe overrides.
-//! Acquisition freezes the resolved recipe into the release; execution uses that record.
+//! Built-in recipes for component slots with conventional prefix integration.
+//!
+//! Acquisition copies these steps into a release when a catalog artifact does not
+//! provide an override, or when a local component is imported. Existing releases
+//! therefore keep their original recipe if these defaults later change.
 
 use std::sync::LazyLock;
 
@@ -149,7 +152,9 @@ static LATENCY_FLEX_STEPS: LazyLock<Vec<InstallStep>> = LazyLock::new(|| {
     ]
 });
 
-/// Returns the default recipe for a component slot; runtime slots need no prefix changes.
+/// Returns the built-in recipe for `slot`.
+///
+/// Runtime components are consumed directly and therefore have no prefix recipe.
 pub(crate) fn steps(slot: Slot) -> &'static [InstallStep] {
     match slot {
         Slot::WineBridge | Slot::Runner | Slot::Umu => &[],

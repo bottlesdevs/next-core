@@ -1,9 +1,8 @@
-//! UMU-backed Proton command lowering.
+//! Lowers Proton commands through UMU.
 //!
-//! Guest commands run through the paired UMU executable with `PROTONPATH` set to
-//! the selected Proton directory, `WINEPREFIX` set to the bottle prefix, and
-//! `WINEARCH=win64`. Server control also runs through UMU because Proton's
-//! `wineserver` requires its runtime.
+//! Every guest command receives the selected Proton directory as `PROTONPATH`,
+//! the target prefix as `WINEPREFIX`, and `WINEARCH=win64`. Server control also
+//! runs through UMU because Proton's `wineserver` depends on its runtime.
 
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
@@ -12,6 +11,7 @@ use super::{Runner, RunnerCommand, RunnerError};
 use crate::command::{Command, Spawnable, Wrapper};
 use crate::error::Result;
 
+/// Stores the paired Proton installation and UMU launcher paths.
 #[derive(Debug)]
 pub(crate) struct Proton {
     proton_path: PathBuf,
@@ -19,6 +19,7 @@ pub(crate) struct Proton {
 }
 
 impl Proton {
+    /// Creates a runner without validating either path.
     pub fn new(proton_path: impl AsRef<Path>, umu_executable: impl AsRef<Path>) -> Self {
         Self {
             proton_path: proton_path.as_ref().to_path_buf(),
@@ -45,6 +46,11 @@ impl Runner for Proton {
     /// retain normal success semantics.
     ///
     /// See <https://github.com/Open-Wine-Components/umu-launcher/issues/593>.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error when UMU cannot be spawned or waited for, or
+    /// [`RunnerError::WineserverFailed`] for any unaccepted exit status.
     async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()> {
         let status = RunnerCommand(
             Command::new(&self.umu_executable)

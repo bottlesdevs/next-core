@@ -1,5 +1,9 @@
-//! Owner history includes selected configuration, the registry baseline, and persistent data.
-//! Callers hold owner coordination and release runtime storage before using it.
+//! Captures and restores complete environment history with FVS.
+//!
+//! A snapshot includes the persisted owner state, private files, registry
+//! baseline, and configuration. History operations run while holding owner
+//! coordination and after runtime storage has been released. Automatic
+//! checkpoints protect mutations and are hidden from user-facing listings.
 
 use super::{BackendSource, Environment, State};
 use crate::virgo::FVS_BLOCK_SIZE;
@@ -12,7 +16,7 @@ use fvs_rs::{Commit, Progress as FvsProgress, Repository, RestoreResponse};
 use std::{path::Path, sync::Arc};
 use tokio::sync::watch;
 
-/// Identifies rollback checkpoints that must not appear as user snapshots.
+/// Identifies internal rollback checkpoints hidden from user snapshot listings.
 ///
 /// Snapshot filtering compares this persisted value exactly, so changing it
 /// would expose checkpoints created by older versions.
@@ -29,6 +33,7 @@ impl From<&FvsProgress> for Transfer {
     }
 }
 
+/// Describes the FVS repository rooted at `root` using the shared block size.
 pub(crate) fn repository(root: &Path) -> Repository {
     Repository {
         repository_path: root.display().to_string(),
@@ -36,6 +41,11 @@ pub(crate) fn repository(root: &Path) -> Repository {
     }
 }
 
+/// Commits the complete owner root, creating its FVS repository if necessary.
+///
+/// # Errors
+///
+/// Returns an error if repository discovery, repository creation, or commit fails.
 pub(crate) async fn capture(
     root: &Path,
     message: String,
@@ -55,6 +65,11 @@ pub(crate) async fn capture(
         .await?)
 }
 
+/// Restores `revision` into the owner root and reports transfer progress.
+///
+/// # Errors
+///
+/// Returns an error if FVS cannot resolve or restore the revision.
 pub(crate) async fn restore(
     root: &Path,
     revision: &str,
@@ -76,8 +91,16 @@ pub(crate) async fn restore(
         .await?)
 }
 
-/// Restore both data and configuration on a rejected mutation. Nothing is published
-/// before this succeeds; a failed rollback names the owner requiring repair.
+/// Returns a mutation result, restoring `checkpoint` first when it is an error.
+///
+/// Nothing is published before recovery succeeds. If both the mutation and the
+/// restore fail, the returned [`EnvironmentError::Rollback`] identifies the root
+/// that requires repair.
+///
+/// # Errors
+///
+/// Returns the original mutation error after a successful recovery, or
+/// [`EnvironmentError::Rollback`] if recovery also fails.
 pub(crate) async fn recover<T>(
     result: Result<T>,
     root: &Path,
@@ -102,6 +125,12 @@ impl<T: BackendSource> Environment<T>
 where
     State<T>: next_config::Config + Clone + PartialEq + Send + Sync,
 {
+    /// Creates a user-visible snapshot after stopping the environment.
+    ///
+    /// # Errors
+    ///
+    /// The operation fails for the reserved checkpoint message, cancellation,
+    /// shutdown failures, or FVS repository and commit errors.
     pub(crate) fn create_snapshot(self: &Arc<Self>, message: String) -> Operation<Snapshot> {
         let environment = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -130,6 +159,14 @@ where
         })
     }
 
+    /// Lists user-visible snapshots in the environment repository.
+    ///
+    /// Returns an empty list before the first snapshot and excludes automatic
+    /// recovery checkpoints.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the environment was deleted or FVS cannot list commits.
     pub(crate) async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
         let _control = self.control.lock().await;
         self.state()?;
@@ -146,6 +183,17 @@ where
             .collect())
     }
 
+    /// Restores a snapshot and publishes the validated state stored within it.
+    ///
+    /// An automatic checkpoint is captured before restoration. Once restoration
+    /// begins, a failed restore, load, identity check, backend check, or validation
+    /// triggers recovery to that checkpoint before coordination is released.
+    ///
+    /// # Errors
+    ///
+    /// The operation fails for cancellation before restoration, shutdown or FVS
+    /// failures, invalid restored state, or [`EnvironmentError::Rollback`] if the
+    /// automatic recovery also fails.
     pub(crate) fn rollback(self: &Arc<Self>, revision: &str) -> Operation<String> {
         let environment = self.clone();
         let revision = revision.to_owned();
