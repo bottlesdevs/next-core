@@ -113,7 +113,7 @@ where
             let id = Uuid::new_v4();
             let state = State {
                 id,
-                config: EnvironmentConfig::new(runner, winebridge, umu)?,
+                config: EnvironmentConfig::new(runner, winebridge, umu),
                 data,
             };
             let environment = Environment::create(
@@ -149,16 +149,13 @@ where
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let environment = manager.open(id)?;
-            environment.delete(&progress, &cancellation).await?;
-            manager.published.send_if_modified(|published| {
-                let mut members = published.as_ref().clone();
-                if members.remove(&id).is_none() {
-                    return false;
-                }
-                *published = Arc::new(members);
-                true
-            });
-            Ok(())
+            environment
+                .delete(&progress, &cancellation, || {
+                    manager.published.send_modify(|published| {
+                        Arc::make_mut(published).remove(&id);
+                    });
+                })
+                .await
         })
     }
 

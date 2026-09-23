@@ -27,20 +27,18 @@ impl EnvironmentConfig {
         runner: Addon<Component>,
         winebridge: Addon<Component>,
         umu: Option<Addon<Component>>,
-    ) -> Result<Self> {
+    ) -> Self {
         let mut components =
             HashMap::from([(Slot::WineBridge, winebridge), (Slot::Runner, runner)]);
         if let Some(umu) = umu {
             components.insert(Slot::Umu, umu);
         }
-        let config = EnvironmentConfig {
+        Self {
             components,
             dependencies: Vec::new(),
             env_vars: Default::default(),
             wrappers: Default::default(),
-        };
-        config.validate()?;
-        Ok(config)
+        }
     }
 
     /// Change only the supplied component's slot, preserving an already-selected identity.
