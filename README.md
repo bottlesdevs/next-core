@@ -34,8 +34,10 @@ The crate is centered around six types:
   program managers.
 - `Addons` publishes live collections of runners and installable addons. Item
   values are snapshots; query the manager again after a publication.
-- `BottleManager` manages bottles by UUID. A `Bottle` is a shared handle whose
-  current immutable `BottleState` can be read or watched.
+- `Manager<Bottle>` and `Manager<Program>` manage their respective collections by
+  UUID. Each returned handle exposes its current immutable state for reading or
+  watching. Manager clones share membership and watch both membership and state
+  changes.
 - `Library` asynchronously lists launchable entries from registered `LibraryProvider`
   implementations and provides launch handles. Call `list()` again to refresh.
 - `Profiles` persists named application identities and the current selection,

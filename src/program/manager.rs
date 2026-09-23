@@ -1,19 +1,13 @@
 //! Registry-backed standalone program lifecycle.
 use super::Program;
 use crate::{
-    Addon, Component, Context, LibraryEntry, LibraryProvider, Operation, ProgramSpec,
-    environment::{Manager, VirgoManager},
+    Addon, Component, LibraryEntry, LibraryProvider, Manager, Operation, ProgramSpec,
     error::{Error, Result},
 };
-use futures_core::Stream;
-use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Clone)]
-pub struct ProgramManager(Arc<Manager<Program>>);
-
 #[async_trait::async_trait]
-impl LibraryProvider for ProgramManager {
+impl LibraryProvider for Manager<Program> {
     fn id(&self) -> &str {
         "programs"
     }
@@ -38,13 +32,7 @@ impl LibraryProvider for ProgramManager {
         Ok(self.open(id)?.launch().map(|_| ()))
     }
 }
-impl ProgramManager {
-    pub(crate) async fn load(context: Context, virgo: Arc<VirgoManager>) -> Result<Self> {
-        Ok(Self(
-            Manager::load(context.directories().programs(), context, virgo).await?,
-        ))
-    }
-
+impl Manager<Program> {
     /// Build missing Virgo layers, prepare the private registry, and save the launch definition.
     /// Requires downloaded runtime and build inputs; does not acquire the application.
     /// Callers supply every owner runtime selection, including UMU when required.
@@ -55,24 +43,6 @@ impl ProgramManager {
         winebridge: Addon<Component>,
         umu: Option<Addon<Component>>,
     ) -> Operation<Program> {
-        self.0.create_environment(launch, runner, winebridge, umu)
-    }
-
-    /// Look up an already-known program synchronously, without filesystem or runtime work.
-    pub fn open(&self, id: Uuid) -> Result<Program> {
-        self.0.open(id)
-    }
-
-    pub fn list(&self) -> Vec<Program> {
-        self.0.list()
-    }
-    /// Observe membership and state changes; ends when the manager is dropped.
-    pub fn watch(&self) -> impl Stream<Item = Vec<Program>> + Send + 'static + use<> {
-        self.0.watch()
-    }
-    /// Stop and withdraw the managed root into trash. Existing handles become deleted;
-    /// cleanup is best effort after withdrawal.
-    pub fn delete(&self, id: Uuid) -> Operation<()> {
-        self.0.delete(id)
+        self.create_environment(launch, runner, winebridge, umu)
     }
 }

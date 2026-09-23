@@ -1,5 +1,5 @@
 #[cfg(feature = "fvs")]
-use crate::{ProgramManager, environment::VirgoManager};
+use crate::{Program, environment::VirgoManager};
 
 use bottles_plugin_host::{PluginInterface, Plugins};
 #[cfg(feature = "fvs")]
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use http_client::{HttpClient, ReqwestClient};
 use url::Url;
 
-use crate::{Addons, BottleManager, Context, Directories, Library, Profiles, error::Result};
+use crate::{Addons, Bottle, Context, Directories, Library, Manager, Profiles, error::Result};
 
 #[derive(Clone, Debug, Default)]
 pub struct Config {
@@ -21,9 +21,9 @@ pub struct Config {
 
 pub struct Bottles {
     context: Context,
-    bottles: BottleManager,
+    bottles: Manager<Bottle>,
     #[cfg(feature = "fvs")]
-    programs: ProgramManager,
+    programs: Manager<Program>,
     library: Library,
     profiles: Profiles,
 }
@@ -62,14 +62,17 @@ impl Bottles {
         .await?;
         #[cfg(feature = "fvs")]
         let virgo = Arc::new(VirgoManager::new(context.clone()));
-        let bottles = BottleManager::load(
+        let bottles = Manager::<Bottle>::load(
+            context.directories().bottles(),
             context.clone(),
             #[cfg(feature = "fvs")]
             virgo.clone(),
         )
         .await?;
         #[cfg(feature = "fvs")]
-        let programs = ProgramManager::load(context.clone(), virgo).await?;
+        let programs =
+            Manager::<Program>::load(context.directories().programs(), context.clone(), virgo)
+                .await?;
         let library = Library::default();
         library.register_provider(Arc::new(bottles.clone()));
         #[cfg(feature = "fvs")]
@@ -100,12 +103,12 @@ impl Bottles {
         Ok(())
     }
 
-    pub fn bottles(&self) -> &BottleManager {
+    pub fn bottles(&self) -> &Manager<Bottle> {
         &self.bottles
     }
 
     #[cfg(feature = "fvs")]
-    pub fn programs(&self) -> &ProgramManager {
+    pub fn programs(&self) -> &Manager<Program> {
         &self.programs
     }
 

@@ -9,7 +9,8 @@ mod manager;
 mod operations;
 mod prefix;
 mod runtime;
-pub(crate) use manager::{EnvironmentHandle, Manager};
+pub(crate) use manager::EnvironmentHandle;
+pub use manager::Manager;
 #[cfg(feature = "fvs")]
 mod snapshot;
 mod state;

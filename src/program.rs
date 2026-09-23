@@ -1,6 +1,5 @@
 //! Standalone Virgo programs with their own persisted environment and history.
 mod manager;
-pub use manager::ProgramManager;
 
 use crate::{
     Edit, Operation, PrefixBackend, ProgramSpec, Snapshot, SnapshotSummary, State,

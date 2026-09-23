@@ -1,6 +1,6 @@
 //! Wine-prefix lifecycle and configuration.
 //!
-//! A [`BottleManager`] owns the bottles known to one [`crate::Bottles`]
+//! A [`crate::Manager`] owns the bottles known to one [`crate::Bottles`]
 //! context. Its [`Bottle`] handles are live, cloneable references to shared
 //! state; [`BottleState`] values returned by those handles are immutable
 //! snapshots that do not change when the bottle is edited or deleted.
@@ -31,5 +31,4 @@ mod state;
 mod tests;
 
 pub use error::BottleError;
-pub use manager::BottleManager;
 pub use state::{Bottle, BottleData, BottleState};

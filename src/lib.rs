@@ -10,7 +10,7 @@ mod profiles;
 #[cfg(feature = "fvs")]
 mod program;
 #[cfg(feature = "fvs")]
-pub use program::{Program, ProgramManager, ProgramState};
+pub use program::{Program, ProgramState};
 mod program_spec;
 pub use program_spec::ProgramSpec;
 mod runner;
@@ -24,9 +24,9 @@ pub use addons::{
     Addon, AddonError, Addons, CatalogEntry, CatalogError, Component, Dependency, InstallerError,
     Requirement, Slot,
 };
-pub use bottle::{Bottle, BottleData, BottleError, BottleManager, BottleState};
+pub use bottle::{Bottle, BottleData, BottleError, BottleState};
 pub use core::{Bottles, Config};
-pub use environment::{Edit, EnvironmentConfig, EnvironmentError, PrefixBackend, State};
+pub use environment::{Edit, EnvironmentConfig, EnvironmentError, Manager, PrefixBackend, State};
 #[cfg(feature = "fvs")]
 pub use environment::{Snapshot, SnapshotSummary};
 pub use library::{Library, LibraryEntry, LibraryItem, LibraryProvider};

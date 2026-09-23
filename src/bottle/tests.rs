@@ -10,9 +10,9 @@ use tokio::sync::{Mutex, watch};
 
 use crate::environment::Environment;
 use crate::{
-    Context, Directories, EnvironmentError, PrefixBackend,
+    Context, Directories, EnvironmentError, Manager, PrefixBackend,
     addons::{AddonError, CatalogError, Requirement, Slot},
-    bottle::{Bottle, BottleManager},
+    bottle::Bottle,
     error::Error,
 };
 fn test_directories() -> Directories {
@@ -134,7 +134,8 @@ fn create_reports_missing_runtime_requirements_before_creating_files() {
         ));
         #[cfg(feature = "fvs")]
         let virgo = Arc::new(VirgoManager::new(context.clone()));
-        let manager = BottleManager::new(
+        let manager = Manager::<Bottle>::new(
+            context.directories().bottles(),
             context,
             #[cfg(feature = "fvs")]
             virgo,
