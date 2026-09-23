@@ -1,33 +1,14 @@
 //! Bottle collection lifecycle backed by the shared environment registry.
 use super::{Bottle, BottleData};
-#[cfg(feature = "fvs")]
-use crate::environment::VirgoManager;
 use crate::{
-    Addon, Component, Context, LibraryEntry, LibraryProvider, Operation, PrefixBackend,
-    environment::Manager,
+    Addon, Component, LibraryEntry, LibraryProvider, Manager, Operation, PrefixBackend,
     error::{Error, Result},
 };
-use futures_core::Stream;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 use uuid::Uuid;
 
-/// The collection-level interface for bottles owned by one [`crate::Bottles`]
-/// context.
-///
-/// Obtain this manager from [`crate::Bottles::bottles`]. Use it for
-/// collection-level work—creating, opening, deleting, listing, and watching
-/// bottles—then use the returned [`Bottle`] handles for operations on an
-/// individual bottle.
-///
-/// Clones share a registry. Opening the same UUID through clones returns a
-/// handle to the same live bottle state. The registry is loaded once from
-/// library-managed storage and is updated by manager operations; it is not a
-/// live view of external filesystem changes.
-#[derive(Clone)]
-pub struct BottleManager(Arc<Manager<Bottle>>);
-
 #[async_trait::async_trait]
-impl LibraryProvider for BottleManager {
+impl LibraryProvider for Manager<Bottle> {
     fn id(&self) -> &str {
         "bottles"
     }
@@ -68,33 +49,7 @@ impl LibraryProvider for BottleManager {
     }
 }
 
-impl BottleManager {
-    #[cfg(test)]
-    pub(crate) fn new(context: Context, #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>) -> Self {
-        Self(Manager::new(
-            context.directories().bottles(),
-            context,
-            #[cfg(feature = "fvs")]
-            virgo,
-        ))
-    }
-
-    /// Populates the shared collection, returning bottle configuration failures.
-    pub(crate) async fn load(
-        context: Context,
-        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
-    ) -> Result<Self> {
-        Ok(Self(
-            Manager::load(
-                context.directories().bottles(),
-                context,
-                #[cfg(feature = "fvs")]
-                virgo,
-            )
-            .await?,
-        ))
-    }
-
+impl Manager<Bottle> {
     /// Creates a bottle using `runner` and the selected storage strategy.
     ///
     /// A new UUID is assigned when the operation starts;
@@ -123,7 +78,7 @@ impl BottleManager {
         winebridge: Addon<Component>,
         umu: Option<Addon<Component>>,
     ) -> Operation<Bottle> {
-        self.0.create_environment(
+        self.create_environment(
             BottleData {
                 name: name.into(),
                 backend,
@@ -133,61 +88,5 @@ impl BottleManager {
             winebridge,
             umu,
         )
-    }
-
-    /// Stops and permanently deletes the bottle identified by `id`.
-    ///
-    /// Cancellation is observed after stopping and before withdrawal into trash.
-    /// Once withdrawn, deletion is published and cleanup is best effort.
-    ///
-    /// After successful deletion, existing [`Bottle`] handles report deletion
-    /// and their state streams end. Previously obtained [`crate::BottleState`]
-    /// snapshots remain usable. Failed withdrawal leaves the registry unchanged;
-    /// trash cleanup errors cannot invalidate deletion.
-    ///
-    /// # Errors
-    ///
-    /// The operation fails if the bottle does not exist, cannot be stopped,
-    /// cancellation is requested, or its root cannot be moved into trash.
-    pub fn delete(&self, id: Uuid) -> Operation<()> {
-        self.0.delete(id)
-    }
-
-    /// Looks up the bottle identified by `id` synchronously in the registry.
-    ///
-    /// Repeated calls through this manager or its clones return handles to the
-    /// same live state. Only bottles loaded at startup or created through this
-    /// manager are opened; this method does not search storage or observe
-    /// external changes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::EnvironmentError::NotFound`] if `id` is not in the registry.
-    pub fn open(&self, id: Uuid) -> Result<Bottle> {
-        self.0.open(id)
-    }
-
-    /// Returns the bottles currently known to this manager.
-    ///
-    /// This allocates a new vector of cloned handles; changes to bottle
-    /// configuration do not change registry membership.
-    ///
-    /// The order is unspecified and must not be used as an identity or stable
-    /// presentation order.
-    pub fn list(&self) -> Vec<Bottle> {
-        self.0.list()
-    }
-
-    /// Watches this manager and every bottle currently registered in it.
-    ///
-    /// The stream first yields the current list, then the latest list after
-    /// each observed membership or bottle-state change. New bottle streams are
-    /// added as membership changes, and deleted bottle streams end with their
-    /// bottle tombstones. Slow consumers may miss intermediate states.
-    ///
-    /// List order is unspecified. The stream ends when all manager handles for
-    /// this context are dropped.
-    pub fn watch(&self) -> impl Stream<Item = Vec<Bottle>> + Send + 'static + use<> {
-        self.0.watch()
     }
 }
