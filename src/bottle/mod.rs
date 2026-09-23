@@ -30,15 +30,6 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-pub use crate::proto::DllOverride;
-pub use crate::proto::DllOverrideMode;
-pub use crate::proto::Process;
-pub use crate::proto::RegistryHive;
-pub use crate::wrapper::{
-    Wrappers,
-    gamescope::{Filter as GamescopeFilter, GamescopeConfig, Scaler as GamescopeScaler},
-    mangohud::MangoHudConfig,
-};
 pub use error::BottleError;
 pub use manager::BottleManager;
 pub use state::{Bottle, BottleData, BottleState};

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use ::directories::ProjectDirs;
 
-use crate::{bottle::error::BottleError, error::Result};
+use crate::error::{Error, Result};
 
 #[derive(Clone, Debug)]
 pub struct Directories(ProjectDirs);
@@ -11,7 +11,7 @@ impl Directories {
     pub async fn new() -> Result<Self> {
         let directories = Self(
             ProjectDirs::from("com", "usebottles", "bottles-next")
-                .ok_or(BottleError::ProjectDirectoriesUnavailable)?,
+                .ok_or(Error::ProjectDirectoriesUnavailable)?,
         );
         for directory in directories.paths() {
             async_fs::create_dir_all(directory).await?;
@@ -21,10 +21,8 @@ impl Directories {
 
     #[cfg(test)]
     pub(crate) fn from_path(path: impl Into<PathBuf>) -> Result<Self> {
-        let directories = Self(
-            ProjectDirs::from_path(path.into())
-                .ok_or(BottleError::ProjectDirectoriesUnavailable)?,
-        );
+        let directories =
+            Self(ProjectDirs::from_path(path.into()).ok_or(Error::ProjectDirectoriesUnavailable)?);
         for directory in directories.paths() {
             std::fs::create_dir_all(directory)?;
         }
