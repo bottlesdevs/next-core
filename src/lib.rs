@@ -5,6 +5,7 @@ mod credentials;
 mod environment;
 pub mod error;
 mod library;
+mod manager;
 mod operation;
 mod profiles;
 #[cfg(feature = "fvs")]
@@ -26,10 +27,11 @@ pub use addons::{
 };
 pub use bottle::{Bottle, BottleData, BottleError, BottleState};
 pub use core::{Bottles, Config};
-pub use environment::{Edit, EnvironmentConfig, EnvironmentError, Manager, PrefixBackend, State};
+pub use environment::{Edit, EnvironmentConfig, EnvironmentError, PrefixBackend, State};
 #[cfg(feature = "fvs")]
 pub use environment::{Snapshot, SnapshotSummary};
 pub use library::{Library, LibraryEntry, LibraryItem, LibraryProvider};
+pub use manager::Manager;
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use profiles::{
     AccountIdentity, AccountLink, AccountLinkInteraction, AccountProviderInfo, Profile,

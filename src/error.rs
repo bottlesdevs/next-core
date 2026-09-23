@@ -2,10 +2,10 @@ pub use bottles_plugin_host::PluginError;
 use thiserror::Error;
 
 #[cfg(feature = "fvs")]
-pub use crate::environment::VirgoError;
+pub use crate::virgo::VirgoError;
 pub use crate::{
     addons::{AddonError, CatalogError, InstallerError},
-    bottle::error::BottleError,
+    bottle::BottleError,
     environment::EnvironmentError,
     profiles::ProfileError,
     runner::RunnerError,
