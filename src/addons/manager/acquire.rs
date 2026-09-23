@@ -1,19 +1,24 @@
-//! Fetch and publish complete immutable releases.
+//! Acquire complete immutable releases from catalogs or local archives.
 
 use super::super::{
-    Addon, AddonError, CatalogError, Component, Dependency,
+    Addon, AddonError, CatalogError, Component, Dependency, Requirement, Slot,
     catalog::{CatalogArtifact, Target},
+    defaults::steps as recipe_steps,
     recipe::InstallResource,
-    recipes::steps as recipe_steps,
 };
-use super::{Addons, download, prepare_component_archive};
+use super::{Addons, download::download};
 use crate::{
     Operation, Progress, Stage,
     error::{Error, Result},
+    runner::{RunnerKind, detect_runner_kind},
     utils::fs,
 };
 use download_manager::manager::DownloadManager;
-use std::{path::Path, sync::Arc};
+use futures_util::TryStreamExt;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -150,6 +155,42 @@ impl Addons {
             .await
         })
     }
+
+    /// Imports a local tar, tar.gz/tgz, or tar.xz/txz.Assigns a fresh UUID and freezes the bundled recipe. The source archive is unchanged; directories are not supported.
+    pub fn import_component(
+        &self,
+        path: impl AsRef<Path>,
+        slot: Slot,
+        name: impl Into<String>,
+        version: impl Into<String>,
+    ) -> Operation<Arc<Addon<Component>>> {
+        let source = path.as_ref().to_path_buf();
+        let name = name.into();
+        let version = version.into();
+        let addons = self.clone();
+        Operation::new(move |progress, cancellation| async move {
+            progress.send_replace(Some(Progress::new(Stage::Preparing)));
+            fs::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
+                let prepared = prepare_component_archive(&source, &stage, &cancellation).await?;
+                let payload = prepared.join("payload");
+                let requirements = inspect_release(slot, &payload).await?;
+                let steps = recipe_steps(slot).to_vec();
+                let id = Uuid::new_v4();
+                let release = Addon::new_component(
+                    id,
+                    name,
+                    version,
+                    slot,
+                    requirements,
+                    InstallResource::new("", steps),
+                );
+                addons
+                    .commit_component(Arc::new(release), &prepared, &cancellation)
+                    .await
+            })
+            .await
+        })
+    }
 }
 
 async fn download_artifact(
@@ -182,6 +223,75 @@ async fn download_artifact(
     }
     if !artifact.checksum().verify(destination).await? {
         return Err(AddonError::ChecksumMismatch(destination.to_path_buf()).into());
+    }
+    Ok(())
+}
+
+async fn inspect_release(slot: Slot, path: &Path) -> Result<Vec<Requirement>> {
+    Ok(match slot {
+        Slot::Runner if detect_runner_kind(path).await? == RunnerKind::Proton => {
+            vec![Requirement::Slot(Slot::Umu)]
+        }
+        Slot::Nvapi => vec![Requirement::Slot(Slot::Dxvk)],
+        _ => Vec::new(),
+    })
+}
+
+// Component archives have one top-level directory, which becomes the payload.
+async fn prepare_component_archive(
+    archive: &Path,
+    stage: &Path,
+    cancellation: &CancellationToken,
+) -> Result<PathBuf> {
+    let extracted = stage.join("extracted");
+    async_fs::create_dir(&extracted).await?;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    crate::utils::fs::archive::extract(archive, &extracted).await?;
+    if cancellation.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    let mut entries = async_fs::read_dir(&extracted).await?;
+    let Some(entry) = entries.try_next().await? else {
+        return Err(AddonError::InvalidComponentArchive.into());
+    };
+    if entries.try_next().await?.is_some() || !entry.file_type().await?.is_dir() {
+        return Err(AddonError::InvalidComponentArchive.into());
+    }
+    let source = entry.path();
+    check_component_links(&source, cancellation).await?;
+    let prepared = stage.join("release");
+    async_fs::create_dir(&prepared).await?;
+    async_fs::rename(source, prepared.join("payload")).await?;
+    Ok(prepared)
+}
+
+// Component links must stay inside the component tree after it leaves staging.
+async fn check_component_links(root: &Path, cancellation: &CancellationToken) -> Result<()> {
+    let root = async_fs::canonicalize(root).await?;
+    let mut pending = vec![root.clone()];
+    while let Some(directory) = pending.pop() {
+        let mut entries = async_fs::read_dir(directory).await?;
+        while let Some(entry) = entries.try_next().await? {
+            if cancellation.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let path = entry.path();
+            let kind = entry.file_type().await?;
+            if kind.is_dir() {
+                pending.push(path);
+            } else if kind.is_symlink() {
+                let target = async_fs::read_link(&path).await?;
+                crate::utils::fs::archive::safe_symlink_target(
+                    path.strip_prefix(&root).unwrap(),
+                    target,
+                )?;
+                if !async_fs::canonicalize(&path).await?.starts_with(&root) {
+                    return Err(AddonError::InvalidComponent(path).into());
+                }
+            }
+        }
     }
     Ok(())
 }
