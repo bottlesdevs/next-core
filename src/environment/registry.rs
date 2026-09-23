@@ -2,7 +2,7 @@
 
 #[cfg(feature = "fvs")]
 use super::VirgoManager;
-use super::{Environment, EnvironmentOwnerState};
+use super::{BackendSource, Environment, State};
 use crate::{Context, error::Result};
 use futures_core::Stream;
 use futures_util::{
@@ -27,7 +27,10 @@ enum Event<T> {
 }
 type Events<T> = Pin<Box<dyn Stream<Item = Option<Event<T>>> + Send>>;
 
-impl<T: EnvironmentOwnerState> Registry<T> {
+impl<T: BackendSource> Registry<T>
+where
+    State<T>: next_config::Config + Clone + PartialEq + Send + Sync,
+{
     pub(crate) fn new() -> Self {
         Self(watch::channel(Arc::new(HashMap::new())).0)
     }
@@ -45,8 +48,8 @@ impl<T: EnvironmentOwnerState> Registry<T> {
         };
         while let Some(entry) = entries.next().await {
             let root = entry?.path();
-            let file = root.join(T::FILE_NAME);
-            let state: T = match next_config::load(&file).await {
+            let file = root.join("state.toml");
+            let state: State<T> = match next_config::load(&file).await {
                 Ok(state) => state,
                 Err(next_config::error::Error::Io(error))
                     if matches!(

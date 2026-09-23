@@ -4,7 +4,7 @@
 use super::VirgoManager;
 use super::prefix::standard;
 use crate::{
-    Context, EnvironmentError, EnvironmentState, PrefixBackend, Progress, Stage,
+    Context, EnvironmentConfig, EnvironmentError, PrefixBackend, Progress, Stage,
     error::{Error, Result, ResultExt},
     utils::storage,
 };
@@ -16,17 +16,35 @@ use tokio_stream::{StreamExt, wrappers::WatchStream};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-pub(crate) trait EnvironmentOwnerState: Config + Clone + PartialEq + Send + Sync {
-    const FILE_NAME: &'static str;
-    fn id(&self) -> Uuid;
+/// Complete persisted configuration for one bottle or standalone program.
+/// Published snapshots remain usable after later edits or deletion.
+#[derive(Clone, Debug, serde::Deserialize, PartialEq, serde::Serialize)]
+pub struct State<T> {
+    pub(crate) id: Uuid,
+    pub(crate) config: EnvironmentConfig,
+    pub(crate) data: T,
+}
+
+impl<T> State<T> {
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+
+    pub fn config(&self) -> &EnvironmentConfig {
+        &self.config
+    }
+}
+
+impl<T: serde::Serialize + serde::de::DeserializeOwned + 'static> Config for State<T> {
+    const VERSION: u32 = 1;
+}
+
+pub(crate) trait BackendSource {
     fn backend(&self) -> PrefixBackend;
-    fn environment(&self) -> &EnvironmentState;
-    fn environment_mut(&mut self) -> &mut EnvironmentState;
-    fn validate(&self) -> Result<()>;
 }
 
 pub(crate) struct Environment<T> {
-    pub(crate) published: watch::Sender<Option<Arc<T>>>,
+    pub(crate) published: watch::Sender<Option<Arc<State<T>>>>,
     pub(crate) control: Mutex<()>,
     pub(crate) root: PathBuf,
     pub(crate) context: Context,
@@ -34,14 +52,17 @@ pub(crate) struct Environment<T> {
     pub(crate) virgo: Arc<VirgoManager>,
 }
 
-impl<T: EnvironmentOwnerState> Environment<T> {
+impl<T: BackendSource> Environment<T>
+where
+    State<T>: Config + Clone + PartialEq + Send + Sync,
+{
     pub(crate) fn from_state(
-        state: T,
+        state: State<T>,
         root: PathBuf,
         context: Context,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
     ) -> Result<Arc<Self>> {
-        state.validate()?;
+        state.config.validate()?;
         let expected = root
             .file_name()
             .and_then(|s| s.to_str())
@@ -72,7 +93,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
 
     /// Creation is private until initialization and persistence both succeed.
     pub(crate) async fn create(
-        state: T,
+        state: State<T>,
         root: PathBuf,
         context: Context,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
@@ -92,16 +113,15 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         }
         progress.send_replace(Some(Progress::new(Stage::CreatingPrefix)));
         // Initialization owns shutdown. Retain storage when it cannot finish safely.
-        match state.backend() {
+        match state.data.backend() {
             PrefixBackend::Standard => {
-                standard::create(state.environment(), &environment.root, &environment.context)
-                    .await?;
+                standard::create(&state.config, &environment.root, &environment.context).await?;
             }
             #[cfg(feature = "fvs")]
             PrefixBackend::Virgo => {
                 let (base, overlays) = environment
                     .virgo
-                    .prepare_artifacts(state.environment(), progress, cancellation)
+                    .prepare_artifacts(&state.config, progress, cancellation)
                     .await?;
                 environment
                     .virgo
@@ -133,20 +153,20 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         Ok(environment)
     }
 
-    pub(crate) fn state(&self) -> Result<Arc<T>> {
+    pub(crate) fn state(&self) -> Result<Arc<State<T>>> {
         self.published
             .borrow()
             .clone()
             .ok_or_else(|| EnvironmentError::Deleted.into())
     }
 
-    pub(crate) fn watch(&self) -> impl Stream<Item = Arc<T>> + Send + 'static + use<T> {
+    pub(crate) fn watch(&self) -> impl Stream<Item = Arc<State<T>>> + Send + 'static + use<T> {
         WatchStream::new(self.published.subscribe())
             .take_while(Option::is_some)
             .filter_map(|state| state)
     }
 
-    pub(crate) fn publish(&self, state: T) {
+    pub(crate) fn publish(&self, state: State<T>) {
         let next = Arc::new(state);
         self.published.send_if_modified(|published| {
             if published.as_deref() == Some(next.as_ref()) {
@@ -157,8 +177,8 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         });
     }
 
-    pub(crate) async fn save(&self, state: &T) -> Result<()> {
-        Ok(next_config::save(self.root.join(T::FILE_NAME), state).await?)
+    pub(crate) async fn save(&self, state: &State<T>) -> Result<()> {
+        Ok(next_config::save(self.root.join("state.toml"), state).await?)
     }
 
     pub(crate) async fn lock_control(

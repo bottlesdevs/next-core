@@ -10,7 +10,7 @@ use uuid::Uuid;
 /// Execution settings embedded in a bottle or standalone program's saved state.
 /// Selections preserve complete frozen recipes independently of shared payloads.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct EnvironmentState {
+pub struct EnvironmentConfig {
     /// Component releases pinned to their occupied slots.
     pub components: HashMap<Slot, Addon<Component>>,
     /// Installed dependencies in installation order.
@@ -21,7 +21,7 @@ pub struct EnvironmentState {
     pub wrappers: Wrappers,
 }
 
-impl EnvironmentState {
+impl EnvironmentConfig {
     /// Construct a selection from caller-supplied runtime records.
     pub(crate) fn new(
         runner: Addon<Component>,
@@ -33,7 +33,7 @@ impl EnvironmentState {
         if let Some(umu) = umu {
             components.insert(Slot::Umu, umu);
         }
-        let config = EnvironmentState {
+        let config = EnvironmentConfig {
             components,
             dependencies: Vec::new(),
             env_vars: Default::default(),

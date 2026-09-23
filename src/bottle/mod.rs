@@ -8,7 +8,7 @@
 //! validation, software application, and persistence. [`crate::ProgramSpec`] defines
 //! programs registered through that callback.
 //!
-//! Bottle directories and their `bottle.toml` files are library-managed.
+//! Bottle directories and their `state.toml` files are library-managed.
 //! Manager queries read an in-memory registry rather than rescanning or
 //! reloading externally modified files. Component and dependency records are pinned in each
 //! persisted state until a bottle operation explicitly replaces them.
@@ -41,4 +41,4 @@ pub use crate::wrapper::{
 };
 pub use error::BottleError;
 pub use manager::BottleManager;
-pub use state::{Bottle, BottleState};
+pub use state::{Bottle, BottleData, BottleState};

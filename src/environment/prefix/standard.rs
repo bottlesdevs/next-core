@@ -2,7 +2,7 @@
 
 use super::super::runtime;
 use crate::{
-    Context, EnvironmentState, Progress, Slot, Stage,
+    Context, EnvironmentConfig, Progress, Slot, Stage,
     addons::{InstallInputs, execute, uninstall},
     error::Result,
 };
@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Successful initialization leaves no Wine processes running; failed cleanup retains data.
 pub(in crate::environment) async fn create(
-    config: &EnvironmentState,
+    config: &EnvironmentConfig,
     root: &Path,
     cx: &Context,
 ) -> Result<()> {
@@ -33,8 +33,8 @@ pub(in crate::environment) async fn create(
 /// The caller requires a stopped owner. All work shares one maintenance session;
 /// shutdown runs once after the batch, including failure or cancellation.
 pub(in crate::environment) async fn apply(
-    previous: &EnvironmentState,
-    candidate: &EnvironmentState,
+    previous: &EnvironmentConfig,
+    candidate: &EnvironmentConfig,
     root: &Path,
     cx: &Context,
     progress: &watch::Sender<Option<Progress>>,

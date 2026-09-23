@@ -2,7 +2,7 @@
 
 #[cfg(feature = "fvs")]
 use super::history;
-use super::{Environment, EnvironmentOwnerState, prefix::standard, runtime};
+use super::{BackendSource, Environment, State, prefix::standard, runtime};
 use crate::{
     Edit, EnvironmentError, Operation, PrefixBackend, ProgramSpec, Progress, Stage,
     error::{Error, Result},
@@ -14,7 +14,10 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-impl<T: EnvironmentOwnerState> Environment<T> {
+impl<T: BackendSource> Environment<T>
+where
+    State<T>: next_config::Config + Clone + PartialEq + Send + Sync,
+{
     pub(crate) fn edit<R: Send + 'static>(
         self: &Arc<Self>,
         callback: impl FnOnce(&mut Edit<'_, T>) -> Result<R> + Send + 'static,
@@ -25,15 +28,15 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             let previous = environment.state()?;
             let mut draft = previous.as_ref().clone();
             let result = callback(&mut Edit { draft: &mut draft })?;
-            draft.validate()?;
+            draft.config.validate()?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
             if draft == *previous {
                 return Ok(result);
             }
-            let before = previous.environment();
-            let after = draft.environment();
+            let before = &previous.config;
+            let after = &draft.config;
             let software_changed =
                 before.components != after.components || before.dependencies != after.dependencies;
             if software_changed {
@@ -50,7 +53,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
                 }
             }
             // Once application succeeds, finish saving even if cancellation arrives.
-            match (previous.backend(), software_changed) {
+            match (previous.data.backend(), software_changed) {
                 (_, false) => environment.save(&draft).await?,
                 (PrefixBackend::Standard, true) => {
                     standard::apply(
@@ -105,7 +108,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
 
     pub(crate) fn launch(
         self: &Arc<Self>,
-        select: impl FnOnce(&T) -> Result<(Uuid, ProgramSpec)> + Send + 'static,
+        select: impl FnOnce(&State<T>) -> Result<(Uuid, ProgramSpec)> + Send + 'static,
     ) -> Operation<u32> {
         let environment = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -136,7 +139,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         }
     }
 
-    pub(crate) async fn kill(&self, select: impl FnOnce(&T) -> Result<Uuid>) -> Result<()> {
+    pub(crate) async fn kill(&self, select: impl FnOnce(&State<T>) -> Result<Uuid>) -> Result<()> {
         let _control = self.control.lock().await;
         let state = self.state()?;
         let id = select(&state)?;
@@ -156,14 +159,14 @@ impl<T: EnvironmentOwnerState> Environment<T> {
         let state = self.state()?;
         let prefix = self.root.join("prefix");
         if crate::utils::exists(&prefix).await? {
-            let config = state.environment();
+            let config = &state.config;
             let runner = config
                 .runner()
                 .load_runner(self.context.directories(), config.umu())
                 .await?;
             runtime::stop(runner.as_ref(), &prefix).await?;
         }
-        self.release_storage(state.backend()).await
+        self.release_storage(state.data.backend()).await
     }
 
     /// Wine is stopped before releasing mounts and their discovery files.
@@ -219,7 +222,7 @@ impl<T: EnvironmentOwnerState> Environment<T> {
 
     async fn attach_or_start(
         &self,
-        state: &T,
+        state: &State<T>,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<WineBridgeClient> {
@@ -234,8 +237,8 @@ impl<T: EnvironmentOwnerState> Environment<T> {
             }
             return Ok(bridge);
         }
-        let config = state.environment();
-        let backend = state.backend();
+        let config = &state.config;
+        let backend = state.data.backend();
         let vars = config.effective_env_vars();
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);

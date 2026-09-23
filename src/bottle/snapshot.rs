@@ -3,7 +3,7 @@ use super::Bottle;
 use crate::{Operation, Snapshot, SnapshotSummary, error::Result};
 
 impl Bottle {
-    /// Stop the environment and capture its managed files and `bottle.toml`.
+    /// Stop the environment and capture its managed files and `state.toml`.
     /// Shared artifacts and external files are not copied or rebuilt on restoration.
     /// Explicit snapshots create a revision even without changes.
     /// The internal checkpoint message is reserved. Once capture starts it finishes

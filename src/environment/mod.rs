@@ -18,10 +18,11 @@ pub use snapshot::{Snapshot, SnapshotSummary};
 
 #[cfg(feature = "fvs")]
 pub use crate::virgo::VirgoError;
-pub use config::EnvironmentState;
+pub use config::EnvironmentConfig;
 pub use edit::Edit;
 pub use error::EnvironmentError;
 pub use prefix::PrefixBackend;
 #[cfg(feature = "fvs")]
 pub(crate) use prefix::virgo::VirgoManager;
-pub(crate) use state::{Environment, EnvironmentOwnerState};
+pub use state::State;
+pub(crate) use state::{BackendSource, Environment};
