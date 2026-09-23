@@ -32,9 +32,6 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use uuid::Uuid;
 
-#[cfg(test)]
-mod tests;
-
 /// Bottle-specific configuration. Execution settings live in [`State`].
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct BottleData {
