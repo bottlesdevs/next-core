@@ -6,12 +6,11 @@ use crate::{
     error::{Error, Result},
 };
 use futures_core::Stream;
-use futures_util::StreamExt;
 use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Clone)]
-pub struct ProgramManager(Arc<Manager<ProgramSpec>>);
+pub struct ProgramManager(Arc<Manager<Program>>);
 
 #[async_trait::async_trait]
 impl LibraryProvider for ProgramManager {
@@ -56,22 +55,20 @@ impl ProgramManager {
         winebridge: Addon<Component>,
         umu: Option<Addon<Component>>,
     ) -> Operation<Program> {
-        self.0.create(launch, runner, winebridge, umu).map(Program)
+        self.0.create_environment(launch, runner, winebridge, umu)
     }
 
     /// Look up an already-known program synchronously, without filesystem or runtime work.
     pub fn open(&self, id: Uuid) -> Result<Program> {
-        self.0.open(id).map(Program)
+        self.0.open(id)
     }
 
     pub fn list(&self) -> Vec<Program> {
-        self.0.list().into_iter().map(Program).collect()
+        self.0.list()
     }
     /// Observe membership and state changes; ends when the manager is dropped.
     pub fn watch(&self) -> impl Stream<Item = Vec<Program>> + Send + 'static + use<> {
-        self.0
-            .watch()
-            .map(|environments| environments.into_iter().map(Program).collect())
+        self.0.watch()
     }
     /// Stop and withdraw the managed root into trash. Existing handles become deleted;
     /// cleanup is best effort after withdrawal.
