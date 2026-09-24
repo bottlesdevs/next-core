@@ -14,6 +14,10 @@ pub enum EnvironmentError {
     #[cfg(feature = "fvs")]
     #[error("no locally recorded Soda runner with a valid semantic version")]
     SodaNotDownloaded,
+    /// No locally acquired WineBridge has a parseable semantic version.
+    #[cfg(feature = "fvs")]
+    #[error("no locally recorded WineBridge with a valid semantic version")]
+    WineBridgeNotDownloaded,
     /// The manager has no environment with the requested identifier.
     #[error("environment {0} was not found")]
     NotFound(Uuid),
@@ -51,9 +55,9 @@ pub enum EnvironmentError {
     /// One or more addon requirements are absent from the proposed configuration.
     #[error("addon requirements are not satisfied: {requirements:?}")]
     RequiresAddon {
-        /// Addon requesting the requirements, or `None` when required runtime slots are absent.
-        required_by: Option<Uuid>,
-        /// Requirements not satisfied by any selected component or dependency.
+        /// Addon requesting the requirements.
+        required_by: Uuid,
+        /// Requirements not satisfied by any selected addon.
         requirements: Vec<Requirement>,
     },
     /// A component was stored under a [`Slot`] different from the one it declares.

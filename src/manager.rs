@@ -8,8 +8,8 @@
 use crate::environment::VirgoManager;
 use crate::environment::{BackendSource, Environment, State};
 use crate::{
-    Addon, Component, Context, EnvironmentConfig, EnvironmentError, Operation, Progress, Stage,
-    error::Result,
+    Addon, Context, EnvironmentConfig, EnvironmentError, Operation, Progress, Runner, Stage, Umu,
+    WineBridge, error::Result,
 };
 use futures_core::Stream;
 use futures_util::{
@@ -167,9 +167,9 @@ where
     pub(crate) fn create_environment(
         &self,
         data: T::Data,
-        runner: Addon<Component>,
-        winebridge: Addon<Component>,
-        umu: Option<Addon<Component>>,
+        runner: Addon<Runner>,
+        winebridge: Addon<WineBridge>,
+        umu: Option<Addon<Umu>>,
     ) -> Operation<T> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {

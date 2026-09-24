@@ -127,6 +127,14 @@ impl Directories {
         self.dependencies().join("releases")
     }
 
+    pub(crate) fn component_catalog(&self) -> PathBuf {
+        self.components().join("catalog.json")
+    }
+
+    pub(crate) fn dependency_catalog(&self) -> PathBuf {
+        self.dependencies().join("catalog.json")
+    }
+
     #[cfg(feature = "fvs")]
     pub(crate) fn virgo(&self) -> PathBuf {
         self.data_dir().join("virgo")

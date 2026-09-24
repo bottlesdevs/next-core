@@ -2,12 +2,13 @@
 
 use super::{Addons, AddonsState};
 use crate::{
-    Addon, AddonError, Component, Dependency, Directories,
+    Addon, AddonError, Component, Dependency, Directories, Runner, Umu, WineBridge,
     addons::catalog::Catalog,
     error::{Error, Result},
     utils::fs,
 };
 use futures_util::TryStreamExt;
+use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -15,87 +16,212 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// Projects a typed release from shared storage and selects its directory.
+pub(crate) trait StoredAddon: Sized + PartialEq + Send + Sync + 'static {
+    fn releases(directories: &Directories) -> PathBuf {
+        directories.component_releases()
+    }
+
+    fn get(release: &StoredRelease) -> Option<&Arc<Addon<Self>>>;
+    fn manifest(record: Arc<Addon<Self>>) -> StoredRelease;
+}
+
+/// The discriminator belongs to shared storage, where several kinds share a root.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum StoredRelease {
+    Runner(Arc<Addon<Runner>>),
+    #[serde(rename = "winebridge")]
+    WineBridge(Arc<Addon<WineBridge>>),
+    Umu(Arc<Addon<Umu>>),
+    Component(Arc<Addon<Component>>),
+    Dependency(Arc<Addon<Dependency>>),
+}
+
+impl StoredRelease {
+    fn id(&self) -> Uuid {
+        match self {
+            Self::Runner(record) => record.id(),
+            Self::WineBridge(record) => record.id(),
+            Self::Umu(record) => record.id(),
+            Self::Component(record) => record.id(),
+            Self::Dependency(record) => record.id(),
+        }
+    }
+}
+
+impl next_config::Config for StoredRelease {
+    const VERSION: u32 = 1;
+}
+
+impl StoredAddon for Runner {
+    fn get(release: &StoredRelease) -> Option<&Arc<Addon<Self>>> {
+        match release {
+            StoredRelease::Runner(record) => Some(record),
+            _ => None,
+        }
+    }
+
+    fn manifest(record: Arc<Addon<Self>>) -> StoredRelease {
+        StoredRelease::Runner(record)
+    }
+}
+
+impl StoredAddon for WineBridge {
+    fn get(release: &StoredRelease) -> Option<&Arc<Addon<Self>>> {
+        match release {
+            StoredRelease::WineBridge(record) => Some(record),
+            _ => None,
+        }
+    }
+
+    fn manifest(record: Arc<Addon<Self>>) -> StoredRelease {
+        StoredRelease::WineBridge(record)
+    }
+}
+
+impl StoredAddon for Umu {
+    fn get(release: &StoredRelease) -> Option<&Arc<Addon<Self>>> {
+        match release {
+            StoredRelease::Umu(record) => Some(record),
+            _ => None,
+        }
+    }
+
+    fn manifest(record: Arc<Addon<Self>>) -> StoredRelease {
+        StoredRelease::Umu(record)
+    }
+}
+
+impl StoredAddon for Component {
+    fn get(release: &StoredRelease) -> Option<&Arc<Addon<Self>>> {
+        match release {
+            StoredRelease::Component(record) => Some(record),
+            _ => None,
+        }
+    }
+
+    fn manifest(record: Arc<Addon<Self>>) -> StoredRelease {
+        StoredRelease::Component(record)
+    }
+}
+
+impl StoredAddon for Dependency {
+    fn releases(directories: &Directories) -> PathBuf {
+        directories.dependency_releases()
+    }
+
+    fn get(release: &StoredRelease) -> Option<&Arc<Addon<Self>>> {
+        match release {
+            StoredRelease::Dependency(record) => Some(record),
+            _ => None,
+        }
+    }
+
+    fn manifest(record: Arc<Addon<Self>>) -> StoredRelease {
+        StoredRelease::Dependency(record)
+    }
+}
+
 impl Addons {
-    /// Removes an acquired component from shared release storage.
+    /// Removes an acquired runner release from shared storage.
     ///
-    /// The release directory is first moved to temporary trash, then the new state
-    /// is published and cleanup is attempted. Existing environment selections retain
-    /// their embedded records but lose access to the shared payload. Already-built
-    /// Virgo artifacts are not removed. Trash cleanup is best effort; cleanup
-    /// failures are logged without changing the result.
+    /// Existing environment selections retain their records but lose the payload.
+    /// Built Virgo artifacts are unaffected. The release is moved to trash before
+    /// the new state is published; trash cleanup is best effort.
     ///
     /// # Errors
     ///
-    /// Returns [`AddonError::NotFound`] if `id` is not an acquired component, or
-    /// returns an I/O error if temporary trash cannot be prepared or the release
-    /// directory cannot be moved.
+    /// Returns [`AddonError::NotFound`] when the release is absent, or an I/O error
+    /// if its storage directory cannot be moved to trash.
+    pub async fn remove_runner(&self, id: Uuid) -> Result<()> {
+        self.remove::<Runner>(id).await
+    }
+
+    /// Removes an acquired winebridge release from shared storage.
+    ///
+    /// Existing environment selections retain their records but lose the payload.
+    /// Built Virgo artifacts are unaffected. The release is moved to trash before
+    /// the new state is published; trash cleanup is best effort.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AddonError::NotFound`] when the release is absent, or an I/O error
+    /// if its storage directory cannot be moved to trash.
+    pub async fn remove_winebridge(&self, id: Uuid) -> Result<()> {
+        self.remove::<WineBridge>(id).await
+    }
+
+    /// Removes an acquired umu release from shared storage.
+    ///
+    /// Existing environment selections retain their records but lose the payload.
+    /// Built Virgo artifacts are unaffected. The release is moved to trash before
+    /// the new state is published; trash cleanup is best effort.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AddonError::NotFound`] when the release is absent, or an I/O error
+    /// if its storage directory cannot be moved to trash.
+    pub async fn remove_umu(&self, id: Uuid) -> Result<()> {
+        self.remove::<Umu>(id).await
+    }
+
+    /// Removes an acquired component release from shared storage.
+    ///
+    /// Existing environment selections retain their records but lose the payload.
+    /// Built Virgo artifacts are unaffected. The release is moved to trash before
+    /// the new state is published; trash cleanup is best effort.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AddonError::NotFound`] when the release is absent, or an I/O error
+    /// if its storage directory cannot be moved to trash.
     pub async fn remove_component(&self, id: Uuid) -> Result<()> {
-        fs::with_temp_dir(&self.0.directories.trash(), |trash| async move {
-            let _write = self.0.write.lock().await;
-            let mut next = self.state().as_ref().clone();
-            let release = next
-                .components
-                .remove(&id)
-                .ok_or(AddonError::NotFound(id))?;
-            async_fs::rename(
-                release.directory(&self.0.directories),
-                trash.join("release"),
-            )
-            .await?;
-            self.publish(next);
-            Ok(())
-        })
-        .await
+        self.remove::<Component>(id).await
     }
 
-    /// Removes an acquired dependency from shared release storage.
+    /// Removes an acquired dependency release from shared storage.
     ///
-    /// The release directory is first moved to temporary trash, then the new state
-    /// is published and cleanup is attempted. Existing environment selections retain
-    /// their embedded records but lose access to the shared payload. Already-built
-    /// Virgo artifacts are not removed. Trash cleanup is best effort; cleanup
-    /// failures are logged without changing the result.
+    /// Existing environment selections retain their records but lose the payload.
+    /// Built Virgo artifacts are unaffected. The release is moved to trash before
+    /// the new state is published; trash cleanup is best effort.
     ///
     /// # Errors
     ///
-    /// Returns [`AddonError::NotFound`] if `id` is not an acquired dependency, or
-    /// returns an I/O error if temporary trash cannot be prepared or the release
-    /// directory cannot be moved.
+    /// Returns [`AddonError::NotFound`] when the release is absent, or an I/O error
+    /// if its storage directory cannot be moved to trash.
     pub async fn remove_dependency(&self, id: Uuid) -> Result<()> {
+        self.remove::<Dependency>(id).await
+    }
+
+    async fn remove<K: StoredAddon>(&self, id: Uuid) -> Result<()> {
         fs::with_temp_dir(&self.0.directories.trash(), |trash| async move {
             let _write = self.0.write.lock().await;
             let mut next = self.state().as_ref().clone();
             let release = next
-                .dependencies
-                .remove(&id)
+                .releases
+                .get(&id)
+                .and_then(K::get)
                 .ok_or(AddonError::NotFound(id))?;
             async_fs::rename(
                 release.directory(&self.0.directories),
                 trash.join("release"),
             )
             .await?;
+            next.releases.remove(&id);
             self.publish(next);
             Ok(())
         })
         .await
     }
 
-    /// Publishes a prepared component release under its immutable UUID.
-    ///
-    /// An already-published identical record is returned unchanged. The write lock
-    /// is cancellation-aware and covers validation, the final rename, and snapshot
-    /// publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on cancellation, UUID collision, conflicting local record,
-    /// occupied destination, manifest serialization, or filesystem failure.
-    pub(super) async fn commit_component(
+    /// Commits a prepared release and publishes the updated snapshot.
+    pub(super) async fn commit<K: StoredAddon>(
         &self,
-        record: Arc<Addon<Component>>,
+        record: Arc<Addon<K>>,
         prepared: &Path,
         cancellation: &CancellationToken,
-    ) -> Result<Arc<Addon<Component>>> {
+    ) -> Result<Arc<Addon<K>>> {
         let id = record.id();
         let destination = record.directory(&self.0.directories);
         let _write = cancellation
@@ -106,72 +232,23 @@ impl Addons {
             return Err(Error::Cancelled);
         }
         let mut next = self.state().as_ref().clone();
-        if let Some(current) = next.components.get(&id) {
+        if let Some(current) = next.releases.get(&id) {
+            let current = K::get(current).ok_or(AddonError::Duplicate(id))?;
             if current != &record {
                 return Err(AddonError::InvalidRelease(destination).into());
             }
             return Ok(current.clone());
         }
-        if next.contains(id) {
-            return Err(AddonError::Duplicate(id).into());
-        }
         if crate::utils::fs::exists(&destination).await? {
             return Err(AddonError::TargetExists(destination).into());
         }
-        next_config::save(prepared.join("release.toml"), record.as_ref()).await?;
+        let stored = K::manifest(record.clone());
+        next_config::save(prepared.join("release.toml"), &stored).await?;
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
         async_fs::rename(prepared, destination).await?;
-        next.components.insert(id, record.clone());
-        self.publish(next);
-        Ok(record)
-    }
-
-    /// Publishes a prepared dependency release under its immutable UUID.
-    ///
-    /// An already-published identical record is returned unchanged. The write lock
-    /// is cancellation-aware and covers validation, the final rename, and snapshot
-    /// publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on cancellation, UUID collision, conflicting local record,
-    /// occupied destination, manifest serialization, or filesystem failure.
-    pub(super) async fn commit_dependency(
-        &self,
-        record: Arc<Addon<Dependency>>,
-        prepared: &Path,
-        cancellation: &CancellationToken,
-    ) -> Result<Arc<Addon<Dependency>>> {
-        let id = record.id();
-        let destination = record.directory(&self.0.directories);
-        let _write = cancellation
-            .run_until_cancelled(self.0.write.lock())
-            .await
-            .ok_or(Error::Cancelled)?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        let mut next = self.state().as_ref().clone();
-        if let Some(current) = next.dependencies.get(&id) {
-            if current != &record {
-                return Err(AddonError::InvalidRelease(destination).into());
-            }
-            return Ok(current.clone());
-        }
-        if next.contains(id) {
-            return Err(AddonError::Duplicate(id).into());
-        }
-        if crate::utils::fs::exists(&destination).await? {
-            return Err(AddonError::TargetExists(destination).into());
-        }
-        next_config::save(prepared.join("release.toml"), record.as_ref()).await?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        async_fs::rename(prepared, destination).await?;
-        next.dependencies.insert(id, record.clone());
+        next.releases.insert(id, stored);
         self.publish(next);
         Ok(record)
     }
@@ -179,36 +256,25 @@ impl Addons {
 
 impl AddonsState {
     /// Loads cached catalogs and release manifests into the initial snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a catalog or manifest cannot be read, a manifest UUID
-    /// does not match its parent directory, or UUIDs collide across local releases.
     pub(super) async fn load_cached(directories: &Directories) -> Result<Self> {
         let mut state = Self {
-            component_catalog: Catalog::<Component>::load(directories).await?,
-            dependency_catalog: Catalog::<Dependency>::load(directories).await?,
+            component_catalog: Catalog::load(&directories.component_catalog()).await?,
+            dependency_catalog: Catalog::load(&directories.dependency_catalog()).await?,
             ..Self::default()
         };
-        for (id, path) in release_manifests(&directories.component_releases()).await? {
-            let record: Addon<Component> = next_config::load(&path).await?;
-            if record.id() != id {
-                return Err(AddonError::InvalidRelease(path).into());
+        for root in [
+            directories.component_releases(),
+            directories.dependency_releases(),
+        ] {
+            for (id, path) in release_manifests(&root).await? {
+                let record: StoredRelease = next_config::load(&path).await?;
+                if record.id() != id {
+                    return Err(AddonError::InvalidRelease(path).into());
+                }
+                if state.releases.insert(id, record).is_some() {
+                    return Err(AddonError::Duplicate(id).into());
+                }
             }
-            if state.contains(id) {
-                return Err(AddonError::Duplicate(id).into());
-            }
-            state.components.insert(id, Arc::new(record));
-        }
-        for (id, path) in release_manifests(&directories.dependency_releases()).await? {
-            let record: Addon<Dependency> = next_config::load(&path).await?;
-            if record.id() != id {
-                return Err(AddonError::InvalidRelease(path).into());
-            }
-            if state.contains(id) {
-                return Err(AddonError::Duplicate(id).into());
-            }
-            state.dependencies.insert(id, Arc::new(record));
         }
         Ok(state)
     }

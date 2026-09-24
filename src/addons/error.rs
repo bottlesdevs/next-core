@@ -38,12 +38,12 @@ pub enum AddonError {
     /// A downloaded artifact did not match its catalog digest.
     #[error("checksum mismatch for {0}")]
     ChecksumMismatch(PathBuf),
-    /// An imported or downloaded component archive has no single top-level directory.
+    /// An imported or downloaded archive has no single top-level directory.
     #[error("an extracted artifact must contain exactly one top-level directory")]
-    InvalidComponentArchive,
-    /// A component payload is structurally invalid or contains an escaping link.
-    #[error("component could not be identified: {0}")]
-    InvalidComponent(PathBuf),
+    InvalidArchive,
+    /// An acquired payload contains an escaping link.
+    #[error("addon payload contains an escaping link: {0}")]
+    InvalidPayload(PathBuf),
     /// A persisted release record conflicts with its storage location or identity.
     #[error("release record is invalid: {0}")]
     InvalidRelease(PathBuf),
@@ -58,7 +58,7 @@ pub enum CatalogError {
     /// The requested UUID is absent from the currently published catalog.
     #[error("catalog addon {0} was not found")]
     NotFound(Uuid),
-    /// At least one catalog failed during a two-family refresh.
+    /// At least one catalog failed during a two-source refresh.
     #[error("catalog refresh failed (components: {components:?}, dependencies: {dependencies:?})")]
     Refresh {
         /// Text of the component-catalog failure, or `None` after success.
@@ -72,10 +72,10 @@ pub enum CatalogError {
     /// The release has no artifact for the current build target.
     #[error("no artifact supports this system for addon {0}")]
     Unsupported(Uuid),
-    /// A component has more than one artifact for the current build target.
-    #[error("component {addon} has {count} matching artifacts; expected exactly one")]
-    InvalidComponentArtifactCount {
-        /// UUID of the component with ambiguous artifacts.
+    /// An archive release has more than one artifact for the current build target.
+    #[error("addon {addon} has {count} matching artifacts; expected exactly one")]
+    InvalidArchiveArtifactCount {
+        /// UUID of the release with ambiguous artifacts.
         addon: Uuid,
         /// Number of artifacts that matched the current target.
         count: usize,

@@ -154,10 +154,9 @@ static LATENCY_FLEX_STEPS: LazyLock<Vec<InstallStep>> = LazyLock::new(|| {
 
 /// Returns the built-in recipe for `slot`.
 ///
-/// Runtime components are consumed directly and therefore have no prefix recipe.
+/// Runtime addons are consumed directly and have no component slot.
 pub(crate) fn steps(slot: Slot) -> &'static [InstallStep] {
     match slot {
-        Slot::WineBridge | Slot::Runner | Slot::Umu => &[],
         Slot::Dxvk => &DXVK_STEPS,
         Slot::Vkd3d => &VKD3D_STEPS,
         Slot::Nvapi => &NVAPI_STEPS,

@@ -1,7 +1,7 @@
 # bottles-core
 
 `bottles-core` is the application library behind Bottles Next. It manages Wine
-and Proton environments, installable runtime components, saved Windows launch
+and Proton environments, runtime tools and prefix components, saved Windows launch
 definitions, user profiles, and launchable library entries.
 
 The main entry point is [`Bottles`]. Opening it resolves the application's data

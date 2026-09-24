@@ -4,8 +4,8 @@
 //! its environment configuration, private storage, and snapshot history.
 
 use crate::{
-    Addon, Component, Edit, LibraryEntry, LibraryProvider, Manager, Operation, PrefixBackend,
-    ProgramSpec, Snapshot, SnapshotSummary, State,
+    Addon, Edit, LibraryEntry, LibraryProvider, Manager, Operation, PrefixBackend, ProgramSpec,
+    Runner, Snapshot, SnapshotSummary, State, Umu, WineBridge,
     environment::{BackendSource, Environment},
     error::{Error, Result},
     manager::Managed,
@@ -307,9 +307,9 @@ impl Manager<Program> {
     pub fn create(
         &self,
         launch: ProgramSpec,
-        runner: Addon<Component>,
-        winebridge: Addon<Component>,
-        umu: Option<Addon<Component>>,
+        runner: Addon<Runner>,
+        winebridge: Addon<WineBridge>,
+        umu: Option<Addon<Umu>>,
     ) -> Operation<Program> {
         self.create_environment(launch, runner, winebridge, umu)
     }

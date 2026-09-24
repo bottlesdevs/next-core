@@ -9,9 +9,12 @@ mod download;
 mod refresh;
 mod storage;
 
+pub(crate) use storage::StoredAddon;
+use storage::StoredRelease;
+
 use super::{
-    Addon, Component, Dependency,
-    catalog::{Catalog, CatalogEntry, CatalogUrls},
+    Addon, Component, Dependency, Runner, Umu, WineBridge,
+    catalog::{AddonKind, Catalog, CatalogEntry},
 };
 use crate::{Directories, error::Result};
 use download_manager::manager::DownloadManager;
@@ -35,14 +38,14 @@ use uuid::Uuid;
 /// # Examples
 ///
 /// ```
-/// use bottles_core::{Addons, CatalogEntry, Component, Slot};
+/// use bottles_core::{Addons, CatalogEntry};
 ///
-/// fn supported_runners(addons: &Addons) -> Vec<CatalogEntry<Component>> {
+/// fn supported_runners(addons: &Addons) -> Vec<CatalogEntry> {
 ///     addons
 ///         .state()
-///         .component_entries()
+///         .runner_entries()
 ///         .into_iter()
-///         .filter(|entry| entry.slot() == Slot::Runner && entry.is_supported())
+///         .filter(CatalogEntry::is_supported)
 ///         .collect()
 /// }
 /// ```
@@ -52,7 +55,8 @@ pub struct Addons(Arc<AddonsInner>);
 struct AddonsInner {
     directories: Directories,
     downloader: Arc<DownloadManager>,
-    catalog_urls: CatalogUrls,
+    component_catalog_url: Option<Url>,
+    dependency_catalog_url: Option<Url>,
     published: watch::Sender<Arc<AddonsState>>,
     /// Serializes filesystem commits and state publication, not transfers.
     write: Mutex<()>,
@@ -64,10 +68,9 @@ struct AddonsInner {
 /// not change this snapshot, and retaining it does not keep the manager alive.
 #[derive(Clone, Debug, Default)]
 pub struct AddonsState {
-    component_catalog: Option<Arc<Catalog<Component>>>,
-    dependency_catalog: Option<Arc<Catalog<Dependency>>>,
-    components: HashMap<Uuid, Arc<Addon<Component>>>,
-    dependencies: HashMap<Uuid, Arc<Addon<Dependency>>>,
+    component_catalog: Option<Arc<Catalog>>,
+    dependency_catalog: Option<Arc<Catalog>>,
+    releases: HashMap<Uuid, StoredRelease>,
 }
 
 impl Addons {
@@ -93,10 +96,8 @@ impl Addons {
         Ok(Self(Arc::new(AddonsInner {
             directories,
             downloader,
-            catalog_urls: CatalogUrls {
-                components: component_catalog_url,
-                dependencies: dependency_catalog_url,
-            },
+            component_catalog_url,
+            dependency_catalog_url,
             published,
             write: Mutex::new(()),
         })))
@@ -110,7 +111,7 @@ impl Addons {
     /// Returns a stream of immutable addon-state snapshots.
     ///
     /// The first item is available immediately. Later items follow refreshes that
-    /// reach publication, including refreshes that report per-family failures, and
+    /// reach publication, including refreshes that report per-source failures, and
     /// successful new release acquisitions, imports, and removals. Reusing an
     /// already-acquired release does not publish. Slow consumers may observe several
     /// publications as one item. The stream does not keep the manager alive and
@@ -127,64 +128,145 @@ impl Addons {
 }
 
 impl AddonsState {
-    fn contains(&self, id: Uuid) -> bool {
-        self.components.contains_key(&id) || self.dependencies.contains_key(&id)
+    fn releases<K: StoredAddon>(&self) -> Vec<Arc<Addon<K>>> {
+        self.releases.values().filter_map(K::get).cloned().collect()
+    }
+
+    fn release<K: StoredAddon>(&self, id: Uuid) -> Option<Arc<Addon<K>>> {
+        self.releases.get(&id).and_then(K::get).cloned()
+    }
+
+    /// Returns runner entries in catalog order.
+    pub fn runner_entries(&self) -> Vec<CatalogEntry> {
+        self.component_catalog_entries(|kind| kind == AddonKind::Runner)
+    }
+
+    /// Returns `WineBridge` entries in catalog order.
+    pub fn winebridge_entries(&self) -> Vec<CatalogEntry> {
+        self.component_catalog_entries(|kind| kind == AddonKind::WineBridge)
+    }
+
+    /// Returns UMU entries in catalog order.
+    pub fn umu_entries(&self) -> Vec<CatalogEntry> {
+        self.component_catalog_entries(|kind| kind == AddonKind::Umu)
     }
 
     /// Returns component entries in their current catalog order.
     ///
-    /// The result is empty until a component catalog has been loaded from cache or
+    /// The result is empty until the component catalog has been loaded from cache or
     /// published by [`Addons::refresh`].
-    pub fn component_entries(&self) -> Vec<CatalogEntry<Component>> {
-        self.component_catalog
-            .iter()
-            .flat_map(|catalog| catalog.entries().iter().cloned())
-            .collect()
+    pub fn component_entries(&self) -> Vec<CatalogEntry> {
+        self.component_catalog_entries(|kind| matches!(kind, AddonKind::Component { .. }))
     }
 
     /// Returns dependency entries in their current catalog order.
     ///
     /// The result is empty until a dependency catalog has been loaded from cache or
     /// published by [`Addons::refresh`].
-    pub fn dependency_entries(&self) -> Vec<CatalogEntry<Dependency>> {
+    pub fn dependency_entries(&self) -> Vec<CatalogEntry> {
         self.dependency_catalog
             .iter()
-            .flat_map(|catalog| catalog.entries().iter().cloned())
+            .flat_map(|catalog| catalog.entries())
+            .filter(|entry| entry.kind() == AddonKind::Dependency)
+            .cloned()
             .collect()
+    }
+
+    /// Returns all locally acquired runners in unspecified order.
+    pub fn runners(&self) -> Vec<Arc<Addon<Runner>>> {
+        self.releases()
+    }
+
+    /// Returns all locally acquired `WineBridge` releases in unspecified order.
+    pub fn winebridges(&self) -> Vec<Arc<Addon<WineBridge>>> {
+        self.releases()
+    }
+
+    /// Returns all locally acquired UMU releases in unspecified order.
+    pub fn umus(&self) -> Vec<Arc<Addon<Umu>>> {
+        self.releases()
     }
 
     /// Returns all locally acquired component releases.
     ///
     /// The order is unspecified.
     pub fn components(&self) -> Vec<Arc<Addon<Component>>> {
-        self.components.values().cloned().collect()
+        self.releases()
     }
 
     /// Returns all locally acquired dependency releases.
     ///
     /// The result order is unspecified.
     pub fn dependencies(&self) -> Vec<Arc<Addon<Dependency>>> {
-        self.dependencies.values().cloned().collect()
+        self.releases()
+    }
+
+    /// Returns the locally acquired runner with UUID `id`, if present.
+    pub fn runner(&self, id: Uuid) -> Option<Arc<Addon<Runner>>> {
+        self.release(id)
+    }
+
+    /// Returns the locally acquired `WineBridge` release with UUID `id`, if present.
+    pub fn winebridge(&self, id: Uuid) -> Option<Arc<Addon<WineBridge>>> {
+        self.release(id)
+    }
+
+    /// Returns the locally acquired UMU release with UUID `id`, if present.
+    pub fn umu(&self, id: Uuid) -> Option<Arc<Addon<Umu>>> {
+        self.release(id)
     }
 
     /// Returns the locally acquired component with UUID `id`, if present.
     pub fn component(&self, id: Uuid) -> Option<Arc<Addon<Component>>> {
-        self.components.get(&id).cloned()
+        self.release(id)
     }
 
     /// Returns the locally acquired dependency with UUID `id`, if present.
     pub fn dependency(&self, id: Uuid) -> Option<Arc<Addon<Dependency>>> {
-        self.dependencies.get(&id).cloned()
+        self.release(id)
     }
 
     /// Returns the component catalog entry with UUID `id`.
     ///
     /// Returns `None` when no valid component catalog is loaded or the release
     /// is absent from it.
-    pub fn component_entry(&self, id: Uuid) -> Option<CatalogEntry<Component>> {
+    pub fn component_entry(&self, id: Uuid) -> Option<CatalogEntry> {
+        self.component_catalog_entry(id, |kind| matches!(kind, AddonKind::Component { .. }))
+    }
+
+    /// Returns the runner catalog entry with UUID `id`, if present.
+    pub fn runner_entry(&self, id: Uuid) -> Option<CatalogEntry> {
+        self.component_catalog_entry(id, |kind| kind == AddonKind::Runner)
+    }
+
+    /// Returns the `WineBridge` catalog entry with UUID `id`, if present.
+    pub fn winebridge_entry(&self, id: Uuid) -> Option<CatalogEntry> {
+        self.component_catalog_entry(id, |kind| kind == AddonKind::WineBridge)
+    }
+
+    /// Returns the UMU catalog entry with UUID `id`, if present.
+    pub fn umu_entry(&self, id: Uuid) -> Option<CatalogEntry> {
+        self.component_catalog_entry(id, |kind| kind == AddonKind::Umu)
+    }
+
+    fn component_catalog_entries(&self, matches: impl Fn(AddonKind) -> bool) -> Vec<CatalogEntry> {
+        self.component_catalog
+            .iter()
+            .flat_map(|catalog| catalog.entries())
+            .filter(|entry| matches(entry.kind()))
+            .cloned()
+            .collect()
+    }
+
+    fn component_catalog_entry(
+        &self,
+        id: Uuid,
+        matches: impl Fn(AddonKind) -> bool,
+    ) -> Option<CatalogEntry> {
         self.component_catalog
             .as_ref()
             .and_then(|catalog| catalog.entry(id))
+            .filter(|entry| matches(entry.kind()))
             .cloned()
     }
 
@@ -192,10 +274,11 @@ impl AddonsState {
     ///
     /// Returns `None` when no valid dependency catalog is loaded or the release
     /// is absent from it.
-    pub fn dependency_entry(&self, id: Uuid) -> Option<CatalogEntry<Dependency>> {
+    pub fn dependency_entry(&self, id: Uuid) -> Option<CatalogEntry> {
         self.dependency_catalog
             .as_ref()
             .and_then(|catalog| catalog.entry(id))
+            .filter(|entry| entry.kind() == AddonKind::Dependency)
             .cloned()
     }
 }
