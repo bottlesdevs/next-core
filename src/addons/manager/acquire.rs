@@ -35,6 +35,8 @@ impl Addons {
     /// Otherwise it selects the single artifact for the current platform, verifies
     /// its checksum, extracts its one top-level directory, and stores the resulting
     /// immutable release. A later catalog refresh does not alter that stored record.
+    /// Downloads are cancellable, but checksum reads and archive extraction finish
+    /// before cancellation is observed.
     ///
     /// # Errors
     ///
@@ -116,7 +118,9 @@ impl Addons {
     /// The returned [`Operation`] reuses the local dependency with this UUID when
     /// present, without comparing it with the current catalog entry.
     /// Otherwise every artifact matching the current platform is downloaded,
-    /// verified, and stored as the dependency payload in catalog order.
+    /// verified, and stored as the dependency payload in catalog order. Downloads
+    /// are cancellable, but an in-progress checksum read finishes before cancellation
+    /// is observed.
     ///
     /// # Errors
     ///
@@ -189,6 +193,11 @@ impl Addons {
     /// containing exactly one top-level directory. The returned [`Operation`]
     /// assigns a fresh UUID, infers built-in requirements for `slot`, freezes the
     /// slot's default recipe, and leaves the source archive unchanged.
+    ///
+    /// Extraction is not sandboxed. Path checks reject lexical traversal and
+    /// escaping links, but cannot prevent a later archive entry from traversing a
+    /// symlink created by an earlier entry; import only trusted archives.
+    /// Extraction and runner inspection finish before cancellation is observed.
     ///
     /// # Errors
     ///

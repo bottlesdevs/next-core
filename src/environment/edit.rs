@@ -1,8 +1,9 @@
-//! Transactional edits to an environment configuration.
+//! Coordinated edits to an environment configuration.
 //!
 //! An owner exposes [`Edit`] only inside its edit callback. Changes are made to
 //! a private draft, validated as a whole, applied to storage, persisted, and
-//! published only after the callback succeeds.
+//! published only after the callback succeeds. Virgo edits recover from a failed
+//! storage change; conventional prefixes can remain partially modified on failure.
 
 use crate::{Addon, Component, Dependency, EnvVars, Slot, Wrappers, error::Result};
 
@@ -83,14 +84,20 @@ where
     /// Runs a coordinated edit and publishes it only after application succeeds.
     ///
     /// Software changes require a stopped environment. Standard prefixes are
-    /// changed in place; Virgo environments checkpoint and recover the owner if
-    /// workspace preparation or persistence fails.
+    /// changed in place without rollback; Virgo environments checkpoint and
+    /// recover the owner if workspace preparation or persistence fails. A
+    /// standard-prefix application or subsequent save failure can therefore leave
+    /// prefix contents inconsistent with the last published configuration.
+    ///
+    /// Cancellation is observed before a change starts and at backend-specific
+    /// safe points. Once backend application succeeds, saving and publication
+    /// finish without another cancellation check.
     ///
     /// # Errors
     ///
     /// Returns an error when the callback rejects the draft, validation fails,
-    /// the environment is running during a software change, cancellation arrives
-    /// before application is committed, or backend application/persistence fails.
+    /// the environment is running during a software change, cancellation is
+    /// observed at a backend safe point, or backend application/persistence fails.
     pub(crate) fn edit<R: Send + 'static>(
         self: &Arc<Self>,
         callback: impl FnOnce(&mut Edit<'_, T>) -> Result<R> + Send + 'static,

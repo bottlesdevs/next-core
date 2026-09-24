@@ -286,6 +286,8 @@ impl<T> Operation<T> {
     /// observed at operation-specific checkpoints. If the work has passed its
     /// cancellation boundary, this may return its successful result or another
     /// error instead of [`Error::Cancelled`](crate::error::Error::Cancelled).
+    /// This method neither aborts the future nor imposes a timeout, so work that
+    /// ignores cancellation can keep it pending indefinitely.
     ///
     /// # Errors
     ///

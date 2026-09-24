@@ -64,8 +64,8 @@ impl Context {
     ///
     /// # Panics
     ///
-    /// Panics if the process cannot construct the test-only Tokio runtime used
-    /// to create a lazy FVS channel.
+    /// With the `fvs` feature, panics if the process cannot construct the
+    /// test-only Tokio runtime used to create a lazy FVS channel.
     pub(crate) async fn for_test(directories: Directories) -> Result<Self> {
         let client = Arc::new(http_client::MockClient::new(|_| {
             Ok(http::Response::new(http_client::body([])))

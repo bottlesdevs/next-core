@@ -1,8 +1,8 @@
 //! Materializes software directly into a conventional Wine prefix.
 //!
 //! Creation initializes Wine and leaves no processes running. Later software
-//! edits uninstall replaced components before installing their replacements and
-//! newly appended dependencies in one maintenance session.
+//! edits uninstall removed or replaced prefix components before installing
+//! replacements and newly appended dependencies in one maintenance session.
 
 use super::super::runtime;
 use crate::{
@@ -37,11 +37,13 @@ pub(in crate::environment) async fn create(
 
 /// Applies the difference between two frozen selections to a stopped prefix.
 ///
-/// Removed components use the previous selection's embedded recipe and prefix
+/// Removed prefix components use the previous selection's embedded recipe and prefix
 /// backups. Replacements and newly appended dependencies read their payloads as
 /// each recipe runs, so a late failure can leave earlier steps applied. The
 /// caller must stop the owner first; this function performs one final shutdown
 /// after the batch whether application succeeds or fails.
+/// `candidate.dependencies` must retain `previous.dependencies` as an exact
+/// prefix; environment edits enforce this by exposing append-only dependencies.
 ///
 /// # Errors
 ///

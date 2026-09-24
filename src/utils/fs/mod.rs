@@ -1,7 +1,7 @@
 //! Filesystem queries, archive handling, and disposable workspaces.
 //!
 //! Temporary-workspace cleanup is best effort: the work result determines
-//! success, and dropping an in-flight future does not schedule cleanup.
+//! success, and panicking or dropping an in-flight future does not schedule cleanup.
 
 pub(crate) mod archive;
 
@@ -17,10 +17,10 @@ use crate::error::ResultExt;
 
 /// Creates an isolated child of `parent`, runs `work`, then removes the child.
 ///
-/// The child directory is passed to `work` after successful creation. Cleanup is
-/// attempted whether `work` succeeds or fails; cleanup errors are logged and do
-/// not replace its result. Dropping this future before completion can leave the
-/// directory and its contents on disk.
+/// The child directory is passed to `work` after successful creation. When
+/// `work` returns, cleanup is attempted for both [`Ok`] and [`Err`] results;
+/// cleanup errors are logged and do not replace that result. A panic in `work`
+/// or dropping this future before completion can leave the directory on disk.
 ///
 /// # Errors
 ///

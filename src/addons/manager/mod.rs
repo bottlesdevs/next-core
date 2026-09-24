@@ -177,10 +177,12 @@ impl Addons {
 
     /// Returns a stream that observes published addon-state changes.
     ///
-    /// The first item is available immediately. Later items follow successful
-    /// catalog refreshes, release acquisitions, imports, and removals. Slow
-    /// consumers may observe several publications as one item. Each item is a
-    /// manager handle; call its query methods to read the current snapshot.
+    /// The first item is available immediately. Later items follow refreshes that
+    /// reach publication, including refreshes that report per-family failures, and
+    /// successful new release acquisitions, imports, and removals. Reusing an
+    /// already-acquired release does not publish. Slow consumers may observe several
+    /// publications as one item. Each item is a manager handle; call its query
+    /// methods to read the current snapshot.
     pub fn watch(&self) -> impl Stream<Item = Self> + Send + 'static + use<> {
         let addons = self.clone();
         tokio_stream::StreamExt::map(WatchStream::new(self.0.published.subscribe()), move |_| {

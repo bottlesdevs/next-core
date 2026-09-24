@@ -50,7 +50,7 @@ pub enum VirgoError {
     /// A selected artifact is absent from the cache.
     #[error("missing Virgo artifact: {0}")]
     MissingArtifact(std::path::PathBuf),
-    /// A published artifact has an invalid manifest or incomplete identity.
+    /// An artifact manifest has the wrong UUID or an empty FVS commit identifier.
     #[error("invalid Virgo artifact: {0}")]
     InvalidArtifact(std::path::PathBuf),
     /// Registry parsing, diffing, or patch application failed.

@@ -88,7 +88,7 @@ pub enum Error {
     /// The operating system credential store failed.
     #[error("credential error: {0}")]
     Credential(#[from] keyring::Error),
-    /// Cooperative cancellation was observed before the operation committed.
+    /// Cooperative cancellation was observed at an operation-defined checkpoint.
     #[error("operation cancelled")]
     Cancelled,
 }

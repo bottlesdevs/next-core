@@ -59,7 +59,10 @@ Progress is advisory and intermediate updates may be coalesced.
 
 Call [`Bottles::shutdown`] only after application work has stopped. Shutdown
 cancels queued and in-flight downloads, waits for download workers to exit, and
-prevents later download-backed operations from starting successfully.
+prevents later download-backed operations from starting successfully. It does
+not stop Wine processes; stop each running [`Bottle`] or standalone program
+explicitly. With `fvs` enabled, the connected or spawned `fvs2d` daemon also
+remains running for later clients.
 
 ## Features
 
@@ -79,7 +82,7 @@ bottles-core = { version = "0.1", default-features = false }
 
 ## Minimum supported Rust version
 
-No MSRV is declared; builds target the current stable Rust toolchain.
+This crate does not declare an MSRV.
 
 ## License
 

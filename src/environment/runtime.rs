@@ -24,6 +24,8 @@ where
 {
     /// Resolves a program from the locked state and launches it through `WineBridge`.
     ///
+    /// Once startup succeeds, a rejected process launch leaves the runtime running.
+    ///
     /// # Errors
     ///
     /// Returns an error if selection fails, startup or attachment fails, the
@@ -87,6 +89,9 @@ where
 
     /// Stops Wine and releases backend storage under the environment lock.
     ///
+    /// Storage release is attempted only after Wine shutdown succeeds. A shutdown
+    /// error can therefore leave mounts and discovery files in place.
+    ///
     /// # Errors
     ///
     /// Returns an error if state loading, runner resolution, process shutdown,
@@ -97,6 +102,9 @@ where
     }
 
     /// Stops Wine and releases storage while the caller retains coordination.
+    ///
+    /// Storage release is attempted only after Wine shutdown succeeds. A shutdown
+    /// error can therefore leave mounts and discovery files in place.
     ///
     /// # Errors
     ///
@@ -117,6 +125,9 @@ where
     }
 
     /// Releases mounts and discovery files after Wine has stopped.
+    ///
+    /// Cleanup is ordered and stops at the first error, so a successful unmount
+    /// can still be followed by partially cleared discovery state.
     ///
     /// # Errors
     ///
@@ -179,7 +190,8 @@ where
     /// Reuses a discovered `WineBridge` or prepares storage and starts a new one.
     ///
     /// On failed startup, the method stops any spawned Wine processes and
-    /// releases storage before returning the original error.
+    /// releases storage. A cleanup failure takes precedence over the startup or
+    /// cancellation error that triggered cleanup.
     ///
     /// # Errors
     ///

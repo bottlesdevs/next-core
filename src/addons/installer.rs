@@ -1,13 +1,14 @@
 //! Execution and partial reversal of frozen addon recipes.
 //!
 //! Installation walks resources and steps in declaration order. Removal walks the
-//! saved steps in reverse, restoring copied files and deleting DLL overrides; steps
-//! without a defined inverse are logged and skipped. Completed changes are not
-//! rolled back if a later step fails.
+//! saved steps in reverse, restoring copied files and deleting DLL overrides.
+//! Environment declarations are ignored; other steps without an inverse are logged
+//! and skipped. Completed changes are not rolled back if a later step fails.
 //!
-//! Cancellation is cooperative between steps and during child processes and archive
-//! work. Recipe paths are joined directly to payload and prefix roots, so recipes
-//! must originate from trusted catalog data.
+//! Cancellation is cooperative between steps and while child processes run. Archive
+//! extraction and individual file copies are not interrupted; cancellation is
+//! observed around them. Recipe paths are joined directly to payload and prefix
+//! roots, so recipes must originate from trusted catalog data.
 
 use std::{
     io,
@@ -271,13 +272,15 @@ async fn wait_for_child(
 /// Copies `source` into the prefix and optionally preserves the displaced file.
 ///
 /// The backup is stored beside the destination with `.bak` appended and is never
-/// overwritten. `relative` is joined directly to `prefix` without containment
-/// validation.
+/// overwritten. With backups enabled, an existing destination is preserved only
+/// when metadata successfully identifies it as a regular file; a metadata error
+/// skips backup and the install copy is still attempted. `relative` is joined
+/// directly to `prefix` without containment validation.
 ///
 /// # Errors
 ///
-/// Returns an error if destination directories cannot be created, metadata cannot
-/// be inspected, or a copy fails.
+/// Returns an error if destination directories cannot be created, backup existence
+/// cannot be checked, or a copy fails.
 ///
 /// # Panics
 ///

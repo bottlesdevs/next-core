@@ -142,7 +142,8 @@ fn merge_private(previous: &Path, upper: &Path, baseline: &Path, merged: &Path) 
 /// The caller must provide a stopped, checkpointed workspace. Artifact `patches`
 /// are applied to `initial` in order, then changes made privately since the prior
 /// baseline are replayed. Other upper files and whiteouts retain normal overlay
-/// precedence.
+/// precedence. Replacing the two hives and prior baseline spans multiple rename
+/// operations and is not atomic; the caller's checkpoint is the recovery boundary.
 ///
 /// # Errors
 ///

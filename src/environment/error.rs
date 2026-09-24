@@ -10,7 +10,7 @@ use uuid::Uuid;
 /// variants of [`crate::error::Error`].
 #[derive(Debug, Error)]
 pub enum EnvironmentError {
-    /// No downloaded Soda runner has a parseable semantic version.
+    /// No locally acquired Soda runner has a parseable semantic version.
     #[cfg(feature = "fvs")]
     #[error("no locally recorded Soda runner with a valid semantic version")]
     SodaNotDownloaded,

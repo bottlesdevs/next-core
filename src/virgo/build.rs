@@ -70,7 +70,8 @@ impl LayerStore {
     /// Creates isolated staging for a build, optionally mounted over `base`.
     ///
     /// This must run inside [`Self::get_or_build`] after all inputs are resolved
-    /// and before any process starts.
+    /// and before any process starts. Cancellation is sampled before setup but
+    /// does not interrupt an active FVS mount request.
     ///
     /// # Errors
     ///
@@ -128,6 +129,8 @@ impl LayerStore {
     /// The caller must stop build processes before calling this method inside
     /// [`Self::get_or_build`]. A failed recipe is discarded after a successful
     /// unmount; an unmount failure retains the workspace and returns immediately.
+    /// Cancellation is sampled before capture, before commit, and before the
+    /// publication rename; it does not interrupt an active FVS request.
     ///
     /// # Errors
     ///

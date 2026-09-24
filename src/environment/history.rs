@@ -127,6 +127,9 @@ where
 {
     /// Creates a user-visible snapshot after stopping the environment.
     ///
+    /// Cancellation is observed before capture starts, but does not interrupt an
+    /// active FVS commit.
+    ///
     /// # Errors
     ///
     /// The operation fails for the reserved checkpoint message, cancellation,
@@ -188,6 +191,8 @@ where
     /// An automatic checkpoint is captured before restoration. Once restoration
     /// begins, a failed restore, load, identity check, backend check, or validation
     /// triggers recovery to that checkpoint before coordination is released.
+    /// Cancellation is sampled before and after checkpoint capture; once restore
+    /// starts, the operation finishes restoration or recovery before returning.
     ///
     /// # Errors
     ///

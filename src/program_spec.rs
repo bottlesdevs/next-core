@@ -4,10 +4,13 @@ use serde::{Deserialize, Serialize};
 
 /// Describes one Windows executable and its launch options.
 ///
-/// `WineBridge` receives paths and arguments as Windows strings without path
-/// validation or command-line parsing. Argument fragments are joined with a
-/// single space at launch, so callers must supply Windows quoting within each
-/// fragment.
+/// `WineBridge` receives paths and arguments as Windows strings without checking
+/// path existence or parsing the command line. At launch it rejects an empty
+/// executable and NUL bytes in the executable, arguments, or working directory.
+/// Argument fragments are joined with a single space, so callers must supply
+/// Windows quoting within each fragment. Deserialization rejects unknown fields;
+/// omitted arguments, working directory, and new-console flag use their constructor
+/// defaults.
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProgramSpec {

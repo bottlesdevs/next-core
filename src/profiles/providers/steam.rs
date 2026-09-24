@@ -28,6 +28,10 @@ const LOGINUSERS_PATHS: &[&str] = &[
 ];
 
 /// Native provider that links Steam's most recently used local account.
+///
+/// The VDF account key becomes [`AccountIdentity::account_id`]. A non-empty
+/// `AccountName` becomes [`AccountIdentity::display_name`]; otherwise the account
+/// ID is used for both fields.
 pub(super) struct Steam;
 
 #[async_trait]

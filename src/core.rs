@@ -22,7 +22,7 @@ use crate::{Addons, Bottle, Context, Directories, Library, Manager, Profiles, er
 #[derive(Clone, Debug, Default)]
 pub struct Config {
     /// Explicit path to the `fvs2d` executable, or `None` to resolve it through
-    /// `PATH`.
+    /// `PATH`. Relative paths are resolved against the process's current directory.
     #[cfg(feature = "fvs")]
     pub fvs2d: Option<PathBuf>,
     /// Remote component catalog downloaded by
@@ -141,7 +141,11 @@ impl Bottles {
     /// Stop submitting work and finish or cooperatively cancel and await
     /// outstanding operations before shutdown. Shutdown cancels queued and
     /// in-flight downloads, waits for their workers to exit, and prevents later
-    /// download requests from being accepted. Calling it more than once is safe.
+    /// download requests from being accepted. It does not stop Wine processes;
+    /// call [`Bottle::stop`](crate::Bottle::stop) and stop any standalone program
+    /// handles explicitly. With `fvs` enabled, the connected or spawned `fvs2d`
+    /// daemon remains running for later clients. Calling shutdown more than once
+    /// is safe.
     ///
     /// # Errors
     ///

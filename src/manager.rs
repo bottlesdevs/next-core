@@ -198,7 +198,7 @@ where
         })
     }
 
-    /// Creates an operation that stops and permanently deletes a member.
+    /// Creates an operation that stops and removes a member.
     ///
     /// Cancellation is observed while waiting for coordination and again after
     /// stopping, before withdrawal into trash. Once stopping begins, shutdown is
@@ -206,8 +206,9 @@ where
     /// Once withdrawn, deletion and removal from the collection are published
     /// before best-effort cleanup. Existing handles report deletion and their
     /// state streams end; previously obtained state snapshots remain usable.
-    /// Failed withdrawal leaves membership unchanged, and trash cleanup errors
-    /// cannot invalidate deletion.
+    /// A failure or cancellation before withdrawal leaves membership unchanged,
+    /// but the runtime may already be stopped. Trash cleanup errors cannot
+    /// invalidate a published deletion.
     ///
     /// # Errors
     ///
@@ -232,7 +233,8 @@ where
     /// and rollback. First yields the current list, then the latest list after
     /// each observed change. Slow consumers may miss intermediate states.
     ///
-    /// Order is unspecified. The stream ends when all manager clones and
+    /// Each list contains live handles, not state snapshots from the time of the
+    /// event. Order is unspecified. The stream ends when all manager clones and
     /// operations retaining this collection are dropped, even if item handles
     /// remain alive.
     ///
