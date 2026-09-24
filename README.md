@@ -44,8 +44,9 @@ core.shutdown().await?;
   snapshots without mutating earlier ones.
 - [`Edit`] collects a draft configuration change and publishes it only after
   validation and persistence succeed.
-- [`Addons`] lists, downloads, imports, and removes Wine runners and other
-  managed components.
+- [`Addons`] downloads, imports, and removes Wine runners and other managed
+  components. [`AddonsState`] provides immutable catalog and release snapshots
+  through [`Addons::state`] and [`Addons::watch`].
 - [`Library`] combines launchable entries from bottles, standalone programs,
   and plugins.
 - [`Profiles`] stores application profiles and their linked external accounts.

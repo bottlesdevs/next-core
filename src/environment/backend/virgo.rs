@@ -111,9 +111,12 @@ impl VirgoManager {
         self.layers
             .get_or_build(destination, None, cancellation, || async {
                 let soda =
-                    latest_component(self.cx.addons().components().into_iter().filter(|addon| {
-                        addon.slot() == Slot::Runner && addon.name().eq_ignore_ascii_case("soda")
-                    }))
+                    latest_component(self.cx.addons().state().components().into_iter().filter(
+                        |addon| {
+                            addon.slot() == Slot::Runner
+                                && addon.name().eq_ignore_ascii_case("soda")
+                        },
+                    ))
                     .ok_or(EnvironmentError::SodaNotDownloaded)?;
                 let runner = soda.load_runner(self.cx.directories(), None).await?;
                 let workspace = self
@@ -197,15 +200,13 @@ impl VirgoManager {
         let destination = Path::new("addons").join(id.to_string());
         self.layers
             .get_or_build(&destination, Some(id), cancellation, || async {
-                let soda = self
-                    .cx
-                    .addons()
+                let addons = self.cx.addons().state();
+                let soda = addons
                     .component(base.id)
                     .ok_or(AddonError::NotFound(base.id))?;
                 let runner = soda.load_runner(self.cx.directories(), None).await?;
                 let winebridge = latest_component(
-                    self.cx
-                        .addons()
+                    addons
                         .components()
                         .into_iter()
                         .filter(|addon| addon.slot() == Slot::WineBridge),
