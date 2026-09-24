@@ -19,19 +19,27 @@ use super::super::{
 use super::{Addons, download::download};
 
 impl Addons {
-    /// Downloads and validates the component and dependency catalogs.
+    /// Downloads and parses the component and dependency catalogs.
     ///
-    /// Download and validation are attempted independently for both families. Once
-    /// both attempts finish, each successful catalog is cached and a single state
-    /// snapshot is published; a failed family retains its previous catalog. The
-    /// operation then reports [`CatalogError::Refresh`] if either attempt failed.
+    /// Components are attempted first, then dependencies. A family failure other
+    /// than cancellation does not prevent the other attempt. Each successful
+    /// catalog is cached before a single snapshot is published; a failed family
+    /// retains its previous catalog. The operation then reports
+    /// [`CatalogError::Refresh`] if either attempt failed, after publishing any
+    /// successful family.
+    ///
+    /// Cache writes occur in the same order. If a later write fails, earlier cache
+    /// writes remain on disk but no new snapshot is published. Cancellation is
+    /// checked through publication-lock acquisition; once cache writes begin, the
+    /// operation runs through publication unless a write fails.
     ///
     /// # Errors
     ///
-    /// The operation fails if cancellation is observed before publication; either
-    /// URL is missing; downloading, parsing, or validating a catalog fails; or a
-    /// successful catalog cannot be written to its cache. Cache-write failure stops
-    /// publication.
+    /// The operation fails if cancelled before cache writes begin, either URL is
+    /// missing, a download or schema parse fails, or a successful catalog cannot be
+    /// written to its cache. Per-family URL, download, and parse failures are
+    /// combined into [`CatalogError::Refresh`]; cache-write failures are returned
+    /// directly.
     pub fn refresh(&self) -> Operation<()> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {

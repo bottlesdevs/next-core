@@ -2,7 +2,7 @@
 //!
 //! Catalogs advertise releases without installing them. A [`CatalogEntry`]
 //! becomes an [`Addon`](super::Addon) only after the manager downloads and
-//! verifies the artifact selected for the current [`Target`].
+//! verifies its compatible artifacts for the current [`Target`].
 //!
 //! Artifact file names and recipe paths are not containment-checked before they
 //! are joined to managed roots. Catalog documents must therefore come from a
@@ -293,8 +293,13 @@ impl<K> CatalogEntry<K> {
     /// Returns whether at least one artifact matches the current build target.
     ///
     /// Platform matching is exact. An artifact without a platform restriction
-    /// matches every supported target. On other build targets, every entry is
-    /// reported as unsupported.
+    /// matches every supported target. Supported operating systems are Linux,
+    /// macOS, and Windows; supported architectures are `x86`, `x86_64`, and
+    /// `aarch64`.
+    /// On other build targets, every entry is reported as unsupported. For
+    /// components, multiple matching artifacts make this method return `true`, but
+    /// [`Addons::fetch_component`](super::Addons::fetch_component) rejects the
+    /// ambiguous entry.
     pub fn is_supported(&self) -> bool {
         Target::current().is_some_and(|target| self.artifacts_for_target(target).next().is_some())
     }
@@ -321,9 +326,10 @@ impl CatalogEntry<Component> {
 #[serde(deny_unknown_fields)]
 /// Describes one downloadable file and its optional installation recipe.
 ///
-/// Matching artifacts are downloaded in catalog order. Their recipes are copied
-/// into the acquired [`Addon`](super::Addon), so later catalog changes do not
-/// affect the local release.
+/// Matching artifacts are downloaded in catalog order. A provided recipe is copied
+/// into the acquired [`Addon`](super::Addon). When absent, components substitute the
+/// slot's default recipe and dependencies use an empty recipe. Later catalog changes
+/// therefore do not affect the local release.
 pub(crate) struct CatalogArtifact {
     url: url::Url,
     file_name: String,

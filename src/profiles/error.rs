@@ -20,7 +20,7 @@ pub enum ProfileError {
         /// Stable identifier of the already-linked provider.
         provider: String,
     },
-    /// Public link state was persisted, but its credential could not be deleted.
+    /// A link was absent from public state, but its credential could not be deleted.
     #[error("failed to clean credentials for account link {link_id}: {source}")]
     CredentialCleanup {
         /// Link whose credential could not be removed.

@@ -20,7 +20,9 @@ impl Addons {
     ///
     /// The release directory is first moved to temporary trash, then the new state
     /// is published and cleanup is attempted. Existing environment selections retain
-    /// their embedded records, and already-built Virgo artifacts are not removed.
+    /// their embedded records but lose access to the shared payload. Already-built
+    /// Virgo artifacts are not removed. Trash cleanup is best effort; cleanup
+    /// failures are logged without changing the result.
     ///
     /// # Errors
     ///
@@ -50,7 +52,9 @@ impl Addons {
     ///
     /// The release directory is first moved to temporary trash, then the new state
     /// is published and cleanup is attempted. Existing environment selections retain
-    /// their embedded records, and already-built Virgo artifacts are not removed.
+    /// their embedded records but lose access to the shared payload. Already-built
+    /// Virgo artifacts are not removed. Trash cleanup is best effort; cleanup
+    /// failures are logged without changing the result.
     ///
     /// # Errors
     ///
@@ -210,7 +214,7 @@ impl AddonsState {
     }
 }
 
-/// Finds release manifests stored below UUID-named directories in `root`.
+/// Collects expected manifest paths from UUID-named directories in `root`.
 ///
 /// Non-directory entries and directories without UUID names are ignored.
 ///

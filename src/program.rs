@@ -77,7 +77,8 @@ impl Program {
     }
     /// Streams the current state and later published replacements.
     ///
-    /// Slow consumers may miss intermediate publications. Deletion ends the stream.
+    /// The first item is the state current at subscription time. Slow consumers
+    /// may miss intermediate publications, and deletion ends the stream.
     pub fn watch(&self) -> impl Stream<Item = Arc<ProgramState>> + Send + 'static + use<> {
         self.0.watch()
     }
@@ -88,6 +89,10 @@ impl Program {
     /// applied, persisted, and then published once. Software changes require the
     /// program to be stopped; launch metadata, environment variables, and
     /// wrappers may be edited while it is running. An unchanged draft is not saved.
+    /// Any shutdown begun for the edit finishes before cancellation is returned.
+    /// Once application succeeds, persistence and publication are not cancelled.
+    /// Failures after checkpoint capture recover the previous files before
+    /// returning; recovery failure reports the program root requiring repair.
     ///
     /// # Errors
     ///
@@ -116,7 +121,11 @@ impl Program {
     }
     /// Creates an operation that mounts storage and launches the program.
     ///
-    /// The program UUID is used as the `WineBridge` process-group identifier.
+    /// The latest published launch definition is resolved after operation
+    /// coordination is acquired. The program UUID is used as the `WineBridge`
+    /// process-group identifier. Success returns the new process ID; it does not
+    /// wait for the process to exit. Cancellation does not interrupt an in-flight
+    /// launch request.
     ///
     /// # Errors
     ///
@@ -126,6 +135,7 @@ impl Program {
         self.0.launch(|state| Ok((state.id, state.data.clone())))
     }
     /// Terminates the program's process group without starting a stopped runtime.
+    /// A stopped runtime is a successful no-op.
     ///
     /// # Errors
     ///
@@ -156,6 +166,9 @@ impl Program {
     }
     /// Creates an operation that lists configured DLL overrides.
     ///
+    /// A stopped runtime is started and left running. Cancellation does not
+    /// interrupt an in-flight `WineBridge` request.
+    ///
     /// # Errors
     ///
     /// Awaiting the operation can fail during storage, runtime, cancellation,
@@ -165,6 +178,9 @@ impl Program {
     }
     /// Creates an operation that sets a Wine DLL override.
     ///
+    /// A stopped runtime is started and left running. Cancellation does not
+    /// interrupt an in-flight `WineBridge` request.
+    ///
     /// # Errors
     ///
     /// Awaiting the operation can fail during storage, runtime, cancellation,
@@ -173,6 +189,10 @@ impl Program {
         self.0.set_dll_override(dll.into(), mode)
     }
     /// Creates an operation that removes a Wine DLL override.
+    ///
+    /// A stopped runtime is started and left running. A missing override is a
+    /// successful no-op. Cancellation does not interrupt an in-flight
+    /// `WineBridge` request.
     ///
     /// # Errors
     ///
@@ -184,9 +204,10 @@ impl Program {
     /// Creates an operation that snapshots persistent files and `state.toml`.
     ///
     /// Shared layers and external files are excluded. Explicit snapshots create
-    /// a revision even if files have not changed. Once capture starts,
-    /// cooperative cancellation no longer interrupts it; [`Operation::cancel`]
-    /// waits for the commit to finish.
+    /// a revision even if files have not changed. The program is stopped before
+    /// capture and is not restarted afterward. Shutdown and capture are not
+    /// interrupted by cancellation; [`Operation::cancel`] waits for the current
+    /// step to finish.
     ///
     /// # Errors
     ///
@@ -212,9 +233,11 @@ impl Program {
     ///
     /// The restored UUID must match the program and its configuration must
     /// validate. Failed restoration recovers the pre-restore checkpoint before
-    /// returning. Cancellation is observed before restoration begins, but does
-    /// not interrupt an active restore or recovery. Working files change without
-    /// moving the FVS repository's current commit.
+    /// returning. Shutdown and checkpoint capture finish before cancellation is
+    /// observed. Once restoration begins, cancellation does not interrupt
+    /// restoration or recovery. Working files change without moving the FVS
+    /// repository's current commit. Rollback first attempts to stop the program
+    /// and never restarts it.
     ///
     /// On success, the operation returns the full state ID resolved from
     /// `revision` and publishes the launch and environment state stored there.

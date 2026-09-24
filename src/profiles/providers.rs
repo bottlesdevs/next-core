@@ -1,8 +1,8 @@
 //! Provider discovery and account-link abstraction.
 //!
 //! The built-in Steam provider is combined with plugins that export the
-//! account-provider interface. Only public provider metadata crosses into
-//! persisted profile state.
+//! account-provider interface. Persisted profile state receives provider metadata
+//! and the public account identity, never the returned credential.
 mod steam;
 
 use crate::error::Result;

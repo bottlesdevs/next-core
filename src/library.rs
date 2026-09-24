@@ -43,7 +43,7 @@ impl Library {
     /// Removes a provider from subsequent listings.
     ///
     /// Previously returned [`LibraryItem`] values keep their provider handle and
-    /// can still launch through it.
+    /// can still call it; removal alone does not invalidate those items.
     ///
     /// # Panics
     ///
@@ -109,25 +109,23 @@ impl LibraryItem {
 
     /// Returns the stable identifier of the source provider.
     ///
-    /// Native providers use `bottles` or `programs`; plugins use their manifest
-    /// identifier.
+    /// Native providers use `bottles`, or `programs` when the `fvs` feature is
+    /// enabled; plugins use their manifest identifier.
     pub fn provider_id(&self) -> &str {
         self.provider.id()
     }
 
-    /// Resolves the entry through its original provider and prepares its launch.
+    /// Asks the entry's original provider to prepare its launch.
     ///
-    /// Resolution happens immediately. The returned [`Operation`] is lazy and
-    /// submits the resolved launch only when polled; completion means the launch
-    /// request finished, not that the title exited.
+    /// The provider may validate the entry here or defer validation to the
+    /// returned [`Operation`]. The operation is lazy, and its completion means
+    /// the launch request finished, not that the title exited.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::LibraryProvider`] when the provider rejects or no longer
-    /// recognizes the stored entry identifier. Native providers may also return
-    /// environment or identifier errors.
-    ///
-    /// [`Error::LibraryProvider`]: crate::error::Error::LibraryProvider
+    /// Returns an error if the provider cannot prepare the launch immediately.
+    /// Awaiting the returned operation may fail later if deferred validation or
+    /// launch fails.
     pub fn launch(&self) -> Result<Operation<()>> {
         self.provider.launch(&self.entry.id)
     }
@@ -172,13 +170,16 @@ pub trait LibraryProvider: Send + Sync {
     /// Returns a provider-specific error if current entries cannot be enumerated.
     async fn list_entries(&self) -> Result<Vec<LibraryEntry>>;
 
-    /// Resolves an entry and prepares its launch without starting it.
-    /// The operation completes when the launch request finishes, not when the title exits.
+    /// Prepares a lazy launch for an entry.
+    ///
+    /// Implementations may validate `entry_id` here or when the returned
+    /// operation is polled. The operation completes when the launch request
+    /// finishes, not when the title exits.
     ///
     /// # Errors
     ///
-    /// Returns an error if `entry_id` is malformed, unknown, or cannot be resolved
-    /// against the provider's current state.
+    /// Returns an error if the launch cannot be prepared immediately. Deferred
+    /// validation and launch failures are returned by the operation.
     fn launch(&self, entry_id: &str) -> Result<Operation<()>>;
 }
 

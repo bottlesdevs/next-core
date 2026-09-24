@@ -54,9 +54,9 @@ impl Profiles {
     ///
     /// Cancellation is cooperative. Pending interaction requests are cancelled,
     /// but a provider call already accepted by a plugin may finish in the background
-    /// after the operation is dropped. Once the write lock is acquired and
-    /// credential persistence begins, the operation completes publication or
-    /// rollback even if cancellation is requested.
+    /// after the operation is dropped. After the write lock is acquired,
+    /// cancellation is no longer checked; final validation, credential storage,
+    /// snapshot persistence, and any rollback run to completion.
     ///
     /// # Errors
     ///
@@ -65,7 +65,7 @@ impl Profiles {
     /// provider, or [`ProfileError::Provider`] when the provider rejects the
     /// request. Plugin loading, credential storage, persistence, cancellation,
     /// and rollback failures are also returned. Cancellation is reported as
-    /// [`Error::Cancelled`] only before the persistence boundary described above.
+    /// [`Error::Cancelled`] only before the write-lock boundary described above.
     pub fn link_account(
         &self,
         profile_id: Uuid,
@@ -134,9 +134,10 @@ impl Profiles {
 
     /// Removes an account link and deletes its stored credential.
     ///
-    /// Link membership is persisted before credential deletion. An unknown
-    /// `link_id` therefore still attempts credential deletion, making the
-    /// method suitable for retrying cleanup after a partial failure.
+    /// When present, link removal is persisted and published before credential
+    /// deletion. An unknown `link_id` skips persistence and publication but still
+    /// attempts credential deletion, making the method suitable for retrying cleanup
+    /// after a partial failure.
     ///
     /// # Errors
     ///

@@ -115,7 +115,9 @@ impl Bottle {
 impl Bottle {
     /// Creates an operation that lists configured DLL overrides.
     ///
-    /// The operation starts or reconnects to `WineBridge` if necessary.
+    /// The operation starts or reconnects to `WineBridge` if necessary and
+    /// leaves the runtime running. Cancellation does not interrupt an in-flight
+    /// `WineBridge` request.
     ///
     /// # Errors
     ///
@@ -126,6 +128,9 @@ impl Bottle {
     }
     /// Creates an operation that sets one Wine DLL override.
     ///
+    /// A stopped runtime is started and left running. Cancellation does not
+    /// interrupt an in-flight `WineBridge` request.
+    ///
     /// # Errors
     ///
     /// Awaiting the operation can fail during environment access, runner or
@@ -134,6 +139,10 @@ impl Bottle {
         self.0.set_dll_override(dll.into(), mode)
     }
     /// Creates an operation that removes one Wine DLL override.
+    ///
+    /// A stopped runtime is started and left running. A missing override is a
+    /// successful no-op. Cancellation does not interrupt an in-flight
+    /// `WineBridge` request.
     ///
     /// # Errors
     ///
@@ -146,7 +155,9 @@ impl Bottle {
     /// Creates an operation that launches a registered program.
     ///
     /// The registration is resolved from the latest state after operation
-    /// coordination is acquired.
+    /// coordination is acquired. Success returns the new process ID; it does not
+    /// wait for the process to exit. Cancellation does not interrupt an in-flight
+    /// launch request.
     ///
     /// # Errors
     ///
@@ -165,7 +176,8 @@ impl Bottle {
     /// Creates an operation that launches an unregistered program definition.
     ///
     /// `id` becomes the `WineBridge` process-group identifier but is not persisted
-    /// in the bottle.
+    /// in the bottle. Success returns the new process ID; it does not wait for the
+    /// process to exit. Cancellation does not interrupt an in-flight launch request.
     ///
     /// # Errors
     ///
@@ -216,6 +228,11 @@ impl Bottle {
     /// The final draft is validated, applied, saved, and then published once.
     /// Software selection changes require a stopped bottle; metadata and startup
     /// settings may change while Wine is running. An unchanged draft is not saved.
+    /// Any shutdown begun for the edit finishes before cancellation is returned.
+    /// Once application succeeds, persistence and publication are not cancelled.
+    /// Standard-prefix software edits are not rolled back: failure or cancellation
+    /// can leave files changed while the previous state remains published. Virgo
+    /// failures after checkpoint capture recover the previous files before returning.
     ///
     /// # Errors
     ///
@@ -276,8 +293,9 @@ impl Bottle {
     ///
     /// Shared artifacts and external files are not copied or rebuilt on
     /// restoration. Explicit snapshots create a revision even without changes.
-    /// Once capture starts, cooperative cancellation no longer interrupts it;
-    /// [`Operation::cancel`] waits for the commit to finish.
+    /// The bottle is stopped before capture and is not restarted afterward.
+    /// Shutdown and capture are not interrupted by cancellation;
+    /// [`Operation::cancel`] waits for the current step to finish.
     ///
     /// # Errors
     ///
@@ -295,8 +313,8 @@ impl Bottle {
     ///
     /// # Errors
     ///
-    /// Returns an error if history metadata cannot be read or FVS cannot list
-    /// revisions.
+    /// Returns an error if the bottle was deleted, history metadata cannot be
+    /// read, or FVS cannot list revisions.
     pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
         self.0.snapshots().await
     }
@@ -306,9 +324,11 @@ impl Bottle {
     /// The restored UUID and backend must match the bottle, and its environment
     /// configuration must validate. A failed restore or invalid state recovers
     /// the previous files before returning; failed recovery reports the root
-    /// requiring repair. Cancellation is observed before restoration begins,
-    /// but does not interrupt an active restore or recovery. Working files
-    /// change without moving the FVS repository's current commit.
+    /// requiring repair. Shutdown and checkpoint capture finish before
+    /// cancellation is observed. Once restoration begins, cancellation does not
+    /// interrupt restoration or recovery. Working files change without moving
+    /// the FVS repository's current commit. Rollback first attempts to stop the
+    /// bottle and never restarts it.
     ///
     /// On success, the operation returns the full state ID resolved from
     /// `revision` and publishes the state stored in that revision.
@@ -380,8 +400,9 @@ impl Manager<Bottle> {
     /// display names are stored verbatim, may be empty, and need not be unique.
     /// Component slots and coexistence requirements are checked before creating
     /// files; missing requirements fail without selecting or downloading other
-    /// owner components. Standard creation initializes Wine without FVS. Virgo
-    /// creation builds missing shared layers before composing private storage.
+    /// owner components. Standard creation initializes Wine without FVS. Virgo,
+    /// available with the `fvs` feature, builds missing shared layers before
+    /// composing private storage.
     /// The bottle is added to this manager only after initialization and
     /// `state.toml` persistence succeed. Cancellation or persistence failure
     /// after backend initialization attempts best-effort removal; earlier

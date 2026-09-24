@@ -41,6 +41,9 @@ impl Runner for Proton {
 
     /// Runs Proton's `wineserver` inside UMU's runtime.
     ///
+    /// Server control uses `PROTONPATH=umu-sniper`; ordinary guest commands use
+    /// the selected Proton directory instead.
+    ///
     /// Exit status `1` is accepted only for `-k`; other commands and statuses
     /// retain normal success semantics.
     ///

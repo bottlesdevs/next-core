@@ -2,7 +2,7 @@
 //!
 //! Bottles and standalone programs expose immutable [`State`] snapshots.
 //! Mutations are serialized by one control lock and publish a replacement
-//! snapshot only after their durable work succeeds. Deletion closes the
+//! snapshot only after persistence succeeds. Deletion closes the
 //! publication stream without invalidating snapshots already held by callers.
 
 mod backend;
@@ -97,8 +97,14 @@ where
     /// Initializes storage and persists a new owner before returning it.
     ///
     /// The owner remains private until both backend initialization and saving
-    /// `state.toml` succeed. A failed final save moves the partially created root
-    /// to trash on a best-effort basis.
+    /// `state.toml` succeed. Failure during backend initialization can leave a
+    /// partial owner root and any already-published shared Virgo artifacts. After
+    /// initialization succeeds, cancellation or a failed save moves the owner
+    /// root to trash on a best-effort basis.
+    ///
+    /// Cancellation is sampled before backend initialization and before and after
+    /// the final save. Backend-specific work may add safe points, but in-flight
+    /// filesystem and FVS requests are not forcibly interrupted.
     ///
     /// # Errors
     ///
@@ -198,6 +204,9 @@ where
 
     /// Atomically saves `state` as the owner's `state.toml`.
     ///
+    /// Failure before the final rename can leave `state.tmp` beside the previous
+    /// configuration.
+    ///
     /// # Errors
     ///
     /// Returns an error if serialization or filesystem persistence fails.
@@ -227,8 +236,10 @@ where
 
     /// Stops the runtime, withdraws the root into trash, and publishes deletion.
     ///
-    /// `on_deleted` runs synchronously after the durable rename and publication,
+    /// `on_deleted` runs synchronously after the successful rename and publication,
     /// before best-effort removal of the trashed directory.
+    /// Cancellation is not sampled during runtime shutdown; it is checked again
+    /// before the rename into trash.
     ///
     /// # Errors
     ///

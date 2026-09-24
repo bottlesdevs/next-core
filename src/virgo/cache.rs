@@ -91,7 +91,8 @@ impl LayerStore {
     /// Lists immediate published children of a collection.
     ///
     /// A manifest identifies an artifact. Staging, files, and directories without
-    /// a manifest are skipped; results are sorted by relative key.
+    /// a manifest are skipped; results are sorted by relative key. An absent
+    /// collection returns an empty list.
     ///
     /// # Errors
     ///
@@ -145,12 +146,18 @@ impl LayerStore {
     /// Publishes a completed staged artifact at its immutable cache key.
     ///
     /// The caller must hold the build lock and provide a committed filesystem plus
-    /// both registry files. Existing destination directories are never replaced.
+    /// both registry files. The destination must remain absent until the final
+    /// same-filesystem rename; this function does not independently enforce that
+    /// invariant.
     ///
     /// # Errors
     ///
     /// Returns an error if the manifest cannot be saved, the destination parent
     /// cannot be created, cancellation arrives before the rename, or publication fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if joining `key` to the Virgo root produces a path without a parent.
     pub(super) async fn publish(
         &self,
         artifact: &Path,

@@ -1,7 +1,7 @@
 //! Selects, builds, and orders immutable Virgo artifacts for an environment.
 //!
 //! Frozen addon selections resolve to a base layer, a runner adapter, component
-//! layers, and dependency layers in composition order.
+//! layers for non-runtime slots, and dependency layers in composition order.
 
 use crate::{
     Addon, AddonError, Component, Context, EnvironmentConfig, EnvironmentError, Progress, Slot,
@@ -32,6 +32,9 @@ impl VirgoManager {
     /// Ensures every artifact needed by `config` exists and returns composition order.
     ///
     /// Cached artifacts remain usable after their source payloads are removed.
+    /// Cancellation or a later build failure does not remove artifacts published
+    /// earlier in the same pass. Failed process shutdown or an uncertain FVS
+    /// request can retain build staging or a mount for diagnosis.
     ///
     /// # Errors
     ///
@@ -68,8 +71,8 @@ impl VirgoManager {
 
     /// Loads the exact cached composition recorded by `config`.
     ///
-    /// Layers are ordered as base, runner adapter, components in slot order, and
-    /// dependencies in installation order.
+    /// Layers are ordered as base, runner adapter, non-runtime components in slot
+    /// order, and dependencies in installation order.
     ///
     /// # Errors
     ///
@@ -174,6 +177,10 @@ impl VirgoManager {
     }
 
     /// Reuses cached addon effects or executes the frozen recipe in an isolated build.
+    ///
+    /// Cache misses execute with the pinned Soda base runner and the greatest
+    /// semantic-versioned local `WineBridge`, independently of the environment's
+    /// selected runtime components.
     ///
     /// # Errors
     ///

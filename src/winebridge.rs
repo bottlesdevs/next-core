@@ -1,9 +1,9 @@
 //! `WineBridge` discovery, process supervision, and gRPC requests.
 //!
-//! Each Wine prefix has at most one discovered server. The discovery file
+//! The client uses one discovered server per Wine prefix. The discovery file
 //! supplies only a TCP port; clients always connect over the IPv4 loopback
-//! interface. An unreachable discovered server must be stopped or cleaned up
-//! before another server can start.
+//! interface. An unreachable discovered server blocks startup of another server
+//! until the stale runtime or discovery file is cleaned up.
 
 use std::{
     io,
@@ -51,7 +51,7 @@ pub enum BridgeError {
     /// Startup exceeded the `WineBridge` readiness deadline.
     #[error("WineBridge did not report readiness before the startup timeout elapsed.")]
     Timeout,
-    /// A discovery file exists, but its endpoint cannot be reached.
+    /// A discovery file exists, but its endpoint is unreachable or unhealthy.
     #[error(
         "WineBridge discovery exists but the runtime is unreachable at {0}; call stop() and retry"
     )]
@@ -95,7 +95,8 @@ async fn endpoint_from_port_file(path: &Path) -> Result<Option<Endpoint>> {
 ///
 /// Startup waits for the gRPC health endpoint to report ready. Dropping a client
 /// does not stop the server; it remains available until the owning environment
-/// is stopped.
+/// is stopped. Filesystem paths are forwarded to the server without confinement
+/// to the Wine prefix.
 pub(crate) struct WineBridgeClient {
     client: GrpcClient<Channel>,
     port_file: PathBuf,
@@ -145,7 +146,8 @@ impl WineBridgeClient {
     /// Waits for a spawned process to publish a healthy endpoint.
     ///
     /// Readiness is polled until the process exits or 30 seconds elapse. On
-    /// failure, the child is killed and reaped before this method returns.
+    /// failure, this attempts to kill and reap the child. A kill failure is
+    /// returned immediately and can leave the child unreaped.
     ///
     /// # Errors
     ///
@@ -272,7 +274,7 @@ impl WineBridgeClient {
 
     // --- Process Management ---
 
-    /// Lists processes tracked by this `WineBridge` server.
+    /// Lists processes visible to this `WineBridge` server.
     ///
     /// # Errors
     ///
@@ -399,7 +401,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails.
+    /// Returns an error if the gRPC request fails or the response omits its value.
     pub async fn get_registry_value(
         &self,
         hive: RegistryHive,
@@ -471,7 +473,7 @@ impl WineBridgeClient {
 
     // --- File System ---
 
-    /// Creates a directory (and any missing parents) inside the prefix.
+    /// Creates a directory and any missing parents at a Windows path.
     ///
     /// # Errors
     ///
@@ -485,11 +487,12 @@ impl WineBridgeClient {
         Ok(())
     }
 
-    /// Deletes a file or directory inside the prefix.
+    /// Deletes a file at a Windows path.
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
+    /// Returns an error if the path is a directory, the gRPC request fails, or
+    /// `WineBridge` reports failure.
     pub async fn delete_file(&self, path: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
         client
@@ -513,7 +516,7 @@ impl WineBridgeClient {
         Ok(())
     }
 
-    /// Copies a file inside the prefix.
+    /// Copies a file between Windows paths.
     ///
     /// # Errors
     ///
@@ -534,7 +537,7 @@ impl WineBridgeClient {
         Ok(())
     }
 
-    /// Moves or renames a file inside the prefix.
+    /// Moves or renames a Windows path.
     ///
     /// # Errors
     ///
@@ -568,7 +571,7 @@ impl WineBridgeClient {
             .into_inner())
     }
 
-    /// Lists the entries of a directory inside the prefix.
+    /// Lists the entries of a directory at a Windows path.
     ///
     /// # Errors
     ///
@@ -584,6 +587,7 @@ impl WineBridgeClient {
     }
 
     /// Checks whether a path exists.
+    /// A `NOT_FOUND` response yields `false`.
     ///
     /// # Errors
     ///

@@ -88,7 +88,8 @@ impl Profiles {
 ///
 /// Clones share the same state, write lock, and change notifications. Mutating
 /// methods persist a complete snapshot before making it visible through
-/// [`state`](Self::state) or [`watch`](Self::watch).
+/// [`state`](Self::state) or [`watch`](Self::watch). A profile-state update that
+/// leaves the snapshot unchanged is neither saved nor published.
 ///
 /// # Examples
 ///
@@ -224,11 +225,11 @@ impl Profiles {
 
     /// Deletes the profile identified by `id`.
     ///
-    /// Linked accounts are removed one at a time before the profile itself is
-    /// removed. If `id` is selected, the first remaining profile becomes
+    /// Linked accounts are removed one at a time in stored order before the profile
+    /// itself is removed. If `id` is selected, the first remaining profile becomes
     /// selected. At least one profile is always retained. Each successful account
-    /// unlink is persisted immediately, so a later cleanup failure can leave the
-    /// profile present with earlier links already removed.
+    /// unlink is persisted immediately, so a later credential-cleanup or persistence
+    /// failure can leave the profile present with earlier links already removed.
     ///
     /// # Errors
     ///

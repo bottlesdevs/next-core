@@ -3,7 +3,8 @@
 //! Archive format is selected from the filename: uncompressed tar, gzip-compressed
 //! tar, and xz-compressed tar are supported. Entry paths and symlink targets are
 //! checked lexically for absolute paths and parent traversal. These checks do not
-//! canonicalize the destination or account for a symlink traversed by a later entry.
+//! canonicalize the destination or account for a symlink traversed by a later entry;
+//! untrusted archives require an independent filesystem confinement boundary.
 
 use std::{
     io,
@@ -24,13 +25,13 @@ pub enum ArchiveError {
     /// An archive or destination filesystem operation failed.
     #[error(transparent)]
     Io(#[from] io::Error),
-    /// The archive file name could not be interpreted as UTF-8.
+    /// The archive path has no file name or its file name is not valid UTF-8.
     #[error("archive name is not valid UTF-8: {0}")]
     InvalidName(PathBuf),
     /// The file extension does not identify a supported tar format.
     #[error("unsupported archive: {0}")]
     Unsupported(PathBuf),
-    /// An entry or symlink target resolves outside the destination tree.
+    /// An entry or symlink target lexically escapes the destination tree.
     #[error("archive entry escaped the staging directory: {0}")]
     EntryOutsideDestination(PathBuf),
     /// The current operation encountered an entry type it does not support.
@@ -40,7 +41,9 @@ pub enum ArchiveError {
 
 /// Extracts a supported tar archive into `destination`.
 ///
-/// The filename must end in `.tar`, `.tar.gz`, `.tgz`, `.tar.xz`, or `.txz`.
+/// The filename must end in the case-sensitive suffix `.tar`, `.tar.gz`, `.tgz`,
+/// `.tar.xz`, or `.txz`. The archive is opened before its suffix is checked, so
+/// an inaccessible path with an unsupported suffix produces [`ArchiveError::Io`].
 /// Existing regular files may be truncated and overwritten, missing parent
 /// directories are created, and archived Unix permission bits are restored.
 /// Extraction is not transactional: entries written before an error remain in
@@ -52,7 +55,7 @@ pub enum ArchiveError {
 ///
 /// # Errors
 ///
-/// Returns [`ArchiveError::InvalidName`] for a non-UTF-8 file name,
+/// Returns [`ArchiveError::InvalidName`] for a missing or non-UTF-8 file name,
 /// [`ArchiveError::Unsupported`] for an unrecognized extension,
 /// [`ArchiveError::EntryOutsideDestination`] for an escaping path,
 /// [`ArchiveError::UnsupportedEntry`] for an unsupported tar entry, or
