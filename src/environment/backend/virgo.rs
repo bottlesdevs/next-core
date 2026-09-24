@@ -5,7 +5,7 @@
 
 use crate::{
     Addon, AddonError, Context, EnvironmentConfig, EnvironmentError, Progress, Stage,
-    addons::{InstallInputs, InstallResource, execute},
+    addons::{InstallInputs, StoredAddon, execute},
     environment::runtime,
     error::{Error, Result},
     virgo::{LayerStore, VirgoLayer},
@@ -16,7 +16,6 @@ use std::{
 };
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
 pub(crate) struct VirgoManager {
     cx: Context,
@@ -54,25 +53,15 @@ impl VirgoManager {
         }
         let base = self.prepare_base(cancellation).await?;
         let mut overlays = vec![self.prepare_adapter(config, &base, cancellation).await?];
-        let addons = config
-            .ordered_components()
-            .map(|addon| {
-                (
-                    addon.id(),
-                    addon.path(self.cx.directories()),
-                    addon.resources(),
-                )
-            })
-            .chain(config.dependencies.iter().map(|addon| {
-                (
-                    addon.id(),
-                    addon.path(self.cx.directories()),
-                    addon.resources(),
-                )
-            }));
-        for (id, payload, resources) in addons {
+        for addon in config.ordered_components() {
             overlays.push(
-                self.prepare_addon(id, &payload, resources, &base, progress, cancellation)
+                self.prepare_addon(addon, &base, progress, cancellation)
+                    .await?,
+            );
+        }
+        for addon in &config.dependencies {
+            overlays.push(
+                self.prepare_addon(addon, &base, progress, cancellation)
                     .await?,
             );
         }
@@ -203,15 +192,14 @@ impl VirgoManager {
     ///
     /// Returns errors for missing build inputs, cancellation, runner loading,
     /// recipe execution, FVS, registry processing, filesystem work, or publication.
-    async fn prepare_addon(
+    async fn prepare_addon<K: StoredAddon>(
         &self,
-        id: Uuid,
-        payload: &Path,
-        resources: &[InstallResource],
+        addon: &Addon<K>,
         base: &VirgoLayer,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
+        let id = addon.id();
         let destination = Path::new("addons").join(id.to_string());
         self.layers
             .get_or_build(&destination, Some(id), cancellation, || async {
@@ -234,8 +222,8 @@ impl VirgoManager {
                         runner: runner.as_ref(),
                         winebridge: &winebridge,
                     },
-                    payload,
-                    resources,
+                    &addon.path(self.cx.directories()),
+                    addon.resources(),
                     false,
                     cancellation,
                     |_| {

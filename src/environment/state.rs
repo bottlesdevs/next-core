@@ -69,11 +69,11 @@ impl EnvironmentConfig {
     /// declarations override earlier values; command-local variables are excluded.
     pub(crate) fn effective_env_vars(&self) -> EnvVars {
         let mut vars = EnvVars::default();
-        let resources = self
+        let steps = self
             .ordered_components()
-            .flat_map(|addon| addon.resources())
-            .chain(self.dependencies.iter().flat_map(|addon| addon.resources()));
-        for step in resources.flat_map(|resource| &resource.steps) {
+            .flat_map(Addon::recipe)
+            .chain(self.dependencies.iter().flat_map(Addon::recipe));
+        for step in steps {
             if let InstallStep::SetEnvironment { name, value } = step {
                 vars.insert(name.clone(), value.clone());
             }

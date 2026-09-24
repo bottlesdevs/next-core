@@ -2,8 +2,7 @@
 //!
 //! An [`Addon`] is the durable form of a release, freezing its catalog metadata
 //! and any installation recipe when the release is acquired.
-//! Runtime tools have distinct types; only prefix components and dependencies
-//! carry installation resources.
+//! Runtime tools have distinct types and empty installation resources.
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
@@ -44,6 +43,8 @@ pub struct Addon<K> {
     version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    resources: Vec<InstallResource>,
     #[serde(flatten)]
     kind: K,
 }
@@ -54,6 +55,7 @@ impl<K> Addon<K> {
         name: String,
         version: String,
         requirements: Vec<Requirement>,
+        resources: Vec<InstallResource>,
         kind: K,
     ) -> Self {
         Self {
@@ -61,6 +63,7 @@ impl<K> Addon<K> {
             name,
             version,
             requirements,
+            resources,
             kind,
         }
     }
@@ -83,6 +86,14 @@ impl<K> Addon<K> {
     /// Returns the constraints that an environment must satisfy for this addon.
     pub fn requirements(&self) -> &[Requirement] {
         &self.requirements
+    }
+
+    pub(crate) fn resources(&self) -> &[InstallResource] {
+        &self.resources
+    }
+
+    pub(crate) fn recipe(&self) -> impl DoubleEndedIterator<Item = &InstallStep> {
+        self.resources.iter().flat_map(|resource| &resource.steps)
     }
 
     /// Returns the shared payload directory for this release.
@@ -118,14 +129,6 @@ impl Addon<Component> {
             Requirement::Id(id) => self.id() == *id,
         }
     }
-
-    pub(crate) fn resources(&self) -> &[InstallResource] {
-        &self.kind.resources
-    }
-
-    pub(crate) fn recipe(&self) -> impl DoubleEndedIterator<Item = &InstallStep> {
-        self.resources().iter().flat_map(|resource| &resource.steps)
-    }
 }
 
 impl Addon<Runner> {
@@ -157,10 +160,6 @@ impl Addon<Runner> {
 }
 
 impl Addon<Dependency> {
-    pub(crate) fn resources(&self) -> &[InstallResource] {
-        &self.kind.resources
-    }
-
     /// Returns whether this dependency satisfies `requirement`.
     ///
     /// Names and identifiers are compared exactly. A dependency never satisfies
@@ -271,12 +270,9 @@ pub struct Umu {}
 pub struct Component {
     /// Environment role occupied by the component.
     pub(crate) slot: Slot,
-    pub(super) resources: Vec<InstallResource>,
 }
 
 /// Marks an addon as a dependency that may coexist with other dependencies.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Dependency {
-    pub(super) resources: Vec<InstallResource>,
-}
+pub struct Dependency {}
