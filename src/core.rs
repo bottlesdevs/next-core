@@ -25,7 +25,7 @@ pub struct Config {
     /// `PATH`. Relative paths are resolved against the process's current directory.
     #[cfg(feature = "fvs")]
     pub fvs2d: Option<PathBuf>,
-    /// Remote component catalog downloaded by
+    /// Remote runner, WineBridge, UMU, and prefix-component catalog downloaded by
     /// [`Addons::refresh`](crate::Addons::refresh).
     pub component_catalog: Option<Url>,
     /// Remote dependency catalog downloaded by

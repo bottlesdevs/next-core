@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use serde::de::DeserializeOwned;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 use crate::{
     Operation, Progress, Stage,
@@ -12,21 +12,18 @@ use crate::{
     utils::fs,
 };
 
-use super::super::{
-    CatalogError, Component, Dependency,
-    catalog::{AddonFamily, Catalog},
-};
+use super::super::{CatalogError, catalog::Catalog};
 use super::{Addons, download::download};
 
 impl Addons {
     /// Downloads and parses the component and dependency catalogs.
     ///
-    /// Components are attempted first, then dependencies. A family failure other
+    /// Components are attempted first, then dependencies. A source failure other
     /// than cancellation does not prevent the other attempt. Each successful
-    /// catalog is cached before a single snapshot is published; a failed family
+    /// catalog is cached before a single snapshot is published; a failed source
     /// retains its previous catalog. The operation then reports
     /// [`CatalogError::Refresh`] if either attempt failed, after publishing any
-    /// successful family.
+    /// successful source.
     ///
     /// Cache writes occur in the same order. If a later write fails, earlier cache
     /// writes remain on disk but no new snapshot is published. Cancellation is
@@ -37,20 +34,30 @@ impl Addons {
     ///
     /// The operation fails if cancelled before cache writes begin, either URL is
     /// missing, a download or schema parse fails, or a successful catalog cannot be
-    /// written to its cache. Per-family URL, download, and parse failures are
+    /// written to its cache. Per-source URL, download, and parse failures are
     /// combined into [`CatalogError::Refresh`]; cache-write failures are returned
     /// directly.
     pub fn refresh(&self) -> Operation<()> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let component = addons
-                .download_catalog::<Component>(progress.clone(), &cancellation)
+                .download_catalog(
+                    addons.0.component_catalog_url.clone(),
+                    "components",
+                    progress.clone(),
+                    &cancellation,
+                )
                 .await;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
             let dependency = addons
-                .download_catalog::<Dependency>(progress, &cancellation)
+                .download_catalog(
+                    addons.0.dependency_catalog_url.clone(),
+                    "dependencies",
+                    progress,
+                    &cancellation,
+                )
                 .await;
 
             let _write = cancellation
@@ -63,14 +70,18 @@ impl Addons {
             let current = addons.state();
             let component_catalog = match &component {
                 Ok(catalog) => {
-                    catalog.save(&addons.0.directories).await?;
+                    catalog
+                        .save(&addons.0.directories.component_catalog())
+                        .await?;
                     Some(catalog.clone())
                 }
                 Err(_) => current.component_catalog.clone(),
             };
             let dependency_catalog = match &dependency {
                 Ok(catalog) => {
-                    catalog.save(&addons.0.directories).await?;
+                    catalog
+                        .save(&addons.0.directories.dependency_catalog())
+                        .await?;
                     Some(catalog.clone())
                 }
                 Err(_) => current.dependency_catalog.clone(),
@@ -91,23 +102,21 @@ impl Addons {
         })
     }
 
-    /// Downloads and parses one family catalog in temporary storage.
+    /// Downloads and parses one catalog source in temporary storage.
     ///
     /// # Errors
     ///
-    /// Returns an error if the family URL is absent, the operation is cancelled,
+    /// Returns an error if the URL is absent, the operation is cancelled,
     /// the transfer or temporary storage fails, or the document does not match the
     /// current catalog schema.
-    async fn download_catalog<K>(
+    async fn download_catalog(
         &self,
+        url: Option<Url>,
+        label: &'static str,
         progress: watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
-    ) -> Result<Arc<Catalog<K>>>
-    where
-        K: AddonFamily,
-        Catalog<K>: DeserializeOwned,
-    {
-        let url = K::url(&self.0.catalog_urls).ok_or(CatalogError::UrlNotConfigured(K::LABEL))?;
+    ) -> Result<Arc<Catalog>> {
+        let url = url.ok_or(CatalogError::UrlNotConfigured(label))?;
         fs::with_temp_dir(&self.0.directories.staging(), |stage| async move {
             let downloaded = stage.join("catalog.json");
             download(
@@ -118,7 +127,7 @@ impl Addons {
                 |transfer| {
                     progress.send_replace(Some(Progress::transferring(
                         Stage::Downloading {
-                            file: format!("{} catalog", K::LABEL),
+                            file: format!("{label} catalog"),
                         },
                         transfer,
                     )));
@@ -126,7 +135,7 @@ impl Addons {
             )
             .await?;
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            Ok(Arc::new(serde_json::from_slice::<Catalog<K>>(
+            Ok(Arc::new(serde_json::from_slice::<Catalog>(
                 &async_fs::read(&downloaded).await?,
             )?))
         })

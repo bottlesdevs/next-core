@@ -29,8 +29,8 @@ pub(in crate::environment) async fn create(
     let prefix = root.join("prefix");
     async_fs::create_dir_all(&prefix).await?;
     let runner = config
-        .runner()
-        .load_runner(cx.directories(), config.umu())
+        .runner
+        .load_runner(cx.directories(), config.umu.as_ref())
         .await?;
     runtime::initialize(runner.as_ref(), &prefix).await
 }
@@ -67,7 +67,7 @@ pub(in crate::environment) async fn apply(
     let mut removals = Vec::new();
     let mut components = Vec::new();
     let dependencies = &candidate.dependencies[previous.dependencies.len()..];
-    for slot in Slot::iter().filter(|slot| !slot.is_runtime()) {
+    for slot in Slot::iter() {
         let old = previous.component(slot);
         let new = candidate.component(slot);
         if old == new {
@@ -80,15 +80,12 @@ pub(in crate::environment) async fn apply(
             components.push(new);
         }
     }
-    if removals.is_empty() && components.is_empty() && dependencies.is_empty() {
-        return Ok(());
-    }
     let runner = candidate
-        .runner()
-        .load_runner(cx.directories(), candidate.umu())
+        .runner
+        .load_runner(cx.directories(), candidate.umu.as_ref())
         .await?;
     let prefix = root.join("prefix");
-    let winebridge = candidate.winebridge().path(cx.directories());
+    let winebridge = candidate.winebridge.path(cx.directories());
     let staging = cx.directories().staging();
     let inputs = InstallInputs {
         prefix: &prefix,

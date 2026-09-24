@@ -116,8 +116,8 @@ where
         if crate::utils::fs::exists(&prefix).await? {
             let config = &state.config;
             let runner = config
-                .runner()
-                .load_runner(self.context.directories(), config.umu())
+                .runner
+                .load_runner(self.context.directories(), config.umu.as_ref())
                 .await?;
             stop(runner.as_ref(), &prefix).await?;
         }
@@ -222,8 +222,8 @@ where
         }
         self.stop_locked().await?;
         let runner = config
-            .runner()
-            .load_runner(self.context.directories(), config.umu())
+            .runner
+            .load_runner(self.context.directories(), config.umu.as_ref())
             .await?;
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
@@ -248,7 +248,7 @@ where
         let command = config.wrappers.apply(WineBridgeClient::command(
             runner.as_ref(),
             &prefix,
-            config.winebridge().path(self.context.directories()),
+            config.winebridge.path(self.context.directories()),
             vars.iter(),
         ));
         let result = WineBridgeClient::connect_or_spawn(&prefix, command)

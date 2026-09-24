@@ -5,7 +5,9 @@
 //! published only after the callback succeeds. Virgo edits recover from a failed
 //! storage change; conventional prefixes can remain partially modified on failure.
 
-use crate::{Addon, Component, Dependency, EnvVars, Slot, Wrappers, error::Result};
+use crate::{
+    Addon, Component, Dependency, EnvVars, Runner, Slot, Umu, WineBridge, Wrappers, error::Result,
+};
 
 #[cfg(feature = "fvs")]
 use super::history;
@@ -36,12 +38,46 @@ pub struct Edit<'a, T> {
 }
 
 impl<T> Edit<'_, T> {
+    /// Selects the Wine or Proton runtime used on the next startup.
+    ///
+    /// Selecting the same identifier preserves the frozen record in the draft.
+    pub fn set_runner(&mut self, runner: Addon<Runner>) {
+        if self.draft.config.runner.id() != runner.id() {
+            self.draft.config.runner = runner;
+        }
+    }
+
+    /// Selects the WineBridge service used on the next startup.
+    ///
+    /// Selecting the same identifier preserves the frozen record in the draft.
+    pub fn set_winebridge(&mut self, winebridge: Addon<WineBridge>) {
+        if self.draft.config.winebridge.id() != winebridge.id() {
+            self.draft.config.winebridge = winebridge;
+        }
+    }
+
+    /// Selects or clears the optional UMU launcher.
+    ///
+    /// Selecting the same identifier preserves the frozen record in the draft.
+    pub fn set_umu(&mut self, umu: Option<Addon<Umu>>) {
+        if self.draft.config.umu.as_ref().map(Addon::id) != umu.as_ref().map(Addon::id) {
+            self.draft.config.umu = umu;
+        }
+    }
+
     /// Selects `component` for the slot declared by that component.
     ///
     /// Other slots are unchanged. Selecting the same addon identifier preserves
     /// the frozen record already stored in the draft.
     pub fn set_component(&mut self, component: Addon<Component>) {
-        self.draft.config.set_component(component);
+        let config = &mut self.draft.config;
+        if config
+            .component(component.slot())
+            .is_some_and(|old| old.id() == component.id())
+        {
+            return;
+        }
+        config.components.insert(component.slot(), component);
     }
 
     /// Removes the component selected in `slot`.
@@ -53,7 +89,12 @@ impl<T> Edit<'_, T> {
     ///
     /// Returns [`EnvironmentError::ComponentNotInstalled`] if `slot` is empty.
     pub fn remove_component(&mut self, slot: Slot) -> Result<()> {
-        self.draft.config.remove_component(slot)
+        self.draft
+            .config
+            .components
+            .remove(&slot)
+            .ok_or(EnvironmentError::ComponentNotInstalled(slot))?;
+        Ok(())
     }
 
     /// Appends `dependency` in installation order if it is not already selected.
@@ -61,7 +102,9 @@ impl<T> Edit<'_, T> {
     /// Duplicate addon identifiers are ignored. Dependencies cannot be removed
     /// or reordered through the edit API.
     pub fn add_dependency(&mut self, dependency: Addon<Dependency>) {
-        self.draft.config.add_dependency(dependency);
+        if self.draft.config.dependency(dependency.id()).is_none() {
+            self.draft.config.dependencies.push(dependency);
+        }
     }
 
     /// Returns owner-level environment variables used on the next startup.
@@ -83,9 +126,11 @@ where
 {
     /// Runs a coordinated edit and publishes it only after application succeeds.
     ///
-    /// Software changes require a stopped environment. Standard prefixes are
-    /// changed in place without rollback; Virgo environments checkpoint and
-    /// recover the owner if workspace preparation or persistence fails. A
+    /// Runtime and prefix changes require a stopped environment. Runtime-only
+    /// changes save directly for Standard prefixes. Virgo rebuilds the
+    /// composition when the runner or UMU changes; WineBridge changes only save.
+    /// Standard prefix changes apply in place without rollback; Virgo environments
+    /// checkpoint and recover the owner if workspace preparation or persistence fails. A
     /// standard-prefix application or subsequent save failure can therefore leave
     /// prefix contents inconsistent with the last published configuration.
     ///
@@ -117,9 +162,13 @@ where
             }
             let before = &previous.config;
             let after = &draft.config;
-            let software_changed =
+            let prefix_changed =
                 before.components != after.components || before.dependencies != after.dependencies;
-            if software_changed {
+            let runner_changed = before.runner != after.runner;
+            let umu_changed = before.umu != after.umu;
+            let runtime_changed =
+                runner_changed || umu_changed || before.winebridge != after.winebridge;
+            if prefix_changed || runtime_changed {
                 if WineBridgeClient::try_connect(&environment.root.join("prefix"))
                     .await?
                     .is_some()
@@ -133,9 +182,8 @@ where
                 }
             }
             // Once application succeeds, finish saving even if cancellation arrives.
-            match (previous.data.backend(), software_changed) {
-                (_, false) => environment.save(&draft).await?,
-                (PrefixBackend::Standard, true) => {
+            match previous.data.backend() {
+                PrefixBackend::Standard if prefix_changed => {
                     standard::apply(
                         before,
                         after,
@@ -147,8 +195,15 @@ where
                     .await?;
                     environment.save(&draft).await?;
                 }
+                PrefixBackend::Standard if runner_changed || umu_changed => {
+                    after
+                        .runner
+                        .load_runner(environment.context.directories(), after.umu.as_ref())
+                        .await?;
+                    environment.save(&draft).await?;
+                }
                 #[cfg(feature = "fvs")]
-                (PrefixBackend::Virgo, true) => {
+                PrefixBackend::Virgo if prefix_changed || runner_changed || umu_changed => {
                     let (base, overlays) = environment
                         .virgo
                         .prepare_artifacts(after, &progress, &cancellation)
@@ -180,6 +235,7 @@ where
                     )
                     .await?;
                 }
+                _ => environment.save(&draft).await?,
             }
             environment.publish(draft);
             Ok(result)

@@ -6,8 +6,8 @@
 //! state.
 
 use crate::{
-    Addon, Component, Edit, LibraryEntry, LibraryProvider, Manager, Operation, PrefixBackend,
-    ProgramSpec, State,
+    Addon, Edit, LibraryEntry, LibraryProvider, Manager, Operation, PrefixBackend, ProgramSpec,
+    Runner, State, Umu, WineBridge,
     error::{Error, Result},
     proto::{DllOverride, DllOverrideMode, Process},
 };
@@ -398,9 +398,9 @@ impl Manager<Bottle> {
     ///
     /// A new UUID is assigned when the operation starts;
     /// display names are stored verbatim, may be empty, and need not be unique.
-    /// Component slots and coexistence requirements are checked before creating
+    /// Addon coexistence requirements are checked before creating
     /// files; missing requirements fail without selecting or downloading other
-    /// owner components. Standard creation initializes Wine without FVS. Virgo,
+    /// owner addons. Standard creation initializes Wine without FVS. Virgo,
     /// available with the `fvs` feature, builds missing shared layers before
     /// composing private storage.
     /// The bottle is added to this manager only after initialization and
@@ -419,9 +419,9 @@ impl Manager<Bottle> {
         &self,
         name: impl Into<String>,
         backend: PrefixBackend,
-        runner: Addon<Component>,
-        winebridge: Addon<Component>,
-        umu: Option<Addon<Component>>,
+        runner: Addon<Runner>,
+        winebridge: Addon<WineBridge>,
+        umu: Option<Addon<Umu>>,
     ) -> Operation<Bottle> {
         self.create_environment(
             BottleData {

@@ -1,19 +1,22 @@
 //! Selects, builds, and orders immutable Virgo artifacts for an environment.
 //!
-//! Frozen addon selections resolve to a base layer, a runner adapter, component
-//! layers for non-runtime slots, and dependency layers in composition order.
+//! Frozen addon selections resolve to a base layer, a runner and UMU adapter,
+//! component layers, and dependency layers in composition order.
 
 use crate::{
-    Addon, AddonError, Component, Context, EnvironmentConfig, EnvironmentError, Progress, Slot,
-    Stage,
-    addons::{AddonFamily, InstallInputs, execute},
+    Addon, AddonError, Context, EnvironmentConfig, EnvironmentError, Progress, Stage,
+    addons::{InstallInputs, InstallResource, execute},
     environment::runtime,
     error::{Error, Result},
     virgo::{LayerStore, VirgoLayer},
 };
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 pub(crate) struct VirgoManager {
     cx: Context,
@@ -51,15 +54,25 @@ impl VirgoManager {
         }
         let base = self.prepare_base(cancellation).await?;
         let mut overlays = vec![self.prepare_adapter(config, &base, cancellation).await?];
-        for addon in config.ordered_components() {
+        let addons = config
+            .ordered_components()
+            .map(|addon| {
+                (
+                    addon.id(),
+                    addon.path(self.cx.directories()),
+                    addon.resources(),
+                )
+            })
+            .chain(config.dependencies.iter().map(|addon| {
+                (
+                    addon.id(),
+                    addon.path(self.cx.directories()),
+                    addon.resources(),
+                )
+            }));
+        for (id, payload, resources) in addons {
             overlays.push(
-                self.prepare_addon(addon, &base, progress, cancellation)
-                    .await?,
-            );
-        }
-        for addon in &config.dependencies {
-            overlays.push(
-                self.prepare_addon(addon, &base, progress, cancellation)
+                self.prepare_addon(id, &payload, resources, &base, progress, cancellation)
                     .await?,
             );
         }
@@ -71,7 +84,7 @@ impl VirgoManager {
 
     /// Loads the exact cached composition recorded by `config`.
     ///
-    /// Layers are ordered as base, runner adapter, non-runtime components in slot
+    /// Layers are ordered as base, runner and UMU adapter, components in slot
     /// order, and dependencies in installation order.
     ///
     /// # Errors
@@ -83,8 +96,8 @@ impl VirgoManager {
         config: &EnvironmentConfig,
     ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
         let base = self.layers.require(Path::new("soda"), None).await?;
-        let runner = config.runner().id();
-        let adapter = Path::new("adapters").join(runner.to_string());
+        let runner = config.runner.id();
+        let adapter = adapter_path(config);
         let mut overlays = vec![self.layers.require(&adapter, Some(runner)).await?];
         for id in config
             .ordered_components()
@@ -110,14 +123,15 @@ impl VirgoManager {
         let destination = Path::new("soda");
         self.layers
             .get_or_build(destination, None, cancellation, || async {
-                let soda =
-                    latest_component(self.cx.addons().state().components().into_iter().filter(
-                        |addon| {
-                            addon.slot() == Slot::Runner
-                                && addon.name().eq_ignore_ascii_case("soda")
-                        },
-                    ))
-                    .ok_or(EnvironmentError::SodaNotDownloaded)?;
+                let soda = latest_addon(
+                    self.cx
+                        .addons()
+                        .state()
+                        .runners()
+                        .into_iter()
+                        .filter(|addon| addon.name().eq_ignore_ascii_case("soda")),
+                )
+                .ok_or(EnvironmentError::SodaNotDownloaded)?;
                 let runner = soda.load_runner(self.cx.directories(), None).await?;
                 let workspace = self
                     .layers
@@ -142,7 +156,7 @@ impl VirgoManager {
             .await
     }
 
-    /// Reuses or builds the selected runner's initialization delta over the base.
+    /// Reuses or builds the selected runner and UMU's initialization delta over the base.
     ///
     /// # Errors
     ///
@@ -154,13 +168,13 @@ impl VirgoManager {
         base: &VirgoLayer,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
-        let id = config.runner().id();
-        let destination = Path::new("adapters").join(id.to_string());
+        let id = config.runner.id();
+        let destination = adapter_path(config);
         self.layers
             .get_or_build(&destination, Some(id), cancellation, || async {
                 let runner = config
-                    .runner()
-                    .load_runner(self.cx.directories(), config.umu())
+                    .runner
+                    .load_runner(self.cx.directories(), config.umu.as_ref())
                     .await?;
                 let workspace = self
                     .layers
@@ -183,36 +197,32 @@ impl VirgoManager {
     ///
     /// Cache misses execute with the pinned Soda base runner and the greatest
     /// semantic-versioned local `WineBridge`, independently of the environment's
-    /// selected runtime components.
+    /// selected runtime tools.
     ///
     /// # Errors
     ///
     /// Returns errors for missing build inputs, cancellation, runner loading,
     /// recipe execution, FVS, registry processing, filesystem work, or publication.
-    async fn prepare_addon<K: AddonFamily>(
+    async fn prepare_addon(
         &self,
-        addon: &Addon<K>,
+        id: Uuid,
+        payload: &Path,
+        resources: &[InstallResource],
         base: &VirgoLayer,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
-        let id = addon.id();
         let destination = Path::new("addons").join(id.to_string());
         self.layers
             .get_or_build(&destination, Some(id), cancellation, || async {
                 let addons = self.cx.addons().state();
                 let soda = addons
-                    .component(base.id)
+                    .runner(base.id)
                     .ok_or(AddonError::NotFound(base.id))?;
                 let runner = soda.load_runner(self.cx.directories(), None).await?;
-                let winebridge = latest_component(
-                    addons
-                        .components()
-                        .into_iter()
-                        .filter(|addon| addon.slot() == Slot::WineBridge),
-                )
-                .ok_or(EnvironmentError::ComponentNotInstalled(Slot::WineBridge))?
-                .path(self.cx.directories());
+                let winebridge = latest_addon(addons.winebridges().into_iter())
+                    .ok_or(EnvironmentError::WineBridgeNotDownloaded)?
+                    .path(self.cx.directories());
                 let workspace = self
                     .layers
                     .prepare_build(&destination, Some(base), cancellation)
@@ -224,8 +234,8 @@ impl VirgoManager {
                         runner: runner.as_ref(),
                         winebridge: &winebridge,
                     },
-                    &addon.path(self.cx.directories()),
-                    addon.resources(),
+                    payload,
+                    resources,
                     false,
                     cancellation,
                     |_| {
@@ -243,9 +253,7 @@ impl VirgoManager {
 }
 
 /// Selects the greatest valid semantic version, using UUID as a stable tie-breaker.
-fn latest_component(
-    addons: impl Iterator<Item = Arc<Addon<Component>>>,
-) -> Option<Arc<Addon<Component>>> {
+fn latest_addon<K>(addons: impl Iterator<Item = Arc<Addon<K>>>) -> Option<Arc<Addon<K>>> {
     addons
         .filter_map(|addon| {
             semver::Version::parse(addon.version())
@@ -254,4 +262,13 @@ fn latest_component(
         })
         .max_by(|(a, left), (b, right)| a.cmp(b).then_with(|| left.id().cmp(&right.id())))
         .map(|(_, addon)| addon)
+}
+
+fn adapter_path(config: &EnvironmentConfig) -> PathBuf {
+    let umu = config
+        .umu
+        .as_ref()
+        .map(|addon| addon.id().to_string())
+        .unwrap_or_else(|| "none".into());
+    Path::new("adapters").join(format!("{}-{umu}", config.runner.id()))
 }

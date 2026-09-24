@@ -10,20 +10,16 @@
 
 use futures_lite::io::AsyncReadExt;
 use sha2::{Digest, Sha256, Sha512};
-use std::{
-    io,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{io, path::Path, sync::Arc};
 
-use serde::{Deserialize, Deserializer, Serialize, de, de::DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use url::Url;
 use uuid::{NonNilUuid, Uuid};
 
-use crate::{Directories, error::Result};
+use crate::error::Result;
 
 use super::recipe::InstallStep;
-use super::{Component, Dependency, Requirement, Slot};
+use super::{Requirement, Slot};
 
 const CATALOG_VERSION: u32 = 1;
 
@@ -133,18 +129,18 @@ enum Architecture {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-/// Contains the cached entries for one addon family.
+/// Contains the cached entries from one catalog source.
 ///
 /// Deserialization accepts only [`CATALOG_VERSION`], preventing a cache written
 /// with an incompatible schema from being used.
-pub(crate) struct Catalog<K> {
+pub(crate) struct Catalog {
     #[serde(deserialize_with = "deserialize_catalog_version")]
     schema_version: u32,
-    entries: Vec<CatalogEntry<K>>,
+    entries: Vec<CatalogEntry>,
 }
 
-impl<K> Catalog<K> {
-    /// Loads the cached catalog for `K`.
+impl Catalog {
+    /// Loads the cached catalog at `path`.
     ///
     /// Returns `None` only when the catalog file does not exist.
     ///
@@ -152,12 +148,8 @@ impl<K> Catalog<K> {
     ///
     /// Returns an error if the cache cannot be read or is not a valid catalog for
     /// the current schema.
-    pub(crate) async fn load(directories: &Directories) -> Result<Option<Arc<Self>>>
-    where
-        K: AddonFamily,
-        Self: DeserializeOwned,
-    {
-        let bytes = match async_fs::read(K::catalog(directories)).await {
+    pub(crate) async fn load(path: &Path) -> Result<Option<Arc<Self>>> {
+        let bytes = match async_fs::read(path).await {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
@@ -165,100 +157,63 @@ impl<K> Catalog<K> {
         Ok(Some(Arc::new(serde_json::from_slice(&bytes)?)))
     }
 
-    /// Serializes this catalog over the cache for `K`.
+    /// Serializes this catalog over the cache at `path`.
     ///
     /// # Errors
     ///
     /// Returns an error if serialization or writing the cache fails.
-    pub(crate) async fn save(&self, directories: &Directories) -> Result<()>
-    where
-        K: AddonFamily,
-        Self: Serialize,
-    {
-        async_fs::write(K::catalog(directories), serde_json::to_vec(self)?).await?;
+    pub(crate) async fn save(&self, path: &Path) -> Result<()> {
+        async_fs::write(path, serde_json::to_vec(self)?).await?;
         Ok(())
     }
 
     /// Returns entries in their catalog-defined order.
-    pub(crate) fn entries(&self) -> &[CatalogEntry<K>] {
+    pub(crate) fn entries(&self) -> &[CatalogEntry] {
         &self.entries
     }
 
-    pub(crate) fn entry(&self, id: Uuid) -> Option<&CatalogEntry<K>> {
+    pub(crate) fn entry(&self, id: Uuid) -> Option<&CatalogEntry> {
         self.entries.iter().find(|entry| entry.id() == id)
     }
 }
 
-pub(crate) struct CatalogUrls {
-    pub(crate) components: Option<Url>,
-    pub(crate) dependencies: Option<Url>,
-}
-
-/// Maps an addon family to its endpoint, catalog cache, and release directory.
-pub(crate) trait AddonFamily {
-    /// Human-readable family name used in progress and errors.
-    const LABEL: &'static str;
-
-    /// Selects this family's configured remote endpoint.
-    fn url(urls: &CatalogUrls) -> Option<Url>;
-    /// Returns this family's catalog cache path.
-    fn catalog(directories: &Directories) -> PathBuf;
-    /// Returns this family's managed release directory.
-    fn releases(directories: &Directories) -> PathBuf;
-}
-
-impl AddonFamily for Component {
-    const LABEL: &'static str = "components";
-
-    fn url(urls: &CatalogUrls) -> Option<Url> {
-        urls.components.clone()
-    }
-
-    fn catalog(directories: &Directories) -> PathBuf {
-        directories.components().join("catalog.json")
-    }
-
-    fn releases(directories: &Directories) -> PathBuf {
-        directories.component_releases()
-    }
-}
-
-impl AddonFamily for Dependency {
-    const LABEL: &'static str = "dependencies";
-
-    fn url(urls: &CatalogUrls) -> Option<Url> {
-        urls.dependencies.clone()
-    }
-
-    fn catalog(directories: &Directories) -> PathBuf {
-        directories.dependencies().join("catalog.json")
-    }
-
-    fn releases(directories: &Directories) -> PathBuf {
-        directories.dependency_releases()
-    }
+/// Identifies the runtime role or prefix contribution advertised by a catalog entry.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum AddonKind {
+    /// A Wine or Proton runner.
+    Runner,
+    /// The Bottles `WineBridge` executable.
+    #[serde(rename = "winebridge")]
+    WineBridge,
+    /// The independently selected UMU launcher.
+    Umu,
+    /// A replaceable component occupying one prefix slot.
+    Component {
+        /// Prefix role occupied by the component.
+        slot: Slot,
+    },
+    /// An installable dependency.
+    Dependency,
 }
 
 /// Describes a release advertised by a remote addon catalog.
 ///
-/// `K` identifies the release as a [`Component`] or [`Dependency`]. An entry is
-/// only metadata: use [`Addons::fetch_component`](super::Addons::fetch_component)
-/// or [`Addons::fetch_dependency`](super::Addons::fetch_dependency) to acquire
-/// its payload. Check [`is_supported`](Self::is_supported) before offering it for
-/// the current platform.
+/// An entry is only metadata. Its [`kind`](Self::kind) selects the corresponding
+/// acquisition method on [`Addons`](super::Addons). Check
+/// [`is_supported`](Self::is_supported) before offering it for the current platform.
 ///
 /// # Examples
 ///
 /// ```
-/// use bottles_core::{CatalogEntry, Component};
+/// use bottles_core::CatalogEntry;
 ///
-/// fn supported(entries: &[CatalogEntry<Component>]) -> Vec<&CatalogEntry<Component>> {
+/// fn supported(entries: &[CatalogEntry]) -> Vec<&CatalogEntry> {
 ///     entries.iter().filter(|entry| entry.is_supported()).collect()
 /// }
 /// ```
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CatalogEntry<K> {
+pub struct CatalogEntry {
     id: NonNilUuid,
     name: String,
     version: String,
@@ -266,10 +221,10 @@ pub struct CatalogEntry<K> {
     requirements: Vec<Requirement>,
     artifacts: Vec<CatalogArtifact>,
     #[serde(flatten)]
-    kind: K,
+    kind: AddonKind,
 }
 
-impl<K> CatalogEntry<K> {
+impl CatalogEntry {
     /// Returns the non-nil identifier shared with the acquired release.
     pub fn id(&self) -> Uuid {
         self.id.get()
@@ -285,6 +240,11 @@ impl<K> CatalogEntry<K> {
         &self.version
     }
 
+    /// Returns the runtime role or prefix contribution of this release.
+    pub fn kind(&self) -> AddonKind {
+        self.kind
+    }
+
     /// Returns the constraints that an environment must satisfy for this release.
     pub fn requirements(&self) -> &[Requirement] {
         &self.requirements
@@ -297,9 +257,8 @@ impl<K> CatalogEntry<K> {
     /// macOS, and Windows; supported architectures are `x86`, `x86_64`, and
     /// `aarch64`.
     /// On other build targets, every entry is reported as unsupported. For
-    /// components, multiple matching artifacts make this method return `true`, but
-    /// [`Addons::fetch_component`](super::Addons::fetch_component) rejects the
-    /// ambiguous entry.
+    /// archive releases, multiple matching artifacts make this method return
+    /// `true`, but acquisition rejects the ambiguous entry.
     pub fn is_supported(&self) -> bool {
         Target::current().is_some_and(|target| self.artifacts_for_target(target).next().is_some())
     }
@@ -315,21 +274,15 @@ impl<K> CatalogEntry<K> {
     }
 }
 
-impl CatalogEntry<Component> {
-    /// Returns the environment slot occupied by this component release.
-    pub fn slot(&self) -> Slot {
-        self.kind.slot
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 /// Describes one downloadable file and its optional installation recipe.
 ///
-/// Matching artifacts are downloaded in catalog order. A provided recipe is copied
-/// into the acquired [`Addon`](super::Addon). When absent, components substitute the
-/// slot's default recipe and dependencies use an empty recipe. Later catalog changes
-/// therefore do not affect the local release.
+/// Components and dependencies declare installation `steps`, including launch
+/// variables, that are frozen into the acquired [`Addon`](super::Addon). When
+/// steps are absent, components substitute the slot's default recipe and
+/// dependencies use an empty recipe. Later catalog changes do not affect the
+/// local release.
 pub(crate) struct CatalogArtifact {
     url: url::Url,
     file_name: String,
