@@ -217,7 +217,7 @@ impl VirgoManager {
             .get_or_build(&destination, Some(id), cancellation, || async {
                 let addons = self.cx.addons().state();
                 let soda = addons
-                    .runner(base.id)
+                    .release::<crate::Runner>(base.id)
                     .ok_or(AddonError::NotFound(base.id))?;
                 let runner = soda.load_runner(self.cx.directories(), None).await?;
                 let winebridge = latest_addon(addons.winebridges().into_iter())
