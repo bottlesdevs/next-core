@@ -3,6 +3,8 @@
 //! [`Profiles`] owns the live profile collection. Mutations are serialized,
 //! saved to disk before publication, and exposed to observers as coherent
 //! [`ProfilesState`] snapshots.
+//! Linked-account metadata is part of those snapshots; provider secrets are
+//! stored separately in the platform credential store.
 
 mod accounts;
 mod credentials;
@@ -37,7 +39,7 @@ impl Profiles {
     /// # Errors
     ///
     /// Returns [`ProfileError::NotFound`] if `id` does not identify a profile,
-    /// or an I/O error if the updated state cannot be persisted.
+    /// or a persistence error if the updated state cannot be saved.
     pub async fn select(&self, id: Uuid) -> Result<Profile> {
         self.update(move |state| {
             let profile = state
@@ -58,7 +60,14 @@ impl Profiles {
         self.update_locked(operation).await
     }
 
-    /// Applies and publishes a mutation while the caller holds `write_lock`.
+    /// Applies, persists, and publishes a mutation while the caller holds `write_lock`.
+    ///
+    /// If the mutation leaves the snapshot unchanged, persistence and publication
+    /// are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error from `operation` or from persisting the changed snapshot.
     async fn update_locked<T>(
         &self,
         operation: impl FnOnce(&mut ProfilesState) -> Result<T>,
@@ -156,12 +165,25 @@ impl Profiles {
 
     /// Creates a profile and selects it in the same published update.
     ///
-    /// Leading and trailing whitespace is removed from `name`. The profile is
-    /// assigned a new UUID and initially has no linked accounts.
+    /// Leading and trailing whitespace is removed from `name`; no other name
+    /// validation is performed. The profile is assigned a new UUID, initially has
+    /// no linked accounts, and becomes selected in the same published snapshot.
     ///
     /// # Errors
     ///
-    /// Returns an I/O error if the updated profile state cannot be persisted.
+    /// Returns a persistence error if the updated profile state cannot be saved.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::{Profiles, error::Error};
+    /// # async fn example(profiles: &Profiles) -> Result<(), Error> {
+    /// let profile = profiles.create("Second player").await?;
+    /// assert_eq!(profile.name(), "Second player");
+    /// assert_eq!(profiles.selected().id(), profile.id());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn create(&self, name: impl Into<String>) -> Result<Profile> {
         let name = name.into().trim().to_owned();
         self.update(move |state| {
@@ -179,12 +201,13 @@ impl Profiles {
 
     /// Changes the display name of the profile identified by `id`.
     ///
-    /// Leading and trailing whitespace is removed from `name`.
+    /// Leading and trailing whitespace is removed from `name`; no other name
+    /// validation is performed.
     ///
     /// # Errors
     ///
     /// Returns [`ProfileError::NotFound`] if `id` does not identify a profile,
-    /// or an I/O error if the updated state cannot be persisted.
+    /// or a persistence error if the updated state cannot be saved.
     pub async fn rename(&self, id: Uuid, name: impl Into<String>) -> Result<Profile> {
         let name = name.into().trim().to_owned();
         self.update(move |state| {
@@ -203,7 +226,9 @@ impl Profiles {
     ///
     /// Linked accounts are removed one at a time before the profile itself is
     /// removed. If `id` is selected, the first remaining profile becomes
-    /// selected. At least one profile is always retained.
+    /// selected. At least one profile is always retained. Each successful account
+    /// unlink is persisted immediately, so a later cleanup failure can leave the
+    /// profile present with earlier links already removed.
     ///
     /// # Errors
     ///

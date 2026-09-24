@@ -19,8 +19,8 @@ impl Addons {
     /// Removes an acquired component from shared release storage.
     ///
     /// The release directory is first moved to temporary trash, then the new state
-    /// is published and cleanup is attempted. Existing environment selections and
-    /// already-built Virgo artifacts retain their embedded release records.
+    /// is published and cleanup is attempted. Existing environment selections retain
+    /// their embedded records, and already-built Virgo artifacts are not removed.
     ///
     /// # Errors
     ///
@@ -49,8 +49,8 @@ impl Addons {
     /// Removes an acquired dependency from shared release storage.
     ///
     /// The release directory is first moved to temporary trash, then the new state
-    /// is published and cleanup is attempted. Existing environment selections and
-    /// already-built Virgo artifacts retain their embedded release records.
+    /// is published and cleanup is attempted. Existing environment selections retain
+    /// their embedded records, and already-built Virgo artifacts are not removed.
     ///
     /// # Errors
     ///

@@ -1,4 +1,4 @@
-//! Platform-specific filesystem locations used by the core.
+//! Resolves and names the filesystem locations owned by Bottles core.
 
 use std::path::{Path, PathBuf};
 
@@ -6,12 +6,12 @@ use ::directories::ProjectDirs;
 
 use crate::error::{Error, Result};
 
-/// Resolves the configuration, data, cache, and runtime locations for Bottles.
+/// Resolves configuration, local data, cache, and runtime locations for Bottles.
 ///
 /// Paths follow the host platform's conventions. Constructing this type with
 /// [`new`](Self::new) creates the persistent directories required by core
-/// services, but disposable locations such as [`staging`](Self::staging) are
-/// created only when needed.
+/// services. Cache, staging, trash, program, and Virgo directories are created
+/// lazily by the workflows that use them.
 ///
 /// # Examples
 ///
@@ -29,7 +29,10 @@ use crate::error::{Error, Result};
 pub struct Directories(ProjectDirs);
 
 impl Directories {
-    /// Resolves and creates the directories required by Bottles core services.
+    /// Resolves platform paths and creates the directories needed at startup.
+    ///
+    /// Configuration, local data, runtime, bottle, component, dependency, plugin,
+    /// and addon-release metadata directories are created recursively.
     ///
     /// # Errors
     ///
@@ -60,33 +63,31 @@ impl Directories {
         Ok(directories)
     }
 
-    /// Returns the platform configuration directory.
     pub(crate) fn config_dir(&self) -> &Path {
         self.0.config_dir()
     }
 
-    /// Returns the platform's local data directory for Bottles.
+    /// Returns the persistent, platform-local data directory for Bottles.
     pub fn data_dir(&self) -> &Path {
         self.0.data_local_dir()
     }
 
-    /// Returns the platform cache directory for Bottles.
+    /// Returns the disposable platform cache directory for Bottles.
     ///
     /// [`new`](Self::new) does not eagerly create this directory.
     pub fn cache_dir(&self) -> &Path {
         self.0.cache_dir()
     }
 
-    /// Returns the root used for disposable installation workspaces.
+    /// Returns the root used for disposable installation and publication workspaces.
     ///
-    /// The path is placed under [`data_dir`](Self::data_dir), allowing staged
-    /// plugin trees to be atomically renamed into [`plugins`](Self::plugins).
-    /// The directory is created by the workflow that uses it.
+    /// The path is placed under [`Self::data_dir`], allowing completed trees to
+    /// be atomically renamed into managed data directories on the same filesystem.
+    /// The directory itself is created lazily.
     pub fn staging(&self) -> PathBuf {
         self.data_dir().join(".staging")
     }
 
-    /// Returns the root used to stage data pending deletion.
     pub(crate) fn trash(&self) -> PathBuf {
         self.data_dir().join(".trash")
     }
@@ -102,53 +103,44 @@ impl Directories {
             .unwrap_or_else(|| self.data_dir().join("runtime"))
     }
 
-    /// Returns the directory containing bottle state.
     pub(crate) fn bottles(&self) -> PathBuf {
         self.data_dir().join("bottles")
     }
 
     #[cfg(feature = "fvs")]
-    /// Returns the directory containing managed program state.
     pub(crate) fn programs(&self) -> PathBuf {
         self.data_dir().join("programs")
     }
-    /// Returns the directory containing installed runtime components.
     pub(crate) fn components(&self) -> PathBuf {
         self.data_dir().join("components")
     }
 
-    /// Returns the directory containing installed dependencies.
     pub(crate) fn dependencies(&self) -> PathBuf {
         self.data_dir().join("dependencies")
     }
 
-    /// Returns the cached component-release metadata directory.
     pub(crate) fn component_releases(&self) -> PathBuf {
         self.components().join("releases")
     }
 
-    /// Returns the cached dependency-release metadata directory.
     pub(crate) fn dependency_releases(&self) -> PathBuf {
         self.dependencies().join("releases")
     }
 
     #[cfg(feature = "fvs")]
-    /// Returns the root used by the Virgo integration.
     pub(crate) fn virgo(&self) -> PathBuf {
         self.data_dir().join("virgo")
     }
 
-    /// Returns the directory containing installed plugins.
+    /// Returns the persistent directory containing installed plugins.
     pub fn plugins(&self) -> PathBuf {
         self.data_dir().join("plugins")
     }
 
-    /// Returns the persisted profile configuration path.
     pub(crate) fn profiles(&self) -> PathBuf {
         self.config_dir().join("profiles.toml")
     }
 
-    /// Enumerates the directories created during initialization.
     fn paths(&self) -> [PathBuf; 9] {
         [
             self.config_dir().to_path_buf(),

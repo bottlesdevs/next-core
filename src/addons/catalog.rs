@@ -35,9 +35,7 @@ const CATALOG_VERSION: u32 = 1;
 /// therefore requires an exact, case-sensitive match with the lowercase hexadecimal
 /// digest produced for the downloaded file.
 pub(crate) enum Checksum {
-    /// Verifies the artifact with SHA-256.
     Sha256(String),
-    /// Verifies the artifact with SHA-512.
     Sha512(String),
 }
 
@@ -186,23 +184,17 @@ impl<K> Catalog<K> {
         &self.entries
     }
 
-    /// Finds the entry with UUID `id`.
     pub(crate) fn entry(&self, id: Uuid) -> Option<&CatalogEntry<K>> {
         self.entries.iter().find(|entry| entry.id() == id)
     }
 }
 
-/// Holds the optional remote endpoint for each addon family.
 pub(crate) struct CatalogUrls {
-    /// Component catalog endpoint.
     pub(crate) components: Option<Url>,
-    /// Dependency catalog endpoint.
     pub(crate) dependencies: Option<Url>,
 }
 
 /// Maps an addon family to its endpoint, catalog cache, and release directory.
-///
-/// This trait is implemented only by [`Component`] and [`Dependency`].
 pub(crate) trait AddonFamily {
     /// Human-readable family name used in progress and errors.
     const LABEL: &'static str;
@@ -254,6 +246,16 @@ impl AddonFamily for Dependency {
 /// or [`Addons::fetch_dependency`](super::Addons::fetch_dependency) to acquire
 /// its payload. Check [`is_supported`](Self::is_supported) before offering it for
 /// the current platform.
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::{CatalogEntry, Component};
+///
+/// fn supported(entries: &[CatalogEntry<Component>]) -> Vec<&CatalogEntry<Component>> {
+///     entries.iter().filter(|entry| entry.is_supported()).collect()
+/// }
+/// ```
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogEntry<K> {
@@ -291,8 +293,8 @@ impl<K> CatalogEntry<K> {
     /// Returns whether at least one artifact matches the current build target.
     ///
     /// Platform matching is exact. An artifact without a platform restriction
-    /// matches any target represented by this crate. If the current OS or
-    /// architecture is not represented, every entry is reported as unsupported.
+    /// matches every supported target. On other build targets, every entry is
+    /// reported as unsupported.
     pub fn is_supported(&self) -> bool {
         Target::current().is_some_and(|target| self.artifacts_for_target(target).next().is_some())
     }
@@ -333,19 +335,15 @@ pub(crate) struct CatalogArtifact {
 }
 
 impl CatalogArtifact {
-    /// Returns the artifact download URL.
     pub(crate) fn url(&self) -> &Url {
         &self.url
     }
-    /// Returns the payload file name used in local release storage.
     pub(crate) fn file_name(&self) -> &str {
         &self.file_name
     }
-    /// Returns the digest required for the downloaded file.
     pub(crate) fn checksum(&self) -> &Checksum {
         &self.checksum
     }
-    /// Returns the recipe override supplied by the catalog, if any.
     pub(crate) fn steps(&self) -> Option<&[InstallStep]> {
         self.steps.as_deref()
     }

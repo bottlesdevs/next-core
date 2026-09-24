@@ -1,4 +1,4 @@
-//! Internal command construction, wrapper composition, and process spawning.
+//! Command construction, wrapper composition, and process spawning.
 //!
 //! A [`Command`] owns an executable, its arguments, and environment overrides.
 //! Wrappers prepend another command without invoking a shell, so argument and
@@ -12,6 +12,7 @@ mod wrapper;
 pub(crate) mod wrappers;
 pub(crate) use wrapper::Wrapper;
 
+/// Marks a command representation that can be lowered and spawned directly.
 pub(crate) trait Spawnable: Into<Command> + Sized {
     /// Converts this value into a command and starts the child process.
     ///
@@ -36,7 +37,6 @@ pub(crate) struct Command {
 }
 
 impl Command {
-    /// Creates a command for `executable` with no arguments or overrides.
     pub(crate) fn new(executable: impl AsRef<OsStr>) -> Self {
         Self {
             executable: executable.as_ref().to_os_string(),
@@ -45,13 +45,11 @@ impl Command {
         }
     }
 
-    /// Appends one argument.
     pub(crate) fn arg(mut self, arg: impl AsRef<OsStr>) -> Self {
         self.args.push(arg.as_ref().to_os_string());
         self
     }
 
-    /// Appends each supplied argument in iteration order.
     pub(crate) fn args<A: AsRef<OsStr>>(mut self, args: impl IntoIterator<Item = A>) -> Self {
         self.args
             .extend(args.into_iter().map(|arg| arg.as_ref().to_os_string()));

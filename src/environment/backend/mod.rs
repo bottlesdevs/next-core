@@ -2,7 +2,7 @@
 //!
 //! [`PrefixBackend`] records whether an environment owns a conventional,
 //! directly modified Wine prefix or a Virgo workspace assembled from immutable
-//! layers. Runtime coordination remains the responsibility of the environment.
+//! layers.
 
 pub(super) mod standard;
 #[cfg(feature = "fvs")]
@@ -13,14 +13,6 @@ use serde::{Deserialize, Serialize};
 /// Selects how an environment stores and materializes its Wine prefix.
 ///
 /// This choice is persisted with the owner and cannot be changed by an edit.
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::PrefixBackend;
-///
-/// assert_eq!(PrefixBackend::Standard, PrefixBackend::Standard);
-/// ```
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Serialize)]
 pub enum PrefixBackend {
     /// Stores installed software and user data together in one mutable prefix.

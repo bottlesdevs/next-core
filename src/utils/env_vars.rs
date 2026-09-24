@@ -1,26 +1,17 @@
-//! Serializable environment-variable overrides.
+//! Serializable environment-variable override maps.
 
 use std::{borrow::Borrow, collections::HashMap, hash::Hash};
 
 use serde::{Deserialize, Serialize};
 
-/// A map of environment-variable names to replacement values.
+/// Stores environment-variable names and their replacement values.
 ///
-/// Inserting the same name again replaces its value. Iteration order is not
-/// stable because values are stored in a [`HashMap`]. The default key and value
-/// type is [`String`]; internal process construction also uses [`OsString`].
+/// Names are compared exactly and are not normalized for the host platform.
+/// Inserting the same name again replaces its value, and iteration order is
+/// unspecified. The default key and value type is [`String`]; internal process
+/// construction also uses [`OsString`].
 ///
 /// [`OsString`]: std::ffi::OsString
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::EnvVars;
-///
-/// let mut vars = EnvVars::<String>::default();
-/// assert_eq!(vars.insert("WINEDEBUG".into(), "-all".into()), None);
-/// assert_eq!(vars.get("WINEDEBUG"), Some("-all"));
-/// ```
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct EnvVars<T: Eq + Hash = String>(HashMap<T, T>);
@@ -56,6 +47,19 @@ impl EnvVars<String> {
     }
 
     /// Iterates over borrowed `(name, value)` pairs in unspecified order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bottles_core::EnvVars;
+    ///
+    /// let mut vars = EnvVars::<String>::default();
+    /// vars.insert("A".into(), "1".into());
+    /// vars.insert("B".into(), "2".into());
+    /// let mut entries = vars.iter().collect::<Vec<_>>();
+    /// entries.sort_unstable();
+    /// assert_eq!(entries, vec![("A", "1"), ("B", "2")]);
+    /// ```
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.0
             .iter()

@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 /// # Errors
 ///
 /// Returns an error if directory creation, runner loading, Wine initialization,
-/// or shutdown fails. A shutdown failure retains the prefix for diagnosis.
+/// or shutdown fails. A shutdown failure retains the prefix.
 pub(in crate::environment) async fn create(
     config: &EnvironmentConfig,
     root: &Path,
@@ -48,6 +48,12 @@ pub(in crate::environment) async fn create(
 /// Returns an error if runner loading, uninstalling, installing, cancellation,
 /// or the final Wine shutdown fails. A shutdown error takes precedence over the
 /// application result.
+///
+/// # Panics
+///
+/// Panics if `candidate.dependencies` is shorter than `previous.dependencies`.
+/// Environment edits preserve the previous dependency prefix, so this indicates
+/// an internal caller violated the edit contract.
 pub(in crate::environment) async fn apply(
     previous: &EnvironmentConfig,
     candidate: &EnvironmentConfig,

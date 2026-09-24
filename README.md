@@ -4,30 +4,18 @@
 and Proton environments, installable runtime components, saved Windows launch
 definitions, user profiles, and launchable library entries.
 
-The main entry point is [`Bottles`]. Opening it discovers persisted bottles,
-loads configured plugins, and exposes the managers used by the rest of the
-application. Long-running changes return an [`Operation`]: a lazy future with
-progress reporting and cooperative cancellation.
+The main entry point is [`Bottles`]. Opening it resolves the application's data
+directories, validates persisted state, initializes addon and environment
+registries, and loads plugin-backed library providers. Long-running changes
+return an [`Operation`]: a lazy future with progress reporting and cooperative
+cancellation.
 
 ## Quick start
 
-Launch settings can be built without opening local services:
-
-```rust
-use bottles_core::ProgramSpec;
-
-let program = ProgramSpec::new("Notepad", r"C:\windows\notepad.exe")
-    .with_args([r"C:\notes.txt"])
-    .with_new_console(true);
-
-assert_eq!(program.name(), "Notepad");
-assert_eq!(program.args(), &[r"C:\notes.txt"]);
-assert!(program.new_console());
-```
-
 A complete application opens the core once, keeps it alive while managers and
 operations are in use, and shuts down its background download service before
-exiting:
+exiting. Opening performs filesystem and plugin I/O and, with `fvs` enabled,
+may start an `fvs2d` process:
 
 ```rust,no_run
 use std::sync::Arc;
@@ -69,11 +57,17 @@ on an executor, or call [`Operation::cancel`] and await the result. Dropping an
 operation merely stops polling it; it does not guarantee cleanup or cancellation.
 Progress is advisory and intermediate updates may be coalesced.
 
+Call [`Bottles::shutdown`] only after application work has stopped. Shutdown
+cancels queued and in-flight downloads, waits for download workers to exit, and
+prevents later download-backed operations from starting successfully.
+
 ## Features
 
 - `fvs` (enabled by default) adds Virgo layered-prefix storage, environment
   history and rollback, and standalone `Program` environments. It also starts
-  or connects to an `fvs2d` process during [`Bottles::open`].
+  or connects to an `fvs2d` process during [`Bottles::open`]. Set
+  `Config::fvs2d` to an explicit executable path or leave it unset to resolve
+  `fvs2d` through `PATH`.
 
 Disable default features when an application only needs conventional mutable
 Wine prefixes:
@@ -85,8 +79,7 @@ bottles-core = { version = "0.1", default-features = false }
 
 ## Minimum supported Rust version
 
-This crate does not currently declare an MSRV. Use the current stable Rust
-toolchain; future releases may adopt an explicit policy.
+No MSRV is declared; builds target the current stable Rust toolchain.
 
 ## License
 

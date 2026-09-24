@@ -37,7 +37,7 @@ pub(crate) struct InstallInputs<'a> {
     pub(crate) staging: &'a Path,
     /// Runner used for Windows child processes.
     pub(crate) runner: &'a dyn Runner,
-    /// Root of the WineBridge component used for registry operations.
+    /// Root of the `WineBridge` component used for registry operations.
     pub(crate) winebridge: &'a Path,
 }
 
@@ -50,7 +50,7 @@ pub(crate) struct InstallInputs<'a> {
 /// # Errors
 ///
 /// Returns an error if cancellation is requested or any filesystem, archive,
-/// process, runner, or WineBridge operation fails. An unsuccessful installer or
+/// process, runner, or `WineBridge` operation fails. An unsuccessful installer or
 /// DLL-registration child is reported as [`InstallerError`]. Earlier steps are not
 /// rolled back.
 pub(crate) async fn execute(

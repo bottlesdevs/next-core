@@ -9,16 +9,6 @@ use uuid::Uuid;
 ///
 /// Snapshots returned by [`Profiles::state`](super::Profiles::state) always
 /// select an entry present in [`profiles`](Self::profiles).
-///
-/// # Examples
-///
-/// ```
-/// # fn inspect(state: &bottles_core::ProfilesState) {
-/// assert!(state.profiles().iter().any(|profile| {
-///     profile.id() == state.selected().id()
-/// }));
-/// # }
-/// ```
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, Config)]
 #[config(version = 1)]
 pub struct ProfilesState {
@@ -40,7 +30,6 @@ impl ProfilesState {
         }
     }
 
-    /// Finds a profile by UUID within this snapshot.
     pub(crate) fn profile(&self, id: Uuid) -> Option<&Profile> {
         self.profiles.iter().find(|profile| profile.id == id)
     }
@@ -67,14 +56,6 @@ impl ProfilesState {
 ///
 /// Values returned from [`Profiles`](super::Profiles) are detached snapshots;
 /// use the manager's mutation methods to make persistent changes.
-///
-/// # Examples
-///
-/// ```
-/// # fn display(profile: &bottles_core::Profile) {
-/// println!("{} ({})", profile.name(), profile.id());
-/// # }
-/// ```
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Profile {
     pub(super) id: Uuid,
@@ -102,16 +83,8 @@ impl Profile {
 
 /// Public metadata for one provider account linked to a profile.
 ///
-/// Credentials are not stored in this value; they live in the platform
-/// credential store under [`link_id`](Self::link_id).
-///
-/// # Examples
-///
-/// ```
-/// # fn provider_id(link: &bottles_core::AccountLink) -> &str {
-/// &link.provider.id
-/// # }
-/// ```
+/// Provider secrets, when present, are not stored in this value; they live in the
+/// platform credential store under [`link_id`](Self::link_id).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AccountLink {
     /// Unique identifier for this link and its credential-store entry.
@@ -123,7 +96,6 @@ pub struct AccountLink {
 }
 
 impl AccountLink {
-    /// Creates public link metadata with a newly generated UUID.
     pub(super) fn new(provider: AccountProviderInfo, identity: AccountIdentity) -> Self {
         Self {
             link_id: Uuid::new_v4(),

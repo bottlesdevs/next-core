@@ -1,14 +1,9 @@
-//! Stores immutable Wine filesystem layers and their registry effects.
+//! Builds, caches, and mounts immutable Wine filesystem and registry layers.
 //!
-//! [`LayerStore`] uses a shared FVS client supplied by the core. Artifact policy
-//! chooses relative cache keys and composition order elsewhere; this subsystem
-//! coordinates cache misses, isolated builds, publication, registry composition,
-//! workspace mounting, and explicit removal.
-//!
-//! Published artifacts are immutable. Build staging and mounts are intentionally
-//! retained when cleanup has an uncertain outcome, allowing diagnosis instead of
-//! risking hidden data loss. The store does not track references or collect unused
-//! artifacts, so callers must prove an artifact is unmounted and unused before removal.
+//! Published artifacts are immutable. Build staging and mounts are retained when
+//! cleanup has an uncertain outcome. The store does not track references or
+//! collect unused artifacts, so removal requires proof that no workspace uses or
+//! mounts the artifact.
 
 mod build;
 mod cache;
@@ -25,7 +20,6 @@ use uuid::Uuid;
 /// FVS repository block size used for Virgo artifacts and environment history.
 pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
-/// Coordinates immutable artifact storage and workspace mounts.
 pub(crate) struct LayerStore {
     directories: Directories,
     fvs: Arc<Fvs2dClient>,
@@ -42,7 +36,6 @@ impl LayerStore {
         }
     }
 
-    /// Allocates a collision-resistant path within the shared staging directory.
     fn staging_path(&self) -> PathBuf {
         self.directories.staging().join(Uuid::new_v4().to_string())
     }

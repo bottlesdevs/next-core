@@ -1,8 +1,9 @@
-//! WineBridge discovery, process supervision, and gRPC requests.
+//! `WineBridge` discovery, process supervision, and gRPC requests.
 //!
-//! Environments use the internal client in this module to start or reconnect
-//! to one WineBridge server per Wine prefix. Public callers encounter failures
-//! through [`BridgeError`].
+//! Each Wine prefix has at most one discovered server. The discovery file
+//! supplies only a TCP port; clients always connect over the IPv4 loopback
+//! interface. An unreachable discovered server must be stopped or cleaned up
+//! before another server can start.
 
 use std::{
     io,
@@ -36,18 +37,10 @@ use crate::proto::{
     ServiceStartType, WinebootMode, registry_value::Value as RegistryValue,
 };
 
-/// Failures specific to starting or supervising WineBridge.
+/// Failures specific to starting or supervising `WineBridge`.
 ///
 /// Protocol transport and status failures use the corresponding variants of
 /// [`crate::error::Error`].
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::error::BridgeError;
-///
-/// assert!(BridgeError::Timeout.to_string().contains("startup timeout"));
-/// ```
 #[derive(Error, Debug)]
 pub enum BridgeError {
     /// The child process exited before the health service became ready.
@@ -55,7 +48,7 @@ pub enum BridgeError {
         "The WineBridge process exited with status {0} before it reported readiness over gRPC."
     )]
     BridgeExited(ExitStatus),
-    /// Startup exceeded the WineBridge readiness deadline.
+    /// Startup exceeded the `WineBridge` readiness deadline.
     #[error("WineBridge did not report readiness before the startup timeout elapsed.")]
     Timeout,
     /// A discovery file exists, but its endpoint cannot be reached.
@@ -63,16 +56,22 @@ pub enum BridgeError {
         "WineBridge discovery exists but the runtime is unreachable at {0}; call stop() and retry"
     )]
     Unavailable(PathBuf),
-    /// WineBridge did not terminate within the shutdown deadline.
+    /// `WineBridge` did not terminate within the shutdown deadline.
     #[error("WineBridge did not stop before the shutdown timeout elapsed.")]
     ShutdownTimeout,
-    /// WineBridge returned a response that violated the expected protocol shape.
+    /// `WineBridge` returned a response that violated the expected protocol shape.
     #[error("WineBridge returned an invalid response: {0}")]
     InvalidResponse(&'static str),
 }
 
 const PORT_FILE_NAME: &str = "bottles-winebridge.port";
 
+/// Reads and validates `WineBridge`'s loopback endpoint discovery file.
+///
+/// # Errors
+///
+/// Returns an I/O error when the file cannot be read, or
+/// [`BridgeError::InvalidResponse`] when it does not contain a nonzero TCP port.
 async fn endpoint_from_port_file(path: &Path) -> Result<Option<Endpoint>> {
     let port = match async_fs::read_to_string(path).await {
         Ok(port) => port,
@@ -92,19 +91,22 @@ async fn endpoint_from_port_file(path: &Path) -> Result<Option<Endpoint>> {
     ))?))
 }
 
-/// Managed client for a WineBridge server running inside a Wine prefix.
+/// Managed client for a `WineBridge` server running inside a Wine prefix.
 ///
-/// The wrapper starts WineBridge through a [`Runner`], waits until the gRPC
-/// health endpoint reports ready, and then exposes higher-level methods for
-/// every WineBridge capability through the generated client.
-///
-/// WineBridge remains available for other clients until the bottle is stopped.
+/// Startup waits for the gRPC health endpoint to report ready. Dropping a client
+/// does not stop the server; it remains available until the owning environment
+/// is stopped.
 pub(crate) struct WineBridgeClient {
     client: GrpcClient<Channel>,
     port_file: PathBuf,
 }
 
 impl WineBridgeClient {
+    /// Builds the runner command used to start `WineBridge` inside `prefix`.
+    ///
+    /// `env_vars` are applied as host-process environment overrides, and the
+    /// Windows-side discovery file path is supplied through
+    /// `WINEBRIDGE_PORT_FILE`.
     pub(crate) fn command<'a>(
         runner: &dyn Runner,
         prefix: &Path,
@@ -122,6 +124,16 @@ impl WineBridgeClient {
         )
     }
 
+    /// Reuses a healthy discovered server or spawns `command` and waits for it.
+    ///
+    /// An existing but unhealthy discovery file is treated as
+    /// [`BridgeError::Unavailable`]; it is not silently replaced by a second
+    /// server.
+    ///
+    /// # Errors
+    ///
+    /// Returns discovery and transport errors, process-spawn errors, or the
+    /// startup failures described by [`BridgeError`].
     pub(crate) async fn connect_or_spawn(prefix: &Path, command: impl Spawnable) -> Result<Self> {
         if let Some(client) = Self::try_connect(prefix).await? {
             return Ok(client);
@@ -130,6 +142,16 @@ impl WineBridgeClient {
         Self::connect(prefix, command.spawn()?).await
     }
 
+    /// Waits for a spawned process to publish a healthy endpoint.
+    ///
+    /// Readiness is polled until the process exits or 30 seconds elapse. On
+    /// failure, the child is killed and reaped before this method returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BridgeError::BridgeExited`] if the process exits before
+    /// readiness, [`BridgeError::Timeout`] after the deadline, or an I/O,
+    /// discovery, transport, kill, or wait error.
     async fn connect(prefix: &Path, mut process: Child) -> Result<Self> {
         let ready = async {
             loop {
@@ -164,6 +186,15 @@ impl WineBridgeClient {
         result
     }
 
+    /// Connects to the discovered server without starting a new one.
+    ///
+    /// Returns `None` only when no discovery file exists. If a discovery file
+    /// exists but its endpoint is unreachable or unhealthy, returns
+    /// [`BridgeError::Unavailable`] instead of starting a second server.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O, transport, discovery-format, or unavailable-runtime error.
     pub(crate) async fn try_connect(prefix: &Path) -> Result<Option<Self>> {
         let bridge = Self::probe(prefix).await?;
         if bridge.is_none() && exists(&Self::port_file(prefix)).await? {
@@ -172,6 +203,11 @@ impl WineBridgeClient {
         Ok(bridge)
     }
 
+    /// Shuts down the discovered server, if one is running.
+    ///
+    /// # Errors
+    ///
+    /// Returns discovery errors or errors from [`shutdown`](Self::shutdown).
     pub(crate) async fn shutdown_existing(prefix: &Path) -> Result<()> {
         if let Some(bridge) = Self::try_connect(prefix).await? {
             bridge.shutdown().await?;
@@ -179,6 +215,11 @@ impl WineBridgeClient {
         Ok(())
     }
 
+    /// Removes the `WineBridge` discovery file if it exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error other than a missing file.
     pub(crate) async fn clear_discovery(prefix: &Path) -> Result<()> {
         match async_fs::remove_file(Self::port_file(prefix)).await {
             Ok(()) => Ok(()),
@@ -187,6 +228,16 @@ impl WineBridgeClient {
         }
     }
 
+    /// Probes the discovered endpoint and requires a serving health response.
+    ///
+    /// Missing discovery, connection failure, timeout, non-serving health, and
+    /// health-RPC failure are represented as `None`. Discovery file I/O and
+    /// format failures are returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the discovery file cannot be read or contains an
+    /// invalid endpoint.
     async fn probe(prefix: &Path) -> Result<Option<Self>> {
         let port_file = Self::port_file(prefix);
 
@@ -221,6 +272,11 @@ impl WineBridgeClient {
 
     // --- Process Management ---
 
+    /// Lists processes tracked by this `WineBridge` server.
+    ///
+    /// # Errors
+    ///
+    /// Returns a gRPC status or transport error if the request fails.
     pub async fn list_processes(&self) -> Result<Vec<Process>> {
         let mut client = self.client.clone();
         let response = client.list_processes(()).await?.into_inner();
@@ -228,6 +284,15 @@ impl WineBridgeClient {
         Ok(response.processes)
     }
 
+    /// Launches a process and returns its Wine process identifier.
+    ///
+    /// `id` identifies the process group used by [`kill_process`](Self::kill_process).
+    /// The remaining values are forwarded to `WineBridge` unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns a gRPC status or transport error if `WineBridge` rejects or cannot
+    /// complete the launch request.
     pub async fn launch_process(
         &self,
         id: uuid::Uuid,
@@ -250,6 +315,11 @@ impl WineBridgeClient {
         Ok(response.into_inner().pid)
     }
 
+    /// Terminates the process group identified by `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a gRPC status or transport error if the request fails.
     pub async fn kill_process(&self, id: uuid::Uuid) -> Result<()> {
         let mut client = self.client.clone();
 
@@ -266,7 +336,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn create_registry_key(
         &self,
         hive: RegistryHive,
@@ -287,7 +357,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn delete_registry_tree(
         &self,
         hive: RegistryHive,
@@ -355,7 +425,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn set_registry_value(
         &self,
         hive: RegistryHive,
@@ -380,7 +450,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn delete_registry_value(
         &self,
         hive: RegistryHive,
@@ -405,7 +475,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn create_directory(&self, path: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
         client
@@ -419,7 +489,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn delete_file(&self, path: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
         client
@@ -447,7 +517,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn copy_file(
         &self,
         source: impl Into<String>,
@@ -468,7 +538,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn move_path(
         &self,
         source: impl Into<String>,
@@ -561,7 +631,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn start_service(&self, name: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
         client
@@ -575,7 +645,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn stop_service(&self, name: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
         client
@@ -589,7 +659,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn create_service(
         &self,
         name: impl Into<String>,
@@ -614,7 +684,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn delete_service(&self, name: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
         client
@@ -658,7 +728,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn set_dll_override(
         &self,
         dll: impl Into<String>,
@@ -679,7 +749,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn delete_dll_override(&self, dll: impl Into<String>) -> Result<()> {
         let mut client = self.client.clone();
         match client
@@ -698,7 +768,7 @@ impl WineBridgeClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or WineBridge reports failure.
+    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
     pub async fn wineboot(&self, mode: WinebootMode) -> Result<()> {
         let mut client = self.client.clone();
         client
@@ -720,13 +790,15 @@ impl WineBridgeClient {
         Ok(response.drives)
     }
 
-    /// Requests the managed WineBridge server to shut down.
+    /// Requests the managed `WineBridge` server to shut down.
     ///
-    /// The owner releases the connection after its complete shutdown succeeds.
+    /// After the shutdown RPC succeeds, this waits up to five seconds for the
+    /// server to remove its discovery file.
     ///
     /// # Errors
     ///
-    /// Returns an error if the shutdown RPC fails.
+    /// Returns an error if the shutdown RPC or discovery-file check fails, or
+    /// [`BridgeError::ShutdownTimeout`] if the file remains after the deadline.
     pub async fn shutdown(&self) -> Result<()> {
         let mut client = self.client.clone();
         let mut request = tonic::Request::new(());

@@ -1,7 +1,7 @@
 //! Starts, inspects, and stops an environment's Wine runtime.
 //!
 //! Runtime operations share the environment control lock with edits, deletion,
-//! and history changes. WineBridge is attached when already running or started
+//! and history changes. `WineBridge` is attached when already running or started
 //! from the currently published configuration. Virgo mounts are created before
 //! startup and released only after Wine processes stop.
 
@@ -22,12 +22,12 @@ impl<T: BackendSource> Environment<T>
 where
     State<T>: next_config::Config + Clone + PartialEq + Send + Sync,
 {
-    /// Resolves a program from the locked state and launches it through WineBridge.
+    /// Resolves a program from the locked state and launches it through `WineBridge`.
     ///
     /// # Errors
     ///
     /// Returns an error if selection fails, startup or attachment fails, the
-    /// operation is cancelled, or WineBridge rejects the launch.
+    /// operation is cancelled, or `WineBridge` rejects the launch.
     pub(crate) fn launch(
         self: &Arc<Self>,
         select: impl FnOnce(&State<T>) -> Result<(Uuid, ProgramSpec)> + Send + 'static,
@@ -52,12 +52,12 @@ where
         })
     }
 
-    /// Lists WineBridge processes, returning an empty list when the runtime is stopped.
+    /// Lists `WineBridge` processes, returning an empty list when the runtime is stopped.
     ///
     /// # Errors
     ///
     /// Returns an error if the environment was deleted, discovery fails, or the
-    /// connected WineBridge cannot list its processes.
+    /// connected `WineBridge` cannot list its processes.
     pub(crate) async fn processes(&self) -> Result<Vec<Process>> {
         let _control = self.control.lock().await;
         self.state()?;
@@ -67,13 +67,13 @@ where
         }
     }
 
-    /// Resolves and kills a process when WineBridge is currently running.
+    /// Resolves and kills a process when `WineBridge` is currently running.
     ///
     /// A stopped runtime is a successful no-op.
     ///
     /// # Errors
     ///
-    /// Returns an error if selection or discovery fails, or WineBridge cannot
+    /// Returns an error if selection or discovery fails, or `WineBridge` cannot
     /// terminate the selected process.
     pub(crate) async fn kill(&self, select: impl FnOnce(&State<T>) -> Result<Uuid>) -> Result<()> {
         let _control = self.control.lock().await;
@@ -137,12 +137,12 @@ where
         Ok(())
     }
 
-    /// Returns an operation that starts or attaches WineBridge and lists DLL overrides.
+    /// Returns an operation that starts or attaches `WineBridge` and lists DLL overrides.
     pub(crate) fn dll_overrides(self: &Arc<Self>) -> Operation<Vec<DllOverride>> {
         self.with_bridge(async |bridge| bridge.list_dll_overrides().await)
     }
 
-    /// Returns an operation that sets one Wine DLL override through WineBridge.
+    /// Returns an operation that sets one Wine DLL override through `WineBridge`.
     pub(crate) fn set_dll_override(
         self: &Arc<Self>,
         dll: String,
@@ -151,12 +151,12 @@ where
         self.with_bridge(async move |bridge| bridge.set_dll_override(dll, mode).await)
     }
 
-    /// Returns an operation that removes one Wine DLL override through WineBridge.
+    /// Returns an operation that removes one Wine DLL override through `WineBridge`.
     pub(crate) fn unset_dll_override(self: &Arc<Self>, dll: String) -> Operation<()> {
         self.with_bridge(async move |bridge| bridge.delete_dll_override(dll).await)
     }
 
-    /// Runs one WineBridge request while holding environment coordination.
+    /// Runs one `WineBridge` request while holding environment coordination.
     fn with_bridge<R, Fut>(
         self: &Arc<Self>,
         work: impl FnOnce(WineBridgeClient) -> Fut + Send + 'static,
@@ -176,7 +176,7 @@ where
         })
     }
 
-    /// Reuses a discovered WineBridge or prepares storage and starts a new one.
+    /// Reuses a discovered `WineBridge` or prepares storage and starts a new one.
     ///
     /// On failed startup, the method stops any spawned Wine processes and
     /// releases storage before returning the original error.
@@ -263,7 +263,7 @@ where
 ///
 /// # Errors
 ///
-/// Returns an error from `wineboot`, WineBridge shutdown, `wineserver`, or
+/// Returns an error from `wineboot`, `WineBridge` shutdown, `wineserver`, or
 /// discovery cleanup.
 pub(super) async fn initialize(runner: &dyn Runner, prefix: &Path) -> Result<()> {
     let initialized = runner.wineboot(prefix, "--init").await;
@@ -271,9 +271,9 @@ pub(super) async fn initialize(runner: &dyn Runner, prefix: &Path) -> Result<()>
     initialized
 }
 
-/// Stops WineBridge, kills and drains wineserver, then clears discovery files.
+/// Stops `WineBridge`, kills and drains wineserver, then clears discovery files.
 ///
-/// Failure to request WineBridge shutdown is logged and does not prevent the
+/// Failure to request `WineBridge` shutdown is logged and does not prevent the
 /// wineserver fallback. The caller remains responsible for backend storage.
 ///
 /// # Errors

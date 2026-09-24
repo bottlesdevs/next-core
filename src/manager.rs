@@ -35,30 +35,14 @@ pub(crate) trait Managed {
 
 type Members<T> = Arc<HashMap<Uuid, T>>;
 
-/// Provides collection-level access to bottles or standalone programs.
+/// Tracks the live collection of bottles or standalone programs.
 ///
 /// Obtain `Manager<Bottle>` from [`crate::Bottles::bottles`], or
 /// `Manager<Program>` from `Bottles::programs` with the `fvs` feature enabled.
-/// Use the manager to create, open, delete, list, and watch its members, then use
-/// the returned handles for operations on an individual environment.
-///
 /// Clones share collection membership. Opening the same UUID through clones
 /// returns handles to the same live state. The collection is loaded once from
 /// library-managed storage and updated by manager operations; it does not
 /// observe external filesystem changes.
-///
-/// # Examples
-///
-/// ```
-/// # use bottles_core::{Bottle, Manager};
-/// # fn inspect(manager: &Manager<Bottle>) {
-/// for bottle in manager.list() {
-///     if let Ok(state) = bottle.state() {
-///         println!("{}", state.name());
-///     }
-/// }
-/// # }
-/// ```
 #[derive(Clone)]
 pub struct Manager<T> {
     root: PathBuf,
@@ -78,15 +62,6 @@ impl<T: Clone> Manager<T> {
     /// Configuration changes do not change collection membership.
     /// Order is unspecified and must not be used as an identity or stable
     /// presentation order.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{Bottle, Manager};
-    /// # fn count(manager: &Manager<Bottle>) -> usize {
-    /// manager.list().len()
-    /// # }
-    /// ```
     pub fn list(&self) -> Vec<T> {
         self.published.borrow().values().cloned().collect()
     }
@@ -99,16 +74,6 @@ impl<T: Clone> Manager<T> {
     /// # Errors
     ///
     /// Returns [`EnvironmentError::NotFound`] if `id` is not in the collection.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{Bottle, Manager};
-    /// # use uuid::Uuid;
-    /// # fn open(manager: &Manager<Bottle>, id: Uuid) -> Result<Bottle, bottles_core::error::Error> {
-    /// manager.open(id)
-    /// # }
-    /// ```
     pub fn open(&self, id: Uuid) -> Result<T> {
         self.published
             .borrow()
@@ -139,6 +104,16 @@ where
         }
     }
 
+    /// Loads valid UUID-named environments found below `root`.
+    ///
+    /// A missing root produces an empty manager. Entries without `state.toml`
+    /// and non-directory entries are ignored; malformed or invalid persisted
+    /// state aborts the entire load.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when directory enumeration, state loading, validation,
+    /// or environment reconstruction fails.
     pub(crate) async fn load(
         root: PathBuf,
         context: Context,
@@ -185,6 +160,10 @@ where
         Ok(manager)
     }
 
+    /// Creates and publishes one environment as a lazy operation.
+    ///
+    /// The generated UUID is not added to collection membership until backend
+    /// initialization and state persistence have completed successfully.
     pub(crate) fn create_environment(
         &self,
         data: T::Data,
@@ -221,7 +200,9 @@ where
 
     /// Creates an operation that stops and permanently deletes a member.
     ///
-    /// Cancellation is observed after stopping and before withdrawal into trash.
+    /// Cancellation is observed while waiting for coordination and again after
+    /// stopping, before withdrawal into trash. Once stopping begins, shutdown is
+    /// allowed to finish even if cancellation is requested.
     /// Once withdrawn, deletion and removal from the collection are published
     /// before best-effort cleanup. Existing handles report deletion and their
     /// state streams end; previously obtained state snapshots remain usable.
@@ -232,16 +213,6 @@ where
     ///
     /// Awaiting the operation fails if the member does not exist, cannot be
     /// stopped, observes cancellation, or cannot move its root into trash.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{Bottle, Manager, Operation};
-    /// # use uuid::Uuid;
-    /// # fn prepare(manager: &Manager<Bottle>, id: Uuid) -> Operation<()> {
-    /// manager.delete(id)
-    /// # }
-    /// ```
     pub fn delete(&self, id: Uuid) -> Operation<()> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {

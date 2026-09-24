@@ -28,9 +28,10 @@ impl Addons {
     ///
     /// # Errors
     ///
-    /// The operation fails if cancellation is requested; either URL is missing;
-    /// downloading, parsing, or validating a catalog fails; or a successful catalog
-    /// cannot be written to its cache. Cache-write failure stops publication.
+    /// The operation fails if cancellation is observed before publication; either
+    /// URL is missing; downloading, parsing, or validating a catalog fails; or a
+    /// successful catalog cannot be written to its cache. Cache-write failure stops
+    /// publication.
     pub fn refresh(&self) -> Operation<()> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {

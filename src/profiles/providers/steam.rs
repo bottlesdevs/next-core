@@ -10,7 +10,6 @@ use bottles_plugin_host::AccountIdentity;
 
 use super::{AccountLinkInteraction, AccountProvider, AccountProviderInfo, LinkedAccount};
 
-/// Returns the native Steam provider's stable metadata.
 pub(super) fn metadata() -> AccountProviderInfo {
     AccountProviderInfo {
         id: "steam".into(),
@@ -53,6 +52,13 @@ impl AccountProvider for Steam {
 }
 
 /// Reads Steam's most recent local account without changing Steam state.
+///
+/// Returns `None` when no supported Steam configuration path exists or no account
+/// is marked as most recent.
+///
+/// # Errors
+///
+/// Returns an error if the first discovered configuration cannot be read or parsed.
 async fn active_account() -> io::Result<Option<AccountIdentity>> {
     let Some(path) = loginusers_path() else {
         return Ok(None);
@@ -60,6 +66,7 @@ async fn active_account() -> io::Result<Option<AccountIdentity>> {
     parse_active_account(&async_fs::read_to_string(path).await?)
 }
 
+/// Returns the first existing `loginusers.vdf` path in platform precedence order.
 fn loginusers_path() -> Option<PathBuf> {
     let home = directories::BaseDirs::new()?.home_dir().to_owned();
     LOGINUSERS_PATHS
@@ -68,6 +75,12 @@ fn loginusers_path() -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
+/// Extracts the first account marked `MostRecent` from Steam VDF text.
+///
+/// # Errors
+///
+/// Returns [`io::ErrorKind::InvalidData`] if the text is invalid VDF or its root
+/// value is not an object.
 fn parse_active_account(text: &str) -> io::Result<Option<AccountIdentity>> {
     let vdf = keyvalues_parser::parse(text)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;

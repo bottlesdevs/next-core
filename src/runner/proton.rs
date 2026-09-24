@@ -11,7 +11,6 @@ use super::{Runner, RunnerCommand, RunnerError};
 use crate::command::{Command, Spawnable, Wrapper};
 use crate::error::Result;
 
-/// Stores the paired Proton installation and UMU launcher paths.
 #[derive(Debug)]
 pub(crate) struct Proton {
     proton_path: PathBuf,

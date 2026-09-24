@@ -32,16 +32,6 @@ use super::{
 /// The UUID returned by [`id`](Self::id) is the record's stable identity. Code
 /// that creates serialized records must assign a new UUID whenever the record's
 /// definition changes.
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::Addon;
-///
-/// fn release_label<K>(addon: &Addon<K>) -> String {
-///     format!("{} {}", addon.name(), addon.version())
-/// }
-/// ```
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(
     deny_unknown_fields,
@@ -124,7 +114,6 @@ impl<K> Addon<K> {
 }
 
 impl Addon<Component> {
-    /// Creates a component record from resolved catalog or import metadata.
     pub(crate) fn new_component(
         id: Uuid,
         name: String,
@@ -188,7 +177,6 @@ impl Addon<Component> {
 }
 
 impl Addon<Dependency> {
-    /// Creates a dependency record from resolved catalog metadata.
     pub(crate) fn new_dependency(
         id: Uuid,
         name: String,
@@ -227,10 +215,20 @@ impl<K: Serialize + serde::de::DeserializeOwned + 'static> next_config::Config f
 ///
 /// Environment state can select at most one [`Component`] for each slot. The
 /// string representation is the canonical spelling used by catalogs and storage.
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::Slot;
+///
+/// assert_eq!("runner".parse::<Slot>()?, Slot::Runner);
+/// assert_eq!(Slot::Runner.to_string(), "runner");
+/// # Ok::<(), String>(())
+/// ```
 #[derive(Clone, Copy, Debug, Deserialize, EnumIter, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Slot {
-    /// The Bottles WineBridge service executable.
+    /// The Bottles `WineBridge` service executable.
     #[serde(rename = "winebridge")]
     WineBridge,
     /// The Wine or Proton runtime used to launch Windows programs.
@@ -243,21 +241,12 @@ pub enum Slot {
     Vkd3d,
     /// The DXVK-NVAPI implementation used by supported NVIDIA workloads.
     Nvapi,
-    /// The LatencyFleX Vulkan layer and Wine integration.
+    /// The `LatencyFleX` Vulkan layer and Wine integration.
     LatencyFlex,
 }
 
 impl Slot {
     /// Returns the canonical catalog and storage spelling of the slot.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bottles_core::Slot;
-    ///
-    /// assert_eq!(Slot::WineBridge.as_str(), "winebridge");
-    /// assert_eq!(Slot::LatencyFlex.as_str(), "latency-flex");
-    /// ```
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::WineBridge => "winebridge",
@@ -305,15 +294,6 @@ impl FromStr for Slot {
 /// slot constraints may be satisfied only by a [`Component`]. Use
 /// [`Addon::<Component>::satisfies`] or [`Addon::<Dependency>::satisfies`] to
 /// test a candidate.
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::{Requirement, Slot};
-///
-/// let requirement = Requirement::Slot(Slot::Runner);
-/// assert!(matches!(requirement, Requirement::Slot(Slot::Runner)));
-/// ```
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Requirement {

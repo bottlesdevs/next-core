@@ -1,4 +1,4 @@
-//! Provider discovery and the internal provider abstraction.
+//! Provider discovery and account-link abstraction.
 //!
 //! The built-in Steam provider is combined with plugins that export the
 //! account-provider interface. Only public provider metadata crosses into
@@ -17,19 +17,6 @@ pub(super) use bottles_plugin_host::LinkedAccount;
 /// Display metadata for an account provider available to [`Profiles`].
 ///
 /// [`Profiles`]: super::Profiles
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::AccountProviderInfo;
-/// use std::borrow::Cow;
-///
-/// let provider = AccountProviderInfo {
-///     id: "example".into(),
-///     name: Cow::Borrowed("Example Store"),
-/// };
-/// assert_eq!(provider.id, "example");
-/// ```
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AccountProviderInfo {
     /// Stable provider identifier used for linking and persistence.
@@ -40,7 +27,7 @@ pub struct AccountProviderInfo {
 
 pub use bottles_plugin_host::AccountIdentity;
 
-/// Provider implementation used by native and plugin account linking.
+/// Supplies provider metadata and the account-identification flow.
 #[async_trait]
 pub(super) trait AccountProvider: Send + Sync {
     /// Returns stable public metadata for this provider.

@@ -2,6 +2,7 @@
 //!
 //! Core mutations return [`Operation`] instead of spawning tasks. The caller
 //! chooses the executor and controls when work starts by polling the operation.
+//! Progress observation does not drive the work.
 
 use std::{
     fmt,
@@ -22,15 +23,6 @@ use crate::error::Result;
 /// The unit depends on the stage: downloads use bytes, while backend services
 /// may report their own units. `total` is absent when the amount of work is not
 /// known in advance.
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::Transfer;
-///
-/// let transfer = Transfer { current: 25, total: Some(100) };
-/// assert_eq!(transfer.total, Some(100));
-/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Transfer {
     /// Work reported complete in the stage's unit.
@@ -44,18 +36,6 @@ pub struct Transfer {
 /// Progress is advisory. Operations may omit stages, and slow consumers may
 /// miss intermediate updates. Await the operation itself to determine when it
 /// has finished and whether it succeeded.
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::{Progress, Stage, Transfer};
-///
-/// let progress = Progress {
-///     stage: Stage::Downloading { file: "runner.tar.xz".into() },
-///     transfer: Some(Transfer { current: 1, total: Some(4) }),
-/// };
-/// assert_eq!(progress.fraction(), Some(0.25));
-/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Progress {
     /// The work currently being performed.
@@ -183,23 +163,11 @@ impl fmt::Display for Stage {
 /// Creating an operation does not start it. Work begins on its first poll;
 /// the caller owns execution and must keep the future driven to completion.
 ///
-/// Dropping an operation abandons its future without requesting cancellation.
-/// Plugin calls already accepted by the host may continue, but core does not
-/// complete subsequent credential writes on the caller's behalf.
-/// Asynchronous persistence and cleanup cannot finish after that drop. Use
-/// [`cancel`](Self::cancel) and await its result to stop cooperatively: account
-/// operations finish entered credential and membership writes before returning.
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::Operation;
-///
-/// # async fn finish(operation: Operation<u32>) -> Result<u32, bottles_core::error::Error> {
-/// let value = operation.await?;
-/// # Ok(value)
-/// # }
-/// ```
+/// Dropping an operation abandons its future without requesting cancellation,
+/// so cleanup encoded in that future will not run. External work already
+/// accepted by another process or plugin may still finish independently. Use
+/// [`cancel`](Self::cancel) and await the result when the operation must reach a
+/// defined terminal state.
 #[must_use = "operations must be awaited, cancelled, or spawned by an executor"]
 pub struct Operation<T> {
     future: Pin<Box<dyn Future<Output = Result<T>> + Send + 'static>>,
@@ -210,10 +178,13 @@ pub struct Operation<T> {
 impl<T> Operation<T> {
     /// Creates an operation whose work closure is invoked on its first poll.
     ///
+    /// If cancellation is requested before that poll, the closure is not invoked
+    /// and the operation returns [`Error::Cancelled`](crate::error::Error::Cancelled).
+    ///
     /// The work must treat cancellation as cooperative and keep any required
     /// asynchronous cleanup in the returned future so [`Operation::cancel`] can
-    /// drive it. Progress senders must not outlive that future: callers expect
-    /// progress streams to close when the operation terminates.
+    /// drive it. Progress senders must not outlive that future so progress streams
+    /// close when the operation terminates.
     pub(crate) fn new<F, Fut>(work: F) -> Self
     where
         T: Send + 'static,
@@ -241,16 +212,6 @@ impl<T> Operation<T> {
     /// Maps a successful result while preserving progress and cancellation.
     ///
     /// Errors pass through unchanged and do not invoke `map`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bottles_core::Operation;
-    ///
-    /// # fn discard_pid(operation: Operation<u32>) -> Operation<()> {
-    /// operation.map(|_| ())
-    /// # }
-    /// ```
     pub fn map<U, F>(self, map: F) -> Operation<U>
     where
         T: Send + 'static,
@@ -271,9 +232,10 @@ impl<T> Operation<T> {
 
     /// Returns a token that can request cancellation without consuming the operation.
     ///
-    /// Cancelling the token only signals the request; it does not start an
-    /// unpolled operation or wait for cleanup. Await the operation to observe
-    /// its terminal result.
+    /// Cancelling the token does not poll the operation or wait for cleanup. If
+    /// cancellation precedes the first poll, the work closure is skipped;
+    /// otherwise the running operation observes the token only at its documented
+    /// cancellation points. Await the operation to obtain its terminal result.
     ///
     /// # Examples
     ///
@@ -319,26 +281,17 @@ impl<T> Operation<T> {
 
     /// Requests cancellation and drives the operation to its terminal result.
     ///
-    /// Cancellation is cooperative and may only be observed at operation-specific
-    /// checkpoints. If the work has passed its cancellation boundary, this may
-    /// return its successful result or another error instead of
-    /// [`Error::Cancelled`](crate::error::Error::Cancelled).
+    /// An unpolled operation is cancelled without invoking its work closure.
+    /// Once work has started, cancellation is cooperative and may only be
+    /// observed at operation-specific checkpoints. If the work has passed its
+    /// cancellation boundary, this may return its successful result or another
+    /// error instead of [`Error::Cancelled`](crate::error::Error::Cancelled).
     ///
     /// # Errors
     ///
     /// Returns the operation's terminal error. Cooperative work commonly returns
     /// [`Error::Cancelled`](crate::error::Error::Cancelled), but work that has
     /// crossed its cancellation boundary may return another result.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bottles_core::Operation;
-    ///
-    /// # async fn cancel(operation: Operation<()>) {
-    /// let _terminal_result = operation.cancel().await;
-    /// # }
-    /// ```
     pub async fn cancel(mut self) -> Result<T> {
         self.cancellation.cancel();
         (&mut self).await

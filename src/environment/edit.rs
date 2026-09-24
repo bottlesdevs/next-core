@@ -19,6 +19,17 @@ use std::sync::Arc;
 ///
 /// Changes remain private until the owner operation completes. The environment
 /// identifier, owner data, and [`PrefixBackend`] cannot be changed through this API.
+///
+/// # Examples
+///
+/// ```
+/// use bottles_core::Edit;
+///
+/// fn configure<T>(edit: &mut Edit<'_, T>) {
+///     edit.env_vars().insert("WINEDEBUG".into(), "-all".into());
+///     edit.wrappers().mangohud.enabled = true;
+/// }
+/// ```
 pub struct Edit<'a, T> {
     pub(crate) draft: &'a mut State<T>,
 }
