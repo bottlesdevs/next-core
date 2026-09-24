@@ -1,7 +1,7 @@
 //! Errors returned by the public core API.
 //!
-//! [`enum@Error`] preserves subsystem-specific causes, while [`Result`] is the
-//! convenience alias used by fallible methods throughout the crate.
+//! [`enum@Error`] preserves subsystem-specific causes for matching and error-chain
+//! inspection.
 
 pub use bottles_plugin_host::PluginError;
 use thiserror::Error;
@@ -21,18 +21,6 @@ pub use crate::{
 use fvs_rs::error::Error as FvsError;
 
 /// A core operation result using [`enum@Error`].
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::error::{Error, Result};
-///
-/// fn cancelled() -> Result<()> {
-///     Err(Error::Cancelled)
-/// }
-///
-/// assert!(matches!(cancelled(), Err(Error::Cancelled)));
-/// ```
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Top-level failures produced by Bottles core services.
@@ -40,15 +28,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Variants retain their subsystem error as a source wherever one is
 /// available, so callers can inspect the error chain or match a specific
 /// category.
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::error::Error;
-///
-/// let error = Error::Cancelled;
-/// assert_eq!(error.to_string(), "operation cancelled");
-/// ```
 #[derive(Error, Debug)]
 pub enum Error {
     /// The operating system did not provide application data directories.
@@ -69,7 +48,7 @@ pub enum Error {
     /// A gRPC service returned a failing status.
     #[error("gRPC status: {0}")]
     Status(#[from] tonic::Status),
-    /// WineBridge startup, discovery, or protocol handling failed.
+    /// `WineBridge` startup, discovery, or protocol handling failed.
     #[error("WineBridge error: {0}")]
     Bridge(#[from] BridgeError),
     /// A Wine or Proton runner failed.
@@ -143,58 +122,17 @@ impl From<download_manager::error::Error> for Error {
 ///
 /// Successful values become `Some`; failures are emitted through `tracing` at
 /// the selected level and become `None`.
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::error::ResultExt;
-///
-/// let value = Ok::<_, std::io::Error>(7).log_error();
-/// assert_eq!(value, Some(7));
-/// ```
 pub trait ResultExt<T, E> {
     /// Logs an error at `ERROR` level and returns the successful value.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bottles_core::error::ResultExt;
-    ///
-    /// assert_eq!(Ok::<_, std::io::Error>(1).log_error(), Some(1));
-    /// ```
     fn log_error(self) -> Option<T>;
 
     /// Logs an error at `WARN` level and returns the successful value.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bottles_core::error::ResultExt;
-    ///
-    /// assert_eq!(Ok::<_, std::io::Error>(1).log_warn(), Some(1));
-    /// ```
     fn log_warn(self) -> Option<T>;
 
     /// Logs an error at `INFO` level and returns the successful value.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bottles_core::error::ResultExt;
-    ///
-    /// assert_eq!(Ok::<_, std::io::Error>(1).log_info(), Some(1));
-    /// ```
     fn log_info(self) -> Option<T>;
 
     /// Logs an error at `DEBUG` level and returns the successful value.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bottles_core::error::ResultExt;
-    ///
-    /// assert_eq!(Ok::<_, std::io::Error>(1).log_debug(), Some(1));
-    /// ```
     fn log_debug(self) -> Option<T>;
 }
 

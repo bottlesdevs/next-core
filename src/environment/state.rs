@@ -25,7 +25,7 @@ pub struct EnvironmentConfig {
     /// Owner-level environment variables applied after addon variables.
     #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
     pub env_vars: EnvVars,
-    /// Host command wrappers applied when WineBridge is started.
+    /// Host command wrappers applied when `WineBridge` is started.
     #[serde(default)]
     pub wrappers: Wrappers,
 }
@@ -90,7 +90,7 @@ impl EnvironmentConfig {
             .filter_map(|slot| self.component(slot))
     }
 
-    /// Resolves the environment variables used to start WineBridge.
+    /// Resolves the environment variables used to start `WineBridge`.
     ///
     /// Component variables are applied in slot order, followed by dependencies
     /// in installation order and finally [`Self::env_vars`]. Later declarations
@@ -119,7 +119,7 @@ impl EnvironmentConfig {
             .expect("persisted environment configuration is validated")
     }
 
-    /// Returns the WineBridge release frozen into this configuration.
+    /// Returns the `WineBridge` release frozen into this configuration.
     ///
     /// # Panics
     ///
@@ -129,7 +129,7 @@ impl EnvironmentConfig {
             .expect("persisted environment configuration is validated")
     }
 
-    /// Returns the selected UMU launcher, if the runner uses one.
+    /// Returns the selected UMU launcher, if one is configured.
     pub fn umu(&self) -> Option<&Addon<Component>> {
         self.component(Slot::Umu)
     }

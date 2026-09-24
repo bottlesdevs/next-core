@@ -1,8 +1,7 @@
 //! Filesystem queries, archive handling, and disposable workspaces.
 //!
-//! Temporary workspaces use random UUID names. Their cleanup is best effort:
-//! the work result determines success, and dropping an in-flight future does
-//! not schedule asynchronous cleanup.
+//! Temporary-workspace cleanup is best effort: the work result determines
+//! success, and dropping an in-flight future does not schedule cleanup.
 
 pub(crate) mod archive;
 
@@ -18,8 +17,10 @@ use crate::error::ResultExt;
 
 /// Creates an isolated child of `parent`, runs `work`, then removes the child.
 ///
-/// Cleanup errors are logged and do not replace the result of `work`. Dropping
-/// this future before completion does not perform asynchronous cleanup.
+/// The child directory is passed to `work` after successful creation. Cleanup is
+/// attempted whether `work` succeeds or fails; cleanup errors are logged and do
+/// not replace its result. Dropping this future before completion can leave the
+/// directory and its contents on disk.
 ///
 /// # Errors
 ///
@@ -41,10 +42,11 @@ where
 }
 
 #[cfg(feature = "fvs")]
-/// Converts `path` to a lexically normalized absolute path.
+/// Converts `path` to an absolute path without accessing the target.
 ///
-/// Relative paths are resolved against the process's current directory. This
-/// does not access the filesystem or resolve symbolic links.
+/// Relative paths are joined to the process's current directory. Collecting the
+/// path components removes redundant separators and current-directory components,
+/// but preserves parent-directory components; symbolic links are not resolved.
 ///
 /// # Errors
 ///
@@ -60,6 +62,8 @@ pub fn absolute_path(path: PathBuf) -> crate::error::Result<PathBuf> {
 }
 
 /// Tests whether `path` exists without masking errors other than not-found.
+///
+/// Metadata lookup follows symbolic links, so a dangling symlink returns `false`.
 ///
 /// # Errors
 ///

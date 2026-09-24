@@ -3,16 +3,7 @@
 use thiserror::Error;
 use uuid::Uuid;
 
-/// A profile or linked-account invariant could not be satisfied.
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::ProfileError;
-///
-/// let error = ProfileError::NotFound(Default::default());
-/// assert!(matches!(error, ProfileError::NotFound(_)));
-/// ```
+/// Reports a profile mutation or linked-account operation that could not complete.
 #[derive(Debug, Error)]
 pub enum ProfileError {
     /// The requested profile UUID is not present.
@@ -29,7 +20,7 @@ pub enum ProfileError {
         /// Stable identifier of the already-linked provider.
         provider: String,
     },
-    /// The account link was removed, but its credential could not be deleted.
+    /// Public link state was persisted, but its credential could not be deleted.
     #[error("failed to clean credentials for account link {link_id}: {source}")]
     CredentialCleanup {
         /// Link whose credential could not be removed.

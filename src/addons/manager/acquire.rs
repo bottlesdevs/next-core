@@ -30,17 +30,18 @@ use uuid::Uuid;
 impl Addons {
     /// Acquires the component identified by `id`.
     ///
-    /// The returned [`Operation`] reuses an identical local release when present.
+    /// The returned [`Operation`] reuses the local component with this UUID when
+    /// present, without comparing it with the current catalog entry.
     /// Otherwise it selects the single artifact for the current platform, verifies
     /// its checksum, extracts its one top-level directory, and stores the resulting
     /// immutable release. A later catalog refresh does not alter that stored record.
     ///
     /// # Errors
     ///
-    /// The operation fails if it is cancelled; `id` is missing, unsupported, or
-    /// collides with another addon; the component has anything other than one
-    /// matching artifact; download or checksum verification fails; the archive is
-    /// invalid; or the release cannot be committed to local storage.
+    /// The operation fails if it is cancelled before commit; `id` is missing,
+    /// unsupported, or collides with another addon; the component has anything
+    /// other than one matching artifact; download or checksum verification fails;
+    /// the archive is invalid; or the release cannot be committed to local storage.
     pub fn fetch_component(&self, id: Uuid) -> Operation<Arc<Addon<Component>>> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -112,15 +113,16 @@ impl Addons {
 
     /// Acquires the dependency identified by `id`.
     ///
-    /// The returned [`Operation`] reuses an identical local release when present.
+    /// The returned [`Operation`] reuses the local dependency with this UUID when
+    /// present, without comparing it with the current catalog entry.
     /// Otherwise every artifact matching the current platform is downloaded,
     /// verified, and stored as the dependency payload in catalog order.
     ///
     /// # Errors
     ///
-    /// The operation fails if it is cancelled; `id` is missing, unsupported, or
-    /// collides with another addon; a download or checksum verification fails; or
-    /// the release cannot be committed to local storage.
+    /// The operation fails if it is cancelled before commit; `id` is missing,
+    /// unsupported, or collides with another addon; a download or checksum
+    /// verification fails; or the release cannot be committed to local storage.
     pub fn fetch_dependency(&self, id: Uuid) -> Operation<Arc<Addon<Dependency>>> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
@@ -190,10 +192,11 @@ impl Addons {
     ///
     /// # Errors
     ///
-    /// The operation fails if it is cancelled; the path is not a supported archive;
-    /// extraction fails; the archive does not contain exactly one top-level
-    /// directory; a symbolic link escapes that directory; the runner payload cannot
-    /// be identified; or the new release cannot be committed to local storage.
+    /// The operation fails if it is cancelled before commit; the path is not a
+    /// supported archive; extraction fails; the archive does not contain exactly
+    /// one top-level directory; a symbolic link escapes that directory; the runner
+    /// payload cannot be identified; or the new release cannot be committed to
+    /// local storage.
     pub fn import_component(
         &self,
         path: impl AsRef<Path>,

@@ -10,7 +10,6 @@ use crate::error::Result;
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 
-/// Stores the direct Wine executable used for command lowering.
 #[derive(Debug)]
 pub(crate) struct Wine {
     executable: PathBuf,

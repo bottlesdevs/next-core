@@ -16,41 +16,14 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 /// An immutable snapshot of a standalone program and its environment configuration.
-///
-/// # Examples
-///
-/// ```
-/// # use bottles_core::ProgramState;
-/// # fn inspect(state: &ProgramState) {
-/// println!("{}: {}", state.name(), state.launch().executable());
-/// # }
-/// ```
 pub type ProgramState = State<ProgramSpec>;
 
 impl State<ProgramSpec> {
     /// Returns the display name from the launch definition.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::ProgramState;
-    /// # fn name(state: &ProgramState) -> &str {
-    /// state.name()
-    /// # }
-    /// ```
     pub fn name(&self) -> &str {
         self.data.name()
     }
     /// Returns the persisted launch definition.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{ProgramSpec, ProgramState};
-    /// # fn launch(state: &ProgramState) -> &ProgramSpec {
-    /// state.launch()
-    /// # }
-    /// ```
     pub fn launch(&self) -> &ProgramSpec {
         &self.data
     }
@@ -65,17 +38,9 @@ impl BackendSource for ProgramSpec {
 /// A live handle to a standalone Virgo program environment.
 ///
 /// Clones share state and lifecycle coordination. Dropping the handle does not
-/// stop Wine; use [`Program::stop`] for explicit shutdown.
-///
-/// # Examples
-///
-/// ```
-/// # use bottles_core::Program;
-/// # fn inspect(program: &Program) -> Result<(), bottles_core::error::Error> {
-/// println!("{}", program.state()?.name());
-/// # Ok(())
-/// # }
-/// ```
+/// stop Wine; use [`Program::stop`] for explicit shutdown. A handle retained
+/// after [`Manager::delete`] reports
+/// [`EnvironmentError::Deleted`](crate::EnvironmentError::Deleted).
 #[derive(Clone)]
 pub struct Program(pub(crate) Arc<Environment<ProgramSpec>>);
 
@@ -98,15 +63,6 @@ impl Program {
     ///
     /// Returns [`EnvironmentError::Deleted`](crate::EnvironmentError::Deleted)
     /// after the program is deleted.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::Program;
-    /// # fn id(program: &Program) -> Result<uuid::Uuid, bottles_core::error::Error> {
-    /// program.id()
-    /// # }
-    /// ```
     pub fn id(&self) -> Result<Uuid> {
         Ok(self.state()?.id())
     }
@@ -116,35 +72,12 @@ impl Program {
     ///
     /// Returns [`EnvironmentError::Deleted`](crate::EnvironmentError::Deleted)
     /// after the program is deleted.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use std::sync::Arc;
-    /// # use bottles_core::{Program, ProgramState};
-    /// # fn state(program: &Program) -> Result<Arc<ProgramState>, bottles_core::error::Error> {
-    /// program.state()
-    /// # }
-    /// ```
     pub fn state(&self) -> Result<Arc<ProgramState>> {
         self.0.state()
     }
     /// Streams the current state and later published replacements.
     ///
     /// Slow consumers may miss intermediate publications. Deletion ends the stream.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::Program;
-    /// # use futures_lite::StreamExt;
-    /// # async fn observe(program: &Program) {
-    /// let mut states = program.watch();
-    /// if let Some(state) = states.next().await {
-    ///     println!("{}", state.name());
-    /// }
-    /// # }
-    /// ```
     pub fn watch(&self) -> impl Stream<Item = Arc<ProgramState>> + Send + 'static + use<> {
         self.0.watch()
     }
@@ -153,12 +86,15 @@ impl Program {
     ///
     /// The callback changes a private draft. The final state is validated,
     /// applied, persisted, and then published once. Software changes require the
-    /// program to be stopped.
+    /// program to be stopped; launch metadata, environment variables, and
+    /// wrappers may be edited while it is running. An unchanged draft is not saved.
     ///
     /// # Errors
     ///
     /// Awaiting the operation returns callback, validation, cancellation,
     /// persistence, software application, or Virgo recovery errors.
+    /// [`EnvironmentError::MustBeStopped`](crate::EnvironmentError::MustBeStopped)
+    /// is returned when software selections change while Wine is running.
     ///
     /// # Examples
     ///
@@ -180,21 +116,12 @@ impl Program {
     }
     /// Creates an operation that mounts storage and launches the program.
     ///
-    /// The program UUID is used as the WineBridge process-group identifier.
+    /// The program UUID is used as the `WineBridge` process-group identifier.
     ///
     /// # Errors
     ///
     /// Awaiting the operation may fail during storage mounting, runner or
-    /// WineBridge startup, cancellation, or process launch.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{Operation, Program};
-    /// # fn prepare(program: &Program) -> Operation<u32> {
-    /// program.launch()
-    /// # }
-    /// ```
+    /// `WineBridge` startup, cancellation, or process launch.
     pub fn launch(&self) -> Operation<u32> {
         self.0.launch(|state| Ok((state.id, state.data.clone())))
     }
@@ -202,18 +129,8 @@ impl Program {
     ///
     /// # Errors
     ///
-    /// Returns an error if state or WineBridge discovery fails, or WineBridge
+    /// Returns an error if state or `WineBridge` discovery fails, or `WineBridge`
     /// cannot terminate the process group.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::Program;
-    /// # async fn example(program: &Program) -> Result<(), bottles_core::error::Error> {
-    /// program.kill().await?;
-    /// # Ok(())
-    /// # }
-    /// ```
     pub async fn kill(&self) -> Result<()> {
         self.0.kill(|state| Ok(state.id)).await
     }
@@ -223,38 +140,17 @@ impl Program {
     ///
     /// Returns an error if runner resolution, Wine shutdown, unmounting, or
     /// discovery cleanup fails.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::Program;
-    /// # async fn example(program: &Program) -> Result<(), bottles_core::error::Error> {
-    /// program.stop().await?;
-    /// # Ok(())
-    /// # }
-    /// ```
     pub async fn stop(&self) -> Result<()> {
         self.0.stop().await
     }
-    /// Lists processes currently reported by WineBridge.
+    /// Lists processes currently reported by `WineBridge`.
     ///
     /// A stopped program returns an empty vector.
     ///
     /// # Errors
     ///
-    /// Returns an error if state or discovery fails, or WineBridge cannot list
+    /// Returns an error if state or discovery fails, or `WineBridge` cannot list
     /// its processes.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::Program;
-    /// # async fn example(program: &Program) -> Result<(), bottles_core::error::Error> {
-    /// let processes = program.processes().await?;
-    /// # let _ = processes;
-    /// # Ok(())
-    /// # }
-    /// ```
     pub async fn processes(&self) -> Result<Vec<Process>> {
         self.0.processes().await
     }
@@ -263,17 +159,7 @@ impl Program {
     /// # Errors
     ///
     /// Awaiting the operation can fail during storage, runtime, cancellation,
-    /// or WineBridge work.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{Operation, Program};
-    /// # use bottles_core::DllOverride;
-    /// # fn prepare(program: &Program) -> Operation<Vec<DllOverride>> {
-    /// program.dll_overrides()
-    /// # }
-    /// ```
+    /// or `WineBridge` work.
     pub fn dll_overrides(&self) -> Operation<Vec<DllOverride>> {
         self.0.dll_overrides()
     }
@@ -282,17 +168,7 @@ impl Program {
     /// # Errors
     ///
     /// Awaiting the operation can fail during storage, runtime, cancellation,
-    /// or WineBridge work.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{Operation, Program};
-    /// # use bottles_core::DllOverrideMode;
-    /// # fn prepare(program: &Program, mode: DllOverrideMode) -> Operation<()> {
-    /// program.set_dll_override("d3d11", mode)
-    /// # }
-    /// ```
+    /// or `WineBridge` work.
     pub fn set_dll_override(&self, dll: impl Into<String>, mode: DllOverrideMode) -> Operation<()> {
         self.0.set_dll_override(dll.into(), mode)
     }
@@ -301,104 +177,64 @@ impl Program {
     /// # Errors
     ///
     /// Awaiting the operation can fail during storage, runtime, cancellation,
-    /// or WineBridge work.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{Operation, Program};
-    /// # fn prepare(program: &Program) -> Operation<()> {
-    /// program.unset_dll_override("d3d11")
-    /// # }
-    /// ```
+    /// or `WineBridge` work.
     pub fn unset_dll_override(&self, dll: impl Into<String>) -> Operation<()> {
         self.0.unset_dll_override(dll.into())
     }
     /// Creates an operation that snapshots persistent files and `state.toml`.
     ///
-    /// Shared layers and external files are excluded.
+    /// Shared layers and external files are excluded. Explicit snapshots create
+    /// a revision even if files have not changed. Once capture starts,
+    /// cooperative cancellation no longer interrupts it; [`Operation::cancel`]
+    /// waits for the commit to finish.
     ///
     /// # Errors
     ///
-    /// Awaiting the operation can fail while stopping Wine, reading managed
-    /// files, or committing the FVS revision.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{Operation, Program, Snapshot};
-    /// # fn prepare(program: &Program) -> Operation<Snapshot> {
-    /// program.create_snapshot("Before update")
-    /// # }
-    /// ```
+    /// Awaiting the operation returns an invalid-input I/O error when `message`
+    /// is the reserved internal checkpoint message. It can also fail during
+    /// cancellation, Wine shutdown, repository initialization, or commit.
     pub fn create_snapshot(&self, message: impl Into<String>) -> Operation<Snapshot> {
         self.0.create_snapshot(message.into())
     }
     /// Lists user snapshots from newest to oldest.
     ///
+    /// Internal recovery checkpoints are excluded. A program with no history
+    /// returns an empty vector without contacting FVS.
+    ///
     /// # Errors
     ///
-    /// Returns an error if history metadata or FVS revisions cannot be read.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::Program;
-    /// # async fn example(program: &Program) -> Result<(), bottles_core::error::Error> {
-    /// let history = program.snapshots().await?;
-    /// # let _ = history;
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// Returns an error if the program was deleted, repository metadata cannot
+    /// be inspected, or FVS cannot list commits.
     pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
         self.0.snapshots().await
     }
     /// Creates an operation that restores and publishes a historical state.
     ///
-    /// Failed restoration recovers the pre-restore checkpoint before returning.
+    /// The restored UUID must match the program and its configuration must
+    /// validate. Failed restoration recovers the pre-restore checkpoint before
+    /// returning. Cancellation is observed before restoration begins, but does
+    /// not interrupt an active restore or recovery. Working files change without
+    /// moving the FVS repository's current commit.
+    ///
+    /// On success, the operation returns the full state ID resolved from
+    /// `revision` and publishes the launch and environment state stored there.
     ///
     /// # Errors
     ///
-    /// Awaiting the operation fails if the revision is invalid, restored state
-    /// does not belong to this program, or restoration and recovery cannot finish.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{Operation, Program};
-    /// # fn prepare(program: &Program, revision: &str) -> Operation<String> {
-    /// program.rollback(revision)
-    /// # }
-    /// ```
+    /// Awaiting the operation fails on cancellation before restoration, Wine
+    /// shutdown or checkpoint failure, an unknown revision, mismatched or
+    /// invalid restored state, or failed restoration or recovery.
     pub fn rollback(&self, revision: &str) -> Operation<String> {
         self.0.rollback(revision)
     }
 }
 impl Edit<'_, ProgramSpec> {
     /// Replaces the standalone program's display name.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{Edit, ProgramSpec};
-    /// # fn rename(edit: &mut Edit<'_, ProgramSpec>) {
-    /// edit.rename("Updated");
-    /// # }
-    /// ```
     pub fn rename(&mut self, name: impl Into<String>) {
         self.draft.data.rename(name);
     }
 
     /// Returns the mutable launch definition in the edit draft.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{Edit, ProgramSpec};
-    /// # fn configure(edit: &mut Edit<'_, ProgramSpec>) {
-    /// edit.launch().rename("Updated");
-    /// # }
-    /// ```
     pub fn launch(&mut self) -> &mut ProgramSpec {
         &mut self.draft.data
     }
@@ -435,32 +271,16 @@ impl Manager<Program> {
     ///
     /// It builds missing shared layers, prepares private registry state, and
     /// persists the launch definition. It does not download the application.
-    ///
-    /// # Arguments
-    ///
-    /// * `launch` - Persisted launch definition and display name.
-    /// * `runner` - Wine or Proton component used by the environment.
-    /// * `winebridge` - WineBridge component used for process control.
-    /// * `umu` - Optional UMU component required by compatible runners.
+    /// The program is added to this manager only after initialization and
+    /// `state.toml` persistence succeed. Cancellation or persistence failure
+    /// after backend initialization attempts best-effort removal; earlier
+    /// backend failures, dropping a started operation, or cleanup failure can
+    /// leave an unregistered directory that a later core startup may discover.
     ///
     /// # Errors
     ///
     /// Awaiting the operation can fail during requirement validation, shared
     /// layer creation, private storage preparation, cancellation, or persistence.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{Addon, Component, Manager, Operation, Program, ProgramSpec};
-    /// # fn prepare(
-    /// #     manager: &Manager<Program>,
-    /// #     runner: Addon<Component>,
-    /// #     winebridge: Addon<Component>,
-    /// # ) -> Operation<Program> {
-    /// let launch = ProgramSpec::new("Tool", "tool.exe");
-    /// manager.create(launch, runner, winebridge, None)
-    /// # }
-    /// ```
     pub fn create(
         &self,
         launch: ProgramSpec,

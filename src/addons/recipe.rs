@@ -23,7 +23,6 @@ pub(crate) struct InstallResource {
 }
 
 impl InstallResource {
-    /// Creates a resource record from its payload path and ordered actions.
     pub(crate) fn new(path: impl Into<PathBuf>, steps: Vec<InstallStep>) -> Self {
         Self {
             path: path.into(),
@@ -82,13 +81,13 @@ pub(crate) enum InstallStep {
         #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
         env_vars: EnvVars,
     },
-    /// Sets a registry value through WineBridge.
+    /// Sets a registry value through `WineBridge`.
     ///
-    /// WineBridge is started with the runner's maintenance environment when needed.
+    /// `WineBridge` is started with the runner's maintenance environment when needed.
     SetRegistryValue {
         /// Root registry hive containing the target key.
         hive: RegistryHive,
-        /// Registry key path passed to WineBridge.
+        /// Registry key path passed to `WineBridge`.
         key: String,
         /// Value name within the key; an empty name addresses the default value.
         name: String,
@@ -97,7 +96,7 @@ pub(crate) enum InstallStep {
     },
     /// Applies the same Wine DLL override mode to each named DLL.
     ///
-    /// WineBridge is started with the runner's maintenance environment when needed.
+    /// `WineBridge` is started with the runner's maintenance environment when needed.
     /// Uninstall deletes these overrides rather than restoring their previous modes.
     SetDllOverrides {
         /// DLL names whose overrides are changed, in application order.

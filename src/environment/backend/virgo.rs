@@ -1,8 +1,7 @@
 //! Selects, builds, and orders immutable Virgo artifacts for an environment.
 //!
-//! The manager converts frozen addon selections into a base layer, a runner
-//! adapter, component layers, and dependency layers. Artifact construction is
-//! delegated to [`LayerStore`]; this module owns catalog lookup and build policy.
+//! Frozen addon selections resolve to a base layer, a runner adapter, component
+//! layers, and dependency layers in composition order.
 
 use crate::{
     Addon, AddonError, Component, Context, EnvironmentConfig, EnvironmentError, Progress, Slot,
@@ -16,10 +15,8 @@ use std::{path::Path, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-/// Shares Virgo artifact policy and storage across one core instance.
 pub(crate) struct VirgoManager {
     cx: Context,
-    /// Shared immutable artifact store used by environment lifecycle operations.
     pub(in crate::environment) layers: LayerStore,
 }
 

@@ -1,10 +1,9 @@
 //! Coordinates environment state, persistence, runtime control, and storage.
 //!
-//! Bottles and standalone programs share this internal owner implementation.
-//! Readers receive immutable [`State`] snapshots, while mutating operations are
-//! serialized by one control lock and publish a replacement snapshot only after
-//! their durable work succeeds. Deletion closes the publication stream without
-//! invalidating snapshots already held by callers.
+//! Bottles and standalone programs expose immutable [`State`] snapshots.
+//! Mutations are serialized by one control lock and publish a replacement
+//! snapshot only after their durable work succeeds. Deletion closes the
+//! publication stream without invalidating snapshots already held by callers.
 
 mod backend;
 mod edit;
@@ -37,24 +36,16 @@ use tokio_stream::{StreamExt, wrappers::WatchStream};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-/// Exposes the immutable prefix backend stored in owner-specific state.
 pub(crate) trait BackendSource {
-    /// Returns the storage backend selected when the owner was created.
     fn backend(&self) -> PrefixBackend;
 }
 
-/// Owns the coordinated state and filesystem root behind a public environment handle.
 pub(crate) struct Environment<T> {
-    /// Latest immutable snapshot, or `None` after deletion.
     pub(crate) published: watch::Sender<Option<Arc<State<T>>>>,
-    /// Serializes mutations and runtime lifecycle work.
     pub(crate) control: Mutex<()>,
-    /// UUID-named directory containing state and prefix storage.
     pub(crate) root: PathBuf,
-    /// Shared services and storage directories.
     pub(crate) context: Context,
     #[cfg(feature = "fvs")]
-    /// Shared artifact manager used by Virgo-backed owners.
     pub(crate) virgo: Arc<VirgoManager>,
 }
 

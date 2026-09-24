@@ -3,7 +3,6 @@
 use crate::command::{Command, Wrapper};
 use serde::{Deserialize, Serialize};
 
-/// Internal gamescope process wrapper.
 pub(crate) struct Gamescope {
     config: GamescopeConfig,
     mangoapp: bool,
@@ -19,7 +18,7 @@ impl From<GamescopeConfig> for Gamescope {
 }
 
 impl Gamescope {
-    /// Uses gamescope's integrated MangoApp overlay.
+    /// Uses gamescope's integrated `MangoApp` overlay.
     pub(crate) fn with_mangoapp(mut self) -> Self {
         self.mangoapp = true;
         self
@@ -43,23 +42,6 @@ impl Wrapper for Gamescope {}
 /// Numeric values are passed through unchanged; validation is left to
 /// gamescope. The [`enabled`](Self::enabled) flag controls whether
 /// [`Wrappers`](super::Wrappers) applies this configuration.
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::{GamescopeConfig, GamescopeFilter, GamescopeScaler};
-///
-/// let config = GamescopeConfig {
-///     enabled: true,
-///     output_width: Some(1920),
-///     output_height: Some(1080),
-///     scaler: Some(GamescopeScaler::Fit),
-///     filter: Some(GamescopeFilter::Fsr),
-///     fullscreen: true,
-///     ..GamescopeConfig::default()
-/// };
-/// assert_eq!(config.output_width, Some(1920));
-/// ```
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct GamescopeConfig {
@@ -137,7 +119,7 @@ pub enum Filter {
     Linear,
     /// Nearest-neighbor sampling.
     Nearest,
-    /// AMD FidelityFX Super Resolution.
+    /// AMD `FidelityFX` Super Resolution.
     Fsr,
     /// NVIDIA Image Scaling.
     Nis,
@@ -158,7 +140,6 @@ impl Filter {
 }
 
 impl GamescopeConfig {
-    /// Converts configured values into gamescope command-line arguments.
     fn to_args(&self) -> Vec<String> {
         let mut args = Vec::new();
 

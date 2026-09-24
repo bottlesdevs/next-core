@@ -1,9 +1,8 @@
-//! MangoHud command wrapper configuration.
+//! `MangoHud` command wrapper configuration.
 
 use crate::command::{Command, Wrapper};
 use serde::{Deserialize, Serialize};
 
-/// Internal MangoHud process wrapper.
 pub(crate) struct MangoHud {
     config: MangoHudConfig,
 }
@@ -23,16 +22,7 @@ impl Into<Command> for MangoHud {
 
 impl Wrapper for MangoHud {}
 
-/// Controls whether a launched command is wrapped by MangoHud.
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::MangoHudConfig;
-///
-/// let config = MangoHudConfig { enabled: true };
-/// assert!(config.enabled);
-/// ```
+/// Controls whether a launched command is wrapped by `MangoHud`.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct MangoHudConfig {
@@ -42,7 +32,6 @@ pub struct MangoHudConfig {
 }
 
 impl MangoHudConfig {
-    /// Returns MangoHud arguments derived from this configuration.
     fn to_args(&self) -> Vec<String> {
         Vec::new()
     }

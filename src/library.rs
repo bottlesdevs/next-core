@@ -21,16 +21,6 @@ use bottles_plugin_host::LoadedPlugin;
 ///
 /// Clones share provider registrations. This collection owns neither provider
 /// storage nor background refresh tasks.
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::Library;
-///
-/// let library = Library::default();
-/// assert!(futures_lite::future::block_on(library.list())?.is_empty());
-/// # Ok::<(), bottles_core::error::Error>(())
-/// ```
 #[derive(Clone, Default)]
 pub struct Library {
     providers: Arc<RwLock<HashMap<String, Arc<dyn LibraryProvider>>>>,
@@ -39,22 +29,12 @@ pub struct Library {
 impl Library {
     /// Registers a provider, replacing the provider with the same [`LibraryProvider::id`].
     ///
-    /// Call after installing or reloading a plugin to register its loaded handle.
-    /// Existing items retain their original provider; refresh to obtain new items.
+    /// Previously returned [`LibraryItem`] values retain their original provider
+    /// handle; call [`list`](Self::list) again to obtain entries from the replacement.
     ///
     /// # Panics
     ///
     /// Panics if a previous writer poisoned the provider lock.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use std::sync::Arc;
-    /// # use bottles_core::{Library, LibraryProvider};
-    /// # fn register(library: &Library, provider: Arc<dyn LibraryProvider>) {
-    /// library.register_provider(provider);
-    /// # }
-    /// ```
     pub fn register_provider(&self, provider: Arc<dyn LibraryProvider>) {
         let id = provider.id().to_owned();
         self.providers.write().unwrap().insert(id, provider);
@@ -64,28 +44,20 @@ impl Library {
     ///
     /// Previously returned [`LibraryItem`] values keep their provider handle and
     /// can still launch through it.
-    /// Plugin unloading or reloading separately retires its old host handles.
     ///
     /// # Panics
     ///
     /// Panics if a previous writer poisoned the provider lock.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bottles_core::Library;
-    ///
-    /// let library = Library::default();
-    /// library.remove_provider("retired-plugin");
-    /// ```
     pub fn remove_provider(&self, provider_id: &str) {
         self.providers.write().unwrap().remove(provider_id);
     }
 
     /// Queries every registered provider and combines its current entries.
     ///
-    /// Providers are captured before enumeration; registration changes affect the
-    /// next listing. Ordering is unspecified. The first provider error is returned.
+    /// Providers are captured before the first query, so concurrent registration
+    /// changes affect only later listings. Providers are queried sequentially in
+    /// unspecified order, and enumeration stops at the first error. Item order is
+    /// therefore also unspecified.
     ///
     /// # Errors
     ///
@@ -94,17 +66,6 @@ impl Library {
     /// # Panics
     ///
     /// Panics if a previous writer poisoned the provider lock.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use bottles_core::Library;
-    ///
-    /// let library = Library::default();
-    /// let items = futures_lite::future::block_on(library.list())?;
-    /// assert!(items.is_empty());
-    /// # Ok::<(), bottles_core::error::Error>(())
-    /// ```
     pub async fn list(&self) -> Result<Vec<LibraryItem>> {
         let providers = self
             .providers
@@ -134,15 +95,6 @@ impl Library {
 ///
 /// The metadata is a snapshot from the last [`Library::list`] call. Listing
 /// again is the only way to refresh it.
-///
-/// # Examples
-///
-/// ```
-/// # use bottles_core::LibraryItem;
-/// # fn print_item(item: &LibraryItem) {
-/// println!("{}: {}", item.provider_id(), item.entry().title);
-/// # }
-/// ```
 #[derive(Clone)]
 pub struct LibraryItem {
     entry: LibraryEntry,
@@ -151,15 +103,6 @@ pub struct LibraryItem {
 
 impl LibraryItem {
     /// Returns the metadata captured during listing.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::LibraryItem;
-    /// # fn title(item: &LibraryItem) -> &str {
-    /// &item.entry().title
-    /// # }
-    /// ```
     pub fn entry(&self) -> &LibraryEntry {
         &self.entry
     }
@@ -168,38 +111,21 @@ impl LibraryItem {
     ///
     /// Native providers use `bottles` or `programs`; plugins use their manifest
     /// identifier.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::LibraryItem;
-    /// # fn source(item: &LibraryItem) -> &str {
-    /// item.provider_id()
-    /// # }
-    /// ```
     pub fn provider_id(&self) -> &str {
         self.provider.id()
     }
 
     /// Resolves the entry through its original provider and prepares its launch.
     ///
-    /// The returned [`Operation`] is lazy and only submits the launch when polled.
+    /// Resolution happens immediately. The returned [`Operation`] is lazy and
+    /// submits the resolved launch only when polled; completion means the launch
+    /// request finished, not that the title exited.
     ///
     /// # Errors
     ///
     /// Returns [`Error::LibraryProvider`] when the provider rejects or no longer
     /// recognizes the stored entry identifier. Native providers may also return
     /// environment or identifier errors.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{LibraryItem, Operation};
-    /// # fn prepare(item: &LibraryItem) -> Result<Operation<()>, bottles_core::error::Error> {
-    /// let launch = item.launch()?;
-    /// # Ok(launch)
-    /// # }
-    /// ```
     ///
     /// [`Error::LibraryProvider`]: crate::error::Error::LibraryProvider
     pub fn launch(&self) -> Result<Operation<()>> {
@@ -209,8 +135,8 @@ impl LibraryItem {
 
 /// Supplies installed entries and resolves launches for one source.
 ///
-/// Entry IDs are local to this provider. Enumeration and launch run only while
-/// their caller drives the returned future or operation.
+/// Entry IDs are local to this provider, and launch operations are lazy.
+/// Implementations must keep [`id`](Self::id) stable while registered.
 ///
 /// # Examples
 ///
@@ -237,15 +163,6 @@ impl LibraryItem {
 #[async_trait]
 pub trait LibraryProvider: Send + Sync {
     /// Returns the stable registration key for this provider.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::LibraryProvider;
-    /// # fn provider_name(provider: &dyn LibraryProvider) -> &str {
-    /// provider.id()
-    /// # }
-    /// ```
     fn id(&self) -> &str;
 
     /// Returns entries available from the provider's current state.
@@ -253,16 +170,6 @@ pub trait LibraryProvider: Send + Sync {
     /// # Errors
     ///
     /// Returns a provider-specific error if current entries cannot be enumerated.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::LibraryProvider;
-    /// # async fn count(provider: &dyn LibraryProvider) -> Result<usize, bottles_core::error::Error> {
-    /// let entries = provider.list_entries().await?;
-    /// # Ok(entries.len())
-    /// # }
-    /// ```
     async fn list_entries(&self) -> Result<Vec<LibraryEntry>>;
 
     /// Resolves an entry and prepares its launch without starting it.
@@ -272,14 +179,6 @@ pub trait LibraryProvider: Send + Sync {
     ///
     /// Returns an error if `entry_id` is malformed, unknown, or cannot be resolved
     /// against the provider's current state.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::{LibraryProvider, Operation};
-    /// # fn prepare(provider: &dyn LibraryProvider, id: &str) -> Result<Operation<()>, bottles_core::error::Error> {
-    /// provider.launch(id)
-    /// # }
     fn launch(&self, entry_id: &str) -> Result<Operation<()>>;
 }
 

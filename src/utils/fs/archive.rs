@@ -1,8 +1,9 @@
-//! Safe extraction and inspection of tar-based component archives.
+//! Extracts and inspects tar-based component archives on Unix hosts.
 //!
-//! Extraction accepts uncompressed tar plus gzip- and xz-compressed tar files.
-//! Entry and symlink paths are checked lexically to prevent writes outside the
-//! destination tree.
+//! Archive format is selected from the filename: uncompressed tar, gzip-compressed
+//! tar, and xz-compressed tar are supported. Entry paths and symlink targets are
+//! checked lexically for absolute paths and parent traversal. These checks do not
+//! canonicalize the destination or account for a symlink traversed by a later entry.
 
 use std::{
     io,
@@ -17,7 +18,7 @@ use futures_lite::{
 use smol_tar::{TarEntry, TarReader};
 use thiserror::Error;
 
-/// A tar archive could not be validated, read, or extracted.
+/// Describes a failure while validating, reading, extracting, or inspecting an archive.
 #[derive(Debug, Error)]
 pub enum ArchiveError {
     /// An archive or destination filesystem operation failed.
@@ -32,16 +33,22 @@ pub enum ArchiveError {
     /// An entry or symlink target resolves outside the destination tree.
     #[error("archive entry escaped the staging directory: {0}")]
     EntryOutsideDestination(PathBuf),
-    /// The archive contains an entry type other than a file, directory, or symlink.
+    /// The current operation encountered an entry type it does not support.
     #[error("unsupported archive entry: {0}")]
     UnsupportedEntry(PathBuf),
 }
 
 /// Extracts a supported tar archive into `destination`.
 ///
-/// Existing files may be overwritten. Parent directories are created as
-/// needed, and archived Unix permission bits are restored after content is
-/// written.
+/// The filename must end in `.tar`, `.tar.gz`, `.tgz`, `.tar.xz`, or `.txz`.
+/// Existing regular files may be truncated and overwritten, missing parent
+/// directories are created, and archived Unix permission bits are restored.
+/// Extraction is not transactional: entries written before an error remain in
+/// `destination`.
+///
+/// Path validation is lexical. Callers must not treat it as protection against
+/// filesystem symlinks that a prior archive entry or pre-existing destination
+/// content places in the path of a later entry.
 ///
 /// # Errors
 ///
@@ -67,7 +74,7 @@ pub(crate) async fn extract(archive: &Path, destination: &Path) -> Result<(), Ar
     }
 }
 
-/// Unpacks validated tar entries and restores directory modes after children.
+/// Unpacks lexically validated entries and restores directory modes after their children.
 async fn unpack(
     reader: impl AsyncRead + Send + 'static,
     destination: &Path,
@@ -118,7 +125,7 @@ async fn unpack(
     Ok(())
 }
 
-/// Lexically normalizes a relative archive path and rejects escapes.
+/// Normalizes a relative archive path and rejects lexical traversal above its root.
 fn safe_path(path: impl AsRef<Path>) -> Result<PathBuf, ArchiveError> {
     let path = path.as_ref();
     let mut result = PathBuf::new();
@@ -135,10 +142,10 @@ fn safe_path(path: impl AsRef<Path>) -> Result<PathBuf, ArchiveError> {
     Ok(result)
 }
 
-/// Verifies that a symlink target remains within the extraction root.
+/// Verifies that a symlink target remains lexically within the extraction root.
 ///
-/// `link` is the symlink's destination-relative path; `target` is interpreted
-/// relative to its parent.
+/// `link` must already be a validated destination-relative path. `target` is
+/// interpreted relative to its parent. No filesystem paths are resolved.
 ///
 /// # Errors
 ///
@@ -159,7 +166,9 @@ async fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     async_fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).await
 }
 
-/// Recursively lists regular files below `root` in path order.
+/// Recursively lists regular files below `root` in deterministic path order.
+///
+/// Symbolic links and all other non-file entries are rejected rather than followed.
 ///
 /// # Errors
 ///

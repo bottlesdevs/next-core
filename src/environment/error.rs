@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 /// Describes invalid environment state and operations rejected by its lifecycle.
 ///
-/// I/O, runner, addon, WineBridge, and Virgo failures are represented by other
+/// I/O, runner, addon, `WineBridge`, and Virgo failures are represented by other
 /// variants of [`crate::error::Error`].
 #[derive(Debug, Error)]
 pub enum EnvironmentError {

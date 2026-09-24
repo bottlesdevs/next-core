@@ -2,6 +2,7 @@
 
 use super::{Command, Spawnable};
 
+/// Composes an outer host command around an inner command without a shell.
 pub(crate) trait Wrapper: Into<Command> + Sized {
     /// Places `self` outside `inner` without spawning either command.
     fn wrap<I: Into<Command>>(self, inner: I) -> Wrapped<Self, I> {
@@ -9,7 +10,6 @@ pub(crate) trait Wrapper: Into<Command> + Sized {
     }
 }
 
-/// A wrapper command paired with the command it will launch.
 #[derive(Debug)]
 pub(crate) struct Wrapped<O: Wrapper, I: Into<Command>> {
     outer: O,

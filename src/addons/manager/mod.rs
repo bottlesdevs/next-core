@@ -22,7 +22,7 @@ use tokio_stream::wrappers::WatchStream;
 use url::Url;
 use uuid::Uuid;
 
-/// Provides access to addon catalogs and acquired releases.
+/// Keeps catalog discovery and release acquisition separate from environment selection.
 ///
 /// Catalog entries describe remote releases, while [`Addon`] values describe
 /// releases already stored locally. Fetching a catalog entry only acquires its

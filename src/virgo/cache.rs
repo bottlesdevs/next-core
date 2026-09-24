@@ -88,7 +88,7 @@ impl LayerStore {
             .ok_or_else(|| VirgoError::MissingArtifact(self.directories.virgo().join(key)).into())
     }
 
-    /// Lists immediate published children of a collection without FVS requests.
+    /// Lists immediate published children of a collection.
     ///
     /// A manifest identifies an artifact. Staging, files, and directories without
     /// a manifest are skipped; results are sorted by relative key.

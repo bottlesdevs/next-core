@@ -52,9 +52,11 @@ impl Profiles {
     /// publishes the new [`AccountLink`]. A profile can have at most one link
     /// for each provider.
     ///
-    /// Cancellation is cooperative. Pending interaction requests are
-    /// cancelled, but a provider call already accepted by a plugin may finish
-    /// in the background after the operation is dropped.
+    /// Cancellation is cooperative. Pending interaction requests are cancelled,
+    /// but a provider call already accepted by a plugin may finish in the background
+    /// after the operation is dropped. Once the write lock is acquired and
+    /// credential persistence begins, the operation completes publication or
+    /// rollback even if cancellation is requested.
     ///
     /// # Errors
     ///
@@ -62,7 +64,8 @@ impl Profiles {
     /// unknown profile, [`ProfileError::AccountAlreadyLinked`] for a duplicate
     /// provider, or [`ProfileError::Provider`] when the provider rejects the
     /// request. Plugin loading, credential storage, persistence, cancellation,
-    /// and rollback failures are also returned.
+    /// and rollback failures are also returned. Cancellation is reported as
+    /// [`Error::Cancelled`] only before the persistence boundary described above.
     pub fn link_account(
         &self,
         profile_id: Uuid,
