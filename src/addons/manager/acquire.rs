@@ -55,14 +55,16 @@ impl Addons {
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
-                if let Some(release) = addons.component(id) {
+                let state = addons.state();
+                if let Some(release) = state.component(id) {
                     return Ok(release);
                 }
-                if addons.state().contains(id) {
+                if state.contains(id) {
                     return Err(AddonError::Duplicate(id).into());
                 }
             }
             let entry = addons
+                .state()
                 .component_entry(id)
                 .ok_or(CatalogError::NotFound(id))?;
             let target = Target::current().ok_or(CatalogError::Unsupported(id))?;
@@ -138,14 +140,16 @@ impl Addons {
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
-                if let Some(release) = addons.dependency(id) {
+                let state = addons.state();
+                if let Some(release) = state.dependency(id) {
                     return Ok(release);
                 }
-                if addons.state().contains(id) {
+                if state.contains(id) {
                     return Err(AddonError::Duplicate(id).into());
                 }
             }
             let entry = addons
+                .state()
                 .dependency_entry(id)
                 .ok_or(CatalogError::NotFound(id))?;
             let target = Target::current().ok_or(CatalogError::Unsupported(id))?;

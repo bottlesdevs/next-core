@@ -28,9 +28,9 @@ use uuid::Uuid;
 /// releases already stored locally. Fetching a catalog entry only acquires its
 /// payload; it does not select the addon for any environment.
 ///
-/// Cloned managers share the same state. Values returned from query methods are
-/// snapshots and remain unchanged after refreshes or storage changes. Query again,
-/// or subscribe with [`watch`](Self::watch), to observe a later snapshot.
+/// Cloned managers share the same state. Read an immutable snapshot with
+/// [`state`](Self::state), or subscribe with [`watch`](Self::watch) to observe
+/// later snapshots.
 ///
 /// # Examples
 ///
@@ -39,6 +39,7 @@ use uuid::Uuid;
 ///
 /// fn supported_runners(addons: &Addons) -> Vec<CatalogEntry<Component>> {
 ///     addons
+///         .state()
 ///         .component_entries()
 ///         .into_iter()
 ///         .filter(|entry| entry.slot() == Slot::Runner && entry.is_supported())
@@ -57,18 +58,16 @@ struct AddonsInner {
     write: Mutex<()>,
 }
 
+/// An immutable snapshot of cached catalogs and locally acquired releases.
+///
+/// Obtained through [`Addons::state`] or [`Addons::watch`]. Later publications do
+/// not change this snapshot, and retaining it does not keep the manager alive.
 #[derive(Clone, Debug, Default)]
-struct AddonsState {
+pub struct AddonsState {
     component_catalog: Option<Arc<Catalog<Component>>>,
     dependency_catalog: Option<Arc<Catalog<Dependency>>>,
     components: HashMap<Uuid, Arc<Addon<Component>>>,
     dependencies: HashMap<Uuid, Arc<Addon<Dependency>>>,
-}
-
-impl AddonsState {
-    fn contains(&self, id: Uuid) -> bool {
-        self.components.contains_key(&id) || self.dependencies.contains_key(&id)
-    }
 }
 
 impl Addons {
@@ -103,13 +102,41 @@ impl Addons {
         })))
     }
 
+    /// Returns the current immutable snapshot.
+    pub fn state(&self) -> Arc<AddonsState> {
+        self.0.published.borrow().clone()
+    }
+
+    /// Returns a stream of immutable addon-state snapshots.
+    ///
+    /// The first item is available immediately. Later items follow refreshes that
+    /// reach publication, including refreshes that report per-family failures, and
+    /// successful new release acquisitions, imports, and removals. Reusing an
+    /// already-acquired release does not publish. Slow consumers may observe several
+    /// publications as one item. The stream does not keep the manager alive and
+    /// ends after the last manager handle is dropped, including those held by
+    /// operations.
+    pub fn watch(&self) -> impl Stream<Item = Arc<AddonsState>> + Send + 'static + use<> {
+        WatchStream::new(self.0.published.subscribe())
+    }
+
+    /// Publishes the already committed local snapshot without filesystem discovery.
+    fn publish(&self, state: AddonsState) {
+        self.0.published.send_replace(Arc::new(state));
+    }
+}
+
+impl AddonsState {
+    fn contains(&self, id: Uuid) -> bool {
+        self.components.contains_key(&id) || self.dependencies.contains_key(&id)
+    }
+
     /// Returns component entries in their current catalog order.
     ///
     /// The result is empty until a component catalog has been loaded from cache or
-    /// published by [`refresh`](Self::refresh).
+    /// published by [`Addons::refresh`].
     pub fn component_entries(&self) -> Vec<CatalogEntry<Component>> {
-        self.state()
-            .component_catalog
+        self.component_catalog
             .iter()
             .flat_map(|catalog| catalog.entries().iter().cloned())
             .collect()
@@ -118,10 +145,9 @@ impl Addons {
     /// Returns dependency entries in their current catalog order.
     ///
     /// The result is empty until a dependency catalog has been loaded from cache or
-    /// published by [`refresh`](Self::refresh).
+    /// published by [`Addons::refresh`].
     pub fn dependency_entries(&self) -> Vec<CatalogEntry<Dependency>> {
-        self.state()
-            .dependency_catalog
+        self.dependency_catalog
             .iter()
             .flat_map(|catalog| catalog.entries().iter().cloned())
             .collect()
@@ -131,24 +157,24 @@ impl Addons {
     ///
     /// The order is unspecified.
     pub fn components(&self) -> Vec<Arc<Addon<Component>>> {
-        self.state().components.values().cloned().collect()
+        self.components.values().cloned().collect()
     }
 
     /// Returns all locally acquired dependency releases.
     ///
     /// The result order is unspecified.
     pub fn dependencies(&self) -> Vec<Arc<Addon<Dependency>>> {
-        self.state().dependencies.values().cloned().collect()
+        self.dependencies.values().cloned().collect()
     }
 
     /// Returns the locally acquired component with UUID `id`, if present.
     pub fn component(&self, id: Uuid) -> Option<Arc<Addon<Component>>> {
-        self.state().components.get(&id).cloned()
+        self.components.get(&id).cloned()
     }
 
     /// Returns the locally acquired dependency with UUID `id`, if present.
     pub fn dependency(&self, id: Uuid) -> Option<Arc<Addon<Dependency>>> {
-        self.state().dependencies.get(&id).cloned()
+        self.dependencies.get(&id).cloned()
     }
 
     /// Returns the component catalog entry with UUID `id`.
@@ -156,8 +182,7 @@ impl Addons {
     /// Returns `None` when no valid component catalog is loaded or the release
     /// is absent from it.
     pub fn component_entry(&self, id: Uuid) -> Option<CatalogEntry<Component>> {
-        self.state()
-            .component_catalog
+        self.component_catalog
             .as_ref()
             .and_then(|catalog| catalog.entry(id))
             .cloned()
@@ -168,34 +193,9 @@ impl Addons {
     /// Returns `None` when no valid dependency catalog is loaded or the release
     /// is absent from it.
     pub fn dependency_entry(&self, id: Uuid) -> Option<CatalogEntry<Dependency>> {
-        self.state()
-            .dependency_catalog
+        self.dependency_catalog
             .as_ref()
             .and_then(|catalog| catalog.entry(id))
             .cloned()
-    }
-
-    /// Returns a stream that observes published addon-state changes.
-    ///
-    /// The first item is available immediately. Later items follow refreshes that
-    /// reach publication, including refreshes that report per-family failures, and
-    /// successful new release acquisitions, imports, and removals. Reusing an
-    /// already-acquired release does not publish. Slow consumers may observe several
-    /// publications as one item. Each item is a manager handle; call its query
-    /// methods to read the current snapshot.
-    pub fn watch(&self) -> impl Stream<Item = Self> + Send + 'static + use<> {
-        let addons = self.clone();
-        tokio_stream::StreamExt::map(WatchStream::new(self.0.published.subscribe()), move |_| {
-            addons.clone()
-        })
-    }
-
-    fn state(&self) -> Arc<AddonsState> {
-        self.0.published.borrow().clone()
-    }
-
-    /// Publishes the already committed local snapshot without filesystem discovery.
-    fn publish(&self, state: AddonsState) {
-        self.0.published.send_replace(Arc::new(state));
     }
 }

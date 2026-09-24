@@ -29,4 +29,4 @@ pub(crate) use catalog::AddonFamily;
 pub use catalog::CatalogEntry;
 pub use error::{AddonError, CatalogError, InstallerError};
 pub(crate) use installer::{InstallInputs, execute, uninstall};
-pub use manager::Addons;
+pub use manager::{Addons, AddonsState};
