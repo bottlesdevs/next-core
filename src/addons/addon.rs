@@ -88,6 +88,10 @@ impl<K> Addon<K> {
         &self.requirements
     }
 
+    pub(crate) fn metadata(&self) -> (Uuid, &str, &[Requirement]) {
+        (self.id, &self.name, &self.requirements)
+    }
+
     pub(crate) fn resources(&self) -> &[InstallResource] {
         &self.resources
     }

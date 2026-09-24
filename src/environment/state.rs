@@ -107,34 +107,11 @@ impl EnvironmentConfig {
     }
 
     fn addon_metadata(&self) -> impl Iterator<Item = (Uuid, &str, &[Requirement])> {
-        [
-            (
-                self.runner.id(),
-                self.runner.name(),
-                self.runner.requirements(),
-            ),
-            (
-                self.winebridge.id(),
-                self.winebridge.name(),
-                self.winebridge.requirements(),
-            ),
-        ]
-        .into_iter()
-        .chain(
-            self.umu
-                .iter()
-                .map(|addon| (addon.id(), addon.name(), addon.requirements())),
-        )
-        .chain(
-            self.components
-                .values()
-                .map(|addon| (addon.id(), addon.name(), addon.requirements())),
-        )
-        .chain(
-            self.dependencies
-                .iter()
-                .map(|addon| (addon.id(), addon.name(), addon.requirements())),
-        )
+        [self.runner.metadata(), self.winebridge.metadata()]
+            .into_iter()
+            .chain(self.umu.iter().map(Addon::metadata))
+            .chain(self.components.values().map(Addon::metadata))
+            .chain(self.dependencies.iter().map(Addon::metadata))
     }
 
     /// Verifies placement, uniqueness, and addon requirements.
