@@ -38,14 +38,14 @@ use uuid::Uuid;
 /// # Examples
 ///
 /// ```
-/// use bottles_core::{Addons, CatalogEntry};
+/// use bottles_core::{AddonKind, Addons, CatalogEntry};
 ///
 /// fn supported_runners(addons: &Addons) -> Vec<CatalogEntry> {
 ///     addons
 ///         .state()
-///         .runner_entries()
+///         .component_entries()
 ///         .into_iter()
-///         .filter(CatalogEntry::is_supported)
+///         .filter(|entry| entry.kind() == AddonKind::Runner && entry.is_supported())
 ///         .collect()
 /// }
 /// ```
@@ -136,27 +136,16 @@ impl AddonsState {
         self.releases.get(&id).and_then(K::get).cloned()
     }
 
-    /// Returns runner entries in catalog order.
-    pub fn runner_entries(&self) -> Vec<CatalogEntry> {
-        self.component_catalog_entries(|kind| kind == AddonKind::Runner)
-    }
-
-    /// Returns `WineBridge` entries in catalog order.
-    pub fn winebridge_entries(&self) -> Vec<CatalogEntry> {
-        self.component_catalog_entries(|kind| kind == AddonKind::WineBridge)
-    }
-
-    /// Returns UMU entries in catalog order.
-    pub fn umu_entries(&self) -> Vec<CatalogEntry> {
-        self.component_catalog_entries(|kind| kind == AddonKind::Umu)
-    }
-
-    /// Returns component entries in their current catalog order.
+    /// Returns runner, `WineBridge`, UMU, and prefix-component entries in catalog order.
     ///
     /// The result is empty until the component catalog has been loaded from cache or
     /// published by [`Addons::refresh`].
     pub fn component_entries(&self) -> Vec<CatalogEntry> {
-        self.component_catalog_entries(|kind| matches!(kind, AddonKind::Component { .. }))
+        self.component_catalog
+            .iter()
+            .flat_map(|catalog| catalog.entries())
+            .cloned()
+            .collect()
     }
 
     /// Returns dependency entries in their current catalog order.
@@ -226,47 +215,14 @@ impl AddonsState {
         self.release(id)
     }
 
-    /// Returns the component catalog entry with UUID `id`.
+    /// Returns the entry with UUID `id` from the mixed component catalog.
     ///
     /// Returns `None` when no valid component catalog is loaded or the release
     /// is absent from it.
     pub fn component_entry(&self, id: Uuid) -> Option<CatalogEntry> {
-        self.component_catalog_entry(id, |kind| matches!(kind, AddonKind::Component { .. }))
-    }
-
-    /// Returns the runner catalog entry with UUID `id`, if present.
-    pub fn runner_entry(&self, id: Uuid) -> Option<CatalogEntry> {
-        self.component_catalog_entry(id, |kind| kind == AddonKind::Runner)
-    }
-
-    /// Returns the `WineBridge` catalog entry with UUID `id`, if present.
-    pub fn winebridge_entry(&self, id: Uuid) -> Option<CatalogEntry> {
-        self.component_catalog_entry(id, |kind| kind == AddonKind::WineBridge)
-    }
-
-    /// Returns the UMU catalog entry with UUID `id`, if present.
-    pub fn umu_entry(&self, id: Uuid) -> Option<CatalogEntry> {
-        self.component_catalog_entry(id, |kind| kind == AddonKind::Umu)
-    }
-
-    fn component_catalog_entries(&self, matches: impl Fn(AddonKind) -> bool) -> Vec<CatalogEntry> {
-        self.component_catalog
-            .iter()
-            .flat_map(|catalog| catalog.entries())
-            .filter(|entry| matches(entry.kind()))
-            .cloned()
-            .collect()
-    }
-
-    fn component_catalog_entry(
-        &self,
-        id: Uuid,
-        matches: impl Fn(AddonKind) -> bool,
-    ) -> Option<CatalogEntry> {
         self.component_catalog
             .as_ref()
             .and_then(|catalog| catalog.entry(id))
-            .filter(|entry| matches(entry.kind()))
             .cloned()
     }
 

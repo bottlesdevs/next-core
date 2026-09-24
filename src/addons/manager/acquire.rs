@@ -34,7 +34,15 @@ impl Addons {
     /// Returns an error on cancellation, a missing or unsupported catalog entry,
     /// ambiguous artifacts, download, verification, extraction, or storage failure.
     pub fn fetch_runner(&self, id: Uuid) -> Operation<Arc<Addon<Runner>>> {
-        self.fetch(id, AddonsState::runner_entry, runtime_record::<Runner>)
+        self.fetch(
+            id,
+            |state, id| {
+                state
+                    .component_entry(id)
+                    .filter(|entry| entry.kind() == AddonKind::Runner)
+            },
+            runtime_record::<Runner>,
+        )
     }
 
     /// Acquires a `WineBridge` archive, or returns its already acquired release.
@@ -46,7 +54,11 @@ impl Addons {
     pub fn fetch_winebridge(&self, id: Uuid) -> Operation<Arc<Addon<WineBridge>>> {
         self.fetch(
             id,
-            AddonsState::winebridge_entry,
+            |state, id| {
+                state
+                    .component_entry(id)
+                    .filter(|entry| entry.kind() == AddonKind::WineBridge)
+            },
             runtime_record::<WineBridge>,
         )
     }
@@ -58,7 +70,15 @@ impl Addons {
     /// Returns an error on cancellation, a missing or unsupported catalog entry,
     /// ambiguous artifacts, download, verification, extraction, or storage failure.
     pub fn fetch_umu(&self, id: Uuid) -> Operation<Arc<Addon<Umu>>> {
-        self.fetch(id, AddonsState::umu_entry, runtime_record::<Umu>)
+        self.fetch(
+            id,
+            |state, id| {
+                state
+                    .component_entry(id)
+                    .filter(|entry| entry.kind() == AddonKind::Umu)
+            },
+            runtime_record::<Umu>,
+        )
     }
 
     /// Acquires a component archive and freezes its selected installation recipe.
@@ -72,7 +92,15 @@ impl Addons {
     /// Returns an error on cancellation, a missing or unsupported catalog entry,
     /// ambiguous artifacts, download, verification, extraction, or storage failure.
     pub fn fetch_component(&self, id: Uuid) -> Operation<Arc<Addon<Component>>> {
-        self.fetch(id, AddonsState::component_entry, component_record)
+        self.fetch(
+            id,
+            |state, id| {
+                state
+                    .component_entry(id)
+                    .filter(|entry| matches!(entry.kind(), AddonKind::Component { .. }))
+            },
+            component_record,
+        )
     }
 
     /// Acquires a dependency and freezes its selected artifact recipes.
