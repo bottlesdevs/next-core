@@ -39,6 +39,16 @@ pub(crate) enum StoredRelease {
 }
 
 impl StoredRelease {
+    fn directory(&self, directories: &Directories) -> PathBuf {
+        match self {
+            Self::Runner(record) => record.directory(directories),
+            Self::WineBridge(record) => record.directory(directories),
+            Self::Umu(record) => record.directory(directories),
+            Self::Component(record) => record.directory(directories),
+            Self::Dependency(record) => record.directory(directories),
+        }
+    }
+
     fn id(&self) -> Uuid {
         match self {
             Self::Runner(record) => record.id(),
@@ -124,7 +134,7 @@ impl StoredAddon for Dependency {
 }
 
 impl Addons {
-    /// Removes an acquired runner release from shared storage.
+    /// Removes an acquired release of any kind from shared storage.
     ///
     /// Existing environment selections retain their records but lose the payload.
     /// Built Virgo artifacts are unaffected. The release is moved to trash before
@@ -134,75 +144,11 @@ impl Addons {
     ///
     /// Returns [`AddonError::NotFound`] when the release is absent, or an I/O error
     /// if its storage directory cannot be moved to trash.
-    pub async fn remove_runner(&self, id: Uuid) -> Result<()> {
-        self.remove::<Runner>(id).await
-    }
-
-    /// Removes an acquired winebridge release from shared storage.
-    ///
-    /// Existing environment selections retain their records but lose the payload.
-    /// Built Virgo artifacts are unaffected. The release is moved to trash before
-    /// the new state is published; trash cleanup is best effort.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AddonError::NotFound`] when the release is absent, or an I/O error
-    /// if its storage directory cannot be moved to trash.
-    pub async fn remove_winebridge(&self, id: Uuid) -> Result<()> {
-        self.remove::<WineBridge>(id).await
-    }
-
-    /// Removes an acquired umu release from shared storage.
-    ///
-    /// Existing environment selections retain their records but lose the payload.
-    /// Built Virgo artifacts are unaffected. The release is moved to trash before
-    /// the new state is published; trash cleanup is best effort.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AddonError::NotFound`] when the release is absent, or an I/O error
-    /// if its storage directory cannot be moved to trash.
-    pub async fn remove_umu(&self, id: Uuid) -> Result<()> {
-        self.remove::<Umu>(id).await
-    }
-
-    /// Removes an acquired component release from shared storage.
-    ///
-    /// Existing environment selections retain their records but lose the payload.
-    /// Built Virgo artifacts are unaffected. The release is moved to trash before
-    /// the new state is published; trash cleanup is best effort.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AddonError::NotFound`] when the release is absent, or an I/O error
-    /// if its storage directory cannot be moved to trash.
-    pub async fn remove_component(&self, id: Uuid) -> Result<()> {
-        self.remove::<Component>(id).await
-    }
-
-    /// Removes an acquired dependency release from shared storage.
-    ///
-    /// Existing environment selections retain their records but lose the payload.
-    /// Built Virgo artifacts are unaffected. The release is moved to trash before
-    /// the new state is published; trash cleanup is best effort.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AddonError::NotFound`] when the release is absent, or an I/O error
-    /// if its storage directory cannot be moved to trash.
-    pub async fn remove_dependency(&self, id: Uuid) -> Result<()> {
-        self.remove::<Dependency>(id).await
-    }
-
-    async fn remove<K: StoredAddon>(&self, id: Uuid) -> Result<()> {
+    pub async fn remove(&self, id: Uuid) -> Result<()> {
         fs::with_temp_dir(&self.0.directories.trash(), |trash| async move {
             let _write = self.0.write.lock().await;
             let mut next = self.state().as_ref().clone();
-            let release = next
-                .releases
-                .get(&id)
-                .and_then(K::get)
-                .ok_or(AddonError::NotFound(id))?;
+            let release = next.releases.get(&id).ok_or(AddonError::NotFound(id))?;
             async_fs::rename(
                 release.directory(&self.0.directories),
                 trash.join("release"),
