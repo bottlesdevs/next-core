@@ -132,7 +132,8 @@ impl AddonsState {
         self.releases.values().filter_map(K::get).cloned().collect()
     }
 
-    fn release<K: StoredAddon>(&self, id: Uuid) -> Option<Arc<Addon<K>>> {
+    #[cfg(feature = "fvs")]
+    pub(crate) fn release<K: StoredAddon>(&self, id: Uuid) -> Option<Arc<Addon<K>>> {
         self.releases.get(&id).and_then(K::get).cloned()
     }
 
@@ -188,31 +189,6 @@ impl AddonsState {
     /// The result order is unspecified.
     pub fn dependencies(&self) -> Vec<Arc<Addon<Dependency>>> {
         self.releases()
-    }
-
-    /// Returns the locally acquired runner with UUID `id`, if present.
-    pub fn runner(&self, id: Uuid) -> Option<Arc<Addon<Runner>>> {
-        self.release(id)
-    }
-
-    /// Returns the locally acquired `WineBridge` release with UUID `id`, if present.
-    pub fn winebridge(&self, id: Uuid) -> Option<Arc<Addon<WineBridge>>> {
-        self.release(id)
-    }
-
-    /// Returns the locally acquired UMU release with UUID `id`, if present.
-    pub fn umu(&self, id: Uuid) -> Option<Arc<Addon<Umu>>> {
-        self.release(id)
-    }
-
-    /// Returns the locally acquired component with UUID `id`, if present.
-    pub fn component(&self, id: Uuid) -> Option<Arc<Addon<Component>>> {
-        self.release(id)
-    }
-
-    /// Returns the locally acquired dependency with UUID `id`, if present.
-    pub fn dependency(&self, id: Uuid) -> Option<Arc<Addon<Dependency>>> {
-        self.release(id)
     }
 
     /// Returns the entry with UUID `id` from the mixed component catalog.
