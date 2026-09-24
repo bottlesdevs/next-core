@@ -10,7 +10,7 @@ use super::super::{
     defaults::steps as recipe_steps,
     recipe::InstallResource,
 };
-use super::{Addons, AddonsState, StoredAddon, download::download};
+use super::{Addons, StoredAddon, StoredRelease, download::download};
 use crate::{
     Operation, Progress, Stage,
     error::{Error, Result},
@@ -34,15 +34,7 @@ impl Addons {
     /// Returns an error on cancellation, a missing or unsupported catalog entry,
     /// ambiguous artifacts, download, verification, extraction, or storage failure.
     pub fn fetch_runner(&self, id: Uuid) -> Operation<Arc<Addon<Runner>>> {
-        self.fetch(
-            id,
-            |state, id| {
-                state
-                    .component_entry(id)
-                    .filter(|entry| entry.kind() == AddonKind::Runner)
-            },
-            runtime_record::<Runner>,
-        )
+        self.fetch(id)
     }
 
     /// Acquires a `WineBridge` archive, or returns its already acquired release.
@@ -52,15 +44,7 @@ impl Addons {
     /// Returns an error on cancellation, a missing or unsupported catalog entry,
     /// ambiguous artifacts, download, verification, extraction, or storage failure.
     pub fn fetch_winebridge(&self, id: Uuid) -> Operation<Arc<Addon<WineBridge>>> {
-        self.fetch(
-            id,
-            |state, id| {
-                state
-                    .component_entry(id)
-                    .filter(|entry| entry.kind() == AddonKind::WineBridge)
-            },
-            runtime_record::<WineBridge>,
-        )
+        self.fetch(id)
     }
 
     /// Acquires an UMU archive, or returns its already acquired release.
@@ -70,15 +54,7 @@ impl Addons {
     /// Returns an error on cancellation, a missing or unsupported catalog entry,
     /// ambiguous artifacts, download, verification, extraction, or storage failure.
     pub fn fetch_umu(&self, id: Uuid) -> Operation<Arc<Addon<Umu>>> {
-        self.fetch(
-            id,
-            |state, id| {
-                state
-                    .component_entry(id)
-                    .filter(|entry| entry.kind() == AddonKind::Umu)
-            },
-            runtime_record::<Umu>,
-        )
+        self.fetch(id)
     }
 
     /// Acquires a component archive and freezes its selected installation recipe.
@@ -92,15 +68,7 @@ impl Addons {
     /// Returns an error on cancellation, a missing or unsupported catalog entry,
     /// ambiguous artifacts, download, verification, extraction, or storage failure.
     pub fn fetch_component(&self, id: Uuid) -> Operation<Arc<Addon<Component>>> {
-        self.fetch(
-            id,
-            |state, id| {
-                state
-                    .component_entry(id)
-                    .filter(|entry| matches!(entry.kind(), AddonKind::Component { .. }))
-            },
-            component_record,
-        )
+        self.fetch(id)
     }
 
     /// Acquires a dependency and freezes its selected artifact recipes.
@@ -115,21 +83,22 @@ impl Addons {
     /// Returns an error on cancellation, a missing or unsupported catalog entry,
     /// download, verification, or storage failure.
     pub fn fetch_dependency(&self, id: Uuid) -> Operation<Arc<Addon<Dependency>>> {
-        self.fetch(id, AddonsState::dependency_entry, dependency_record)
+        self.fetch(id)
     }
 
-    fn fetch<K: StoredAddon>(
-        &self,
-        id: Uuid,
-        lookup: fn(&AddonsState, Uuid) -> Option<CatalogEntry>,
-        record: fn(&CatalogEntry, &[&CatalogArtifact]) -> Addon<K>,
-    ) -> Operation<Arc<Addon<K>>> {
+    fn fetch<K: StoredAddon>(&self, id: Uuid) -> Operation<Arc<Addon<K>>> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
             if let Some(release) = addons.acquired::<K>(id, &cancellation).await? {
                 return Ok(release);
             }
-            let entry = lookup(&addons.state(), id).ok_or(CatalogError::NotFound(id))?;
+            let state = addons.state();
+            let entry = state
+                .component_catalog
+                .iter()
+                .chain(state.dependency_catalog.iter())
+                .find_map(|catalog| catalog.entry(id))
+                .ok_or(CatalogError::NotFound(id))?;
             let target = Target::current().ok_or(CatalogError::Unsupported(id))?;
             let artifacts: Vec<_> = entry.artifacts_for_target(target).collect();
             if artifacts.is_empty() {
@@ -143,7 +112,10 @@ impl Addons {
                 }
                 .into());
             }
-            let record = Arc::new(record(&entry, &artifacts));
+            let release = release_record(entry, &artifacts);
+            let record = K::get(&release)
+                .cloned()
+                .ok_or(CatalogError::NotFound(id))?;
             fs::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
                 let downloads = stage.join("downloads");
                 async_fs::create_dir(&downloads).await?;
@@ -315,54 +287,51 @@ impl Addons {
     }
 }
 
-fn runtime_record<K: Default>(entry: &CatalogEntry, _artifacts: &[&CatalogArtifact]) -> Addon<K> {
-    Addon::new(
-        entry.id(),
-        entry.name().into(),
-        entry.version().into(),
-        entry.requirements().to_vec(),
-        Vec::new(),
-        K::default(),
-    )
+fn release_record(entry: &CatalogEntry, artifacts: &[&CatalogArtifact]) -> StoredRelease {
+    match entry.kind() {
+        AddonKind::Runner => record(entry, Runner {}, Vec::new()),
+        AddonKind::WineBridge => record(entry, WineBridge {}, Vec::new()),
+        AddonKind::Umu => record(entry, Umu {}, Vec::new()),
+        AddonKind::Component { slot } => record(
+            entry,
+            Component { slot },
+            vec![InstallResource::new(
+                "",
+                artifacts[0]
+                    .steps()
+                    .unwrap_or_else(|| recipe_steps(slot))
+                    .to_vec(),
+            )],
+        ),
+        AddonKind::Dependency => record(
+            entry,
+            Dependency {},
+            artifacts
+                .iter()
+                .map(|artifact| {
+                    InstallResource::new(
+                        artifact.file_name(),
+                        artifact.steps().unwrap_or_default().to_vec(),
+                    )
+                })
+                .collect(),
+        ),
+    }
 }
 
-fn component_record(entry: &CatalogEntry, artifacts: &[&CatalogArtifact]) -> Addon<Component> {
-    let AddonKind::Component { slot } = entry.kind() else {
-        unreachable!("component entry lookup only returns components")
-    };
-    Addon::new(
+fn record<K: StoredAddon>(
+    entry: &CatalogEntry,
+    kind: K,
+    resources: Vec<InstallResource>,
+) -> StoredRelease {
+    K::manifest(Arc::new(Addon::new(
         entry.id(),
         entry.name().into(),
         entry.version().into(),
         entry.requirements().to_vec(),
-        vec![InstallResource::new(
-            "",
-            artifacts[0]
-                .steps()
-                .unwrap_or_else(|| recipe_steps(slot))
-                .to_vec(),
-        )],
-        Component { slot },
-    )
-}
-
-fn dependency_record(entry: &CatalogEntry, artifacts: &[&CatalogArtifact]) -> Addon<Dependency> {
-    Addon::new(
-        entry.id(),
-        entry.name().into(),
-        entry.version().into(),
-        entry.requirements().to_vec(),
-        artifacts
-            .iter()
-            .map(|artifact| {
-                InstallResource::new(
-                    artifact.file_name(),
-                    artifact.steps().unwrap_or_default().to_vec(),
-                )
-            })
-            .collect(),
-        Dependency {},
-    )
+        resources,
+        kind,
+    )))
 }
 
 async fn download_artifact(
