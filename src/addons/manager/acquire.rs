@@ -250,7 +250,14 @@ impl Addons {
     ) -> Operation<Arc<Addon<K>>> {
         self.import_archive(
             path,
-            Addon::new(Uuid::new_v4(), name, version, Vec::new(), K::default()),
+            Addon::new(
+                Uuid::new_v4(),
+                name,
+                version,
+                Vec::new(),
+                Vec::new(),
+                K::default(),
+            ),
         )
     }
 
@@ -282,10 +289,8 @@ impl Addons {
                 name.into(),
                 version.into(),
                 requirements,
-                Component {
-                    slot,
-                    resources: vec![InstallResource::new("", recipe_steps(slot).to_vec())],
-                },
+                vec![InstallResource::new("", recipe_steps(slot).to_vec())],
+                Component { slot },
             ),
         )
     }
@@ -316,6 +321,7 @@ fn runtime_record<K: Default>(entry: &CatalogEntry, _artifacts: &[&CatalogArtifa
         entry.name().into(),
         entry.version().into(),
         entry.requirements().to_vec(),
+        Vec::new(),
         K::default(),
     )
 }
@@ -329,16 +335,14 @@ fn component_record(entry: &CatalogEntry, artifacts: &[&CatalogArtifact]) -> Add
         entry.name().into(),
         entry.version().into(),
         entry.requirements().to_vec(),
-        Component {
-            slot,
-            resources: vec![InstallResource::new(
-                "",
-                artifacts[0]
-                    .steps()
-                    .unwrap_or_else(|| recipe_steps(slot))
-                    .to_vec(),
-            )],
-        },
+        vec![InstallResource::new(
+            "",
+            artifacts[0]
+                .steps()
+                .unwrap_or_else(|| recipe_steps(slot))
+                .to_vec(),
+        )],
+        Component { slot },
     )
 }
 
@@ -348,17 +352,16 @@ fn dependency_record(entry: &CatalogEntry, artifacts: &[&CatalogArtifact]) -> Ad
         entry.name().into(),
         entry.version().into(),
         entry.requirements().to_vec(),
-        Dependency {
-            resources: artifacts
-                .iter()
-                .map(|artifact| {
-                    InstallResource::new(
-                        artifact.file_name(),
-                        artifact.steps().unwrap_or_default().to_vec(),
-                    )
-                })
-                .collect(),
-        },
+        artifacts
+            .iter()
+            .map(|artifact| {
+                InstallResource::new(
+                    artifact.file_name(),
+                    artifact.steps().unwrap_or_default().to_vec(),
+                )
+            })
+            .collect(),
+        Dependency {},
     )
 }
 

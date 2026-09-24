@@ -31,6 +31,4 @@ pub use error::{AddonError, CatalogError, InstallerError};
 pub(crate) use installer::{InstallInputs, execute, uninstall};
 pub(crate) use manager::StoredAddon;
 pub use manager::{Addons, AddonsState};
-#[cfg(feature = "fvs")]
-pub(crate) use recipe::InstallResource;
 pub(crate) use recipe::InstallStep;
