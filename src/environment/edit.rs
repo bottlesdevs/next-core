@@ -128,7 +128,7 @@ where
     ///
     /// Runtime and prefix changes require a stopped environment. Runtime-only
     /// changes save directly for Standard prefixes. Virgo rebuilds the
-    /// composition when the runner or UMU changes; WineBridge changes only save.
+    /// composition when the runner changes; UMU and WineBridge changes only save.
     /// Standard prefix changes apply in place without rollback; Virgo environments
     /// checkpoint and recover the owner if workspace preparation or persistence fails. A
     /// standard-prefix application or subsequent save failure can therefore leave
@@ -195,15 +195,8 @@ where
                     .await?;
                     environment.save(&draft).await?;
                 }
-                PrefixBackend::Standard if runner_changed || umu_changed => {
-                    after
-                        .runner
-                        .load_runner(environment.context.directories(), after.umu.as_ref())
-                        .await?;
-                    environment.save(&draft).await?;
-                }
                 #[cfg(feature = "fvs")]
-                PrefixBackend::Virgo if prefix_changed || runner_changed || umu_changed => {
+                PrefixBackend::Virgo if prefix_changed || runner_changed => {
                     let (base, overlays) = environment
                         .virgo
                         .prepare_artifacts(after, &progress, &cancellation)
@@ -234,6 +227,13 @@ where
                         &progress,
                     )
                     .await?;
+                }
+                _ if runner_changed || umu_changed => {
+                    after
+                        .runner
+                        .load_runner(environment.context.directories(), after.umu.as_ref())
+                        .await?;
+                    environment.save(&draft).await?;
                 }
                 _ => environment.save(&draft).await?,
             }

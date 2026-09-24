@@ -1,6 +1,6 @@
 //! Selects, builds, and orders immutable Virgo artifacts for an environment.
 //!
-//! Frozen addon selections resolve to a base layer, a runner and UMU adapter,
+//! Frozen addon selections resolve to a base layer, a runner adapter,
 //! component layers, and dependency layers in composition order.
 
 use crate::{
@@ -10,10 +10,7 @@ use crate::{
     error::{Error, Result},
     virgo::{LayerStore, VirgoLayer},
 };
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -73,7 +70,7 @@ impl VirgoManager {
 
     /// Loads the exact cached composition recorded by `config`.
     ///
-    /// Layers are ordered as base, runner and UMU adapter, components in slot
+    /// Layers are ordered as base, runner adapter, components in slot
     /// order, and dependencies in installation order.
     ///
     /// # Errors
@@ -86,7 +83,7 @@ impl VirgoManager {
     ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
         let base = self.layers.require(Path::new("soda"), None).await?;
         let runner = config.runner.id();
-        let adapter = adapter_path(config);
+        let adapter = Path::new("adapters").join(runner.to_string());
         let mut overlays = vec![self.layers.require(&adapter, Some(runner)).await?];
         for id in config
             .ordered_components()
@@ -145,7 +142,7 @@ impl VirgoManager {
             .await
     }
 
-    /// Reuses or builds the selected runner and UMU's initialization delta over the base.
+    /// Reuses or builds the selected runner's initialization delta over the base.
     ///
     /// # Errors
     ///
@@ -158,7 +155,7 @@ impl VirgoManager {
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
         let id = config.runner.id();
-        let destination = adapter_path(config);
+        let destination = Path::new("adapters").join(id.to_string());
         self.layers
             .get_or_build(&destination, Some(id), cancellation, || async {
                 let runner = config
@@ -250,13 +247,4 @@ fn latest_addon<K>(addons: impl Iterator<Item = Arc<Addon<K>>>) -> Option<Arc<Ad
         })
         .max_by(|(a, left), (b, right)| a.cmp(b).then_with(|| left.id().cmp(&right.id())))
         .map(|(_, addon)| addon)
-}
-
-fn adapter_path(config: &EnvironmentConfig) -> PathBuf {
-    let umu = config
-        .umu
-        .as_ref()
-        .map(|addon| addon.id().to_string())
-        .unwrap_or_else(|| "none".into());
-    Path::new("adapters").join(format!("{}-{umu}", config.runner.id()))
 }
