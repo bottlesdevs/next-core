@@ -48,8 +48,8 @@ core.shutdown().await?;
   and plugins.
 - [`Profiles`] stores application profiles and their linked external accounts.
 
-Applications explicitly open plugin sessions through [`plugins::PluginLibraryProvider`]
-and [`plugins::PluginAccountProvider`] with their chosen WASI capabilities, then
+Applications explicitly open plugin sessions through [`plugins::open_library_provider`]
+and [`plugins::open_account_provider`] with their chosen WASI capabilities, then
 register them with [`Library::register_provider`] or [`Profiles::register_provider`].
 Reloading or uninstalling a package does not replace an existing session; the
 application opens and registers a replacement when needed.
