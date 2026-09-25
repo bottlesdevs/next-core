@@ -5,45 +5,16 @@
 
 use super::providers::LinkedAccount;
 use super::{
-    AccountLink, AccountLinkInteraction, AccountProviderInfo, ProfileError, Profiles,
-    ProfilesState, credentials, providers,
+    AccountLink, AccountLinkInteraction, ProfileError, Profiles, ProfilesState, credentials,
 };
 use crate::{
     Operation,
     error::{Error, Result},
 };
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-struct CancellableInteraction {
-    inner: Arc<dyn AccountLinkInteraction>,
-    cancellation: CancellationToken,
-}
-
-#[async_trait::async_trait]
-impl AccountLinkInteraction for CancellableInteraction {
-    async fn request_input(
-        &self,
-        url: url::Url,
-        instructions: String,
-    ) -> std::result::Result<String, String> {
-        self.cancellation
-            .run_until_cancelled(self.inner.request_input(url, instructions))
-            .await
-            .ok_or_else(|| "account linking cancelled".to_owned())?
-    }
-}
-
 impl Profiles {
-    /// Returns the built-in and installed-plugin account providers.
-    ///
-    /// The built-in Steam provider appears first. A plugin that uses the
-    /// reserved `steam` identifier is omitted.
-    pub fn account_providers(&self) -> Vec<AccountProviderInfo> {
-        providers::list(&self.inner.plugins)
-    }
-
     /// Starts linking an account provider to a profile.
     ///
     /// The returned [`Operation`] must be driven by the caller. It validates
@@ -52,9 +23,9 @@ impl Profiles {
     /// publishes the new [`AccountLink`]. A profile can have at most one link
     /// for each provider.
     ///
-    /// Cancellation is cooperative. Pending interaction requests are cancelled,
-    /// but a provider call already accepted by a plugin may finish in the background
-    /// after the operation is dropped. After the write lock is acquired,
+    /// Cancellation drops the pending provider call, including its interaction.
+    /// An interrupted plugin invocation closes that provider's session.
+    /// After the write lock is acquired,
     /// cancellation is no longer checked; final validation, credential storage,
     /// snapshot persistence, and any rollback run to completion.
     ///
@@ -63,7 +34,7 @@ impl Profiles {
     /// When driven, the operation returns [`ProfileError::NotFound`] for an
     /// unknown profile, [`ProfileError::AccountAlreadyLinked`] for a duplicate
     /// provider, or [`ProfileError::Provider`] when the provider rejects the
-    /// request. Plugin loading, credential storage, persistence, cancellation,
+    /// request or is not registered. Credential storage, persistence, cancellation,
     /// and rollback failures are also returned. Cancellation is reported as
     /// [`Error::Cancelled`] only before the write-lock boundary described above.
     pub fn link_account(
@@ -75,22 +46,21 @@ impl Profiles {
         let profiles = self.clone();
         Operation::new(move |_, cancellation| async move {
             validate_account_link(&profiles.state(), profile_id, &provider_id)?;
-            let provider = cancellation
-                .run_until_cancelled(providers::get(&profiles.inner.plugins, &provider_id))
+            let provider = profiles
+                .inner
+                .providers
+                .read()
+                .unwrap()
+                .get(&provider_id)
+                .cloned()
+                .ok_or_else(|| ProfileError::Provider {
+                    provider: provider_id.clone(),
+                    message: "account provider is not registered".into(),
+                })?;
+            let linked = cancellation
+                .run_until_cancelled(provider.link_account(interaction))
                 .await
-                .ok_or(Error::Cancelled)??;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            let linked = provider
-                .link_account(Arc::new(CancellableInteraction {
-                    inner: interaction,
-                    cancellation: cancellation.clone(),
-                }))
-                .await;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
+                .ok_or(Error::Cancelled)?;
             let linked = linked.map_err(|message| ProfileError::Provider {
                 provider: provider_id,
                 message,

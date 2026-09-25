@@ -1,23 +1,14 @@
-//! Provider discovery and account-link abstraction.
-//!
-//! The built-in Steam provider is combined with plugins that export the
-//! account-provider interface. Persisted profile state receives provider metadata
-//! and the public account identity, never the returned credential.
+//! Account providers and their explicitly registered capabilities.
+
 mod steam;
 
-use crate::error::Result;
-use crate::plugins::PluginInterface;
 use async_trait::async_trait;
-use bottles_plugin_host::{LoadedPlugin, Plugins};
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
-pub use bottles_plugin_host::AccountLinkInteraction;
-pub(super) use bottles_plugin_host::LinkedAccount;
+use super::Profiles;
 
 /// Display metadata for an account provider available to [`Profiles`].
-///
-/// [`Profiles`]: super::Profiles
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AccountProviderInfo {
     /// Stable provider identifier used for linking and persistence.
@@ -26,11 +17,35 @@ pub struct AccountProviderInfo {
     pub name: Cow<'static, str>,
 }
 
-pub use bottles_plugin_host::AccountIdentity;
+/// Public identity returned by an account provider.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AccountIdentity {
+    /// Account identifier local to the provider.
+    pub account_id: String,
+    /// Human-readable account name.
+    pub display_name: String,
+}
+
+/// An identified account and its optional private credential.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct LinkedAccount {
+    /// Public account identity saved in profile state.
+    pub identity: AccountIdentity,
+    /// Opaque credential saved separately in the platform credential store.
+    pub credential: Option<Vec<u8>>,
+}
+
+/// Input capability supplied by the caller to one account-link invocation.
+#[async_trait]
+pub trait AccountLinkInteraction: Send + Sync {
+    /// Requests user input for the provider's authentication flow.
+    async fn request_input(&self, url: url::Url, instructions: String) -> Result<String, String>;
+}
 
 /// Supplies provider metadata and the account-identification flow.
+/// Provider identifiers must remain stable while registered.
 #[async_trait]
-pub(super) trait AccountProvider: Send + Sync {
+pub trait AccountProvider: Send + Sync {
     /// Returns stable public metadata for this provider.
     fn metadata(&self) -> AccountProviderInfo;
     /// Runs the provider's account-identification or authentication flow.
@@ -40,50 +55,38 @@ pub(super) trait AccountProvider: Send + Sync {
     ) -> std::result::Result<LinkedAccount, String>;
 }
 
-/// Lists the native provider followed by eligible installed plugins.
-pub(super) fn list(plugins: &Plugins) -> Vec<AccountProviderInfo> {
-    std::iter::once(steam::metadata())
-        .chain(
-            plugins
-                .list()
-                .into_iter()
-                .filter(|plugin| {
-                    plugin.manifest.id != steam::metadata().id
-                        && plugin.exports(PluginInterface::AccountProvider)
-                })
-                .map(|plugin| AccountProviderInfo {
-                    id: plugin.manifest.id,
-                    name: plugin.manifest.name.into(),
-                }),
-        )
-        .collect()
+impl Profiles {
+    /// Registers a provider, replacing any registration with the same identifier.
+    /// Already-running account links retain their original provider.
+    pub fn register_provider(&self, provider: Arc<dyn AccountProvider>) {
+        let id = provider.metadata().id;
+        self.inner.providers.write().unwrap().insert(id, provider);
+    }
+
+    /// Removes a provider from future account-link operations.
+    /// Existing links and already-running operations keep their original state.
+    pub fn remove_provider(&self, provider_id: &str) {
+        self.inner.providers.write().unwrap().remove(provider_id);
+    }
+
+    /// Lists the currently registered account providers in unspecified order.
+    pub fn account_providers(&self) -> Vec<AccountProviderInfo> {
+        let providers = self
+            .inner
+            .providers
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        providers
+            .iter()
+            .map(|provider| provider.metadata())
+            .collect()
+    }
 }
 
-/// Resolves and loads an account provider by identifier.
-///
-/// # Errors
-///
-/// Returns a plugin-host error if a non-native provider cannot be loaded.
-pub(super) async fn get(plugins: &Plugins, id: &str) -> Result<Box<dyn AccountProvider>> {
-    if id == steam::metadata().id {
-        return Ok(Box::new(steam::Steam));
-    }
-    Ok(Box::new(plugins.load(id).await?))
-}
-
-#[async_trait]
-impl AccountProvider for LoadedPlugin {
-    fn metadata(&self) -> AccountProviderInfo {
-        AccountProviderInfo {
-            id: self.info.manifest.id.clone(),
-            name: self.info.manifest.name.clone().into(),
-        }
-    }
-
-    async fn link_account(
-        &self,
-        interaction: Arc<dyn AccountLinkInteraction>,
-    ) -> std::result::Result<LinkedAccount, String> {
-        bottles_plugin_host::storefront::link_account(self, interaction).await
-    }
+pub(super) fn builtins() -> HashMap<String, Arc<dyn AccountProvider>> {
+    let steam: Arc<dyn AccountProvider> = Arc::new(steam::Steam);
+    HashMap::from([(steam.metadata().id, steam)])
 }

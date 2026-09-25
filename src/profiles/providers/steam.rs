@@ -6,9 +6,9 @@
 use async_trait::async_trait;
 use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
-use bottles_plugin_host::AccountIdentity;
-
-use super::{AccountLinkInteraction, AccountProvider, AccountProviderInfo, LinkedAccount};
+use super::{
+    AccountIdentity, AccountLinkInteraction, AccountProvider, AccountProviderInfo, LinkedAccount,
+};
 
 pub(super) fn metadata() -> AccountProviderInfo {
     AccountProviderInfo {
