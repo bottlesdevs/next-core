@@ -2,33 +2,26 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bottles_plugin_host::{Plugin, PluginInfo, Plugins, WasiState};
-use wasmtime::component::{Accessor, HasSelf, Linker, Resource};
+use wasmtime::component::{Accessor, HasSelf, Resource};
 
 use crate::{
     AccountIdentity, AccountLinkInteraction, AccountProvider, AccountProviderInfo, LinkedAccount,
 };
 
 mod bindings {
-    pub type Interaction = std::sync::Arc<dyn crate::AccountLinkInteraction>;
-
     wasmtime::component::bindgen!({
         path: "../next-plugin-api/wit",
         world: "account",
         imports: { default: trappable },
         exports: { default: async | store },
         with: {
-            "bottles:plugin/account-link.interaction": Interaction,
+            "bottles:plugin/account-link":
+                crate::plugin::bottles::plugin::account_link,
         },
     });
 }
 
-use bindings::bottles::plugin::account_link;
-
-/// Adds account imports to the host linker using its WASI state.
-/// Account interaction is granted only by passing a resource to a linking call.
-pub(crate) fn add_to_linker(linker: &mut Linker<WasiState>) -> wasmtime::Result<()> {
-    account_link::add_to_linker::<_, HasSelf<WasiState>>(linker, |state| state)
-}
+use crate::plugin::bottles::plugin::account_link;
 
 impl<T: Send + 'static> account_link::HostInteractionWithStore<T> for HasSelf<WasiState> {
     async fn request_input(
@@ -69,16 +62,10 @@ pub(super) async fn open_account_provider(
     plugins: &Plugins,
     info: &PluginInfo,
 ) -> bottles_plugin_host::Result<PluginAccountProvider> {
-    use wasmtime_wasi::WasiCtxBuilder;
-
-    plugins
-        .load(
-            info,
-            WasiState::new(WasiCtxBuilder::new().build()),
-            add_to_linker,
-            |store, instance| bindings::Account::new(store, instance),
-        )
-        .await
+    crate::plugin::load_plugin(plugins, info, |store, instance| {
+        bindings::Account::new(store, instance)
+    })
+    .await
 }
 
 #[async_trait]

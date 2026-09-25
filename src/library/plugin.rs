@@ -24,15 +24,10 @@ pub(super) async fn open_library_provider(
     plugins: &Plugins,
     info: &PluginInfo,
 ) -> bottles_plugin_host::Result<PluginLibraryProvider> {
-    use wasmtime_wasi::WasiCtxBuilder;
-    plugins
-        .load(
-            info,
-            WasiState::new(WasiCtxBuilder::new().build()),
-            crate::profiles::add_to_linker,
-            |store, instance| bindings::Library::new(store, instance),
-        )
-        .await
+    crate::plugin::load_plugin(plugins, info, |store, instance| {
+        bindings::Library::new(store, instance)
+    })
+    .await
 }
 
 #[async_trait]

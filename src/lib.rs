@@ -12,8 +12,8 @@ pub mod error;
 mod library;
 mod manager;
 mod operation;
-mod plugin_interfaces;
-pub use plugin_interfaces::PluginInterface;
+mod plugin;
+pub use plugin::PluginInterface;
 mod profiles;
 #[cfg(feature = "fvs")]
 mod program;
