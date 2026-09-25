@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bottles_plugin_host::{CompiledPlugin, Plugin, PluginInstance, WasiState};
+use bottles_plugin_host::{Plugin, PluginInfo, Plugins, WasiState};
 use wasmtime::component::{Accessor, HasSelf, Linker, Resource};
-use wasmtime_wasi::WasiCtx;
 
 use crate::{
     AccountIdentity, AccountLinkInteraction, AccountProvider, AccountProviderInfo, LinkedAccount,
@@ -23,15 +22,12 @@ mod bindings {
     });
 }
 
-use bindings::{bottles::plugin::account_link, exports::bottles::plugin::account_provider};
+use bindings::bottles::plugin::account_link;
 
-/// Adds core domain imports to a caller-owned linker using its WASI state.
+/// Adds account imports to the host linker using its WASI state.
 /// Account interaction is granted only by passing a resource to a linking call.
-pub(crate) fn add_to_linker<T: Send + 'static>(
-    linker: &mut Linker<T>,
-    state: fn(&mut T) -> &mut WasiState,
-) -> wasmtime::Result<()> {
-    account_link::add_to_linker::<_, HasSelf<WasiState>>(linker, state)
+pub(crate) fn add_to_linker(linker: &mut Linker<WasiState>) -> wasmtime::Result<()> {
+    account_link::add_to_linker::<_, HasSelf<WasiState>>(linker, |state| state)
 }
 
 impl<T: Send + 'static> account_link::HostInteractionWithStore<T> for HasSelf<WasiState> {
@@ -66,22 +62,18 @@ impl account_link::Host for WasiState {}
 /// A persistent account-provider session driven by its caller.
 /// Clones share guest state; opening another provider creates an independent session.
 /// Poll opening and calls within a caller-owned Tokio runtime with I/O and time enabled.
-pub(super) type PluginAccountProvider = Plugin<WasiState, account_provider::Guest>;
+pub(super) type PluginAccountProvider = Plugin<WasiState, bindings::Account>;
 
-/// Opens an account-provider session with the caller's WASI capabilities.
-/// Runtime errors or dropped active calls close the session permanently.
+/// Opens an independent account-provider session from the installed catalog.
 pub(super) async fn open_account_provider(
-    plugin: Arc<CompiledPlugin>,
-    wasi: WasiCtx,
+    plugins: &Plugins,
+    info: &PluginInfo,
 ) -> bottles_plugin_host::Result<PluginAccountProvider> {
-    let mut linker = Linker::new(plugin.component().engine());
-    bottles_plugin_host::add_to_linker(&mut linker)?;
-    add_to_linker(&mut linker, |state| state)?;
-    let pre = linker.instantiate_pre(plugin.component())?;
-    let indices = account_provider::GuestIndices::new(&pre)?;
-    let mut invocation = PluginInstance::new(&pre, WasiState::new(wasi)).await?;
-    let guest = indices.load(&mut invocation.store, &invocation.instance)?;
-    Ok(Plugin::new(plugin, invocation, guest))
+    plugins
+        .load(info, add_to_linker, |store, instance| {
+            bindings::Account::new(store, instance)
+        })
+        .await
 }
 
 #[async_trait]
@@ -97,17 +89,19 @@ impl AccountProvider for PluginAccountProvider {
         &self,
         interaction: Arc<dyn AccountLinkInteraction>,
     ) -> Result<LinkedAccount, String> {
-        self.call(move |invocation, guest| {
+        self.call(move |store, bindings| {
             Box::pin(async move {
-                let interaction = invocation.store.data_mut().table.push(interaction)?;
+                let interaction = store.data_mut().table.push(interaction)?;
                 let borrowed = Resource::new_borrow(interaction.rep());
-                let result = invocation
-                    .store
+                let result = store
                     .run_concurrent(async move |accessor| {
-                        guest.call_link_account(accessor, borrowed).await
+                        bindings
+                            .bottles_plugin_account_provider()
+                            .call_link_account(accessor, borrowed)
+                            .await
                     })
                     .await??;
-                invocation.store.data_mut().table.delete(interaction)?;
+                store.data_mut().table.delete(interaction)?;
                 Ok(result)
             })
         })

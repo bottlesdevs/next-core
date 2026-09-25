@@ -1,9 +1,5 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
-use bottles_plugin_host::{CompiledPlugin, Plugin, PluginInstance, WasiState};
-use wasmtime::component::Linker;
-use wasmtime_wasi::WasiCtx;
+use bottles_plugin_host::{Plugin, PluginInfo, Plugins, WasiState};
 
 use crate::{
     LibraryEntry, LibraryProvider, Operation,
@@ -18,27 +14,23 @@ mod bindings {
     });
 }
 
-use bindings::exports::bottles::plugin::library_provider;
-
 /// A persistent installed-title provider driven by its caller.
 /// Clones share guest state; opening another provider creates an independent session.
 /// Poll opening and calls within a caller-owned Tokio runtime with I/O and time enabled.
-pub(super) type PluginLibraryProvider = Plugin<WasiState, library_provider::Guest>;
+pub(super) type PluginLibraryProvider = Plugin<WasiState, bindings::Library>;
 
-/// Opens a library-provider session with the caller's WASI capabilities.
-/// Runtime errors or dropped active calls close the session permanently.
+/// Opens an independent library-provider session from the installed catalog.
 pub(super) async fn open_library_provider(
-    plugin: Arc<CompiledPlugin>,
-    wasi: WasiCtx,
+    plugins: &Plugins,
+    info: &PluginInfo,
 ) -> bottles_plugin_host::Result<PluginLibraryProvider> {
-    let mut linker = Linker::new(plugin.component().engine());
-    bottles_plugin_host::add_to_linker(&mut linker)?;
-    crate::profiles::add_plugin_imports(&mut linker, |state| state)?;
-    let pre = linker.instantiate_pre(plugin.component())?;
-    let indices = library_provider::GuestIndices::new(&pre)?;
-    let mut invocation = PluginInstance::new(&pre, WasiState::new(wasi)).await?;
-    let guest = indices.load(&mut invocation.store, &invocation.instance)?;
-    Ok(Plugin::new(plugin, invocation, guest))
+    plugins
+        .load(
+            info,
+            crate::profiles::add_plugin_imports,
+            |store, instance| bindings::Library::new(store, instance),
+        )
+        .await
 }
 
 #[async_trait]
@@ -48,11 +40,15 @@ impl LibraryProvider for PluginLibraryProvider {
     }
 
     async fn list_entries(&self) -> Result<Vec<LibraryEntry>> {
-        self.call(move |invocation, guest| {
+        self.call(move |store, bindings| {
             Box::pin(async move {
-                invocation
-                    .store
-                    .run_concurrent(async move |accessor| guest.call_list_entries(accessor).await)
+                store
+                    .run_concurrent(async move |accessor| {
+                        bindings
+                            .bottles_plugin_library_provider()
+                            .call_list_entries(accessor)
+                            .await
+                    })
                     .await?
             })
         })
@@ -79,12 +75,14 @@ impl LibraryProvider for PluginLibraryProvider {
         let entry_id = entry_id.to_owned();
         Ok(Operation::new(move |_, cancellation| async move {
             cancellation
-                .run_until_cancelled(provider.call(move |invocation, guest| {
+                .run_until_cancelled(provider.call(move |store, bindings| {
                     Box::pin(async move {
-                        invocation
-                            .store
+                        store
                             .run_concurrent(async move |accessor| {
-                                guest.call_launch(accessor, entry_id).await
+                                bindings
+                                    .bottles_plugin_library_provider()
+                                    .call_launch(accessor, entry_id)
+                                    .await
                             })
                             .await?
                     })

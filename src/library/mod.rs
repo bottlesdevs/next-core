@@ -13,7 +13,6 @@ use std::{
 use crate::{Context, Operation, PluginInterface, error::Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use wasmtime_wasi::WasiCtxBuilder;
 
 /// An installed title supplied by a library provider.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -40,9 +39,7 @@ impl Library {
         let plugins = context.plugins();
         for info in plugins.list() {
             if info.exports(PluginInterface::LibraryProvider) {
-                let compiled = plugins.load(&info.manifest.id).await?;
-                let wasi = WasiCtxBuilder::new().build();
-                let provider = plugin::open_library_provider(compiled, wasi).await?;
+                let provider = plugin::open_library_provider(plugins, &info).await?;
                 library.register_provider(Arc::new(provider));
             }
         }

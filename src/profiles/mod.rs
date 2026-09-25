@@ -32,7 +32,6 @@ use std::{
 use tokio::sync::{Mutex, watch};
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
-use wasmtime_wasi::WasiCtxBuilder;
 
 struct ProfilesInner {
     providers: RwLock<HashMap<String, Arc<dyn AccountProvider>>>,
@@ -150,9 +149,7 @@ impl Profiles {
         let plugins = context.plugins();
         for info in plugins.list() {
             if info.exports(PluginInterface::AccountProvider) {
-                let compiled = plugins.load(&info.manifest.id).await?;
-                let wasi = WasiCtxBuilder::new().build();
-                let provider = plugin::open_account_provider(compiled, wasi).await?;
+                let provider = plugin::open_account_provider(plugins, &info).await?;
                 profiles.register_provider(Arc::new(provider));
             }
         }
