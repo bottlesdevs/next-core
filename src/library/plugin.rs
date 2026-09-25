@@ -25,11 +25,9 @@ pub(super) async fn open_library_provider(
     info: &PluginInfo,
 ) -> bottles_plugin_host::Result<PluginLibraryProvider> {
     plugins
-        .load(
-            info,
-            crate::profiles::add_plugin_imports,
-            |store, instance| bindings::Library::new(store, instance),
-        )
+        .load(info, crate::profiles::add_to_linker, |store, instance| {
+            bindings::Library::new(store, instance)
+        })
         .await
 }
 
@@ -40,16 +38,12 @@ impl LibraryProvider for PluginLibraryProvider {
     }
 
     async fn list_entries(&self) -> Result<Vec<LibraryEntry>> {
-        self.call(move |store, bindings| {
+        self.call(move |accessor, bindings| {
             Box::pin(async move {
-                store
-                    .run_concurrent(async move |accessor| {
-                        bindings
-                            .bottles_plugin_library_provider()
-                            .call_list_entries(accessor)
-                            .await
-                    })
-                    .await?
+                bindings
+                    .bottles_plugin_library_provider()
+                    .call_list_entries(accessor)
+                    .await
             })
         })
         .await
@@ -75,16 +69,12 @@ impl LibraryProvider for PluginLibraryProvider {
         let entry_id = entry_id.to_owned();
         Ok(Operation::new(move |_, cancellation| async move {
             cancellation
-                .run_until_cancelled(provider.call(move |store, bindings| {
+                .run_until_cancelled(provider.call(move |accessor, bindings| {
                     Box::pin(async move {
-                        store
-                            .run_concurrent(async move |accessor| {
-                                bindings
-                                    .bottles_plugin_library_provider()
-                                    .call_launch(accessor, entry_id)
-                                    .await
-                            })
-                            .await?
+                        bindings
+                            .bottles_plugin_library_provider()
+                            .call_launch(accessor, entry_id)
+                            .await
                     })
                 }))
                 .await

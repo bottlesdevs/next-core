@@ -13,7 +13,7 @@ mod plugin;
 mod providers;
 mod state;
 
-pub(crate) use plugin::add_to_linker as add_plugin_imports;
+pub(crate) use plugin::add_to_linker;
 
 pub use error::ProfileError;
 pub use providers::{
