@@ -9,8 +9,11 @@
 mod accounts;
 mod credentials;
 mod error;
+mod plugin;
 mod providers;
 mod state;
+
+pub(crate) use plugin::add_to_linker as add_plugin_imports;
 
 pub use error::ProfileError;
 pub use providers::{
@@ -18,7 +21,7 @@ pub use providers::{
 };
 pub use state::{AccountLink, Profile, ProfilesState};
 
-use crate::{Directories, error::Result};
+use crate::{Context, PluginInterface, error::Result};
 use futures_core::Stream;
 use std::{
     collections::HashMap,
@@ -29,6 +32,7 @@ use std::{
 use tokio::sync::{Mutex, watch};
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
+use wasmtime_wasi::WasiCtxBuilder;
 
 struct ProfilesInner {
     providers: RwLock<HashMap<String, Arc<dyn AccountProvider>>>,
@@ -112,14 +116,15 @@ pub struct Profiles {
 }
 
 impl Profiles {
-    /// Loads persisted profiles or creates the initial `Player` profile.
+    /// Loads persisted profiles and registers built-in and installed account providers.
+    /// Creates the initial `Player` profile when no persisted state exists.
     ///
     /// # Errors
     ///
-    /// Returns an error if state cannot be loaded or initialized, or
+    /// Returns an error if state or an account plugin cannot be loaded or initialized, or
     /// [`ProfileError::NotFound`] if the persisted selection is invalid.
-    pub(crate) async fn load(directories: &Directories) -> Result<Self> {
-        let path = directories.profiles();
+    pub(crate) async fn load(context: Context) -> Result<Self> {
+        let path = context.directories().profiles();
         let state = match next_config::load(&path).await {
             Ok(state) => state,
             Err(next_config::error::Error::Io(error))
@@ -141,7 +146,17 @@ impl Profiles {
             published,
             write_lock: Mutex::new(()),
         });
-        Ok(Self { inner })
+        let profiles = Self { inner };
+        let plugins = context.plugins();
+        for info in plugins.list() {
+            if info.exports(PluginInterface::AccountProvider) {
+                let compiled = plugins.load(&info.manifest.id).await?;
+                let wasi = WasiCtxBuilder::new().build();
+                let provider = plugin::open_account_provider(compiled, wasi).await?;
+                profiles.register_provider(Arc::new(provider));
+            }
+        }
+        Ok(profiles)
     }
 
     /// Returns the current profile collection and selection in one snapshot.

@@ -27,7 +27,7 @@ use bindings::{bottles::plugin::account_link, exports::bottles::plugin::account_
 
 /// Adds core domain imports to a caller-owned linker using its WASI state.
 /// Account interaction is granted only by passing a resource to a linking call.
-pub fn add_to_linker<T: Send + 'static>(
+pub(crate) fn add_to_linker<T: Send + 'static>(
     linker: &mut Linker<T>,
     state: fn(&mut T) -> &mut WasiState,
 ) -> wasmtime::Result<()> {
@@ -66,11 +66,11 @@ impl account_link::Host for WasiState {}
 /// A persistent account-provider session driven by its caller.
 /// Clones share guest state; opening another provider creates an independent session.
 /// Poll opening and calls within a caller-owned Tokio runtime with I/O and time enabled.
-pub type PluginAccountProvider = Plugin<WasiState, account_provider::Guest>;
+pub(super) type PluginAccountProvider = Plugin<WasiState, account_provider::Guest>;
 
 /// Opens an account-provider session with the caller's WASI capabilities.
 /// Runtime errors or dropped active calls close the session permanently.
-pub async fn open_account_provider(
+pub(super) async fn open_account_provider(
     plugin: Arc<CompiledPlugin>,
     wasi: WasiCtx,
 ) -> bottles_plugin_host::Result<PluginAccountProvider> {

@@ -1,6 +1,7 @@
 //! Shared services used by one core instance.
 
 use crate::{Addons, Directories, error::Result};
+use bottles_plugin_host::Plugins;
 use download_manager::manager::{DownloadManager, DownloadManagerConfig};
 #[cfg(feature = "fvs")]
 use fvs_rs::Fvs2dClient;
@@ -10,6 +11,7 @@ use url::Url;
 
 struct ContextInner {
     directories: Directories,
+    plugins: Arc<Plugins>,
     http_client: Arc<dyn HttpClient>,
     downloader: Arc<DownloadManager>,
     addons: Addons,
@@ -29,6 +31,7 @@ impl Context {
     /// addon catalog cannot be loaded from storage.
     pub(crate) async fn new(
         directories: Directories,
+        plugins: Arc<Plugins>,
         http_client: Arc<dyn HttpClient>,
         #[cfg(feature = "fvs")] fvs: Arc<Fvs2dClient>,
         component_catalog: Option<Url>,
@@ -47,6 +50,7 @@ impl Context {
         .await?;
         Ok(Self(Arc::new(ContextInner {
             directories,
+            plugins,
             http_client,
             downloader,
             addons,
@@ -85,8 +89,10 @@ impl Context {
                 tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy(),
             ))
         };
+        let plugins = Plugins::open(directories.plugins(), directories.staging()).await?;
         Self::new(
             directories,
+            plugins,
             client,
             #[cfg(feature = "fvs")]
             fvs,
@@ -102,6 +108,10 @@ impl Context {
 
     pub(crate) fn directories(&self) -> &Directories {
         &self.0.directories
+    }
+
+    pub(crate) fn plugins(&self) -> &Plugins {
+        &self.0.plugins
     }
 
     pub(crate) fn downloader(&self) -> &DownloadManager {

@@ -3,14 +3,17 @@
 //! [`Library`] is an explicitly refreshed view: each call to [`Library::list`]
 //! asks every currently registered [`LibraryProvider`] for its latest entries.
 
+mod plugin;
+
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
 };
 
-use crate::{Operation, error::Result};
+use crate::{Context, Operation, PluginInterface, error::Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use wasmtime_wasi::WasiCtxBuilder;
 
 /// An installed title supplied by a library provider.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -31,6 +34,21 @@ pub struct Library {
 }
 
 impl Library {
+    /// Opens an independent provider session for each installed library plugin.
+    pub(crate) async fn load(context: Context) -> Result<Self> {
+        let library = Self::default();
+        let plugins = context.plugins();
+        for info in plugins.list() {
+            if info.exports(PluginInterface::LibraryProvider) {
+                let compiled = plugins.load(&info.manifest.id).await?;
+                let wasi = WasiCtxBuilder::new().build();
+                let provider = plugin::open_library_provider(compiled, wasi).await?;
+                library.register_provider(Arc::new(provider));
+            }
+        }
+        Ok(library)
+    }
+
     /// Registers a provider, replacing the provider with the same [`LibraryProvider::id`].
     ///
     /// Previously returned [`LibraryItem`] values retain their original provider

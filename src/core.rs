@@ -7,6 +7,7 @@ use crate::{Program, environment::VirgoManager};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use bottles_plugin_host::Plugins;
 use http_client::{HttpClient, ReqwestClient};
 use url::Url;
 
@@ -51,28 +52,35 @@ impl Bottles {
     ///
     /// This resolves application directories, loads profiles, cached addon
     /// catalogs, installed addons, and environment registries, then registers
-    /// native library and account providers. With the `fvs` feature, it connects
-    /// to or starts `fvs2d` before loading Virgo-backed environments.
+    /// native and installed plugin providers. Plugin compilation
+    /// and instantiation finish within this future. Poll it in a
+    /// caller-owned Tokio runtime with I/O and time enabled. Catalog changes do
+    /// not update this core's registrations; reopening creates fresh sessions.
+    /// With the `fvs` feature, it connects to or starts `fvs2d` before loading
+    /// Virgo-backed environments.
     ///
     /// # Errors
     ///
     /// Returns an error if application directories are unavailable; persisted
     /// profiles, addons, or environments cannot be read or validated; the HTTP
     /// or download service cannot initialize; an FVS executable cannot be
-    /// resolved or contacted.
+    /// resolved or contacted; or a plugin cannot compile or instantiate.
     ///
     /// # Examples
     ///
     /// ```no_run
-    /// # use bottles_core::{Bottles, Config};
+    /// # use bottles_core::{Bottles, Config, Directories};
+    /// # use bottles_plugin_host::Plugins;
     /// # async fn example() -> Result<(), bottles_core::error::Error> {
-    /// let core = Bottles::open(Config::default()).await?;
+    /// let directories = Directories::new().await?;
+    /// let plugins = Plugins::open(directories.plugins(), directories.staging()).await?;
+    /// let core = Bottles::open(Config::default(), plugins.clone()).await?;
     /// assert!(!core.profiles().selected().name().is_empty());
     /// core.shutdown().await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn open(config: Config) -> Result<Self> {
+    pub async fn open(config: Config, plugins: Arc<Plugins>) -> Result<Self> {
         let Config {
             #[cfg(feature = "fvs")]
             fvs2d,
@@ -80,7 +88,6 @@ impl Bottles {
             dependency_catalog,
         } = config;
         let directories = Directories::new().await?;
-        let profiles = Profiles::load(&directories).await?;
         let http_client: Arc<dyn HttpClient> =
             Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
         #[cfg(feature = "fvs")]
@@ -93,6 +100,7 @@ impl Bottles {
         );
         let context = Context::new(
             directories,
+            plugins,
             http_client,
             #[cfg(feature = "fvs")]
             fvs,
@@ -100,6 +108,8 @@ impl Bottles {
             dependency_catalog,
         )
         .await?;
+        let profiles = Profiles::load(context.clone()).await?;
+        let library = Library::load(context.clone()).await?;
         #[cfg(feature = "fvs")]
         let virgo = Arc::new(VirgoManager::new(context.clone()));
         let bottles = Manager::<Bottle>::load(
@@ -113,7 +123,6 @@ impl Bottles {
         let programs =
             Manager::<Program>::load(context.directories().programs(), context.clone(), virgo)
                 .await?;
-        let library = Library::default();
         library.register_provider(Arc::new(bottles.clone()));
         #[cfg(feature = "fvs")]
         library.register_provider(Arc::new(programs.clone()));
