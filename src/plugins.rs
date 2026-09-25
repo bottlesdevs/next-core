@@ -8,8 +8,8 @@
 mod account;
 mod library;
 
-pub use account::{PluginAccountProvider, add_to_linker};
-pub use library::PluginLibraryProvider;
+pub use account::{PluginAccountProvider, add_to_linker, open_account_provider};
+pub use library::{PluginLibraryProvider, open_library_provider};
 
 mod interfaces {
     include!(concat!(env!("OUT_DIR"), "/plugin_interfaces.rs"));

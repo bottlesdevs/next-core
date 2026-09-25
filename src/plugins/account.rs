@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bottles_plugin_host::{CompiledPlugin, Invocation, Session, WasiState};
+use bottles_plugin_host::{CompiledPlugin, Invocation, Plugin, WasiState};
 use wasmtime::component::{Accessor, HasSelf, Linker, Resource};
 use wasmtime_wasi::WasiCtx;
 
@@ -66,69 +66,59 @@ impl account_link::Host for WasiState {}
 /// A persistent account-provider session driven by its caller.
 /// Clones share guest state; opening another provider creates an independent session.
 /// Poll opening and calls within a caller-owned Tokio runtime with I/O and time enabled.
-#[derive(Clone)]
-pub struct PluginAccountProvider {
-    metadata: AccountProviderInfo,
-    guest: account_provider::Guest,
-    session: Arc<Session<WasiState>>,
-}
+pub type PluginAccountProvider = Plugin<WasiState, account_provider::Guest>;
 
-impl PluginAccountProvider {
-    /// Opens an account-provider session with the caller's WASI capabilities.
-    /// Runtime errors or dropped active calls close the session permanently.
-    pub async fn open(plugin: &CompiledPlugin, wasi: WasiCtx) -> bottles_plugin_host::Result<Self> {
-        let mut linker = Linker::new(plugin.component().engine());
-        bottles_plugin_host::add_to_linker(&mut linker)?;
-        add_to_linker(&mut linker, |state| state)?;
-        let pre = linker.instantiate_pre(plugin.component())?;
-        let indices = account_provider::GuestIndices::new(&pre)?;
-        let mut invocation = Invocation::new(&pre, WasiState::new(wasi)).await?;
-        let guest = indices.load(&mut invocation.store, &invocation.instance)?;
-        Ok(Self {
-            metadata: AccountProviderInfo {
-                id: plugin.info.manifest.id.clone(),
-                name: plugin.info.manifest.name.clone().into(),
-            },
-            guest,
-            session: Arc::new(Session::new(invocation)),
-        })
-    }
+/// Opens an account-provider session with the caller's WASI capabilities.
+/// Runtime errors or dropped active calls close the session permanently.
+pub async fn open_account_provider(
+    plugin: Arc<CompiledPlugin>,
+    wasi: WasiCtx,
+) -> bottles_plugin_host::Result<PluginAccountProvider> {
+    let mut linker = Linker::new(plugin.component().engine());
+    bottles_plugin_host::add_to_linker(&mut linker)?;
+    add_to_linker(&mut linker, |state| state)?;
+    let pre = linker.instantiate_pre(plugin.component())?;
+    let indices = account_provider::GuestIndices::new(&pre)?;
+    let mut invocation = Invocation::new(&pre, WasiState::new(wasi)).await?;
+    let guest = indices.load(&mut invocation.store, &invocation.instance)?;
+    Ok(Plugin::new(plugin, invocation, guest))
 }
 
 #[async_trait]
 impl AccountProvider for PluginAccountProvider {
     fn metadata(&self) -> AccountProviderInfo {
-        self.metadata.clone()
+        AccountProviderInfo {
+            id: self.info().manifest.id.clone(),
+            name: self.info().manifest.name.clone().into(),
+        }
     }
 
     async fn link_account(
         &self,
         interaction: Arc<dyn AccountLinkInteraction>,
     ) -> Result<LinkedAccount, String> {
-        let guest = self.guest.clone();
-        self.session
-            .call(move |invocation| {
-                Box::pin(async move {
-                    let interaction = invocation.store.data_mut().table.push(interaction)?;
-                    let borrowed = Resource::new_borrow(interaction.rep());
-                    let result = invocation
-                        .store
-                        .run_concurrent(async move |accessor| {
-                            guest.call_link_account(accessor, borrowed).await
-                        })
-                        .await??;
-                    invocation.store.data_mut().table.delete(interaction)?;
-                    Ok(result)
-                })
+        self.call(move |invocation, guest| {
+            Box::pin(async move {
+                let interaction = invocation.store.data_mut().table.push(interaction)?;
+                let borrowed = Resource::new_borrow(interaction.rep());
+                let result = invocation
+                    .store
+                    .run_concurrent(async move |accessor| {
+                        guest.call_link_account(accessor, borrowed).await
+                    })
+                    .await??;
+                invocation.store.data_mut().table.delete(interaction)?;
+                Ok(result)
             })
-            .await
-            .map_err(|error| error.to_string())?
-            .map(|linked| LinkedAccount {
-                identity: AccountIdentity {
-                    account_id: linked.identity.account_id,
-                    display_name: linked.identity.display_name,
-                },
-                credential: linked.credential,
-            })
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map(|linked| LinkedAccount {
+            identity: AccountIdentity {
+                account_id: linked.identity.account_id,
+                display_name: linked.identity.display_name,
+            },
+            credential: linked.credential,
+        })
     }
 }
