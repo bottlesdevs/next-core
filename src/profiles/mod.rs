@@ -13,19 +13,25 @@ mod providers;
 mod state;
 
 pub use error::ProfileError;
-pub use providers::{AccountIdentity, AccountLinkInteraction, AccountProviderInfo};
+pub use providers::{
+    AccountIdentity, AccountLinkInteraction, AccountProvider, AccountProviderInfo, LinkedAccount,
+};
 pub use state::{AccountLink, Profile, ProfilesState};
 
 use crate::{Directories, error::Result};
-use bottles_plugin_host::Plugins;
 use futures_core::Stream;
-use std::{io, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    io,
+    path::PathBuf,
+    sync::{Arc, RwLock},
+};
 use tokio::sync::{Mutex, watch};
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
 struct ProfilesInner {
-    plugins: Arc<Plugins>,
+    providers: RwLock<HashMap<String, Arc<dyn AccountProvider>>>,
     path: PathBuf,
     published: watch::Sender<Arc<ProfilesState>>,
     write_lock: Mutex<()>,
@@ -112,7 +118,7 @@ impl Profiles {
     ///
     /// Returns an error if state cannot be loaded or initialized, or
     /// [`ProfileError::NotFound`] if the persisted selection is invalid.
-    pub(crate) async fn load(directories: &Directories, plugins: Arc<Plugins>) -> Result<Self> {
+    pub(crate) async fn load(directories: &Directories) -> Result<Self> {
         let path = directories.profiles();
         let state = match next_config::load(&path).await {
             Ok(state) => state,
@@ -130,7 +136,7 @@ impl Profiles {
         }
         let (published, _) = watch::channel(Arc::new(state));
         let inner = Arc::new(ProfilesInner {
-            plugins,
+            providers: RwLock::new(providers::builtins()),
             path,
             published,
             write_lock: Mutex::new(()),

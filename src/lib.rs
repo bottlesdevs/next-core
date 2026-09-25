@@ -42,8 +42,8 @@ pub use library::{Library, LibraryEntry, LibraryItem, LibraryProvider};
 pub use manager::Manager;
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use profiles::{
-    AccountIdentity, AccountLink, AccountLinkInteraction, AccountProviderInfo, Profile,
-    ProfileError, Profiles, ProfilesState,
+    AccountIdentity, AccountLink, AccountLinkInteraction, AccountProvider, AccountProviderInfo,
+    LinkedAccount, Profile, ProfileError, Profiles, ProfilesState,
 };
 pub use proto::{DllOverride, DllOverrideMode, Process, RegistryHive};
 pub use utils::directories::Directories;

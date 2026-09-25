@@ -6,7 +6,7 @@ definitions, user profiles, and launchable library entries.
 
 The main entry point is [`Bottles`]. Opening it resolves the application's data
 directories, validates persisted state, initializes addon and environment
-registries, and loads plugin-backed library providers. Long-running changes
+registries, and registers native library and account providers. Long-running changes
 return an [`Operation`]: a lazy future with progress reporting and cooperative
 cancellation.
 
@@ -14,17 +14,14 @@ cancellation.
 
 A complete application opens the core once, keeps it alive while managers and
 operations are in use, and shuts down its background download service before
-exiting. Opening performs filesystem and plugin I/O and, with `fvs` enabled,
+exiting. Opening performs filesystem I/O and, with `fvs` enabled,
 may start an `fvs2d` process:
 
 ```rust,no_run
-use std::sync::Arc;
-
 use bottles_core::{Bottles, Config};
-use bottles_plugin_host::Plugins;
 
-# async fn run(plugins: Arc<Plugins>) -> Result<(), bottles_core::error::Error> {
-let core = Bottles::open(Config::default(), plugins).await?;
+# async fn run() -> Result<(), bottles_core::error::Error> {
+let core = Bottles::open(Config::default()).await?;
 
 for bottle in core.bottles().list() {
     println!("{}", bottle.state()?.name());
@@ -50,6 +47,12 @@ core.shutdown().await?;
 - [`Library`] combines launchable entries from bottles, standalone programs,
   and plugins.
 - [`Profiles`] stores application profiles and their linked external accounts.
+
+Applications explicitly open plugin sessions through [`plugins::PluginLibraryProvider`]
+and [`plugins::PluginAccountProvider`] with their chosen WASI capabilities, then
+register them with [`Library::register_provider`] or [`Profiles::register_provider`].
+Reloading or uninstalling a package does not replace an existing session; the
+application opens and registers a replacement when needed.
 
 ## Operations and cancellation
 

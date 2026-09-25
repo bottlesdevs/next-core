@@ -3,8 +3,6 @@
 #[cfg(feature = "fvs")]
 use crate::{Program, environment::VirgoManager};
 
-use crate::plugins::PluginInterface;
-use bottles_plugin_host::Plugins;
 #[cfg(feature = "fvs")]
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -53,7 +51,7 @@ impl Bottles {
     ///
     /// This resolves application directories, loads profiles, cached addon
     /// catalogs, installed addons, and environment registries, then registers
-    /// native and plugin library providers. With the `fvs` feature, it connects
+    /// native library and account providers. With the `fvs` feature, it connects
     /// to or starts `fvs2d` before loading Virgo-backed environments.
     ///
     /// # Errors
@@ -61,22 +59,20 @@ impl Bottles {
     /// Returns an error if application directories are unavailable; persisted
     /// profiles, addons, or environments cannot be read or validated; the HTTP
     /// or download service cannot initialize; an FVS executable cannot be
-    /// resolved or contacted; or an exported plugin provider cannot be loaded.
+    /// resolved or contacted.
     ///
     /// # Examples
     ///
     /// ```no_run
-    /// # use std::sync::Arc;
     /// # use bottles_core::{Bottles, Config};
-    /// # use bottles_plugin_host::Plugins;
-    /// # async fn example(plugins: Arc<Plugins>) -> Result<(), bottles_core::error::Error> {
-    /// let core = Bottles::open(Config::default(), plugins).await?;
+    /// # async fn example() -> Result<(), bottles_core::error::Error> {
+    /// let core = Bottles::open(Config::default()).await?;
     /// assert!(!core.profiles().selected().name().is_empty());
     /// core.shutdown().await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn open(config: Config, plugins: Arc<Plugins>) -> Result<Self> {
+    pub async fn open(config: Config) -> Result<Self> {
         let Config {
             #[cfg(feature = "fvs")]
             fvs2d,
@@ -84,7 +80,7 @@ impl Bottles {
             dependency_catalog,
         } = config;
         let directories = Directories::new().await?;
-        let profiles = Profiles::load(&directories, plugins.clone()).await?;
+        let profiles = Profiles::load(&directories).await?;
         let http_client: Arc<dyn HttpClient> =
             Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
         #[cfg(feature = "fvs")]
@@ -121,12 +117,6 @@ impl Bottles {
         library.register_provider(Arc::new(bottles.clone()));
         #[cfg(feature = "fvs")]
         library.register_provider(Arc::new(programs.clone()));
-        for plugin in plugins.list() {
-            if plugin.exports(PluginInterface::LibraryProvider) {
-                library.register_provider(Arc::new(plugins.load(&plugin.manifest.id).await?));
-            }
-        }
-
         Ok(Self {
             context,
             bottles,

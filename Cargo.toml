@@ -52,6 +52,8 @@ strum.workspace = true
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde", "v5"] }
 keyring.workspace = true
+wasmtime = { version = "49", default-features = false, features = ["async", "component-model", "component-model-async", "cranelift"] }
+wasmtime-wasi = { version = "49", default-features = false, features = ["p2"] }
 
 [build-dependencies]
 heck = "0.5"
