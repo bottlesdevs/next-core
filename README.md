@@ -6,7 +6,7 @@ definitions, user profiles, and launchable library entries.
 
 The main entry point is [`Bottles`]. Opening it resolves the application's data
 directories, validates persisted state, initializes addon and environment
-registries, and registers native library and account providers. Long-running changes
+registries, and registers native and installed plugin providers. Long-running changes
 return an [`Operation`]: a lazy future with progress reporting and cooperative
 cancellation.
 
@@ -18,10 +18,13 @@ exiting. Opening performs filesystem I/O and, with `fvs` enabled,
 may start an `fvs2d` process:
 
 ```rust,no_run
-use bottles_core::{Bottles, Config};
+use bottles_core::{Bottles, Config, Directories};
+use bottles_plugin_host::Plugins;
 
 # async fn run() -> Result<(), bottles_core::error::Error> {
-let core = Bottles::open(Config::default()).await?;
+let directories = Directories::new().await?;
+let plugins = Plugins::open(directories.plugins(), directories.staging()).await?;
+let core = Bottles::open(Config::default(), plugins.clone()).await?;
 
 for bottle in core.bottles().list() {
     println!("{}", bottle.state()?.name());
@@ -48,11 +51,10 @@ core.shutdown().await?;
   and plugins.
 - [`Profiles`] stores application profiles and their linked external accounts.
 
-Applications explicitly open plugin sessions through [`plugins::open_library_provider`]
-and [`plugins::open_account_provider`] with their chosen WASI capabilities, then
-register them with [`Library::register_provider`] or [`Profiles::register_provider`].
-Reloading or uninstalling a package does not replace an existing session; the
-application opens and registers a replacement when needed.
+[`Bottles::open`] automatically loads installed plugins and registers their account
+and library providers, creating WASI contexts internally for independent sessions.
+Catalog changes do not replace existing sessions; reopening core loads the current
+catalog.
 Plugin sessions use WASI P3; poll their futures in a caller-owned Tokio runtime
 with I/O and time enabled. The core does not create an executor or spawn plugin calls.
 

@@ -23,17 +23,17 @@ use bindings::exports::bottles::plugin::library_provider;
 /// A persistent installed-title provider driven by its caller.
 /// Clones share guest state; opening another provider creates an independent session.
 /// Poll opening and calls within a caller-owned Tokio runtime with I/O and time enabled.
-pub type PluginLibraryProvider = Plugin<WasiState, library_provider::Guest>;
+pub(super) type PluginLibraryProvider = Plugin<WasiState, library_provider::Guest>;
 
 /// Opens a library-provider session with the caller's WASI capabilities.
 /// Runtime errors or dropped active calls close the session permanently.
-pub async fn open_library_provider(
+pub(super) async fn open_library_provider(
     plugin: Arc<CompiledPlugin>,
     wasi: WasiCtx,
 ) -> bottles_plugin_host::Result<PluginLibraryProvider> {
     let mut linker = Linker::new(plugin.component().engine());
     bottles_plugin_host::add_to_linker(&mut linker)?;
-    super::add_to_linker(&mut linker, |state| state)?;
+    crate::profiles::add_plugin_imports(&mut linker, |state| state)?;
     let pre = linker.instantiate_pre(plugin.component())?;
     let indices = library_provider::GuestIndices::new(&pre)?;
     let mut invocation = PluginInstance::new(&pre, WasiState::new(wasi)).await?;
