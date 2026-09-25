@@ -14,7 +14,7 @@ mod bindings {
     wasmtime::component::bindgen!({
         path: "../next-plugin-api/wit",
         world: "library",
-        exports: { default: async },
+        exports: { default: async | store },
     });
 }
 
@@ -22,6 +22,7 @@ use bindings::exports::bottles::plugin::library_provider;
 
 /// A persistent installed-title provider driven by its caller.
 /// Clones share guest state; opening another provider creates an independent session.
+/// Poll opening and calls within a caller-owned Tokio runtime with I/O and time enabled.
 #[derive(Clone)]
 pub struct PluginLibraryProvider {
     id: String,
@@ -58,7 +59,14 @@ impl LibraryProvider for PluginLibraryProvider {
         let guest = self.guest.clone();
         self.session
             .call(move |invocation| {
-                Box::pin(async move { guest.call_list_entries(&mut invocation.store).await })
+                Box::pin(async move {
+                    invocation
+                        .store
+                        .run_concurrent(async move |accessor| {
+                            guest.call_list_entries(accessor).await
+                        })
+                        .await?
+                })
             })
             .await
             .map_err(|error| error.to_string())
@@ -85,9 +93,14 @@ impl LibraryProvider for PluginLibraryProvider {
             let guest = provider.guest;
             cancellation
                 .run_until_cancelled(provider.session.call(move |invocation| {
-                    Box::pin(
-                        async move { guest.call_launch(&mut invocation.store, &entry_id).await },
-                    )
+                    Box::pin(async move {
+                        invocation
+                            .store
+                            .run_concurrent(async move |accessor| {
+                                guest.call_launch(accessor, entry_id).await
+                            })
+                            .await?
+                    })
                 }))
                 .await
                 .ok_or(Error::Cancelled)?

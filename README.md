@@ -53,6 +53,8 @@ and [`plugins::PluginAccountProvider`] with their chosen WASI capabilities, then
 register them with [`Library::register_provider`] or [`Profiles::register_provider`].
 Reloading or uninstalling a package does not replace an existing session; the
 application opens and registers a replacement when needed.
+Plugin sessions use WASI P3; poll their futures in a caller-owned Tokio runtime
+with I/O and time enabled. The core does not create an executor or spawn plugin calls.
 
 ## Operations and cancellation
 

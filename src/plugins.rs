@@ -3,6 +3,7 @@
 //! Callers open persistent providers with explicit WASI capabilities and register
 //! them with [`crate::Library`] or [`crate::Profiles`]. Catalog changes do not
 //! replace existing sessions; callers open and register replacements explicitly.
+//! Plugin futures require the caller's Tokio runtime with I/O and time enabled.
 
 mod account;
 mod library;
