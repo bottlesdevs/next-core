@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bottles_plugin_host::{CompiledPlugin, Invocation, Session, WasiState};
-use wasmtime::component::{HasSelf, Linker, Resource};
+use wasmtime::component::{Accessor, HasSelf, Linker, Resource};
 use wasmtime_wasi::WasiCtx;
 
 use crate::{
@@ -15,8 +15,8 @@ mod bindings {
     wasmtime::component::bindgen!({
         path: "../next-plugin-api/wit",
         world: "account",
-        imports: { default: async | trappable },
-        exports: { default: async },
+        imports: { default: trappable },
+        exports: { default: async | store },
         with: {
             "bottles:plugin/account-link.interaction": Interaction,
         },
@@ -34,22 +34,25 @@ pub fn add_to_linker<T: Send + 'static>(
     account_link::add_to_linker::<_, HasSelf<WasiState>>(linker, state)
 }
 
-impl account_link::HostInteraction for WasiState {
+impl<T: Send + 'static> account_link::HostInteractionWithStore<T> for HasSelf<WasiState> {
     async fn request_input(
-        &mut self,
+        accessor: &Accessor<T, Self>,
         interaction: Resource<Arc<dyn AccountLinkInteraction>>,
         url: String,
         instructions: String,
     ) -> wasmtime::Result<Result<String, String>> {
-        let interaction = self.table.get(&interaction)?.clone();
+        let interaction =
+            accessor.with(|mut access| access.get().table.get(&interaction).cloned())?;
         let url = match url::Url::parse(&url) {
             Ok(url) => url,
             Err(error) => return Ok(Err(error.to_string())),
         };
         Ok(interaction.request_input(url, instructions).await)
     }
+}
 
-    async fn drop(
+impl account_link::HostInteraction for WasiState {
+    fn drop(
         &mut self,
         interaction: Resource<Arc<dyn AccountLinkInteraction>>,
     ) -> wasmtime::Result<()> {
@@ -62,6 +65,7 @@ impl account_link::Host for WasiState {}
 
 /// A persistent account-provider session driven by its caller.
 /// Clones share guest state; opening another provider creates an independent session.
+/// Poll opening and calls within a caller-owned Tokio runtime with I/O and time enabled.
 #[derive(Clone)]
 pub struct PluginAccountProvider {
     metadata: AccountProviderInfo,
@@ -107,9 +111,12 @@ impl AccountProvider for PluginAccountProvider {
                 Box::pin(async move {
                     let interaction = invocation.store.data_mut().table.push(interaction)?;
                     let borrowed = Resource::new_borrow(interaction.rep());
-                    let result = guest
-                        .call_link_account(&mut invocation.store, borrowed)
-                        .await?;
+                    let result = invocation
+                        .store
+                        .run_concurrent(async move |accessor| {
+                            guest.call_link_account(accessor, borrowed).await
+                        })
+                        .await??;
                     invocation.store.data_mut().table.delete(interaction)?;
                     Ok(result)
                 })
