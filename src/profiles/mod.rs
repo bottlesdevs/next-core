@@ -13,8 +13,6 @@ mod plugin;
 mod providers;
 mod state;
 
-pub(crate) use plugin::add_to_linker;
-
 pub use error::ProfileError;
 pub use providers::{
     AccountIdentity, AccountLinkInteraction, AccountProvider, AccountProviderInfo, LinkedAccount,
