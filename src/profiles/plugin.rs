@@ -69,10 +69,15 @@ pub(super) async fn open_account_provider(
     plugins: &Plugins,
     info: &PluginInfo,
 ) -> bottles_plugin_host::Result<PluginAccountProvider> {
+    use wasmtime_wasi::WasiCtxBuilder;
+
     plugins
-        .load(info, add_to_linker, |store, instance| {
-            bindings::Account::new(store, instance)
-        })
+        .load(
+            info,
+            WasiState::new(WasiCtxBuilder::new().build()),
+            add_to_linker,
+            |store, instance| bindings::Account::new(store, instance),
+        )
         .await
 }
 
