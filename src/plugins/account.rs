@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use bottles_plugin_host::{CompiledPlugin, Invocation, Plugin, WasiState};
+use bottles_plugin_host::{CompiledPlugin, Plugin, PluginInstance, WasiState};
 use wasmtime::component::{Accessor, HasSelf, Linker, Resource};
 use wasmtime_wasi::WasiCtx;
 
@@ -79,7 +79,7 @@ pub async fn open_account_provider(
     add_to_linker(&mut linker, |state| state)?;
     let pre = linker.instantiate_pre(plugin.component())?;
     let indices = account_provider::GuestIndices::new(&pre)?;
-    let mut invocation = Invocation::new(&pre, WasiState::new(wasi)).await?;
+    let mut invocation = PluginInstance::new(&pre, WasiState::new(wasi)).await?;
     let guest = indices.load(&mut invocation.store, &invocation.instance)?;
     Ok(Plugin::new(plugin, invocation, guest))
 }
