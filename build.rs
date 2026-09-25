@@ -8,18 +8,17 @@ fn main() {
     println!("cargo:rerun-if-changed={wit}");
     let mut resolve = Resolve::default();
     let (package, _) = resolve.push_dir(wit).unwrap();
+    let world = resolve.packages[package].worlds["core"];
     let mut interfaces = BTreeMap::new();
-    for world in resolve.packages[package].worlds.values() {
-        for (key, item) in &resolve.worlds[*world].exports {
-            if let WorldItem::Interface { id, .. } = item {
-                let name = resolve.interfaces[*id].name.as_ref().unwrap();
-                interfaces.insert(resolve.name_world_key(key), name.to_upper_camel_case());
-            }
+    for (key, item) in &resolve.worlds[world].exports {
+        if let WorldItem::Interface { id, .. } = item {
+            let name = resolve.interfaces[*id].name.as_ref().unwrap();
+            interfaces.insert(resolve.name_world_key(key), name.to_upper_camel_case());
         }
     }
 
     let mut source = String::from(
-        "/// Known exported interfaces, generated from the SDK's WIT worlds.\n\
+        "/// Known exported interfaces, generated from the SDK's core WIT world.\n\
          #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n\
          pub enum PluginInterface {\n",
     );
