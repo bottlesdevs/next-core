@@ -6,8 +6,9 @@
 mod steam;
 
 use crate::error::Result;
+use crate::plugins::PluginInterface;
 use async_trait::async_trait;
-use bottles_plugin_host::{LoadedPlugin, PluginInterface, Plugins};
+use bottles_plugin_host::{LoadedPlugin, Plugins};
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, sync::Arc};
 
