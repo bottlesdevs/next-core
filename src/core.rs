@@ -3,7 +3,8 @@
 #[cfg(feature = "fvs")]
 use crate::{Program, environment::VirgoManager};
 
-use bottles_plugin_host::{PluginInterface, Plugins};
+use crate::plugins::PluginInterface;
+use bottles_plugin_host::Plugins;
 #[cfg(feature = "fvs")]
 use std::path::PathBuf;
 use std::sync::Arc;

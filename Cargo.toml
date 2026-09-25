@@ -53,6 +53,10 @@ url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde", "v5"] }
 keyring.workspace = true
 
+[build-dependencies]
+heck = "0.5"
+wit-parser = { version = "0.259", default-features = false, features = ["std"] }
+
 [dev-dependencies]
 async-executor.workspace = true
 http.workspace = true
