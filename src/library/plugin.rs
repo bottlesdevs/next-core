@@ -15,11 +15,11 @@ mod bindings {
 }
 
 /// A persistent installed-title provider driven by its caller.
-/// Clones share guest state; opening another provider creates an independent session.
+/// Clones and other interfaces of this plugin share guest state.
 /// Poll opening and calls within a caller-owned Tokio runtime with I/O and time enabled.
 pub(super) type PluginLibraryProvider = Plugin<bindings::Library>;
 
-/// Opens an independent library-provider session from the installed catalog.
+/// Attaches library bindings to the plugin's shared session.
 pub(super) async fn open_library_provider(
     plugins: &Plugins,
     info: &PluginInfo,
