@@ -33,7 +33,7 @@ pub struct Library {
 }
 
 impl Library {
-    /// Opens an independent provider session for each installed library plugin.
+    /// Attaches a library provider to each installed plugin's shared session.
     pub(crate) async fn load(context: Context) -> Result<Self> {
         let library = Self::default();
         let plugins = context.plugins();

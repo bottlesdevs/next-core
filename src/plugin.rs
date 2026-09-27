@@ -27,7 +27,7 @@ fn register_imports(linker: &mut Linker<WasiState>) -> wasmtime::Result<()> {
 }
 
 /// Opens a provider using core's default state and complete host import environment.
-pub(crate) async fn load_plugin<Bindings: Send>(
+pub(crate) async fn load_plugin<Bindings: Send + Sync>(
     plugins: &Plugins,
     info: &PluginInfo,
     load_exports: impl FnOnce(&mut Store<WasiState>, &Instance) -> wasmtime::Result<Bindings> + Send,
