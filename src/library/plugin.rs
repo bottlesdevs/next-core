@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use bottles_plugin_host::{Plugin, PluginInfo, Plugins, WasiState};
+use bottles_plugin_host::{Plugin, PluginInfo, Plugins};
 
 use crate::{
     LibraryEntry, LibraryProvider, Operation,
@@ -17,7 +17,7 @@ mod bindings {
 /// A persistent installed-title provider driven by its caller.
 /// Clones share guest state; opening another provider creates an independent session.
 /// Poll opening and calls within a caller-owned Tokio runtime with I/O and time enabled.
-pub(super) type PluginLibraryProvider = Plugin<WasiState, bindings::Library>;
+pub(super) type PluginLibraryProvider = Plugin<bindings::Library>;
 
 /// Opens an independent library-provider session from the installed catalog.
 pub(super) async fn open_library_provider(

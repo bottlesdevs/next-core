@@ -7,7 +7,6 @@ use wasmtime::{
     Store,
     component::{HasSelf, Instance, Linker},
 };
-use wasmtime_wasi::WasiCtxBuilder;
 
 include!(concat!(env!("OUT_DIR"), "/plugin_interfaces.rs"));
 
@@ -32,13 +31,6 @@ pub(crate) async fn load_plugin<Bindings: Send>(
     plugins: &Plugins,
     info: &PluginInfo,
     load_exports: impl FnOnce(&mut Store<WasiState>, &Instance) -> wasmtime::Result<Bindings> + Send,
-) -> bottles_plugin_host::Result<Plugin<WasiState, Bindings>> {
-    plugins
-        .load(
-            info,
-            WasiState::new(WasiCtxBuilder::new().build()),
-            register_imports,
-            load_exports,
-        )
-        .await
+) -> bottles_plugin_host::Result<Plugin<Bindings>> {
+    plugins.load(info, register_imports, load_exports).await
 }

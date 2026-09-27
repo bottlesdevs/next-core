@@ -55,7 +55,7 @@ impl account_link::Host for WasiState {}
 /// A persistent account-provider session driven by its caller.
 /// Clones share guest state; opening another provider creates an independent session.
 /// Poll opening and calls within a caller-owned Tokio runtime with I/O and time enabled.
-pub(super) type PluginAccountProvider = Plugin<WasiState, bindings::Account>;
+pub(super) type PluginAccountProvider = Plugin<bindings::Account>;
 
 /// Opens an independent account-provider session from the installed catalog.
 pub(super) async fn open_account_provider(
