@@ -81,14 +81,14 @@ impl AccountProvider for PluginAccountProvider {
         &self,
         interaction: Arc<dyn AccountLinkInteraction>,
     ) -> Result<LinkedAccount, String> {
-        self.call(move |accessor, bindings| {
+        self.call(move |accessor, bindings, guest_object| {
             Box::pin(async move {
                 let interaction =
                     accessor.with(|mut access| access.get().table.push(interaction))?;
                 let borrowed = Resource::new_borrow(interaction.rep());
                 let result = bindings
                     .bottles_plugin_account_provider()
-                    .call_link_account(accessor, borrowed)
+                    .call_link_account(accessor, guest_object, borrowed)
                     .await?;
                 accessor.with(|mut access| access.get().table.delete(interaction))?;
                 Ok(result)
