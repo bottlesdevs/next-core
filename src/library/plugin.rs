@@ -37,11 +37,11 @@ impl LibraryProvider for PluginLibraryProvider {
     }
 
     async fn list_entries(&self) -> Result<Vec<LibraryEntry>> {
-        self.call(move |accessor, bindings| {
+        self.call(move |accessor, bindings, guest_object| {
             Box::pin(async move {
                 bindings
                     .bottles_plugin_library_provider()
-                    .call_list_entries(accessor)
+                    .call_list_entries(accessor, guest_object)
                     .await
             })
         })
@@ -68,11 +68,11 @@ impl LibraryProvider for PluginLibraryProvider {
         let entry_id = entry_id.to_owned();
         Ok(Operation::new(move |_, cancellation| async move {
             cancellation
-                .run_until_cancelled(provider.call(move |accessor, bindings| {
+                .run_until_cancelled(provider.call(move |accessor, bindings, guest_object| {
                     Box::pin(async move {
                         bindings
                             .bottles_plugin_library_provider()
-                            .call_launch(accessor, entry_id)
+                            .call_launch(accessor, guest_object, entry_id)
                             .await
                     })
                 }))
