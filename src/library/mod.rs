@@ -1,16 +1,14 @@
-//! Aggregation of launchable entries from core and plugin providers.
+//! Aggregation of launchable entries from registered providers.
 //!
 //! [`Library`] is an explicitly refreshed view: each call to [`Library::list`]
 //! asks every currently registered [`LibraryProvider`] for its latest entries.
-
-mod plugin;
 
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
 };
 
-use crate::{Context, Operation, PluginInterface, error::Result};
+use crate::{Operation, error::Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -33,19 +31,6 @@ pub struct Library {
 }
 
 impl Library {
-    /// Attaches a library provider to each installed plugin's shared session.
-    pub(crate) async fn load(context: Context) -> Result<Self> {
-        let library = Self::default();
-        let plugins = context.plugins();
-        for info in plugins.list() {
-            if info.exports(PluginInterface::LibraryProvider) {
-                let provider = plugin::open_library_provider(plugins, &info).await?;
-                library.register_provider(Arc::new(provider));
-            }
-        }
-        Ok(library)
-    }
-
     /// Registers a provider, replacing the provider with the same [`LibraryProvider::id`].
     ///
     /// Previously returned [`LibraryItem`] values retain their original provider
@@ -128,8 +113,8 @@ impl LibraryItem {
 
     /// Returns the stable identifier of the source provider.
     ///
-    /// Native providers use `bottles`, or `programs` when the `fvs` feature is
-    /// enabled; plugins use their manifest identifier.
+    /// Built-in providers use `bottles`, or `programs` when the `fvs` feature is
+    /// enabled. Other providers supply their own stable identifier.
     pub fn provider_id(&self) -> &str {
         self.provider.id()
     }

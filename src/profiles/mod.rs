@@ -9,7 +9,6 @@
 mod accounts;
 mod credentials;
 mod error;
-mod plugin;
 mod providers;
 mod state;
 
@@ -19,7 +18,7 @@ pub use providers::{
 };
 pub use state::{AccountLink, Profile, ProfilesState};
 
-use crate::{Context, PluginInterface, error::Result};
+use crate::{Context, error::Result};
 use futures_core::Stream;
 use std::{
     collections::HashMap,
@@ -113,12 +112,12 @@ pub struct Profiles {
 }
 
 impl Profiles {
-    /// Loads persisted profiles and registers built-in and installed account providers.
+    /// Loads persisted profiles and registers built-in account providers.
     /// Creates the initial `Player` profile when no persisted state exists.
     ///
     /// # Errors
     ///
-    /// Returns an error if state or an account plugin cannot be loaded or initialized, or
+    /// Returns an error if state cannot be loaded or initialized, or
     /// [`ProfileError::NotFound`] if the persisted selection is invalid.
     pub(crate) async fn load(context: Context) -> Result<Self> {
         let path = context.directories().profiles();
@@ -143,15 +142,7 @@ impl Profiles {
             published,
             write_lock: Mutex::new(()),
         });
-        let profiles = Self { inner };
-        let plugins = context.plugins();
-        for info in plugins.list() {
-            if info.exports(PluginInterface::AccountProvider) {
-                let provider = plugin::open_account_provider(plugins, &info).await?;
-                profiles.register_provider(Arc::new(provider));
-            }
-        }
-        Ok(profiles)
+        Ok(Self { inner })
     }
 
     /// Returns the current profile collection and selection in one snapshot.
