@@ -1,4 +1,4 @@
-//! Aggregation of launchable entries from core and plugin providers.
+//! Aggregation of launchable entries from registered providers.
 //!
 //! [`Library`] is an explicitly refreshed view: each call to [`Library::list`]
 //! asks every currently registered [`LibraryProvider`] for its latest entries.
@@ -8,14 +8,18 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-pub use bottles_plugin_host::LibraryEntry;
-
-use crate::{
-    Operation,
-    error::{Error, Result},
-};
+use crate::{Operation, error::Result};
 use async_trait::async_trait;
-use bottles_plugin_host::LoadedPlugin;
+use serde::{Deserialize, Serialize};
+
+/// An installed title supplied by a library provider.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct LibraryEntry {
+    /// Identifier local to the provider.
+    pub id: String,
+    /// Display title.
+    pub title: String,
+}
 
 /// Registers providers and combines their launchable entries.
 ///
@@ -109,8 +113,8 @@ impl LibraryItem {
 
     /// Returns the stable identifier of the source provider.
     ///
-    /// Native providers use `bottles`, or `programs` when the `fvs` feature is
-    /// enabled; plugins use their manifest identifier.
+    /// Built-in providers use `bottles`, or `programs` when the `fvs` feature is
+    /// enabled. Other providers supply their own stable identifier.
     pub fn provider_id(&self) -> &str {
         self.provider.id()
     }
@@ -181,35 +185,4 @@ pub trait LibraryProvider: Send + Sync {
     /// Returns an error if the launch cannot be prepared immediately. Deferred
     /// validation and launch failures are returned by the operation.
     fn launch(&self, entry_id: &str) -> Result<Operation<()>>;
-}
-
-#[async_trait]
-impl LibraryProvider for LoadedPlugin {
-    fn id(&self) -> &str {
-        &self.info.manifest.id
-    }
-
-    async fn list_entries(&self) -> Result<Vec<LibraryEntry>> {
-        bottles_plugin_host::library::list_entries(self)
-            .await
-            .map_err(|message| Error::LibraryProvider {
-                provider: self.id().to_owned(),
-                message,
-            })
-    }
-
-    fn launch(&self, entry_id: &str) -> Result<Operation<()>> {
-        let plugin = self.clone();
-        let entry_id = entry_id.to_owned();
-        // Operation checks cancellation before submission. Once accepted by the
-        // host, await the reply even if cancellation is requested in the meantime.
-        Ok(Operation::new(move |_, _| async move {
-            bottles_plugin_host::library::launch(&plugin, &entry_id)
-                .await
-                .map_err(|message| Error::LibraryProvider {
-                    provider: plugin.id().to_owned(),
-                    message,
-                })
-        }))
-    }
 }
