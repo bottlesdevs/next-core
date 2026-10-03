@@ -185,7 +185,7 @@ impl<T> Operation<T> {
     /// asynchronous cleanup in the returned future so [`Operation::cancel`] can
     /// drive it. Progress senders must not outlive that future so progress streams
     /// close when the operation terminates.
-    pub(crate) fn new<F, Fut>(work: F) -> Self
+    pub fn new<F, Fut>(work: F) -> Self
     where
         T: Send + 'static,
         F: FnOnce(watch::Sender<Option<Progress>>, CancellationToken) -> Fut + Send + 'static,

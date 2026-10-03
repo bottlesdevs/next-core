@@ -3,7 +3,6 @@
 //! [`enum@Error`] preserves subsystem-specific causes for matching and error-chain
 //! inspection.
 
-pub use bottles_plugin_host::PluginError;
 use thiserror::Error;
 
 #[cfg(feature = "fvs")]
@@ -74,9 +73,6 @@ pub enum Error {
     /// Profile or account management failed.
     #[error("profile error: {0}")]
     Profile(#[from] ProfileError),
-    /// A plugin could not be loaded or contacted.
-    #[error("plugin error: {0}")]
-    Plugin(#[from] PluginError),
     /// A library provider rejected enumeration or launch.
     #[error("library provider {provider}: {message}")]
     LibraryProvider {

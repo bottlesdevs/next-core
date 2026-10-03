@@ -24,10 +24,9 @@ impl Profiles {
     /// for each provider.
     ///
     /// Cancellation drops the pending provider call, including its interaction.
-    /// An interrupted plugin invocation closes that provider's session.
-    /// After the write lock is acquired,
-    /// cancellation is no longer checked; final validation, credential storage,
-    /// snapshot persistence, and any rollback run to completion.
+    /// After the write lock is acquired, cancellation is no longer checked;
+    /// final validation, credential storage, snapshot persistence, and any
+    /// rollback run to completion.
     ///
     /// # Errors
     ///
