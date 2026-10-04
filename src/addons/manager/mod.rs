@@ -55,8 +55,8 @@ pub struct Addons(Arc<AddonsInner>);
 struct AddonsInner {
     directories: Directories,
     downloader: Arc<DownloadManager>,
-    component_catalog_url: Option<Url>,
-    dependency_catalog_url: Option<Url>,
+    component_catalog_url: Url,
+    dependency_catalog_url: Url,
     published: watch::Sender<Arc<AddonsState>>,
     /// Serializes filesystem commits and state publication, not transfers.
     write: Mutex<()>,
@@ -88,8 +88,8 @@ impl Addons {
     pub(crate) async fn load(
         directories: Directories,
         downloader: Arc<DownloadManager>,
-        component_catalog_url: Option<Url>,
-        dependency_catalog_url: Option<Url>,
+        component_catalog_url: Url,
+        dependency_catalog_url: Url,
     ) -> Result<Self> {
         let state = AddonsState::load_cached(&directories).await?;
         let (published, _) = watch::channel(Arc::new(state));

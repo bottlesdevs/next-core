@@ -1,12 +1,13 @@
 //! Shared services used by one core instance.
 
-use crate::{Addons, Directories, error::Result};
+use crate::{Addons, Config, Directories, error::Result};
 use download_manager::manager::{DownloadManager, DownloadManagerConfig};
 #[cfg(feature = "fvs")]
 use fvs_rs::Fvs2dClient;
 use http_client::HttpClient;
+#[cfg(feature = "fvs")]
+use std::path::PathBuf;
 use std::sync::Arc;
-use url::Url;
 
 struct ContextInner {
     directories: Directories,
@@ -25,14 +26,37 @@ impl Context {
     ///
     /// # Errors
     ///
-    /// Returns an error if the download manager cannot initialize or either
-    /// addon catalog cannot be loaded from storage.
+    /// Returns an error if FVS cannot be resolved, started, or contacted; the
+    /// download manager cannot initialize; or an addon catalog cannot be loaded.
     pub(crate) async fn new(
         directories: Directories,
         http_client: Arc<dyn HttpClient>,
+        config: Config,
+    ) -> Result<Self> {
+        #[cfg(feature = "fvs")]
+        let fvs = Arc::new(
+            Fvs2dClient::connect_or_spawn(
+                fvs_executable(config.fvs2d.clone())?,
+                directories.runtime_dir().join("fvs2d.sock"),
+            )
+            .await?,
+        );
+        Self::load(
+            directories,
+            http_client,
+            config,
+            #[cfg(feature = "fvs")]
+            fvs,
+        )
+        .await
+    }
+
+    // Tests supply an inert FVS client while sharing the service initialization.
+    async fn load(
+        directories: Directories,
+        http_client: Arc<dyn HttpClient>,
+        config: Config,
         #[cfg(feature = "fvs")] fvs: Arc<Fvs2dClient>,
-        component_catalog: Option<Url>,
-        dependency_catalog: Option<Url>,
     ) -> Result<Self> {
         let downloader = Arc::new(DownloadManager::new(
             http_client.clone(),
@@ -41,8 +65,8 @@ impl Context {
         let addons = Addons::load(
             directories.clone(),
             downloader.clone(),
-            component_catalog,
-            dependency_catalog,
+            config.component_catalog,
+            config.dependency_catalog,
         )
         .await?;
         Ok(Self(Arc::new(ContextInner {
@@ -60,7 +84,8 @@ impl Context {
     ///
     /// # Errors
     ///
-    /// Returns the initialization and catalog-loading errors from [`Self::new`].
+    /// Returns an error if the download manager cannot initialize or an addon
+    /// catalog cannot be loaded from storage.
     ///
     /// # Panics
     ///
@@ -85,13 +110,12 @@ impl Context {
                 tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy(),
             ))
         };
-        Self::new(
+        Self::load(
             directories,
             client,
+            Config::default(),
             #[cfg(feature = "fvs")]
             fvs,
-            None,
-            None,
         )
         .await
     }
@@ -116,4 +140,12 @@ impl Context {
     pub(crate) fn fvs(&self) -> &Arc<Fvs2dClient> {
         &self.0.fvs
     }
+}
+
+#[cfg(feature = "fvs")]
+fn fvs_executable(configured: Option<PathBuf>) -> Result<PathBuf> {
+    Ok(configured
+        .map(crate::utils::fs::absolute_path)
+        .transpose()?
+        .unwrap_or_else(|| PathBuf::from("fvs2d")))
 }

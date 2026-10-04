@@ -15,10 +15,10 @@ use crate::{Addons, Bottle, Context, Directories, Library, Manager, Profiles, er
 /// Startup options for [`Bottles::open`].
 ///
 /// Catalog URLs are used by [`Addons::refresh`](crate::Addons::refresh); cached
-/// catalogs and installed addons still load when a URL is absent. Refreshing a
-/// family without a configured URL reports an error for that family. With the
+/// catalogs and installed addons load without fetching. URLs default to the
+/// official Bottles catalogs and may be overridden by applications. With the
 /// `fvs` feature enabled, an unset daemon path resolves `fvs2d` through `PATH`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Config {
     /// Explicit path to the `fvs2d` executable, or `None` to resolve it through
     /// `PATH`. Relative paths are resolved against the process's current directory.
@@ -26,10 +26,27 @@ pub struct Config {
     pub fvs2d: Option<PathBuf>,
     /// Remote runner, WineBridge, UMU, and prefix-component catalog downloaded by
     /// [`Addons::refresh`](crate::Addons::refresh).
-    pub component_catalog: Option<Url>,
+    pub component_catalog: Url,
     /// Remote dependency catalog downloaded by
     /// [`Addons::refresh`](crate::Addons::refresh).
-    pub dependency_catalog: Option<Url>,
+    pub dependency_catalog: Url,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            #[cfg(feature = "fvs")]
+            fvs2d: None,
+            component_catalog: Url::parse(
+                "https://bottles-next-deps.bromb.in/api/v1/catalog/components",
+            )
+            .expect("failed to parse component catalog URL"),
+            dependency_catalog: Url::parse(
+                "https://bottles-next-deps.bromb.in/api/v1/catalog/dependencies",
+            )
+            .expect("failed to parse dependency catalog URL"),
+        }
+    }
 }
 
 /// Owns the services and persisted collections used by Bottles Next.
@@ -74,32 +91,10 @@ impl Bottles {
     /// # }
     /// ```
     pub async fn open(config: Config) -> Result<Self> {
-        let Config {
-            #[cfg(feature = "fvs")]
-            fvs2d,
-            component_catalog,
-            dependency_catalog,
-        } = config;
         let directories = Directories::new().await?;
         let http_client: Arc<dyn HttpClient> =
             Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
-        #[cfg(feature = "fvs")]
-        let fvs = Arc::new(
-            fvs_rs::Fvs2dClient::connect_or_spawn(
-                fvs_executable(fvs2d)?,
-                directories.runtime_dir().join("fvs2d.sock"),
-            )
-            .await?,
-        );
-        let context = Context::new(
-            directories,
-            http_client,
-            #[cfg(feature = "fvs")]
-            fvs,
-            component_catalog,
-            dependency_catalog,
-        )
-        .await?;
+        let context = Context::new(directories, http_client, config).await?;
         let profiles = Profiles::load(context.clone()).await?;
         let library = Library::default();
         #[cfg(feature = "fvs")]
@@ -181,23 +176,5 @@ impl Bottles {
     /// Returns the HTTP transport shared by core services.
     pub fn http_client(&self) -> &Arc<dyn HttpClient> {
         self.context.http_client()
-    }
-}
-
-#[cfg(feature = "fvs")]
-fn fvs_executable(configured: Option<PathBuf>) -> Result<PathBuf> {
-    Ok(configured
-        .map(crate::utils::fs::absolute_path)
-        .transpose()?
-        .unwrap_or_else(|| PathBuf::from("fvs2d")))
-}
-
-#[cfg(all(test, feature = "fvs"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn uses_path_lookup_when_fvs2d_is_not_configured() {
-        assert_eq!(fvs_executable(None).unwrap(), PathBuf::from("fvs2d"));
     }
 }

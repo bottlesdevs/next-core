@@ -32,9 +32,9 @@ impl Addons {
     ///
     /// # Errors
     ///
-    /// The operation fails if cancelled before cache writes begin, either URL is
-    /// missing, a download or schema parse fails, or a successful catalog cannot be
-    /// written to its cache. Per-source URL, download, and parse failures are
+    /// The operation fails if cancelled before cache writes begin, a download or
+    /// schema parse fails, or a successful catalog cannot be written to its cache.
+    /// Per-source download and parse failures are
     /// combined into [`CatalogError::Refresh`]; cache-write failures are returned
     /// directly.
     pub fn refresh(&self) -> Operation<()> {
@@ -106,17 +106,16 @@ impl Addons {
     ///
     /// # Errors
     ///
-    /// Returns an error if the URL is absent, the operation is cancelled,
+    /// Returns an error if the operation is cancelled,
     /// the transfer or temporary storage fails, or the document does not match the
     /// current catalog schema.
     async fn download_catalog(
         &self,
-        url: Option<Url>,
+        url: Url,
         label: &'static str,
         progress: watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<Arc<Catalog>> {
-        let url = url.ok_or(CatalogError::UrlNotConfigured(label))?;
         fs::with_temp_dir(&self.0.directories.staging(), |stage| async move {
             let downloaded = stage.join("catalog.json");
             download(
