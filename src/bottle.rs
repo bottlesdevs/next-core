@@ -6,9 +6,8 @@
 //! state.
 
 use crate::{
-    Addon, Edit, LibraryEntry, LibraryProvider, Manager, Operation, PrefixBackend, ProgramSpec,
-    Runner, State, Umu, WineBridge,
-    error::{Error, Result},
+    Addon, Edit, Manager, Operation, PrefixBackend, ProgramSpec, Runner, State, Umu, WineBridge,
+    error::Result,
     proto::{DllOverride, DllOverrideMode, Process},
 };
 #[cfg(feature = "fvs")]
@@ -349,48 +348,6 @@ pub enum BottleError {
     /// No program is registered with the requested UUID.
     #[error("program {0} was not found")]
     ProgramNotFound(Uuid),
-}
-
-#[async_trait::async_trait]
-impl LibraryProvider for Manager<Bottle> {
-    fn id(&self) -> &str {
-        "bottles"
-    }
-
-    async fn list_entries(&self) -> Result<Vec<LibraryEntry>> {
-        let mut entries = Vec::new();
-        for state in self
-            .list()
-            .into_iter()
-            .filter_map(|bottle| bottle.state().ok())
-        {
-            entries.extend(state.programs().map(|(id, program)| LibraryEntry {
-                id: format!("{}/{id}", state.id()),
-                title: program.name().to_owned(),
-            }));
-        }
-        Ok(entries)
-    }
-
-    fn launch(&self, entry_id: &str) -> Result<Operation<()>> {
-        let (bottle_id, program_id) =
-            entry_id
-                .split_once('/')
-                .ok_or_else(|| Error::LibraryProvider {
-                    provider: self.id().to_owned(),
-                    message: "expected bottle UUID/program UUID".into(),
-                })?;
-        let parse_id = |id| {
-            Uuid::parse_str(id).map_err(|error| Error::LibraryProvider {
-                provider: self.id().to_owned(),
-                message: error.to_string(),
-            })
-        };
-        Ok(self
-            .open(parse_id(bottle_id)?)?
-            .launch_program(parse_id(program_id)?)
-            .map(|_| ()))
-    }
 }
 
 impl Manager<Bottle> {

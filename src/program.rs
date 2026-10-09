@@ -4,10 +4,10 @@
 //! its environment configuration, private storage, and snapshot history.
 
 use crate::{
-    Addon, Edit, LibraryEntry, LibraryProvider, Manager, Operation, PrefixBackend, ProgramSpec,
-    Runner, Snapshot, SnapshotSummary, State, Umu, WineBridge,
+    Addon, Edit, Manager, Operation, PrefixBackend, ProgramSpec, Runner, Snapshot, SnapshotSummary,
+    State, Umu, WineBridge,
     environment::{BackendSource, Environment},
-    error::{Error, Result},
+    error::Result,
     manager::Managed,
     proto::{DllOverride, DllOverrideMode, Process},
 };
@@ -263,32 +263,6 @@ impl Edit<'_, ProgramSpec> {
     }
 }
 
-#[async_trait::async_trait]
-impl LibraryProvider for Manager<Program> {
-    fn id(&self) -> &str {
-        "programs"
-    }
-
-    async fn list_entries(&self) -> Result<Vec<LibraryEntry>> {
-        Ok(self
-            .list()
-            .into_iter()
-            .filter_map(|program| program.state().ok())
-            .map(|state| LibraryEntry {
-                id: state.id().to_string(),
-                title: state.name().to_owned(),
-            })
-            .collect())
-    }
-
-    fn launch(&self, entry_id: &str) -> Result<Operation<()>> {
-        let id = Uuid::parse_str(entry_id).map_err(|error| Error::LibraryProvider {
-            provider: self.id().to_owned(),
-            message: error.to_string(),
-        })?;
-        Ok(self.open(id)?.launch().map(|_| ()))
-    }
-}
 impl Manager<Program> {
     /// Creates an operation that initializes a standalone Virgo program.
     ///

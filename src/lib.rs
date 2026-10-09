@@ -37,7 +37,7 @@ pub use core::{Bottles, Config};
 pub use environment::{Edit, EnvironmentConfig, EnvironmentError, PrefixBackend, State};
 #[cfg(feature = "fvs")]
 pub use environment::{Snapshot, SnapshotSummary};
-pub use library::{Library, LibraryEntry, LibraryItem, LibraryProvider};
+pub use library::{Library, LibraryEntry, LibraryProvider, LibrarySnapshot, ProviderState};
 pub use manager::Manager;
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use profiles::{
