@@ -63,7 +63,17 @@ impl Directories {
         Ok(directories)
     }
 
-    pub(crate) fn config_dir(&self) -> &Path {
+    /// Returns the persistent configuration directory.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::Directories;
+    /// fn settings_path(directories: &Directories) -> std::path::PathBuf {
+    ///     directories.config_dir().join("ui.toml")
+    /// }
+    /// ```
+    pub fn config_dir(&self) -> &Path {
         self.0.config_dir()
     }
 

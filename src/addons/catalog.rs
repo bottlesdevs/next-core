@@ -178,13 +178,15 @@ impl Catalog {
 }
 
 /// Identifies the runtime role or prefix contribution advertised by a catalog entry.
+///
+/// Catalog entries encode this role as one `kind` string. Component roles use
+/// the canonical spelling of [`Slot`].
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(try_from = "String", into = "String")]
 pub enum AddonKind {
     /// A Wine or Proton runner.
     Runner,
     /// The Bottles `WineBridge` executable.
-    #[serde(rename = "winebridge")]
     WineBridge,
     /// The independently selected UMU launcher.
     Umu,
@@ -195,6 +197,34 @@ pub enum AddonKind {
     },
     /// An installable dependency.
     Dependency,
+}
+
+impl TryFrom<String> for AddonKind {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        Ok(match value.as_str() {
+            "runner" => Self::Runner,
+            "winebridge" => Self::WineBridge,
+            "umu" => Self::Umu,
+            "dependency" => Self::Dependency,
+            slot => Self::Component {
+                slot: slot.parse()?,
+            },
+        })
+    }
+}
+
+impl From<AddonKind> for String {
+    fn from(kind: AddonKind) -> Self {
+        match kind {
+            AddonKind::Runner => "runner".into(),
+            AddonKind::WineBridge => "winebridge".into(),
+            AddonKind::Umu => "umu".into(),
+            AddonKind::Dependency => "dependency".into(),
+            AddonKind::Component { slot } => slot.to_string(),
+        }
+    }
 }
 
 /// Describes a release advertised by a remote addon catalog.
@@ -220,7 +250,6 @@ pub struct CatalogEntry {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
     artifacts: Vec<CatalogArtifact>,
-    #[serde(flatten)]
     kind: AddonKind,
 }
 

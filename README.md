@@ -44,8 +44,9 @@ core.shutdown().await?;
 - [`Addons`] downloads, imports, and removes Wine runners and other managed
   components. [`AddonsState`] provides immutable catalog and release snapshots
   through [`Addons::state`] and [`Addons::watch`].
-- [`Library`] combines launchable entries from bottles, standalone programs,
-  and plugins.
+- [`Library`] observes provider-published listings through live [`LibrarySnapshot`]
+  values, and launches entries by provider and entry ID. Snapshots include
+  each provider's [`ProviderState`]: loading, loaded entries, or a listing error.
 - [`Profiles`] stores application profiles and their linked external accounts.
 
 Applications can register account and library providers through [`Profiles`] and

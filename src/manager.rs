@@ -9,21 +9,12 @@ use crate::environment::VirgoManager;
 use crate::environment::{BackendSource, Environment, State};
 use crate::{
     Addon, Context, EnvironmentConfig, EnvironmentError, Operation, Progress, Runner, Stage, Umu,
-    WineBridge, error::Result,
+    WineBridge, error::Result, utils::join::join,
 };
 use futures_core::Stream;
-use futures_util::{
-    StreamExt,
-    stream::{self, SelectAll},
-};
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-    pin::Pin,
-    sync::Arc,
-};
+use futures_util::StreamExt;
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::watch;
-use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
 pub(crate) trait Managed {
@@ -51,11 +42,6 @@ pub struct Manager<T> {
     virgo: Arc<VirgoManager>,
     published: watch::Sender<Members<T>>,
 }
-enum Event<T> {
-    Membership(Members<T>),
-    Changed,
-}
-type Events<T> = Pin<Box<dyn Stream<Item = Option<Event<T>>> + Send>>;
 
 impl<T: Clone> Manager<T> {
     /// Returns cloned handles for the currently known members.
@@ -85,10 +71,11 @@ impl<T: Clone> Manager<T> {
 
 // Only core handles supply environment access; the adapter stays private.
 #[allow(private_bounds)]
-impl<T: Managed + Clone + Send + Sync + 'static> Manager<T>
+impl<T, Data> Manager<T>
 where
-    T::Data: BackendSource + Send,
-    State<T::Data>: next_config::Config + Clone + PartialEq + Send + Sync,
+    T: Managed<Data = Data> + Clone + Send + Sync + 'static,
+    Data: BackendSource + Send,
+    State<Data>: next_config::Config + Clone + PartialEq + Send + Sync,
 {
     pub(crate) fn new(
         root: PathBuf,
@@ -230,11 +217,12 @@ where
     }
 
     /// Observes collection membership and member state changes, including edits
-    /// and rollback. First yields the current list, then the latest list after
-    /// each observed change. Slow consumers may miss intermediate states.
+    /// and rollback. First yields current state snapshots, then the latest list
+    /// after each observed change. Slow consumers may miss intermediate states.
     ///
-    /// Each list contains live handles, not state snapshots from the time of the
-    /// event. Order is unspecified. The stream ends when all manager clones and
+    /// Previously emitted snapshots remain unchanged. Use [`open`](Self::open)
+    /// with a state's ID to obtain a handle when an action is needed.
+    /// Order is unspecified. The stream ends when all manager clones and
     /// operations retaining this collection are dropped, even if item handles
     /// remain alive.
     ///
@@ -246,51 +234,19 @@ where
     /// # async fn observe(manager: &Manager<Bottle>) {
     /// let updates = manager.watch();
     /// futures_lite::pin!(updates);
-    /// if let Some(bottles) = updates.next().await {
-    ///     println!("{} bottles", bottles.len());
+    /// if let Some(states) = updates.next().await {
+    ///     for state in states {
+    ///         println!("{}: {}", state.id(), state.name());
+    ///     }
     /// }
     /// # }
     /// ```
-    pub fn watch(&self) -> impl Stream<Item = Vec<T>> + Send + 'static + use<T> {
-        let published = self.published.subscribe();
-        let mut events = SelectAll::<Events<T>>::new();
-        // End the aggregate when the manager closes, even if callers retain handles.
-        events.push(Box::pin(
-            WatchStream::new(published.clone())
-                .map(|members| Some(Event::Membership(members)))
-                .chain(stream::once(async { None })),
-        ));
-        stream::unfold(
-            (published, events, HashSet::new()),
-            |(published, mut events, mut subscribed)| async move {
-                let event = events.next().await??;
-                match event {
-                    Event::Membership(members) => {
-                        subscribed.retain(|id| members.contains_key(id));
-                        for (id, handle) in members.iter() {
-                            if subscribed.insert(*id) {
-                                let environment = handle.environment();
-                                let mut previous = environment.state().ok();
-                                events.push(Box::pin(environment.watch().filter_map(
-                                    move |state| {
-                                        let changed = previous
-                                            .as_ref()
-                                            .is_none_or(|current| !Arc::ptr_eq(current, &state));
-                                        previous = Some(state);
-                                        std::future::ready(changed.then_some(Some(Event::Changed)))
-                                    },
-                                )));
-                            }
-                        }
-                        let list = members.values().cloned().collect();
-                        Some((list, (published, events, subscribed)))
-                    }
-                    Event::Changed => {
-                        let list = published.borrow().values().cloned().collect();
-                        Some((list, (published, events, subscribed)))
-                    }
-                }
-            },
-        )
+    pub fn watch(
+        &self,
+    ) -> impl Stream<Item = Vec<Arc<State<Data>>>> + Send + 'static + use<T, Data> {
+        join(self.published.subscribe(), |handle| {
+            handle.environment().watch().boxed()
+        })
+        .map(|states| states.values().cloned().collect())
     }
 }

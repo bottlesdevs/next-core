@@ -66,9 +66,6 @@ pub enum CatalogError {
         /// Text of the dependency-catalog failure, or `None` after success.
         dependencies: Option<String>,
     },
-    /// No remote URL is configured for the named addon family.
-    #[error("{0} catalog URL is not configured")]
-    UrlNotConfigured(&'static str),
     /// The release has no artifact for the current build target.
     #[error("no artifact supports this system for addon {0}")]
     Unsupported(Uuid),

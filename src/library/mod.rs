@@ -1,16 +1,22 @@
 //! Aggregation of launchable entries from registered providers.
 //!
-//! [`Library`] is an explicitly refreshed view: each call to [`Library::list`]
-//! asks every currently registered [`LibraryProvider`] for its latest entries.
+//! [`Library::watch`] follows provider registrations and their entry streams, and
+//! [`Library::launch`] delegates to the currently registered provider.
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
+use std::{collections::HashMap, sync::Arc};
+
+#[cfg(feature = "fvs")]
+use crate::Program;
+use crate::{
+    Bottle, Manager, Operation,
+    error::{Error, Result},
+    utils::join::join,
 };
-
-use crate::{Operation, error::Result};
-use async_trait::async_trait;
+use futures_core::Stream;
+use futures_util::{StreamExt, stream::BoxStream};
 use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
+use uuid::Uuid;
 
 /// An installed title supplied by a library provider.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -21,105 +27,60 @@ pub struct LibraryEntry {
     pub title: String,
 }
 
+/// A provider's latest listing.
+#[derive(Debug)]
+pub enum ProviderState {
+    /// The provider has not finished its first listing.
+    Loading,
+    /// The provider's latest available entries.
+    Loaded(Vec<LibraryEntry>),
+    /// The provider's latest enumeration error.
+    Failed(Error),
+}
+
+/// An immutable map of all registered providers and their latest listing states.
+///
+/// Provider states are shared across snapshots without cloning entries or errors.
+pub type LibrarySnapshot = Arc<HashMap<String, Arc<ProviderState>>>;
+
 /// Registers providers and combines their launchable entries.
 ///
-/// Clones share provider registrations. This collection owns neither provider
-/// storage nor background refresh tasks.
+/// Clones share provider registrations.
 #[derive(Clone, Default)]
 pub struct Library {
-    providers: Arc<RwLock<HashMap<String, Arc<dyn LibraryProvider>>>>,
+    providers: watch::Sender<Arc<HashMap<String, Arc<dyn LibraryProvider>>>>,
 }
 
 impl Library {
     /// Registers a provider, replacing the provider with the same [`LibraryProvider::id`].
     ///
-    /// Previously returned [`LibraryItem`] values retain their original provider
-    /// handle; call [`list`](Self::list) again to obtain entries from the replacement.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a previous writer poisoned the provider lock.
+    /// Watchers observe the replacement's published state and stop watching the old provider.
     pub fn register_provider(&self, provider: Arc<dyn LibraryProvider>) {
         let id = provider.id().to_owned();
-        self.providers.write().unwrap().insert(id, provider);
+        self.providers.send_modify(|providers| {
+            Arc::make_mut(providers).insert(id, provider);
+        });
     }
 
     /// Removes a provider from subsequent listings.
     ///
-    /// Previously returned [`LibraryItem`] values keep their provider handle and
-    /// can still call it; removal alone does not invalidate those items.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a previous writer poisoned the provider lock.
+    /// Watchers stop watching this provider and omit it from their next snapshot.
     pub fn remove_provider(&self, provider_id: &str) {
-        self.providers.write().unwrap().remove(provider_id);
+        self.providers.send_modify(|providers| {
+            Arc::make_mut(providers).remove(provider_id);
+        });
     }
 
-    /// Queries every registered provider and combines its current entries.
-    ///
-    /// Providers are captured before the first query, so concurrent registration
-    /// changes affect only later listings. Providers are queried sequentially in
-    /// unspecified order, and enumeration stops at the first error. Item order is
-    /// therefore also unspecified.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first error produced by [`LibraryProvider::list_entries`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if a previous writer poisoned the provider lock.
-    pub async fn list(&self) -> Result<Vec<LibraryItem>> {
-        let providers = self
-            .providers
-            .read()
-            .unwrap()
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut items = Vec::new();
-        for provider in providers {
-            items.extend(
-                provider
-                    .list_entries()
-                    .await?
-                    .into_iter()
-                    .map(|entry| LibraryItem {
-                        entry,
-                        provider: provider.clone(),
-                    }),
-            );
-        }
-        Ok(items)
-    }
-}
-
-/// A listed entry paired with the provider that can launch it.
-///
-/// The metadata is a snapshot from the last [`Library::list`] call. Listing
-/// again is the only way to refresh it.
-#[derive(Clone)]
-pub struct LibraryItem {
-    entry: LibraryEntry,
-    provider: Arc<dyn LibraryProvider>,
-}
-
-impl LibraryItem {
-    /// Returns the metadata captured during listing.
-    pub fn entry(&self) -> &LibraryEntry {
-        &self.entry
+    /// Yields an initial snapshot, then follows registrations and entry updates.
+    /// Registry changes resubscribe providers to their current published states.
+    /// Each snapshot retains the latest state per provider and omits removed
+    /// providers. The stream ends when the last [`Library`] sharing this registry
+    /// is dropped, even if providers remain alive.
+    pub fn watch(&self) -> impl Stream<Item = LibrarySnapshot> + Send + 'static + use<> {
+        join(self.providers.subscribe(), |provider| provider.entries())
     }
 
-    /// Returns the stable identifier of the source provider.
-    ///
-    /// Built-in providers use `bottles`, or `programs` when the `fvs` feature is
-    /// enabled. Other providers supply their own stable identifier.
-    pub fn provider_id(&self) -> &str {
-        self.provider.id()
-    }
-
-    /// Asks the entry's original provider to prepare its launch.
+    /// Asks the currently registered provider to prepare an entry's launch.
     ///
     /// The provider may validate the entry here or defer validation to the
     /// returned [`Operation`]. The operation is lazy, and its completion means
@@ -127,11 +88,20 @@ impl LibraryItem {
     ///
     /// # Errors
     ///
-    /// Returns an error if the provider cannot prepare the launch immediately.
+    /// Returns an error if the provider is not registered or cannot prepare the launch.
     /// Awaiting the returned operation may fail later if deferred validation or
     /// launch fails.
-    pub fn launch(&self) -> Result<Operation<()>> {
-        self.provider.launch(&self.entry.id)
+    pub fn launch(&self, provider: &str, entry: &str) -> Result<Operation<()>> {
+        let registered = self
+            .providers
+            .borrow()
+            .get(provider)
+            .cloned()
+            .ok_or_else(|| Error::LibraryProvider {
+                provider: provider.to_owned(),
+                message: "provider not found".into(),
+            })?;
+        registered.launch(entry)
     }
 }
 
@@ -143,16 +113,19 @@ impl LibraryItem {
 /// # Examples
 ///
 /// ```
-/// use bottles_core::{LibraryEntry, LibraryProvider, Operation};
+/// use bottles_core::{LibraryProvider, Operation, ProviderState};
 /// use bottles_core::error::{Error, Result};
+/// use futures_util::{StreamExt, stream::{self, BoxStream}};
+/// use std::{future::ready, sync::Arc};
 ///
 /// struct EmptyProvider;
 ///
-/// #[async_trait::async_trait]
 /// impl LibraryProvider for EmptyProvider {
 ///     fn id(&self) -> &str { "empty" }
 ///
-///     async fn list_entries(&self) -> Result<Vec<LibraryEntry>> { Ok(Vec::new()) }
+///     fn entries(&self) -> BoxStream<'static, Arc<ProviderState>> {
+///         stream::once(ready(Arc::new(ProviderState::Loaded(Vec::new())))).boxed()
+///     }
 ///
 ///     fn launch(&self, _entry_id: &str) -> Result<Operation<()>> {
 ///         Err(Error::LibraryProvider {
@@ -162,17 +135,18 @@ impl LibraryItem {
 ///     }
 /// }
 /// ```
-#[async_trait]
 pub trait LibraryProvider: Send + Sync {
     /// Returns the stable registration key for this provider.
     fn id(&self) -> &str;
 
-    /// Returns entries available from the provider's current state.
+    /// Observes the provider's own published listing state.
     ///
-    /// # Errors
-    ///
-    /// Returns a provider-specific error if current entries cannot be enumerated.
-    async fn list_entries(&self) -> Result<Vec<LibraryEntry>>;
+    /// The current item must be ready when first polled. Subscribing must be cheap
+    /// and starts no work. Providers publish [`ProviderState::Loading`]
+    /// until their first listing completes, then publish loaded entries or an error.
+    /// Each item replaces the previous state; a finished stream retains its last
+    /// published state in [`Library::watch`].
+    fn entries(&self) -> BoxStream<'static, Arc<ProviderState>>;
 
     /// Prepares a lazy launch for an entry.
     ///
@@ -185,4 +159,76 @@ pub trait LibraryProvider: Send + Sync {
     /// Returns an error if the launch cannot be prepared immediately. Deferred
     /// validation and launch failures are returned by the operation.
     fn launch(&self, entry_id: &str) -> Result<Operation<()>>;
+}
+
+impl LibraryProvider for Manager<Bottle> {
+    fn id(&self) -> &str {
+        "bottles"
+    }
+
+    fn entries(&self) -> BoxStream<'static, Arc<ProviderState>> {
+        self.watch()
+            .map(|states| {
+                let mut entries = Vec::new();
+                for state in states {
+                    entries.extend(state.programs().map(|(id, program)| LibraryEntry {
+                        id: format!("{}/{id}", state.id()),
+                        title: program.name().to_owned(),
+                    }));
+                }
+                Arc::new(ProviderState::Loaded(entries))
+            })
+            .boxed()
+    }
+
+    fn launch(&self, entry_id: &str) -> Result<Operation<()>> {
+        let (bottle_id, program_id) =
+            entry_id
+                .split_once('/')
+                .ok_or_else(|| Error::LibraryProvider {
+                    provider: self.id().to_owned(),
+                    message: "expected bottle UUID/program UUID".into(),
+                })?;
+        let parse_id = |id| {
+            Uuid::parse_str(id).map_err(|error| Error::LibraryProvider {
+                provider: self.id().to_owned(),
+                message: error.to_string(),
+            })
+        };
+        Ok(self
+            .open(parse_id(bottle_id)?)?
+            .launch_program(parse_id(program_id)?)
+            .map(|_| ()))
+    }
+}
+
+#[cfg(feature = "fvs")]
+impl LibraryProvider for Manager<Program> {
+    fn id(&self) -> &str {
+        "programs"
+    }
+
+    fn entries(&self) -> BoxStream<'static, Arc<ProviderState>> {
+        self.watch()
+            .map(|states| {
+                Arc::new(ProviderState::Loaded(
+                    states
+                        .iter()
+                        .map(|state| LibraryEntry {
+                            id: state.id().to_string(),
+                            title: state.name().to_owned(),
+                        })
+                        .collect(),
+                ))
+            })
+            .boxed()
+    }
+
+    fn launch(&self, entry_id: &str) -> Result<Operation<()>> {
+        let id = Uuid::parse_str(entry_id).map_err(|error| Error::LibraryProvider {
+            provider: self.id().to_owned(),
+            message: error.to_string(),
+        })?;
+        Ok(self.open(id)?.launch().map(|_| ()))
+    }
 }
