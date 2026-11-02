@@ -5,12 +5,12 @@
 
 use crate::{
     Addon, AddonError, Context, EnvironmentConfig, EnvironmentError, Progress, Stage,
-    addons::{InstallInputs, StoredAddon, execute},
+    addons::{InstallInputs, execute},
     environment::runtime,
     error::{Error, Result},
     virgo::{LayerStore, VirgoLayer},
 };
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -113,7 +113,7 @@ impl VirgoManager {
                     self.cx
                         .addons()
                         .state()
-                        .runners()
+                        .releases::<crate::Runner>()
                         .into_iter()
                         .filter(|addon| addon.name().eq_ignore_ascii_case("soda")),
                 )
@@ -189,7 +189,7 @@ impl VirgoManager {
     ///
     /// Returns errors for missing build inputs, cancellation, runner loading,
     /// recipe execution, FVS, registry processing, filesystem work, or publication.
-    async fn prepare_addon<K: StoredAddon>(
+    async fn prepare_addon<K: crate::Kind>(
         &self,
         addon: &Addon<K>,
         base: &VirgoLayer,
@@ -205,7 +205,7 @@ impl VirgoManager {
                     .release::<crate::Runner>(base.id)
                     .ok_or(AddonError::NotFound(base.id))?;
                 let runner = soda.load_runner(self.cx.directories(), None).await?;
-                let winebridge = latest_addon(addons.winebridges().into_iter())
+                let winebridge = latest_addon(addons.releases::<crate::WineBridge>().into_iter())
                     .ok_or(EnvironmentError::WineBridgeNotDownloaded)?
                     .path(self.cx.directories());
                 let workspace = self
@@ -238,7 +238,7 @@ impl VirgoManager {
 }
 
 /// Selects the greatest valid semantic version, using UUID as a stable tie-breaker.
-fn latest_addon<K>(addons: impl Iterator<Item = Arc<Addon<K>>>) -> Option<Arc<Addon<K>>> {
+fn latest_addon<K>(addons: impl Iterator<Item = Addon<K>>) -> Option<Addon<K>> {
     addons
         .filter_map(|addon| {
             semver::Version::parse(addon.version())

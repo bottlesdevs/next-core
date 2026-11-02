@@ -2,135 +2,18 @@
 
 use super::{Addons, AddonsState};
 use crate::{
-    Addon, AddonError, Component, Dependency, Directories, Runner, Umu, WineBridge,
+    Addon, AddonError, AddonKind, Directories, Kind,
     addons::catalog::Catalog,
     error::{Error, Result},
     utils::fs,
 };
 use futures_util::TryStreamExt;
-use serde::{Deserialize, Serialize};
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-/// Projects a typed release from shared storage and selects its directory.
-pub(crate) trait StoredAddon: Sized + PartialEq + Send + Sync + 'static {
-    fn releases(directories: &Directories) -> PathBuf {
-        directories.component_releases()
-    }
-
-    fn get(release: &StoredRelease) -> Option<&Arc<Addon<Self>>>;
-    fn manifest(record: Arc<Addon<Self>>) -> StoredRelease;
-}
-
-/// The discriminator belongs to shared storage, where several kinds share a root.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub(crate) enum StoredRelease {
-    Runner(Arc<Addon<Runner>>),
-    #[serde(rename = "winebridge")]
-    WineBridge(Arc<Addon<WineBridge>>),
-    Umu(Arc<Addon<Umu>>),
-    Component(Arc<Addon<Component>>),
-    Dependency(Arc<Addon<Dependency>>),
-}
-
-impl StoredRelease {
-    fn directory(&self, directories: &Directories) -> PathBuf {
-        match self {
-            Self::Runner(record) => record.directory(directories),
-            Self::WineBridge(record) => record.directory(directories),
-            Self::Umu(record) => record.directory(directories),
-            Self::Component(record) => record.directory(directories),
-            Self::Dependency(record) => record.directory(directories),
-        }
-    }
-
-    fn id(&self) -> Uuid {
-        match self {
-            Self::Runner(record) => record.id(),
-            Self::WineBridge(record) => record.id(),
-            Self::Umu(record) => record.id(),
-            Self::Component(record) => record.id(),
-            Self::Dependency(record) => record.id(),
-        }
-    }
-}
-
-impl next_config::Config for StoredRelease {
+impl next_config::Config for Addon<AddonKind> {
     const VERSION: u32 = 1;
-}
-
-impl StoredAddon for Runner {
-    fn get(release: &StoredRelease) -> Option<&Arc<Addon<Self>>> {
-        match release {
-            StoredRelease::Runner(record) => Some(record),
-            _ => None,
-        }
-    }
-
-    fn manifest(record: Arc<Addon<Self>>) -> StoredRelease {
-        StoredRelease::Runner(record)
-    }
-}
-
-impl StoredAddon for WineBridge {
-    fn get(release: &StoredRelease) -> Option<&Arc<Addon<Self>>> {
-        match release {
-            StoredRelease::WineBridge(record) => Some(record),
-            _ => None,
-        }
-    }
-
-    fn manifest(record: Arc<Addon<Self>>) -> StoredRelease {
-        StoredRelease::WineBridge(record)
-    }
-}
-
-impl StoredAddon for Umu {
-    fn get(release: &StoredRelease) -> Option<&Arc<Addon<Self>>> {
-        match release {
-            StoredRelease::Umu(record) => Some(record),
-            _ => None,
-        }
-    }
-
-    fn manifest(record: Arc<Addon<Self>>) -> StoredRelease {
-        StoredRelease::Umu(record)
-    }
-}
-
-impl StoredAddon for Component {
-    fn get(release: &StoredRelease) -> Option<&Arc<Addon<Self>>> {
-        match release {
-            StoredRelease::Component(record) => Some(record),
-            _ => None,
-        }
-    }
-
-    fn manifest(record: Arc<Addon<Self>>) -> StoredRelease {
-        StoredRelease::Component(record)
-    }
-}
-
-impl StoredAddon for Dependency {
-    fn releases(directories: &Directories) -> PathBuf {
-        directories.dependency_releases()
-    }
-
-    fn get(release: &StoredRelease) -> Option<&Arc<Addon<Self>>> {
-        match release {
-            StoredRelease::Dependency(record) => Some(record),
-            _ => None,
-        }
-    }
-
-    fn manifest(record: Arc<Addon<Self>>) -> StoredRelease {
-        StoredRelease::Dependency(record)
-    }
 }
 
 impl Addons {
@@ -162,12 +45,12 @@ impl Addons {
     }
 
     /// Commits a prepared release and publishes the updated snapshot.
-    pub(super) async fn commit<K: StoredAddon>(
+    pub(super) async fn commit<K: Kind>(
         &self,
-        record: Arc<Addon<K>>,
+        record: Addon<K>,
         prepared: &Path,
         cancellation: &CancellationToken,
-    ) -> Result<Arc<Addon<K>>> {
+    ) -> Result<Addon<K>> {
         let id = record.id();
         let destination = record.directory(&self.0.directories);
         let _write = cancellation
@@ -179,16 +62,16 @@ impl Addons {
         }
         let mut next = self.state().as_ref().clone();
         if let Some(current) = next.releases.get(&id) {
-            let current = K::get(current).ok_or(AddonError::Duplicate(id))?;
-            if current != &record {
+            let current = current.clone().cast().ok_or(AddonError::WrongKind(id))?;
+            if current != record {
                 return Err(AddonError::InvalidRelease(destination).into());
             }
-            return Ok(current.clone());
+            return Ok(current);
         }
         if crate::utils::fs::exists(&destination).await? {
             return Err(AddonError::TargetExists(destination).into());
         }
-        let stored = K::manifest(record.clone());
+        let stored = record.clone().erase();
         next_config::save(prepared.join("release.toml"), &stored).await?;
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
@@ -213,7 +96,7 @@ impl AddonsState {
             directories.dependency_releases(),
         ] {
             for (id, path) in release_manifests(&root).await? {
-                let record: StoredRelease = next_config::load(&path).await?;
+                let record: Addon<AddonKind> = next_config::load(&path).await?;
                 if record.id() != id {
                     return Err(AddonError::InvalidRelease(path).into());
                 }

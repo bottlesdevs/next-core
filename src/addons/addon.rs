@@ -3,6 +3,7 @@
 //! An [`Addon`] is the durable form of a release, freezing its catalog metadata
 //! and any installation recipe when the release is acquired.
 //! Runtime tools have distinct types and empty installation resources.
+//! [`Kind`] connects each marker type to its catalog [`AddonKind`].
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
@@ -17,7 +18,7 @@ use crate::{
 };
 
 use super::{
-    StoredAddon,
+    AddonKind,
     recipe::{InstallResource, InstallStep},
 };
 
@@ -88,6 +89,14 @@ impl<K> Addon<K> {
         &self.requirements
     }
 
+    /// Returns the catalog kind of this release.
+    pub fn kind(&self) -> AddonKind
+    where
+        K: Kind,
+    {
+        self.kind.widen()
+    }
+
     pub(crate) fn metadata(&self) -> (Uuid, &str, &[Requirement]) {
         (self.id, &self.name, &self.requirements)
     }
@@ -103,16 +112,52 @@ impl<K> Addon<K> {
     /// Returns the shared payload directory for this release.
     pub(crate) fn path(&self, directories: &Directories) -> PathBuf
     where
-        K: StoredAddon,
+        K: Kind,
     {
         self.directory(directories).join("payload")
     }
+
     /// Returns the managed directory containing this release's manifest and payload.
     pub(super) fn directory(&self, directories: &Directories) -> PathBuf
     where
-        K: StoredAddon,
+        K: Kind,
     {
-        K::releases(directories).join(self.id().to_string())
+        let releases = match self.kind.widen() {
+            AddonKind::Dependency => directories.dependency_releases(),
+            _ => directories.component_releases(),
+        };
+        releases.join(self.id().to_string())
+    }
+
+    /// Converts this record to kind `J`, or returns `None` if its kind differs.
+    ///
+    /// Casting to [`AddonKind`] always succeeds.
+    pub fn cast<J: Kind>(self) -> Option<Addon<J>>
+    where
+        K: Kind,
+    {
+        Some(Addon {
+            kind: J::narrow(self.kind.widen())?,
+            id: self.id,
+            name: self.name,
+            version: self.version,
+            requirements: self.requirements,
+            resources: self.resources,
+        })
+    }
+
+    pub(super) fn erase(self) -> Addon<AddonKind>
+    where
+        K: Kind,
+    {
+        Addon {
+            kind: self.kind.widen(),
+            id: self.id,
+            name: self.name,
+            version: self.version,
+            requirements: self.requirements,
+            resources: self.resources,
+        }
     }
 }
 
@@ -251,6 +296,67 @@ pub enum Requirement {
     Id(Uuid),
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Identifies the kind parameter of an [`Addon`].
+///
+/// Implemented by the marker types [`Runner`], [`WineBridge`], [`Umu`],
+/// [`Component`], and [`Dependency`], and by [`AddonKind`], which stands for a
+/// release of any kind.
+pub trait Kind: sealed::Sealed + Clone + PartialEq + Send + Sync + 'static {
+    /// Returns the marker for `kind`, or `None` if `kind` is another kind.
+    fn narrow(kind: AddonKind) -> Option<Self>;
+    /// Returns the catalog kind described by this marker.
+    fn widen(&self) -> AddonKind;
+}
+
+impl sealed::Sealed for AddonKind {}
+
+impl Kind for AddonKind {
+    fn narrow(kind: AddonKind) -> Option<Self> {
+        Some(kind)
+    }
+
+    fn widen(&self) -> AddonKind {
+        *self
+    }
+}
+
+macro_rules! unit_kinds {
+    ($($marker:ident),*) => {$(
+        impl sealed::Sealed for $marker {}
+
+        impl Kind for $marker {
+            fn narrow(kind: AddonKind) -> Option<Self> {
+                matches!(kind, AddonKind::$marker).then_some(Self {})
+            }
+
+            fn widen(&self) -> AddonKind {
+                AddonKind::$marker
+            }
+        }
+    )*};
+}
+
+unit_kinds!(Runner, WineBridge, Umu, Dependency);
+
+impl sealed::Sealed for Component {}
+
+impl Kind for Component {
+    fn narrow(kind: AddonKind) -> Option<Self> {
+        match kind {
+            AddonKind::Component { slot } => Some(Self { slot }),
+            _ => None,
+        }
+    }
+
+    fn widen(&self) -> AddonKind {
+        AddonKind::Component { slot: self.slot }
+    }
+}
+
 /// Marks an acquired Wine or Proton runtime.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -273,7 +379,7 @@ pub struct Umu {}
 #[serde(deny_unknown_fields)]
 pub struct Component {
     /// Environment role occupied by the component.
-    pub(crate) slot: Slot,
+    pub slot: Slot,
 }
 
 /// Marks an addon as a dependency that may coexist with other dependencies.

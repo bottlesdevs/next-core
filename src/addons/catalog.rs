@@ -199,8 +199,8 @@ pub enum AddonKind {
 
 /// Describes a release advertised by a remote addon catalog.
 ///
-/// An entry is only metadata. Its [`kind`](Self::kind) selects the corresponding
-/// acquisition method on [`Addons`](super::Addons). Check
+/// An entry is only metadata. Acquire it with [`Addons::fetch`](super::Addons::fetch)
+/// as the [`Kind`](super::Kind) matching its [`kind`](Self::kind). Check
 /// [`is_supported`](Self::is_supported) before offering it for the current platform.
 ///
 /// # Examples
