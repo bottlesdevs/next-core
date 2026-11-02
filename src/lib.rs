@@ -27,7 +27,7 @@ mod winebridge;
 
 pub use addons::{
     Addon, AddonError, AddonKind, Addons, AddonsState, CatalogEntry, CatalogError, Component,
-    Dependency, InstallerError, Requirement, Runner, Slot, Umu, WineBridge,
+    Dependency, InstallerError, Kind, Requirement, Runner, Slot, Umu, WineBridge,
 };
 pub use bottle::{Bottle, BottleData, BottleError, BottleState};
 pub use command::wrappers::{

@@ -9,11 +9,8 @@ mod download;
 mod refresh;
 mod storage;
 
-pub(crate) use storage::StoredAddon;
-use storage::StoredRelease;
-
 use super::{
-    Addon, Component, Dependency, Runner, Umu, WineBridge,
+    Addon, Kind,
     catalog::{AddonKind, Catalog, CatalogEntry},
 };
 use crate::{Directories, error::Result};
@@ -70,7 +67,7 @@ struct AddonsInner {
 pub struct AddonsState {
     component_catalog: Option<Arc<Catalog>>,
     dependency_catalog: Option<Arc<Catalog>>,
-    releases: HashMap<Uuid, StoredRelease>,
+    releases: HashMap<Uuid, Addon<AddonKind>>,
 }
 
 impl Addons {
@@ -128,13 +125,19 @@ impl Addons {
 }
 
 impl AddonsState {
-    fn releases<K: StoredAddon>(&self) -> Vec<Arc<Addon<K>>> {
-        self.releases.values().filter_map(K::get).cloned().collect()
+    /// Returns all locally acquired releases of kind `K` in unspecified order.
+    ///
+    /// Use [`AddonKind`] as `K` to list releases of every kind.
+    pub fn releases<K: Kind>(&self) -> Vec<Addon<K>> {
+        self.releases
+            .values()
+            .filter_map(|release| release.clone().cast())
+            .collect()
     }
 
-    #[cfg(feature = "fvs")]
-    pub(crate) fn release<K: StoredAddon>(&self, id: Uuid) -> Option<Arc<Addon<K>>> {
-        self.releases.get(&id).and_then(K::get).cloned()
+    /// Returns the locally acquired release with UUID `id` if it is of kind `K`.
+    pub fn release<K: Kind>(&self, id: Uuid) -> Option<Addon<K>> {
+        self.releases.get(&id)?.clone().cast()
     }
 
     /// Returns runner, `WineBridge`, UMU, and prefix-component entries in catalog order.
@@ -160,35 +163,6 @@ impl AddonsState {
             .filter(|entry| entry.kind() == AddonKind::Dependency)
             .cloned()
             .collect()
-    }
-
-    /// Returns all locally acquired runners in unspecified order.
-    pub fn runners(&self) -> Vec<Arc<Addon<Runner>>> {
-        self.releases()
-    }
-
-    /// Returns all locally acquired `WineBridge` releases in unspecified order.
-    pub fn winebridges(&self) -> Vec<Arc<Addon<WineBridge>>> {
-        self.releases()
-    }
-
-    /// Returns all locally acquired UMU releases in unspecified order.
-    pub fn umus(&self) -> Vec<Arc<Addon<Umu>>> {
-        self.releases()
-    }
-
-    /// Returns all locally acquired component releases.
-    ///
-    /// The order is unspecified.
-    pub fn components(&self) -> Vec<Arc<Addon<Component>>> {
-        self.releases()
-    }
-
-    /// Returns all locally acquired dependency releases.
-    ///
-    /// The result order is unspecified.
-    pub fn dependencies(&self) -> Vec<Arc<Addon<Dependency>>> {
-        self.releases()
     }
 
     /// Returns the entry with UUID `id` from the mixed component catalog.
