@@ -1,13 +1,13 @@
-//! Selects, builds, and orders immutable Virgo artifacts for an environment.
+//! Selects, builds, and orders immutable Virgo artifacts for a prefix.
 //!
 //! Frozen addon selections resolve to a base layer, a runner adapter,
 //! component layers, and dependency layers in composition order.
 
 use crate::{
-    Addon, AddonError, Context, EnvironmentError, EnvironmentState, Progress, Stage,
+    Addon, AddonError, Context, PrefixError, PrefixState, Progress, Stage,
     addons::{InstallInputs, execute},
-    environment::runtime,
     error::{Error, Result},
+    prefix::runtime,
     virgo::{LayerStore, VirgoLayer},
 };
 use std::path::Path;
@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) struct VirgoManager {
     cx: Context,
-    pub(in crate::environment) layers: LayerStore,
+    pub(in crate::prefix) layers: LayerStore,
 }
 
 impl VirgoManager {
@@ -39,9 +39,9 @@ impl VirgoManager {
     ///
     /// Returns cancellation, catalog, runner, installer, FVS, registry, or
     /// filesystem errors encountered while resolving or building an artifact.
-    pub(in crate::environment) async fn prepare_artifacts(
+    pub(in crate::prefix) async fn prepare_artifacts(
         &self,
-        config: &EnvironmentState,
+        config: &PrefixState,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
@@ -77,9 +77,9 @@ impl VirgoManager {
     ///
     /// Returns [`crate::virgo::VirgoError::MissingArtifact`] for an absent cache
     /// entry, or an error when a manifest is unreadable or invalid.
-    pub(in crate::environment) async fn composition(
+    pub(in crate::prefix) async fn composition(
         &self,
-        config: &EnvironmentState,
+        config: &PrefixState,
     ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
         let base = self.layers.require(Path::new("soda"), None).await?;
         let runner = config.runner.id();
@@ -103,7 +103,7 @@ impl VirgoManager {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvironmentError::SodaNotDownloaded`] when no eligible local
+    /// Returns [`PrefixError::SodaNotDownloaded`] when no eligible local
     /// runner exists, plus cancellation, runner, FVS, registry, or filesystem errors.
     async fn prepare_base(&self, cancellation: &CancellationToken) -> Result<VirgoLayer> {
         let destination = Path::new("soda");
@@ -117,7 +117,7 @@ impl VirgoManager {
                         .into_iter()
                         .filter(|addon| addon.name().eq_ignore_ascii_case("soda")),
                 )
-                .ok_or(EnvironmentError::SodaNotDownloaded)?;
+                .ok_or(PrefixError::SodaNotDownloaded)?;
                 let runner = soda.load_runner(self.cx.directories(), None).await?;
                 let workspace = self
                     .layers
@@ -126,9 +126,9 @@ impl VirgoManager {
                 let executed = if cancellation.is_cancelled() {
                     Err(Error::Cancelled)
                 } else {
-                    runner.wineboot(&workspace.prefix, "--init").await
+                    runner.wineboot(&workspace.wineprefix, "--init").await
                 };
-                runtime::stop(runner.as_ref(), &workspace.prefix).await?;
+                runtime::stop(runner.as_ref(), &workspace.wineprefix).await?;
                 self.layers
                     .finish_build(
                         workspace,
@@ -150,7 +150,7 @@ impl VirgoManager {
     /// filesystem, or publication errors.
     async fn prepare_adapter(
         &self,
-        config: &EnvironmentState,
+        config: &PrefixState,
         base: &VirgoLayer,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
@@ -169,9 +169,9 @@ impl VirgoManager {
                 let executed = if cancellation.is_cancelled() {
                     Err(Error::Cancelled)
                 } else {
-                    runner.wineboot(&workspace.prefix, "--init").await
+                    runner.wineboot(&workspace.wineprefix, "--init").await
                 };
-                runtime::stop(runner.as_ref(), &workspace.prefix).await?;
+                runtime::stop(runner.as_ref(), &workspace.wineprefix).await?;
                 self.layers
                     .finish_build(workspace, id, id.to_string(), executed, cancellation)
                     .await
@@ -182,7 +182,7 @@ impl VirgoManager {
     /// Reuses cached addon effects or executes the frozen recipe in an isolated build.
     ///
     /// Cache misses execute with the pinned Soda base runner and the greatest
-    /// semantic-versioned local `WineBridge`, independently of the environment's
+    /// semantic-versioned local `WineBridge`, independently of the prefix's
     /// selected runtime tools.
     ///
     /// # Errors
@@ -206,7 +206,7 @@ impl VirgoManager {
                     .ok_or(AddonError::NotFound(base.id))?;
                 let runner = soda.load_runner(self.cx.directories(), None).await?;
                 let winebridge = latest_addon(addons.releases::<crate::WineBridge>().into_iter())
-                    .ok_or(EnvironmentError::WineBridgeNotDownloaded)?
+                    .ok_or(PrefixError::WineBridgeNotDownloaded)?
                     .path(self.cx.directories());
                 let workspace = self
                     .layers
@@ -214,7 +214,7 @@ impl VirgoManager {
                     .await?;
                 let executed = execute(
                     InstallInputs {
-                        prefix: &workspace.prefix,
+                        wineprefix: &workspace.wineprefix,
                         staging: &self.cx.directories().staging(),
                         runner: runner.as_ref(),
                         winebridge: &winebridge,
@@ -228,7 +228,7 @@ impl VirgoManager {
                     },
                 )
                 .await;
-                runtime::stop(runner.as_ref(), &workspace.prefix).await?;
+                runtime::stop(runner.as_ref(), &workspace.wineprefix).await?;
                 self.layers
                     .finish_build(workspace, id, id.to_string(), executed, cancellation)
                     .await

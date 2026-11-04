@@ -1,6 +1,6 @@
-//! Coordinated edits to an environment configuration.
+//! Coordinated edits to a prefix configuration.
 //!
-//! [`Edit`] is exposed only inside an environment's edit callback. Changes are made to
+//! [`Edit`] is exposed only inside a prefix's edit callback. Changes are made to
 //! a private draft, validated as a whole, applied to storage, persisted, and
 //! published only after the callback succeeds. Virgo edits recover from a failed
 //! storage change; conventional prefixes can remain partially modified on failure.
@@ -11,14 +11,14 @@ use crate::{
 
 #[cfg(feature = "fvs")]
 use super::history;
-use super::{EnvironmentState, Inner, backend::standard};
+use super::{Inner, PrefixState, backend::standard};
 use crate::{
-    EnvironmentError, Operation, PrefixBackend, Progress, Stage, error::Error,
+    Operation, PrefixBackend, PrefixError, Progress, Stage, error::Error,
     winebridge::WineBridgeClient,
 };
 use std::sync::Arc;
 
-/// Provides mutable access to an environment's editable state.
+/// Provides mutable access to a prefix's editable state.
 ///
 /// Changes remain private until the edit operation completes. The
 /// [`PrefixBackend`] cannot be changed through this API.
@@ -34,7 +34,7 @@ use std::sync::Arc;
 /// }
 /// ```
 pub struct Edit<'a> {
-    pub(crate) draft: &'a mut EnvironmentState,
+    pub(crate) draft: &'a mut PrefixState,
 }
 
 impl Edit<'_> {
@@ -87,12 +87,12 @@ impl Edit<'_> {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvironmentError::ComponentNotInstalled`] if `slot` is empty.
+    /// Returns [`PrefixError::ComponentNotInstalled`] if `slot` is empty.
     pub fn remove_component(&mut self, slot: Slot) -> Result<()> {
         self.draft
             .components
             .remove(&slot)
-            .ok_or(EnvironmentError::ComponentNotInstalled(slot))?;
+            .ok_or(PrefixError::ComponentNotInstalled(slot))?;
         Ok(())
     }
 
@@ -122,11 +122,11 @@ impl Edit<'_> {
 impl Inner {
     /// Runs a coordinated edit and publishes it only after application succeeds.
     ///
-    /// Runtime and prefix changes require a stopped environment. Runtime-only
+    /// Runtime and prefix changes require a stopped prefix. Runtime-only
     /// changes save directly for Standard prefixes. Virgo rebuilds the
     /// composition when the runner changes; UMU and WineBridge changes only save.
-    /// Standard prefix changes apply in place without rollback; Virgo environments
-    /// checkpoint and recover the environment if workspace preparation or persistence fails. A
+    /// Standard prefix changes apply in place without rollback; Virgo prefixes
+    /// checkpoint and recover the prefix if workspace preparation or persistence fails. A
     /// standard-prefix application or subsequent save failure can therefore leave
     /// prefix contents inconsistent with the last published configuration.
     ///
@@ -137,16 +137,16 @@ impl Inner {
     /// # Errors
     ///
     /// Returns an error when the callback rejects the draft, validation fails,
-    /// the environment is running during a software change, cancellation is
+    /// the prefix is running during a software change, cancellation is
     /// observed at a backend safe point, or backend application/persistence fails.
     pub(crate) fn edit<R: Send + 'static>(
         self: &Arc<Self>,
         callback: impl FnOnce(&mut Edit<'_>) -> Result<R> + Send + 'static,
     ) -> Operation<R> {
-        let environment = self.clone();
+        let prefix = self.clone();
         Operation::new(move |progress, cancellation| async move {
-            let _control = environment.lock_control(&cancellation).await?;
-            let previous = environment.state()?;
+            let _control = prefix.lock_control(&cancellation).await?;
+            let previous = prefix.state()?;
             let mut draft = previous.as_ref().clone();
             let result = callback(&mut Edit { draft: &mut draft })?;
             draft.validate()?;
@@ -165,14 +165,14 @@ impl Inner {
             let runtime_changed =
                 runner_changed || umu_changed || before.winebridge != after.winebridge;
             if prefix_changed || runtime_changed {
-                if WineBridgeClient::try_connect(&environment.root.join("prefix"))
+                if WineBridgeClient::try_connect(&prefix.root.join("prefix"))
                     .await?
                     .is_some()
                 {
-                    return Err(EnvironmentError::MustBeStopped.into());
+                    return Err(PrefixError::MustBeStopped.into());
                 }
                 progress.send_replace(Some(Progress::new(Stage::Stopping)));
-                environment.stop_locked().await?;
+                prefix.stop_locked().await?;
                 if cancellation.is_cancelled() {
                     return Err(Error::Cancelled);
                 }
@@ -183,43 +183,43 @@ impl Inner {
                     standard::apply(
                         before,
                         after,
-                        &environment.root,
-                        &environment.context,
+                        &prefix.root,
+                        &prefix.context,
                         &progress,
                         &cancellation,
                     )
                     .await?;
-                    environment.save(&draft).await?;
+                    prefix.save(&draft).await?;
                 }
                 #[cfg(feature = "fvs")]
                 PrefixBackend::Virgo if prefix_changed || runner_changed => {
-                    let (base, overlays) = environment
+                    let (base, overlays) = prefix
                         .virgo
                         .prepare_artifacts(after, &progress, &cancellation)
                         .await?;
                     let checkpoint = history::capture(
-                        &environment.root,
+                        &prefix.root,
                         history::AUTO_CHECKPOINT_MESSAGE.into(),
                         false,
                         Stage::Checkpointing,
-                        &environment.context,
+                        &prefix.context,
                         &progress,
                     )
                     .await?;
                     let applied = async {
-                        environment
+                        prefix
                             .virgo
                             .layers
-                            .prepare_workspace(&environment.root, &base, &overlays, &cancellation)
+                            .prepare_workspace(&prefix.root, &base, &overlays, &cancellation)
                             .await?;
-                        environment.save(&draft).await
+                        prefix.save(&draft).await
                     }
                     .await;
                     history::recover(
                         applied,
-                        &environment.root,
+                        &prefix.root,
                         &checkpoint,
-                        &environment.context,
+                        &prefix.context,
                         &progress,
                     )
                     .await?;
@@ -227,13 +227,13 @@ impl Inner {
                 _ if runner_changed || umu_changed => {
                     after
                         .runner
-                        .load_runner(environment.context.directories(), after.umu.as_ref())
+                        .load_runner(prefix.context.directories(), after.umu.as_ref())
                         .await?;
-                    environment.save(&draft).await?;
+                    prefix.save(&draft).await?;
                 }
-                _ => environment.save(&draft).await?,
+                _ => prefix.save(&draft).await?,
             }
-            environment.publish(draft);
+            prefix.publish(draft);
             Ok(result)
         })
     }

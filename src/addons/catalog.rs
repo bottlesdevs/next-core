@@ -225,7 +225,7 @@ impl CatalogEntry {
         self.role
     }
 
-    /// Returns the constraints that an environment must satisfy for this release.
+    /// Returns the constraints that a prefix must satisfy for this release.
     pub fn requirements(&self) -> &[Requirement] {
         &self.requirements
     }

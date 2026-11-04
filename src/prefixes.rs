@@ -1,15 +1,15 @@
-//! Live collections of persisted environments.
+//! Live collections of persisted prefixes.
 //!
-//! A [`Manager`] is loaded once by [`crate::Bottles`] and then updated by create,
+//! [`Prefixes`] is loaded once by [`crate::Bottles`] and then updated by create,
 //! edit, rollback, and delete operations. It does not poll the filesystem for
 //! changes made outside this crate.
 
 #[cfg(feature = "fvs")]
-use crate::environment::VirgoManager;
-use crate::environment::{Inner, Inventory};
+use crate::prefix::VirgoManager;
+use crate::prefix::{Inner, Inventory};
 use crate::{
-    Addon, Context, Environment, EnvironmentError, EnvironmentState, Operation, PrefixBackend,
-    Progress, Runner, Stage, Umu, WineBridge, error::Result,
+    Addon, Context, Operation, Prefix, PrefixBackend, PrefixError, PrefixState, Progress, Runner,
+    Stage, Umu, WineBridge, error::Result,
 };
 use futures_core::Stream;
 use futures_util::StreamExt;
@@ -22,51 +22,51 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
-/// Tracks the live collection of environments.
+/// Tracks the live collection of prefixes.
 ///
-/// Obtain it from [`crate::Bottles::environments`]. Clones share collection
+/// Obtain it from [`crate::Bottles::prefixes`]. Clones share collection
 /// membership and its [`Inventory`]. Opening the same UUID through clones
 /// returns handles to the same live state. The collection is loaded once from
-/// library-managed storage and updated by manager operations; it does not
+/// library-managed storage and updated by its operations; it does not
 /// observe external filesystem changes.
 #[derive(Clone)]
-pub struct Manager {
+pub struct Prefixes {
     root: PathBuf,
     context: Context,
     #[cfg(feature = "fvs")]
     virgo: Arc<VirgoManager>,
     inventory: watch::Sender<Inventory>,
-    members: Arc<Mutex<HashMap<Uuid, Environment>>>,
+    members: Arc<Mutex<HashMap<Uuid, Prefix>>>,
 }
 
-impl Manager {
+impl Prefixes {
     /// Returns cloned handles for the currently known members.
     ///
     /// Order is unspecified and must not be used as an identity or stable
     /// presentation order.
-    pub fn list(&self) -> Vec<Environment> {
+    pub fn list(&self) -> Vec<Prefix> {
         self.members.lock().unwrap().values().cloned().collect()
     }
 
     /// Looks up a member without filesystem or runtime work.
     ///
-    /// Repeated calls through this manager or its clones return handles to the
+    /// Repeated calls through this collection or its clones return handles to the
     /// same live state. Only members loaded at startup or created through this
-    /// manager are opened.
+    /// collection are opened.
     ///
     /// # Errors
     ///
-    /// Returns [`EnvironmentError::NotFound`] if `id` is not in the collection.
-    pub fn open(&self, id: Uuid) -> Result<Environment> {
+    /// Returns [`PrefixError::NotFound`] if `id` is not in the collection.
+    pub fn open(&self, id: Uuid) -> Result<Prefix> {
         self.members
             .lock()
             .unwrap()
             .get(&id)
             .cloned()
-            .ok_or_else(|| EnvironmentError::NotFound(id).into())
+            .ok_or_else(|| PrefixError::NotFound(id).into())
     }
 
-    /// Returns the current state of every environment, ordered by identifier.
+    /// Returns the current state of every prefix, ordered by identifier.
     pub fn inventory(&self) -> Inventory {
         self.inventory.borrow().clone()
     }
@@ -75,18 +75,18 @@ impl Manager {
     ///
     /// First yields the current inventory, then the latest one after each
     /// change. Slow consumers may miss intermediate inventories. The stream ends
-    /// when the manager, its clones, and every environment handle are dropped.
+    /// when the collection, its clones, and every prefix handle are dropped.
     ///
     /// # Examples
     ///
     /// ```
-    /// # use bottles_core::Manager;
+    /// # use bottles_core::Prefixes;
     /// # use futures_lite::StreamExt;
-    /// # async fn observe(manager: &Manager) {
-    /// let updates = manager.watch();
+    /// # async fn observe(prefixes: &Prefixes) {
+    /// let updates = prefixes.watch();
     /// futures_lite::pin!(updates);
     /// if let Some(inventory) = updates.next().await {
-    ///     println!("{} environments", inventory.len());
+    ///     println!("{} prefixes", inventory.len());
     /// }
     /// # }
     /// ```
@@ -94,22 +94,22 @@ impl Manager {
         WatchStream::new(self.inventory.subscribe())
     }
 
-    /// Loads valid UUID-named environments found below `root`.
+    /// Loads valid UUID-named prefixes found below `root`.
     ///
-    /// A missing root produces an empty manager. Entries without `state.toml`
+    /// A missing root produces an empty collection. Entries without `state.toml`
     /// and non-directory entries are ignored; malformed or invalid persisted
     /// state aborts the entire load.
     ///
     /// # Errors
     ///
     /// Returns an error when directory enumeration, state loading, validation,
-    /// or environment reconstruction fails.
+    /// or prefix reconstruction fails.
     pub(crate) async fn load(
         root: PathBuf,
         context: Context,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
     ) -> Result<Self> {
-        let manager = Self {
+        let prefixes = Self {
             root,
             context,
             #[cfg(feature = "fvs")]
@@ -119,15 +119,15 @@ impl Manager {
         };
         let mut states = BTreeMap::new();
         let mut members = HashMap::new();
-        let mut entries = match async_fs::read_dir(&manager.root).await {
+        let mut entries = match async_fs::read_dir(&prefixes.root).await {
             Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(manager),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(prefixes),
             Err(error) => return Err(error.into()),
         };
         while let Some(entry) = entries.next().await {
             let root = entry?.path();
             let file = root.join("state.toml");
-            let state: EnvironmentState = match next_config::load(&file).await {
+            let state: PrefixState = match next_config::load(&file).await {
                 Ok(state) => state,
                 Err(next_config::error::Error::Io(error))
                     if matches!(
@@ -140,17 +140,17 @@ impl Manager {
                 Err(error) => return Err(error.into()),
             };
             state.validate()?;
-            let environment = manager.environment(root)?;
-            states.insert(environment.id(), Arc::new(state));
-            members.insert(environment.id(), environment);
+            let prefix = prefixes.prefix(root)?;
+            states.insert(prefix.id(), Arc::new(state));
+            members.insert(prefix.id(), prefix);
         }
-        *manager.members.lock().unwrap() = members;
-        manager.inventory.send_replace(Arc::new(states));
-        Ok(manager)
+        *prefixes.members.lock().unwrap() = members;
+        prefixes.inventory.send_replace(Arc::new(states));
+        Ok(prefixes)
     }
 
-    fn environment(&self, root: PathBuf) -> Result<Environment> {
-        Ok(Environment(Inner::new(
+    fn prefix(&self, root: PathBuf) -> Result<Prefix> {
+        Ok(Prefix(Inner::new(
             root,
             self.inventory.clone(),
             self.context.clone(),
@@ -159,14 +159,14 @@ impl Manager {
         )?))
     }
 
-    /// Creates an operation that initializes and persists an environment.
+    /// Creates an operation that initializes and persists a prefix.
     ///
     /// A new UUID is assigned when the operation starts. Addon coexistence
     /// requirements are checked before creating files; missing requirements fail
     /// without selecting or downloading other addons. Standard creation
     /// initializes Wine without FVS. Virgo, available with the `fvs` feature,
     /// builds missing shared layers before composing private storage.
-    /// The environment is added to this manager only after initialization and
+    /// The prefix is added to this collection only after initialization and
     /// `state.toml` persistence succeed. Cancellation or persistence failure
     /// after backend initialization attempts best-effort removal; earlier
     /// backend failures, dropping a started operation, or cleanup failure can
@@ -174,7 +174,7 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvironmentError::RequiresAddon`] for missing coexistence
+    /// Returns [`PrefixError::RequiresAddon`] for missing coexistence
     /// requirements before creating any files. Awaiting the operation can also
     /// fail during cancellation, service startup, I/O, prefix initialization, or
     /// state persistence.
@@ -184,25 +184,22 @@ impl Manager {
         runner: Addon<Runner>,
         winebridge: Addon<WineBridge>,
         umu: Option<Addon<Umu>>,
-    ) -> Operation<Environment> {
-        let manager = self.clone();
+    ) -> Operation<Prefix> {
+        let prefixes = self.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            let state = EnvironmentState::new(backend, runner, winebridge, umu);
+            let state = PrefixState::new(backend, runner, winebridge, umu);
             state.validate()?;
-            let environment = manager.environment(manager.root.join(Uuid::new_v4().to_string()))?;
-            environment
-                .0
-                .create(&state, &progress, &cancellation)
-                .await?;
+            let prefix = prefixes.prefix(prefixes.root.join(Uuid::new_v4().to_string()))?;
+            prefix.0.create(&state, &progress, &cancellation).await?;
             // Join membership first so watchers can open what they observe.
-            manager
+            prefixes
                 .members
                 .lock()
                 .unwrap()
-                .insert(environment.id(), environment.clone());
-            environment.0.publish(state);
-            Ok(environment)
+                .insert(prefix.id(), prefix.clone());
+            prefix.0.publish(state);
+            Ok(prefix)
         })
     }
 
@@ -223,13 +220,13 @@ impl Manager {
     /// Awaiting the operation fails if the member does not exist, cannot be
     /// stopped, observes cancellation, or cannot move its root into trash.
     pub fn delete(&self, id: Uuid) -> Operation<()> {
-        let manager = self.clone();
+        let prefixes = self.clone();
         Operation::new(move |progress, cancellation| async move {
-            let handle = manager.open(id)?;
+            let handle = prefixes.open(id)?;
             handle
                 .0
                 .delete(&progress, &cancellation, || {
-                    manager.members.lock().unwrap().remove(&id);
+                    prefixes.members.lock().unwrap().remove(&id);
                 })
                 .await
         })

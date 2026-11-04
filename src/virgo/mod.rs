@@ -17,7 +17,7 @@ use std::{path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-/// FVS repository block size used for Virgo artifacts and environment history.
+/// FVS repository block size used for Virgo artifacts and prefix history.
 pub(crate) const FVS_BLOCK_SIZE: u32 = 1024 * 1024;
 
 pub(crate) struct LayerStore {

@@ -9,7 +9,7 @@ use thiserror::Error;
 pub use crate::virgo::VirgoError;
 pub use crate::{
     addons::{AddonError, CatalogError, InstallerError},
-    environment::EnvironmentError,
+    prefix::PrefixError,
     runner::RunnerError,
     utils::fs::archive::ArchiveError,
     winebridge::BridgeError,
@@ -55,9 +55,9 @@ pub enum Error {
     /// The FVS client or daemon failed.
     #[error("FVS error: {0}")]
     Fvs(#[from] FvsError),
-    /// Environment state, lifecycle, or validation failed.
-    #[error("Environment error: {0}")]
-    Environment(#[from] EnvironmentError),
+    /// Prefix state, lifecycle, or validation failed.
+    #[error("Prefix error: {0}")]
+    Prefix(#[from] PrefixError),
     #[cfg(feature = "fvs")]
     /// Virgo layered storage failed.
     #[error("Virgo error: {0}")]

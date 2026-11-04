@@ -103,7 +103,7 @@ impl Progress {
 pub enum Stage {
     /// Resolves inputs and validates prerequisites.
     Preparing,
-    /// Stops an active environment before mutation.
+    /// Stops an active prefix before mutation.
     Stopping,
     /// Downloads a named artifact.
     Downloading {
@@ -125,9 +125,9 @@ pub enum Stage {
     #[cfg(feature = "fvs")]
     /// Restores an FVS revision.
     Restoring,
-    /// Reconstructs environment state after a selection changes.
+    /// Reconstructs prefix state after a selection changes.
     Rebuilding,
-    /// Applies configuration to an environment.
+    /// Applies configuration to a prefix.
     Configuring,
     /// Removes installed data.
     Removing,

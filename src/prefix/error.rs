@@ -1,15 +1,15 @@
-//! Errors raised while loading, validating, or mutating environments.
+//! Errors raised while loading, validating, or mutating prefixes.
 
 use crate::{Requirement, Slot};
 use thiserror::Error;
 use uuid::Uuid;
 
-/// Describes invalid environment state and operations rejected by its lifecycle.
+/// Describes invalid prefix state and operations rejected by its lifecycle.
 ///
 /// I/O, runner, addon, `WineBridge`, and Virgo failures are represented by other
 /// variants of [`crate::error::Error`].
 #[derive(Debug, Error)]
-pub enum EnvironmentError {
+pub enum PrefixError {
     /// No locally acquired Soda runner has a parseable semantic version.
     #[cfg(feature = "fvs")]
     #[error("no locally recorded Soda runner with a valid semantic version")]
@@ -18,30 +18,28 @@ pub enum EnvironmentError {
     #[cfg(feature = "fvs")]
     #[error("no locally recorded WineBridge with a valid semantic version")]
     WineBridgeNotDownloaded,
-    /// The manager has no environment with the requested identifier.
-    #[error("environment {0} was not found")]
+    /// The collection has no prefix with the requested identifier.
+    #[error("prefix {0} was not found")]
     NotFound(Uuid),
-    /// The environment was deleted while a handle to it remained alive.
-    #[error("environment was deleted")]
+    /// The prefix was deleted while a handle to it remained alive.
+    #[error("prefix was deleted")]
     Deleted,
     /// Restoring the automatic checkpoint after a failed mutation also failed.
     #[cfg(feature = "fvs")]
-    #[error(
-        "rollback failed for {root}; repair or restore this environment before retrying: {source}"
-    )]
+    #[error("rollback failed for {root}; repair or restore this prefix before retrying: {source}")]
     Rollback {
-        /// Root directory of the environment that could not be recovered.
+        /// Root directory of the prefix that could not be recovered.
         root: std::path::PathBuf,
         /// Error returned while restoring the checkpoint.
         #[source]
         source: Box<crate::error::Error>,
     },
 
-    /// Software selections cannot be changed while the environment is running.
-    #[error("stop the environment before changing its settings")]
+    /// Software selections cannot be changed while the prefix is running.
+    #[error("stop the prefix before changing its settings")]
     MustBeStopped,
     /// A proposed edit violates an invariant not represented by another variant.
-    #[error("invalid environment edit: {0}")]
+    #[error("invalid prefix edit: {0}")]
     InvalidEdit(&'static str),
     /// No selected component occupies the requested [`Slot`].
     #[error("component slot {0:?} is not installed")]

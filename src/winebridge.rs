@@ -94,7 +94,7 @@ async fn endpoint_from_port_file(path: &Path) -> Result<Option<Endpoint>> {
 /// Managed client for a `WineBridge` server running inside a Wine prefix.
 ///
 /// Startup waits for the gRPC health endpoint to report ready. Dropping a client
-/// does not stop the server; it remains available until the owning environment
+/// does not stop the server; it remains available until the owning prefix
 /// is stopped. Filesystem paths are forwarded to the server without confinement
 /// to the Wine prefix.
 pub(crate) struct WineBridgeClient {

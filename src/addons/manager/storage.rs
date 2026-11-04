@@ -19,7 +19,7 @@ impl next_config::Config for Addon<AddonRole> {
 impl Addons {
     /// Removes an acquired release of any role from shared storage.
     ///
-    /// Existing environment selections retain their records but lose the payload.
+    /// Existing prefix selections retain their records but lose the payload.
     /// Built Virgo artifacts are unaffected. The release is moved to trash before
     /// the new state is published; trash cleanup is best effort.
     ///

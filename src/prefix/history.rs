@@ -1,14 +1,14 @@
-//! Captures and restores complete environment history with FVS.
+//! Captures and restores complete prefix history with FVS.
 //!
-//! A snapshot includes the persisted environment state, private files, registry
-//! baseline, and configuration. History operations run while holding environment
+//! A snapshot includes the persisted prefix state, private files, registry
+//! baseline, and configuration. History operations run while holding prefix
 //! coordination and after runtime storage has been released. Automatic
 //! checkpoints protect mutations and are hidden from user-facing listings.
 
-use super::{EnvironmentState, Inner};
+use super::{Inner, PrefixState};
 use crate::virgo::FVS_BLOCK_SIZE;
 use crate::{
-    Context, EnvironmentError, Operation, Progress, Stage, Transfer,
+    Context, Operation, PrefixError, Progress, Stage, Transfer,
     error::{Error, Result},
 };
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
@@ -41,7 +41,7 @@ pub(crate) fn repository(root: &Path) -> Repository {
     }
 }
 
-/// Commits the complete environment root, creating its FVS repository if necessary.
+/// Commits the complete prefix root, creating its FVS repository if necessary.
 ///
 /// # Errors
 ///
@@ -65,7 +65,7 @@ pub(crate) async fn capture(
         .await?)
 }
 
-/// Restores `revision` into the environment root and reports transfer progress.
+/// Restores `revision` into the prefix root and reports transfer progress.
 ///
 /// # Errors
 ///
@@ -94,13 +94,13 @@ pub(crate) async fn restore(
 /// Returns a mutation result, restoring `checkpoint` first when it is an error.
 ///
 /// Nothing is published before recovery succeeds. If both the mutation and the
-/// restore fail, the returned [`EnvironmentError::Rollback`] identifies the root
+/// restore fail, the returned [`PrefixError::Rollback`] identifies the root
 /// that requires repair.
 ///
 /// # Errors
 ///
 /// Returns the original mutation error after a successful recovery, or
-/// [`EnvironmentError::Rollback`] if recovery also fails.
+/// [`PrefixError::Rollback`] if recovery also fails.
 pub(crate) async fn recover<T>(
     result: Result<T>,
     root: &Path,
@@ -111,7 +111,7 @@ pub(crate) async fn recover<T>(
     if let Err(error) = &result {
         if let Err(source) = restore(root, &checkpoint.state_id, cx, progress).await {
             tracing::error!(%error, "mutation failed before rollback failed");
-            return Err(super::EnvironmentError::Rollback {
+            return Err(super::PrefixError::Rollback {
                 root: root.to_path_buf(),
                 source: Box::new(source),
             }
@@ -122,7 +122,7 @@ pub(crate) async fn recover<T>(
 }
 
 impl Inner {
-    /// Creates a user-visible snapshot after stopping the environment.
+    /// Creates a user-visible snapshot after stopping the prefix.
     ///
     /// Cancellation is observed before capture starts, but does not interrupt an
     /// active FVS commit.
@@ -132,7 +132,7 @@ impl Inner {
     /// The operation fails for the reserved checkpoint message, cancellation,
     /// shutdown failures, or FVS repository and commit errors.
     pub(crate) fn create_snapshot(self: &Arc<Self>, message: String) -> Operation<Snapshot> {
-        let environment = self.clone();
+        let prefix = self.clone();
         Operation::new(move |progress, cancellation| async move {
             if message == AUTO_CHECKPOINT_MESSAGE {
                 return Err(std::io::Error::new(
@@ -141,32 +141,32 @@ impl Inner {
                 )
                 .into());
             }
-            let _control = environment.lock_control(&cancellation).await?;
+            let _control = prefix.lock_control(&cancellation).await?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            environment.stop_locked().await?;
+            prefix.stop_locked().await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
             capture(
-                &environment.root,
+                &prefix.root,
                 message,
                 true,
                 Stage::Committing,
-                &environment.context,
+                &prefix.context,
                 &progress,
             )
             .await
         })
     }
 
-    /// Lists user-visible snapshots in the environment repository.
+    /// Lists user-visible snapshots in the prefix repository.
     ///
     /// Returns an empty list before the first snapshot and excludes automatic
     /// recovery checkpoints.
     ///
     /// # Errors
     ///
-    /// Returns an error if the environment was deleted or FVS cannot list commits.
+    /// Returns an error if the prefix was deleted or FVS cannot list commits.
     pub(crate) async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
         let _control = self.control.lock().await;
         self.state()?;
@@ -194,25 +194,25 @@ impl Inner {
     /// # Errors
     ///
     /// The operation fails for cancellation before restoration, shutdown or FVS
-    /// failures, invalid restored state, or [`EnvironmentError::Rollback`] if the
+    /// failures, invalid restored state, or [`PrefixError::Rollback`] if the
     /// automatic recovery also fails.
     pub(crate) fn rollback(self: &Arc<Self>, revision: &str) -> Operation<String> {
-        let environment = self.clone();
+        let prefix = self.clone();
         let revision = revision.to_owned();
         Operation::new(move |progress, cancellation| async move {
-            let _control = environment.lock_control(&cancellation).await?;
-            let current = environment.state()?;
+            let _control = prefix.lock_control(&cancellation).await?;
+            let current = prefix.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
-            environment.stop_locked().await?;
+            prefix.stop_locked().await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
             let checkpoint = capture(
-                &environment.root,
+                &prefix.root,
                 AUTO_CHECKPOINT_MESSAGE.into(),
                 false,
                 Stage::Checkpointing,
-                &environment.context,
+                &prefix.context,
                 &progress,
             )
             .await?;
@@ -221,20 +221,12 @@ impl Inner {
             }
             // Once restoration starts, finish it or recover before releasing coordination.
             let result = async {
-                let restored = restore(
-                    &environment.root,
-                    &revision,
-                    &environment.context,
-                    &progress,
-                )
-                .await?;
-                let state: EnvironmentState =
-                    next_config::load(environment.root.join("state.toml")).await?;
+                let restored = restore(&prefix.root, &revision, &prefix.context, &progress).await?;
+                let state: PrefixState = next_config::load(prefix.root.join("state.toml")).await?;
                 if state.backend != current.backend {
-                    return Err(EnvironmentError::InvalidEdit(
-                        "snapshot backend does not match environment",
-                    )
-                    .into());
+                    return Err(
+                        PrefixError::InvalidEdit("snapshot backend does not match prefix").into(),
+                    );
                 }
                 state.validate()?;
                 Ok((restored.state_id, state))
@@ -242,13 +234,13 @@ impl Inner {
             .await;
             let (revision, state) = recover(
                 result,
-                &environment.root,
+                &prefix.root,
                 &checkpoint,
-                &environment.context,
+                &prefix.context,
                 &progress,
             )
             .await?;
-            environment.publish(state);
+            prefix.publish(state);
             Ok(revision)
         })
     }

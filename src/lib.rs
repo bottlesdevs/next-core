@@ -6,10 +6,10 @@
 mod addons;
 mod command;
 mod core;
-mod environment;
 pub mod error;
-mod manager;
 mod operation;
+mod prefix;
+mod prefixes;
 mod program_spec;
 pub use program_spec::ProgramSpec;
 mod runner;
@@ -26,13 +26,11 @@ pub use command::wrappers::{
     GamescopeConfig, GamescopeFilter, GamescopeScaler, MangoHudConfig, Wrappers,
 };
 pub use core::{Bottles, Config};
-pub use environment::{
-    Edit, Environment, EnvironmentError, EnvironmentState, Inventory, PrefixBackend,
-};
-#[cfg(feature = "fvs")]
-pub use environment::{Snapshot, SnapshotSummary};
-pub use manager::Manager;
 pub use operation::{Operation, Progress, Stage, Transfer};
+pub use prefix::{Edit, Inventory, Prefix, PrefixBackend, PrefixError, PrefixState};
+#[cfg(feature = "fvs")]
+pub use prefix::{Snapshot, SnapshotSummary};
+pub use prefixes::Prefixes;
 pub use proto::{DllOverride, DllOverrideMode, Process, RegistryHive};
 pub use utils::directories::Directories;
 pub use utils::env_vars::EnvVars;

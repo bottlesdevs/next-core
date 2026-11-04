@@ -1,4 +1,4 @@
-//! Catalogs, acquires, and describes software used by Bottles environments.
+//! Catalogs, acquires, and describes software used by Bottles prefixes.
 //!
 //! Addons have two lifecycle representations:
 //!
@@ -7,15 +7,15 @@
 //!   for prefix software, an installation recipe.
 //!
 //! [`Runner`], [`WineBridge`], and [`Umu`] supply runtime tooling through dedicated
-//! environment fields. [`Component`] releases occupy mutually exclusive [`Slot`]s; [`Dependency`]
+//! prefix fields. [`Component`] releases occupy mutually exclusive [`Slot`]s; [`Dependency`]
 //! releases are appended in installation order. A release may declare
-//! [`Requirement`]s that environment validation must satisfy.
+//! [`Requirement`]s that prefix validation must satisfy.
 //!
 //! [`AddonRole`] holds one marker, and [`RoleMarker`] bounds the type parameter
 //! of [`Addon`], so one generic API acquires, imports, and lists every role.
 //!
 //! Use [`crate::Bottles::addons`] to access the shared [`Addons`] manager. Acquiring
-//! a release only places it in shared storage. Selection remains an explicit environment
+//! a release only places it in shared storage. Selection remains an explicit prefix
 //! edit through [`crate::Edit`].
 
 #![warn(missing_docs)]

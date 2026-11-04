@@ -22,11 +22,11 @@ use tokio_stream::wrappers::WatchStream;
 use url::Url;
 use uuid::Uuid;
 
-/// Keeps catalog discovery and release acquisition separate from environment selection.
+/// Keeps catalog discovery and release acquisition separate from prefix selection.
 ///
 /// Catalog entries describe remote releases, while [`Addon`] values describe
 /// releases already stored locally. Fetching a catalog entry only acquires its
-/// payload; it does not select the addon for any environment.
+/// payload; it does not select the addon for any prefix.
 ///
 /// Cloned managers share the same state. Read an immutable snapshot with
 /// [`state`](Self::state), or subscribe with [`watch`](Self::watch) to observe

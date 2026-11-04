@@ -1,7 +1,7 @@
 //! Initialization and shared services for a Bottles application.
 
 #[cfg(feature = "fvs")]
-use crate::environment::VirgoManager;
+use crate::prefix::VirgoManager;
 
 #[cfg(feature = "fvs")]
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use http_client::{HttpClient, ReqwestClient};
 use url::Url;
 
-use crate::{Addons, Context, Directories, Manager, error::Result};
+use crate::{Addons, Context, Directories, Prefixes, error::Result};
 
 /// Startup options for [`Bottles::open`].
 ///
@@ -34,26 +34,26 @@ pub struct Config {
 
 /// Owns the services and persisted collections used by Bottles Next.
 ///
-/// Create one instance with [`Bottles::open`], borrow its managers for the
+/// Create one instance with [`Bottles::open`], borrow its collections for the
 /// lifetime of the application, then call [`Bottles::shutdown`] after all
 /// outstanding [`Operation`](crate::Operation) values have completed.
 pub struct Bottles {
     context: Context,
-    environments: Manager,
+    prefixes: Prefixes,
 }
 
 impl Bottles {
     /// Opens the application core and loads persisted state.
     ///
     /// This resolves application directories, loads cached addon
-    /// catalogs, installed addons, and environment registries.
+    /// catalogs, installed addons, and prefix registries.
     /// With the `fvs` feature, it connects to or starts `fvs2d` before loading
-    /// Virgo-backed environments.
+    /// Virgo-backed prefixes.
     ///
     /// # Errors
     ///
     /// Returns an error if application directories are unavailable; persisted
-    /// addons or environments cannot be read or validated; the HTTP
+    /// addons or prefixes cannot be read or validated; the HTTP
     /// or download service cannot initialize; an FVS executable cannot be
     /// resolved or contacted.
     ///
@@ -96,17 +96,14 @@ impl Bottles {
         .await?;
         #[cfg(feature = "fvs")]
         let virgo = Arc::new(VirgoManager::new(context.clone()));
-        let environments = Manager::load(
-            context.directories().environments(),
+        let prefixes = Prefixes::load(
+            context.directories().prefixes(),
             context.clone(),
             #[cfg(feature = "fvs")]
             virgo,
         )
         .await?;
-        Ok(Self {
-            context,
-            environments,
-        })
+        Ok(Self { context, prefixes })
     }
 
     /// Cancels downloads and stops the background download service.
@@ -115,9 +112,9 @@ impl Bottles {
     /// outstanding operations before shutdown. Shutdown cancels queued and
     /// in-flight downloads, waits for their workers to exit, and prevents later
     /// download requests from being accepted. It does not stop Wine processes;
-    /// call [`Environment::stop`](crate::Environment::stop) explicitly. With `fvs` enabled, the connected or spawned `fvs2d`
-    /// daemon remains running for later clients. Calling shutdown more than once
-    /// is safe.
+    /// call [`Prefix::stop`](crate::Prefix::stop) explicitly. With `fvs`
+    /// enabled, the connected or spawned `fvs2d` daemon remains running for later
+    /// clients. Calling shutdown more than once is safe.
     ///
     /// # Errors
     ///
@@ -127,9 +124,9 @@ impl Bottles {
         Ok(())
     }
 
-    /// Returns the manager for persisted [`Environment`](crate::Environment) handles.
-    pub fn environments(&self) -> &Manager {
-        &self.environments
+    /// Returns the collection of persisted [`Prefix`](crate::Prefix) handles.
+    pub fn prefixes(&self) -> &Prefixes {
+        &self.prefixes
     }
 
     /// Returns the resolved application directories.

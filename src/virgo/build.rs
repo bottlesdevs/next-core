@@ -25,7 +25,7 @@ pub(crate) struct BuildWorkspace {
     destination: PathBuf,
     stage: PathBuf,
     /// Prefix in which the build recipe executes.
-    pub(crate) prefix: PathBuf,
+    pub(crate) wineprefix: PathBuf,
     overlay: Option<(Mount, PathBuf)>,
 }
 
@@ -89,7 +89,7 @@ impl LayerStore {
         }
         let stage = self.staging_path();
         let filesystem = stage.join("artifact/filesystem");
-        let prefix = if base.is_some() {
+        let wineprefix = if base.is_some() {
             stage.join("prefix")
         } else {
             filesystem.clone()
@@ -97,7 +97,7 @@ impl LayerStore {
         let setup = async {
             async_fs::create_dir_all(&filesystem).await?;
             if base.is_some() {
-                async_fs::create_dir_all(&prefix).await?;
+                async_fs::create_dir_all(&wineprefix).await?;
             }
             Ok::<_, Error>(())
         }
@@ -110,7 +110,7 @@ impl LayerStore {
         let overlay = if let Some(base) = base {
             let mount = self
                 .fvs
-                .mount(&prefix, vec![base.layer.clone()], Some(&filesystem))
+                .mount(&wineprefix, vec![base.layer.clone()], Some(&filesystem))
                 .await?;
             Some((mount, base.registry.clone()))
         } else {
@@ -119,7 +119,7 @@ impl LayerStore {
         Ok(BuildWorkspace {
             destination: key.to_path_buf(),
             stage,
-            prefix,
+            wineprefix,
             overlay,
         })
     }
@@ -153,7 +153,7 @@ impl LayerStore {
                 return Err(Error::Cancelled);
             }
             if let Some((mount, base)) = &workspace.overlay {
-                registry::write_patches(base, &workspace.prefix, &registry).await?;
+                registry::write_patches(base, &workspace.wineprefix, &registry).await?;
                 self.fvs.diff_mount(mount, true).await?;
             } else {
                 registry::capture(&filesystem, &registry).await?;
