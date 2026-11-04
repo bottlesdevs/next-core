@@ -57,6 +57,13 @@ pub enum Error {
     /// The FVS client or daemon failed.
     #[error("FVS error: {0}")]
     Fvs(#[from] FvsError),
+    #[cfg(feature = "fvs")]
+    /// The `fvs2d` daemon is not installed at the configured path or on `PATH`.
+    #[error(
+        "fvs2d was not found (looked for `{}`); install it on PATH or build without the `fvs` feature",
+        .0.display()
+    )]
+    Fvs2dNotFound(std::path::PathBuf),
     /// A bottle-specific request was invalid.
     #[error("Bottle error: {0}")]
     Bottle(#[from] BottleError),

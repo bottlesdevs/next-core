@@ -84,13 +84,17 @@ impl Bottles {
         let http_client: Arc<dyn HttpClient> =
             Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
         #[cfg(feature = "fvs")]
-        let fvs = Arc::new(
-            fvs_rs::Fvs2dClient::connect_or_spawn(
-                fvs_executable(fvs2d)?,
-                directories.runtime_dir().join("fvs2d.sock"),
+        let fvs = {
+            let executable = fvs_executable(fvs2d)?;
+            Arc::new(
+                fvs_rs::Fvs2dClient::connect_or_spawn(
+                    &executable,
+                    directories.runtime_dir().join("fvs2d.sock"),
+                )
+                .await
+                .map_err(|error| fvs_spawn_error(error, executable))?,
             )
-            .await?,
-        );
+        };
         let context = Context::new(
             directories,
             http_client,
@@ -192,6 +196,17 @@ fn fvs_executable(configured: Option<PathBuf>) -> Result<PathBuf> {
         .unwrap_or_else(|| PathBuf::from("fvs2d")))
 }
 
+/// Names the missing daemon instead of reporting a bare `NotFound` I/O error.
+#[cfg(feature = "fvs")]
+fn fvs_spawn_error(error: fvs_rs::error::Error, executable: PathBuf) -> crate::error::Error {
+    match error {
+        fvs_rs::error::Error::Io(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            crate::error::Error::Fvs2dNotFound(executable)
+        }
+        error => error.into(),
+    }
+}
+
 #[cfg(all(test, feature = "fvs"))]
 mod tests {
     use super::*;
@@ -199,5 +214,14 @@ mod tests {
     #[test]
     fn uses_path_lookup_when_fvs2d_is_not_configured() {
         assert_eq!(fvs_executable(None).unwrap(), PathBuf::from("fvs2d"));
+    }
+
+    #[test]
+    fn missing_fvs2d_is_reported_by_name() {
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let error = fvs_spawn_error(missing.into(), PathBuf::from("fvs2d"));
+        assert!(
+            matches!(&error, crate::error::Error::Fvs2dNotFound(path) if path == &PathBuf::from("fvs2d"))
+        );
     }
 }
