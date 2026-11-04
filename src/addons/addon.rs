@@ -24,7 +24,7 @@ use super::recipe::{InstallResource, InstallStep};
 ///
 /// `R` is a [`RoleMarker`]: [`Runner`], [`WineBridge`], [`Umu`], [`Component`],
 /// [`Dependency`], or [`AddonRole`] for a release of any role. Records are
-/// stored next to their shared payload and copied into environment state when the
+/// stored next to their shared payload and copied into prefix state when the
 /// addon is selected. Because metadata is frozen at acquisition time, later
 /// catalog refreshes do not alter existing records.
 ///
@@ -79,7 +79,7 @@ impl<R> Addon<R> {
         &self.version
     }
 
-    /// Returns the constraints that an environment must satisfy for this addon.
+    /// Returns the constraints that a prefix must satisfy for this addon.
     pub fn requirements(&self) -> &[Requirement] {
         &self.requirements
     }
@@ -157,7 +157,7 @@ impl<R> Addon<R> {
 }
 
 impl Addon<Component> {
-    /// Returns the mutually exclusive environment position occupied by the component.
+    /// Returns the mutually exclusive prefix position occupied by the component.
     pub fn slot(&self) -> Slot {
         self.role.slot
     }
@@ -217,9 +217,9 @@ impl Addon<Dependency> {
     }
 }
 
-/// Identifies a mutually exclusive component position in an environment.
+/// Identifies a mutually exclusive component position in a prefix.
 ///
-/// Environment state can select at most one [`Component`] for each slot. The
+/// Prefix state can select at most one [`Component`] for each slot. The
 /// string representation is the canonical spelling used by catalogs and storage.
 ///
 /// # Examples
@@ -276,7 +276,7 @@ impl FromStr for Slot {
     }
 }
 
-/// Describes another addon that must be present in an environment.
+/// Describes another addon that must be present in a prefix.
 ///
 /// Name and identifier constraints may be satisfied by an addon of any role;
 /// slot constraints may be satisfied only by a [`Component`].
@@ -291,7 +291,7 @@ pub enum Requirement {
     Id(Uuid),
 }
 
-/// Identifies the role of an addon in an environment.
+/// Identifies the role of an addon in a prefix.
 ///
 /// Catalog entries and shared storage hold releases of every role, so this is
 /// the role checked at runtime. Each variant holds the marker used as the type
@@ -354,11 +354,11 @@ pub struct Umu {}
 
 /// Marks an addon as a component that occupies one [`Slot`].
 ///
-/// Components are mutually exclusive by slot when selected in an environment.
+/// Components are mutually exclusive by slot when selected in a prefix.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
-    /// Environment position occupied by the component.
+    /// Prefix position occupied by the component.
     pub slot: Slot,
 }
 

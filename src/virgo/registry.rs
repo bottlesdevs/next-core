@@ -47,10 +47,10 @@ fn write_forward(old: &Path, new: &Path, output: &Path, hive: Hive) -> Result<()
 ///
 /// Returns an I/O error if the destination cannot be created or either managed
 /// hive cannot be copied.
-pub(super) async fn capture(prefix: &Path, before: &Path) -> Result<()> {
+pub(super) async fn capture(wineprefix: &Path, before: &Path) -> Result<()> {
     async_fs::create_dir_all(before).await?;
     for (file, _) in registry_files() {
-        async_fs::copy(prefix.join(file), before.join(file)).await?;
+        async_fs::copy(wineprefix.join(file), before.join(file)).await?;
     }
     Ok(())
 }
@@ -64,10 +64,10 @@ pub(super) async fn capture(prefix: &Path, before: &Path) -> Result<()> {
 ///
 /// Returns an I/O or [`VirgoError::Registry`] error while reading, diffing, or
 /// serializing either hive.
-pub(super) async fn write_patches(before: &Path, prefix: &Path, patches: &Path) -> Result<()> {
-    let (before, prefix, patches) = (
+pub(super) async fn write_patches(before: &Path, wineprefix: &Path, patches: &Path) -> Result<()> {
+    let (before, wineprefix, patches) = (
         before.to_path_buf(),
-        prefix.to_path_buf(),
+        wineprefix.to_path_buf(),
         patches.to_path_buf(),
     );
     blocking::unblock(move || {
@@ -75,7 +75,7 @@ pub(super) async fn write_patches(before: &Path, prefix: &Path, patches: &Path) 
         for (file, hive) in registry_files() {
             write_forward(
                 &before.join(file),
-                &prefix.join(file),
+                &wineprefix.join(file),
                 &patches.join(file),
                 hive,
             )?;

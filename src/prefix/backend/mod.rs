@@ -1,6 +1,6 @@
 //! Prefix storage strategies.
 //!
-//! [`PrefixBackend`] records whether an environment owns a conventional,
+//! [`PrefixBackend`] records whether a prefix owns a conventional,
 //! directly modified Wine prefix or a Virgo workspace assembled from immutable
 //! layers.
 
@@ -10,11 +10,11 @@ pub(super) mod virgo;
 
 use serde::{Deserialize, Serialize};
 
-/// Selects how an environment stores and materializes its Wine prefix.
+/// Selects how a prefix stores and materializes its Wine prefix.
 ///
-/// This choice is persisted with the environment and cannot be changed by an edit.
+/// This choice is persisted with the prefix and cannot be changed by an edit.
 /// Without the `fvs` feature, the `Virgo` variant is absent and persisted Virgo
-/// environments cannot be deserialized.
+/// prefixes cannot be deserialized.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Serialize)]
 pub enum PrefixBackend {
     /// Stores installed software and user data together in one mutable prefix.

@@ -1,11 +1,11 @@
-//! Starts, inspects, and stops an environment's Wine runtime.
+//! Starts, inspects, and stops a prefix's Wine runtime.
 //!
-//! Runtime operations share the environment control lock with edits, deletion,
+//! Runtime operations share the prefix control lock with edits, deletion,
 //! and history changes. `WineBridge` is attached when already running or started
 //! from the currently published configuration. Virgo mounts are created before
 //! startup and released only after Wine processes stop.
 
-use super::{EnvironmentState, Inner};
+use super::{Inner, PrefixState};
 use crate::runner::Runner;
 use crate::{
     Operation, PrefixBackend, ProgramSpec, Progress, Stage,
@@ -28,11 +28,11 @@ impl Inner {
     /// Returns an error if startup or attachment fails, the operation is
     /// cancelled, or `WineBridge` rejects the launch.
     pub(crate) fn launch(self: &Arc<Self>, group: Uuid, launch: ProgramSpec) -> Operation<u32> {
-        let environment = self.clone();
+        let prefix = self.clone();
         Operation::new(move |progress, cancellation| async move {
-            let _control = environment.lock_control(&cancellation).await?;
-            let state = environment.state()?;
-            let bridge = environment
+            let _control = prefix.lock_control(&cancellation).await?;
+            let state = prefix.state()?;
+            let bridge = prefix
                 .attach_or_start(&state, &progress, &cancellation)
                 .await?;
             bridge
@@ -51,7 +51,7 @@ impl Inner {
     ///
     /// # Errors
     ///
-    /// Returns an error if the environment was deleted, discovery fails, or the
+    /// Returns an error if the prefix was deleted, discovery fails, or the
     /// connected `WineBridge` cannot list its processes.
     pub(crate) async fn processes(&self) -> Result<Vec<Process>> {
         let _control = self.control.lock().await;
@@ -79,7 +79,7 @@ impl Inner {
         Ok(())
     }
 
-    /// Stops Wine and releases backend storage under the environment lock.
+    /// Stops Wine and releases backend storage under the prefix lock.
     ///
     /// Storage release is attempted only after Wine shutdown succeeds. A shutdown
     /// error can therefore leave mounts and discovery files in place.
@@ -104,13 +104,13 @@ impl Inner {
     /// unmounting, or discovery cleanup fails.
     pub(crate) async fn stop_locked(&self) -> Result<()> {
         let state = self.state()?;
-        let prefix = self.root.join("prefix");
-        if crate::utils::fs::exists(&prefix).await? {
+        let wineprefix = self.root.join("prefix");
+        if crate::utils::fs::exists(&wineprefix).await? {
             let runner = state
                 .runner
                 .load_runner(self.context.directories(), state.umu.as_ref())
                 .await?;
-            stop(runner.as_ref(), &prefix).await?;
+            stop(runner.as_ref(), &wineprefix).await?;
         }
         self.release_storage(state.backend).await
     }
@@ -158,7 +158,7 @@ impl Inner {
         self.with_bridge(async move |bridge| bridge.delete_dll_override(dll).await)
     }
 
-    /// Runs one `WineBridge` request while holding environment coordination.
+    /// Runs one `WineBridge` request while holding prefix coordination.
     fn with_bridge<R, Fut>(
         self: &Arc<Self>,
         work: impl FnOnce(WineBridgeClient) -> Fut + Send + 'static,
@@ -167,11 +167,11 @@ impl Inner {
         R: Send + 'static,
         Fut: Future<Output = Result<R>> + Send + 'static,
     {
-        let environment = self.clone();
+        let prefix = self.clone();
         Operation::new(move |progress, cancellation| async move {
-            let _control = environment.lock_control(&cancellation).await?;
-            let state = environment.state()?;
-            let bridge = environment
+            let _control = prefix.lock_control(&cancellation).await?;
+            let state = prefix.state()?;
+            let bridge = prefix
                 .attach_or_start(&state, &progress, &cancellation)
                 .await?;
             work(bridge).await
@@ -190,7 +190,7 @@ impl Inner {
     /// cleanup errors encountered while obtaining a usable client.
     async fn attach_or_start(
         &self,
-        state: &EnvironmentState,
+        state: &PrefixState,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<WineBridgeClient> {
@@ -198,8 +198,8 @@ impl Inner {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let prefix = self.root.join("prefix");
-        if let Some(bridge) = WineBridgeClient::try_connect(&prefix).await? {
+        let wineprefix = self.root.join("prefix");
+        if let Some(bridge) = WineBridgeClient::try_connect(&wineprefix).await? {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
@@ -237,11 +237,11 @@ impl Inner {
         }
         let command = state.wrappers.apply(WineBridgeClient::command(
             runner.as_ref(),
-            &prefix,
+            &wineprefix,
             state.winebridge.path(self.context.directories()),
             vars.iter(),
         ));
-        let result = WineBridgeClient::connect_or_spawn(&prefix, command)
+        let result = WineBridgeClient::connect_or_spawn(&wineprefix, command)
             .await
             .and_then(|bridge| {
                 if cancellation.is_cancelled() {
@@ -251,7 +251,7 @@ impl Inner {
                 }
             });
         if result.is_err() {
-            stop(runner.as_ref(), &prefix).await?;
+            stop(runner.as_ref(), &wineprefix).await?;
             self.release_storage(backend).await?;
         }
         result
@@ -267,9 +267,9 @@ impl Inner {
 ///
 /// Returns an error from `wineboot`, `WineBridge` shutdown, `wineserver`, or
 /// discovery cleanup.
-pub(super) async fn initialize(runner: &dyn Runner, prefix: &Path) -> Result<()> {
-    let initialized = runner.wineboot(prefix, "--init").await;
-    stop(runner, prefix).await?;
+pub(super) async fn initialize(runner: &dyn Runner, wineprefix: &Path) -> Result<()> {
+    let initialized = runner.wineboot(wineprefix, "--init").await;
+    stop(runner, wineprefix).await?;
     initialized
 }
 
@@ -281,13 +281,13 @@ pub(super) async fn initialize(runner: &dyn Runner, prefix: &Path) -> Result<()>
 /// # Errors
 ///
 /// Returns an error if either wineserver command or discovery cleanup fails.
-pub(super) async fn stop(runner: &dyn Runner, prefix: &Path) -> Result<()> {
-    if let Err(error) = WineBridgeClient::shutdown_existing(prefix).await {
+pub(super) async fn stop(runner: &dyn Runner, wineprefix: &Path) -> Result<()> {
+    if let Err(error) = WineBridgeClient::shutdown_existing(wineprefix).await {
         tracing::debug!(%error, "WineBridge shutdown failed; stopping wineserver");
     }
     for argument in ["-k", "-w"] {
-        runner.wineserver(prefix, argument).await?;
+        runner.wineserver(wineprefix, argument).await?;
     }
-    WineBridgeClient::clear_discovery(prefix).await?;
+    WineBridgeClient::clear_discovery(wineprefix).await?;
     Ok(())
 }

@@ -1,9 +1,9 @@
-//! The persisted record of an environment's contents and startup settings.
+//! The persisted record of a prefix's contents and startup settings.
 //!
-//! [`EnvironmentState`] records the prefix backend, the frozen addon selections
+//! [`PrefixState`] records the prefix backend, the frozen addon selections
 //! applied to the prefix, and the settings used to start its runtime.
 
-use super::{EnvironmentError, PrefixBackend};
+use super::{PrefixBackend, PrefixError};
 use crate::{
     Addon, Component, Dependency, EnvVars, Requirement, Runner, Slot, Umu, WineBridge, Wrappers,
     addons::InstallStep, error::Result,
@@ -14,18 +14,18 @@ use std::collections::{HashMap, HashSet};
 use strum::IntoEnumIterator;
 use uuid::Uuid;
 
-/// Captures one immutable, published view of an environment.
+/// Captures one immutable, published view of a prefix.
 ///
 /// Addon selections are frozen records. They preserve their metadata and any
 /// installation recipe even if the shared catalog later changes. Acquired
 /// snapshots remain readable after later edits or deletion.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct EnvironmentState {
-    /// Storage strategy chosen when the environment was created.
+pub struct PrefixState {
+    /// Storage strategy chosen when the prefix was created.
     pub backend: PrefixBackend,
-    /// Wine or Proton runtime selected for this environment.
+    /// Wine or Proton runtime selected for this prefix.
     pub runner: Addon<Runner>,
-    /// WineBridge service selected for this environment.
+    /// WineBridge service selected for this prefix.
     pub winebridge: Addon<WineBridge>,
     /// Optional UMU launcher used by Proton runtimes.
     pub umu: Option<Addon<Umu>>,
@@ -41,7 +41,7 @@ pub struct EnvironmentState {
     pub wrappers: Wrappers,
 }
 
-impl EnvironmentState {
+impl PrefixState {
     /// Creates the initial state from its backend and selected runtime tools.
     pub(crate) fn new(
         backend: PrefixBackend,
@@ -122,22 +122,21 @@ impl EnvironmentState {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvironmentError::InvalidEdit`] for duplicate dependencies,
-    /// [`EnvironmentError::InvalidComponentSlot`] for a misplaced component, or
-    /// [`EnvironmentError::RequiresAddon`] for any unsatisfied requirement.
+    /// Returns [`PrefixError::InvalidEdit`] for duplicate dependencies,
+    /// [`PrefixError::InvalidComponentSlot`] for a misplaced component, or
+    /// [`PrefixError::RequiresAddon`] for any unsatisfied requirement.
     pub(crate) fn validate(&self) -> Result<()> {
         let mut dependencies = HashSet::new();
         for addon in &self.dependencies {
             if !dependencies.insert(addon.id()) {
-                return Err(EnvironmentError::InvalidEdit(
-                    "a dependency may only be selected once",
-                )
-                .into());
+                return Err(
+                    PrefixError::InvalidEdit("a dependency may only be selected once").into(),
+                );
             }
         }
         for (slot, component) in &self.components {
             if component.slot() != *slot {
-                return Err(EnvironmentError::InvalidComponentSlot {
+                return Err(PrefixError::InvalidComponentSlot {
                     component: component.id(),
                     required: *slot,
                 }
@@ -152,7 +151,7 @@ impl EnvironmentState {
                 .cloned()
                 .collect::<Vec<_>>();
             if !missing.is_empty() {
-                return Err(EnvironmentError::RequiresAddon {
+                return Err(PrefixError::RequiresAddon {
                     required_by: id,
                     requirements: missing,
                 }
@@ -163,6 +162,6 @@ impl EnvironmentState {
     }
 }
 
-impl Config for EnvironmentState {
+impl Config for PrefixState {
     const VERSION: u32 = 1;
 }

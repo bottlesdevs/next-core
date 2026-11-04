@@ -1,11 +1,11 @@
 # bottles-core
 
 `bottles-core` is the application library behind Bottles Next. It manages Wine
-and Proton environments, runtime tools and prefix components, and launches
+and Proton prefixes, runtime tools and prefix components, and launches
 Windows programs in them.
 
 The main entry point is [`Bottles`]. Opening it resolves the application's data
-directories, validates persisted state, initializes addon and environment
+directories, validates persisted state, initializes addon and prefix
 registries. Long-running changes
 return an [`Operation`]: a lazy future with progress reporting and cooperative
 cancellation.
@@ -23,8 +23,8 @@ use bottles_core::{Bottles, Config};
 # async fn run() -> Result<(), bottles_core::error::Error> {
 let core = Bottles::open(Config::default()).await?;
 
-for environment in core.environments().list() {
-    println!("{}: {:?}", environment.id(), environment.state()?.backend);
+for prefix in core.prefixes().list() {
+    println!("{}: {:?}", prefix.id(), prefix.state()?.backend);
 }
 
 core.shutdown().await?;
@@ -35,9 +35,9 @@ core.shutdown().await?;
 ## Core concepts
 
 - [`Bottles`] owns the shared services and top-level managers.
-- [`Manager`] provides the current collection of [`Environment`] handles and
-  publishes every environment's state as one [`Inventory`].
-- [`EnvironmentState`] values are immutable snapshots. Handle watchers publish
+- [`Prefixes`] provides the current collection of [`Prefix`] handles and
+  publishes every prefix's state as one [`Inventory`].
+- [`PrefixState`] values are immutable snapshots. Handle watchers publish
   later snapshots without mutating earlier ones.
 - [`Edit`] collects a draft configuration change and publishes it only after
   validation and persistence succeed.
@@ -55,13 +55,13 @@ Progress is advisory and intermediate updates may be coalesced.
 Call [`Bottles::shutdown`] only after application work has stopped. Shutdown
 cancels queued and in-flight downloads, waits for download workers to exit, and
 prevents later download-backed operations from starting successfully. It does
-not stop Wine processes; stop each running [`Environment`] explicitly. With
+not stop Wine processes; stop each running [`Prefix`] explicitly. With
 `fvs` enabled, the connected or spawned `fvs2d` daemon also remains running for
 later clients.
 
 ## Features
 
-- `fvs` (enabled by default) adds Virgo layered-prefix storage and environment
+- `fvs` (enabled by default) adds Virgo layered-prefix storage and prefix
   history and rollback. It also starts or connects to an `fvs2d` process during
   [`Bottles::open`]. Set
   `Config::fvs2d` to an explicit executable path or leave it unset to resolve

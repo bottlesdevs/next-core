@@ -33,7 +33,7 @@ use crate::addons::recipe::{InstallResource, InstallStep};
 #[derive(Clone, Copy)]
 pub(crate) struct InstallInputs<'a> {
     /// Wine prefix that receives recipe changes.
-    pub(crate) prefix: &'a Path,
+    pub(crate) wineprefix: &'a Path,
     /// Parent directory for temporary archive extraction.
     pub(crate) staging: &'a Path,
     /// Runner used for Windows child processes.
@@ -102,11 +102,11 @@ pub(crate) async fn uninstall<'a>(
 
 async fn maintenance_bridge(
     runner: &dyn Runner,
-    prefix: &Path,
+    wineprefix: &Path,
     executable: &Path,
 ) -> Result<WineBridgeClient> {
-    let command = WineBridgeClient::command(runner, prefix, executable, std::iter::empty());
-    WineBridgeClient::connect_or_spawn(prefix, command).await
+    let command = WineBridgeClient::command(runner, wineprefix, executable, std::iter::empty());
+    WineBridgeClient::connect_or_spawn(wineprefix, command).await
 }
 
 async fn execute_step(
@@ -117,7 +117,7 @@ async fn execute_step(
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let InstallInputs {
-        prefix,
+        wineprefix,
         staging,
         runner,
         winebridge,
@@ -133,12 +133,12 @@ async fn execute_step(
             } else {
                 resource.join(source)
             };
-            install_file(&source, prefix, destination, backup_files).await?;
+            install_file(&source, wineprefix, destination, backup_files).await?;
         }
         InstallStep::Extract { destination } => {
             extract_into(
                 resource,
-                prefix,
+                wineprefix,
                 staging,
                 destination,
                 backup_files,
@@ -158,7 +158,7 @@ async fn execute_step(
                 command = command.env(name, value);
             }
             let status =
-                wait_for_child(runner.command(prefix, command).spawn()?, cancellation).await?;
+                wait_for_child(runner.command(wineprefix, command).spawn()?, cancellation).await?;
             if !status.success() {
                 return Err(InstallerError::InstallerFailed(status).into());
             }
@@ -166,12 +166,13 @@ async fn execute_step(
         InstallStep::RegisterDlls { dlls, env_vars } => {
             for dll in dlls {
                 check_cancellation(cancellation)?;
-                let mut command = Command::new("regsvr32").arg("/s").arg(prefix.join(dll));
+                let mut command = Command::new("regsvr32").arg("/s").arg(wineprefix.join(dll));
                 for (name, value) in env_vars.iter() {
                     command = command.env(name, value);
                 }
                 let status =
-                    wait_for_child(runner.command(prefix, command).spawn()?, cancellation).await?;
+                    wait_for_child(runner.command(wineprefix, command).spawn()?, cancellation)
+                        .await?;
                 if !status.success() {
                     return Err(InstallerError::RegisterDllFailed(status).into());
                 }
@@ -183,14 +184,14 @@ async fn execute_step(
             name,
             value,
         } => {
-            let bridge = maintenance_bridge(runner, prefix, winebridge).await?;
+            let bridge = maintenance_bridge(runner, wineprefix, winebridge).await?;
             check_cancellation(cancellation)?;
             bridge
                 .set_registry_value(*hive, key.clone(), name.clone(), value.clone())
                 .await?;
         }
         InstallStep::SetDllOverrides { dlls, mode } => {
-            let bridge = maintenance_bridge(runner, prefix, winebridge).await?;
+            let bridge = maintenance_bridge(runner, wineprefix, winebridge).await?;
             for dll in dlls {
                 check_cancellation(cancellation)?;
                 bridge.set_dll_override(dll.clone(), *mode).await?;
@@ -207,7 +208,7 @@ async fn uninstall_step(
     cancellation: &CancellationToken,
 ) -> Result<()> {
     let InstallInputs {
-        prefix,
+        wineprefix,
         runner,
         winebridge,
         ..
@@ -215,10 +216,10 @@ async fn uninstall_step(
     match step {
         InstallStep::SetEnvironment { .. } => {}
         InstallStep::Copy { destination, .. } => {
-            uninstall_file(prefix, destination).await?;
+            uninstall_file(wineprefix, destination).await?;
         }
         InstallStep::SetDllOverrides { dlls, .. } => {
-            let bridge = maintenance_bridge(runner, prefix, winebridge).await?;
+            let bridge = maintenance_bridge(runner, wineprefix, winebridge).await?;
             for dll in dlls.iter().rev() {
                 check_cancellation(cancellation)?;
                 bridge.delete_dll_override(dll.clone()).await?;
@@ -275,7 +276,7 @@ async fn wait_for_child(
 /// overwritten. With backups enabled, an existing destination is preserved only
 /// when metadata successfully identifies it as a regular file; a metadata error
 /// skips backup and the install copy is still attempted. `relative` is joined
-/// directly to `prefix` without containment validation.
+/// directly to `wineprefix` without containment validation.
 ///
 /// # Errors
 ///
@@ -287,14 +288,14 @@ async fn wait_for_child(
 /// Panics if the resulting destination has no parent directory.
 async fn install_file(
     source: &Path,
-    prefix: &Path,
+    wineprefix: &Path,
     relative: &Path,
     backup_files: bool,
 ) -> Result<()> {
-    let destination = prefix.join(relative);
+    let destination = wineprefix.join(relative);
     async_fs::create_dir_all(destination.parent().expect("destination has a parent")).await?;
     let relative_backup = backup_path(relative);
-    let backup = prefix.join(&relative_backup);
+    let backup = wineprefix.join(&relative_backup);
     if backup_files
         && async_fs::metadata(&destination)
             .await
@@ -314,9 +315,9 @@ async fn install_file(
 /// # Errors
 ///
 /// Returns an error if backup inspection, restoration, or removal fails.
-async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
-    let destination = prefix.join(relative);
-    let backup = prefix.join(backup_path(relative));
+async fn uninstall_file(wineprefix: &Path, relative: &Path) -> io::Result<()> {
+    let destination = wineprefix.join(relative);
+    let backup = wineprefix.join(backup_path(relative));
     match async_fs::metadata(&backup).await {
         Ok(_) => {
             async_fs::copy(&backup, &destination).await?;
@@ -340,7 +341,7 @@ async fn uninstall_file(prefix: &Path, relative: &Path) -> io::Result<()> {
 /// staging or installation filesystem failure.
 async fn extract_into(
     archive: &Path,
-    prefix: &Path,
+    wineprefix: &Path,
     staging: &Path,
     destination: &Path,
     backup_files: bool,
@@ -353,7 +354,7 @@ async fn extract_into(
         for source in archive::files(&stage).await? {
             check_cancellation(cancellation)?;
             let relative = destination.join(source.strip_prefix(&stage).unwrap());
-            install_file(&source, prefix, &relative, backup_files).await?;
+            install_file(&source, wineprefix, &relative, backup_files).await?;
         }
         check_cancellation(cancellation)?;
         Ok::<_, Error>(())

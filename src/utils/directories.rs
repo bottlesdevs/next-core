@@ -31,7 +31,7 @@ pub struct Directories(ProjectDirs);
 impl Directories {
     /// Resolves platform paths and creates the directories needed at startup.
     ///
-    /// Configuration, local data, runtime, environment, component, dependency, plugin,
+    /// Configuration, local data, runtime, prefix, component, dependency, plugin,
     /// and addon-release metadata directories are created recursively.
     ///
     /// # Errors
@@ -104,8 +104,8 @@ impl Directories {
             .unwrap_or_else(|| self.data_dir().join("runtime"))
     }
 
-    pub(crate) fn environments(&self) -> PathBuf {
-        self.data_dir().join("environments")
+    pub(crate) fn prefixes(&self) -> PathBuf {
+        self.data_dir().join("prefixes")
     }
 
     pub(crate) fn components(&self) -> PathBuf {
@@ -147,7 +147,7 @@ impl Directories {
             self.config_dir().to_path_buf(),
             self.data_dir().to_path_buf(),
             self.runtime_dir(),
-            self.environments(),
+            self.prefixes(),
             self.components(),
             self.dependencies(),
             self.plugins(),

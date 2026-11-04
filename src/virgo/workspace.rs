@@ -1,6 +1,6 @@
 //! Prepares private registry state and mounts a Virgo workspace for execution.
 //!
-//! Registry composition occurs only while the environment is stopped and
+//! Registry composition occurs only while the prefix is stopped and
 //! unmounted. Runtime startup then mounts the selected filesystem layers over the
 //! private upper directory without changing the composed registry files.
 
@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 impl LayerStore {
     /// Composes selected registry effects into a stopped, unmounted workspace.
     ///
-    /// The caller is responsible for checkpointing an existing environment and recovering
+    /// The caller is responsible for checkpointing an existing prefix and recovering
     /// failures before publishing a new selection. Cancellation is sampled before
     /// and after composition but does not interrupt the blocking registry work.
     ///
@@ -69,13 +69,13 @@ impl LayerStore {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let prefix = root.join("prefix");
-        ensure_empty_dir(&prefix).await?;
+        let wineprefix = root.join("prefix");
+        ensure_empty_dir(&wineprefix).await?;
         let upper = root.join("upper");
         let layers = std::iter::once(base.layer.clone())
             .chain(overlays.iter().map(|layer| layer.layer.clone()))
             .collect();
-        self.fvs.mount(&prefix, layers, Some(&upper)).await?;
+        self.fvs.mount(&wineprefix, layers, Some(&upper)).await?;
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
@@ -90,13 +90,13 @@ impl LayerStore {
     ///
     /// Returns an error if prefix inspection, mount discovery, or unmounting fails.
     pub(crate) async fn unmount_workspace(&self, root: &Path) -> Result<()> {
-        let prefix = root.join("prefix");
-        if crate::utils::fs::exists(&prefix).await? {
+        let wineprefix = root.join("prefix");
+        if crate::utils::fs::exists(&wineprefix).await? {
             if let Some(mount) = self.fvs.list_mounts().await?.into_iter().find(|mount| {
                 mount
                     .spec
                     .as_ref()
-                    .is_some_and(|spec| spec.mount_point == prefix.to_string_lossy())
+                    .is_some_and(|spec| spec.mount_point == wineprefix.to_string_lossy())
             }) {
                 self.fvs.unmount(&mount, UnmountMode::Normal).await?;
             }

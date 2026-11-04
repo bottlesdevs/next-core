@@ -1,8 +1,8 @@
-//! Coordinates environment state, persistence, runtime control, and storage.
+//! Coordinates prefix state, persistence, runtime control, and storage.
 //!
-//! An [`Environment`] exposes immutable [`EnvironmentState`] snapshots, which
-//! every environment publishes into one shared [`Inventory`]. Mutations are
-//! serialized by one control lock per environment and publish a replacement
+//! A [`Prefix`] exposes immutable [`PrefixState`] snapshots, which every
+//! prefix publishes into one shared [`Inventory`]. Mutations are
+//! serialized by one control lock per prefix and publish a replacement
 //! snapshot only after persistence succeeds. Deletion removes the snapshot from
 //! the inventory without invalidating snapshots already held by callers.
 
@@ -19,11 +19,11 @@ pub use backend::PrefixBackend;
 #[cfg(feature = "fvs")]
 pub(crate) use backend::virgo::VirgoManager;
 pub use edit::Edit;
-pub use error::EnvironmentError;
-pub use handle::Environment;
+pub use error::PrefixError;
+pub use handle::Prefix;
 #[cfg(feature = "fvs")]
 pub use history::{Snapshot, SnapshotSummary};
-pub use state::EnvironmentState;
+pub use state::PrefixState;
 
 use crate::{
     Context, Progress, Stage,
@@ -38,8 +38,8 @@ use tokio_stream::{StreamExt, wrappers::WatchStream};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-/// Every environment's published state, keyed by environment identifier.
-pub type Inventory = Arc<BTreeMap<Uuid, Arc<EnvironmentState>>>;
+/// Every prefix's published state, keyed by prefix identifier.
+pub type Inventory = Arc<BTreeMap<Uuid, Arc<PrefixState>>>;
 
 pub(crate) struct Inner {
     pub(crate) id: Uuid,
@@ -52,7 +52,7 @@ pub(crate) struct Inner {
 }
 
 impl Inner {
-    /// Constructs the environment stored at `root` without touching storage.
+    /// Constructs the prefix stored at `root` without touching storage.
     ///
     /// Its state is read from `inventory`, where it is absent until published.
     ///
@@ -72,7 +72,7 @@ impl Inner {
             .ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "environment directory must be a UUID",
+                    "prefix directory must be a UUID",
                 )
             })?;
         Ok(Arc::new(Self {
@@ -88,10 +88,10 @@ impl Inner {
 
     /// Initializes storage for `state` and persists it without publishing it.
     ///
-    /// Failure during backend initialization can leave a partial environment
+    /// Failure during backend initialization can leave a partial prefix
     /// root and any already-published shared Virgo artifacts. After
     /// initialization succeeds, cancellation or a failed save moves the
-    /// environment root to trash on a best-effort basis.
+    /// prefix root to trash on a best-effort basis.
     ///
     /// Cancellation is sampled before backend initialization and before and after
     /// the final save. Backend-specific work may add safe points, but in-flight
@@ -103,7 +103,7 @@ impl Inner {
     /// encountered during initialization.
     pub(crate) async fn create(
         &self,
-        state: &EnvironmentState,
+        state: &PrefixState,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<()> {
@@ -142,7 +142,7 @@ impl Inner {
         .await;
         if result.is_err() {
             fs::with_temp_dir(&self.context.directories().trash(), |trash| {
-                async_fs::rename(&self.root, trash.join("environment"))
+                async_fs::rename(&self.root, trash.join("prefix"))
             })
             .await
             .log_warn();
@@ -154,28 +154,26 @@ impl Inner {
     ///
     /// # Errors
     ///
-    /// Returns [`EnvironmentError::Deleted`] once the environment is absent from
+    /// Returns [`PrefixError::Deleted`] once the prefix is absent from
     /// the inventory.
-    pub(crate) fn state(&self) -> Result<Arc<EnvironmentState>> {
+    pub(crate) fn state(&self) -> Result<Arc<PrefixState>> {
         self.inventory
             .borrow()
             .get(&self.id)
             .cloned()
-            .ok_or_else(|| EnvironmentError::Deleted.into())
+            .ok_or_else(|| PrefixError::Deleted.into())
     }
 
     /// Streams the current state and later distinct publications until deletion.
-    pub(crate) fn watch(
-        &self,
-    ) -> impl Stream<Item = Arc<EnvironmentState>> + Send + 'static + use<> {
+    pub(crate) fn watch(&self) -> impl Stream<Item = Arc<PrefixState>> + Send + 'static + use<> {
         let id = self.id;
-        let mut previous: Option<Arc<EnvironmentState>> = None;
+        let mut previous: Option<Arc<PrefixState>> = None;
         WatchStream::new(self.inventory.subscribe())
             .map(move |inventory| inventory.get(&id).cloned())
             .take_while(Option::is_some)
             .filter_map(move |state| {
                 let state = state?;
-                // Changes to other environments republish this one unchanged.
+                // Changes to other prefixes republish this one unchanged.
                 let changed = previous
                     .as_ref()
                     .is_none_or(|previous| !Arc::ptr_eq(previous, &state));
@@ -185,7 +183,7 @@ impl Inner {
     }
 
     /// Publishes `state` when it differs from the current snapshot.
-    pub(crate) fn publish(&self, state: EnvironmentState) {
+    pub(crate) fn publish(&self, state: PrefixState) {
         self.inventory.send_if_modified(|inventory| {
             if inventory.get(&self.id).map(AsRef::as_ref) == Some(&state) {
                 return false;
@@ -195,7 +193,7 @@ impl Inner {
         });
     }
 
-    /// Atomically saves `state` as the environment's `state.toml`.
+    /// Atomically saves `state` as the prefix's `state.toml`.
     ///
     /// Failure before the final rename can leave `state.tmp` beside the previous
     /// configuration.
@@ -203,7 +201,7 @@ impl Inner {
     /// # Errors
     ///
     /// Returns an error if serialization or filesystem persistence fails.
-    pub(crate) async fn save(&self, state: &EnvironmentState) -> Result<()> {
+    pub(crate) async fn save(&self, state: &PrefixState) -> Result<()> {
         Ok(next_config::save(self.root.join("state.toml"), state).await?)
     }
 

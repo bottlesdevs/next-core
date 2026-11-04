@@ -6,7 +6,7 @@
 
 use super::super::runtime;
 use crate::{
-    Context, EnvironmentState, Progress, Slot, Stage,
+    Context, PrefixState, Progress, Slot, Stage,
     addons::{InstallInputs, execute, uninstall},
     error::Result,
 };
@@ -21,18 +21,18 @@ use tokio_util::sync::CancellationToken;
 ///
 /// Returns an error if directory creation, runner loading, Wine initialization,
 /// or shutdown fails. A shutdown failure retains the prefix.
-pub(in crate::environment) async fn create(
-    config: &EnvironmentState,
+pub(in crate::prefix) async fn create(
+    config: &PrefixState,
     root: &Path,
     cx: &Context,
 ) -> Result<()> {
-    let prefix = root.join("prefix");
-    async_fs::create_dir_all(&prefix).await?;
+    let wineprefix = root.join("prefix");
+    async_fs::create_dir_all(&wineprefix).await?;
     let runner = config
         .runner
         .load_runner(cx.directories(), config.umu.as_ref())
         .await?;
-    runtime::initialize(runner.as_ref(), &prefix).await
+    runtime::initialize(runner.as_ref(), &wineprefix).await
 }
 
 /// Applies the difference between two frozen selections to a stopped prefix.
@@ -40,10 +40,10 @@ pub(in crate::environment) async fn create(
 /// Removed prefix components use the previous selection's embedded recipe and prefix
 /// backups. Replacements and newly appended dependencies read their payloads as
 /// each recipe runs, so a late failure can leave earlier steps applied. The
-/// caller must stop the environment first; this function performs one final shutdown
+/// caller must stop the prefix first; this function performs one final shutdown
 /// after the batch whether application succeeds or fails.
-/// `candidate.dependencies` must retain `previous.dependencies` as an exact
-/// prefix; environment edits enforce this by exposing append-only dependencies.
+/// `candidate.dependencies` must begin with exactly `previous.dependencies`;
+/// edits enforce this by exposing append-only dependencies.
 ///
 /// # Errors
 ///
@@ -54,11 +54,11 @@ pub(in crate::environment) async fn create(
 /// # Panics
 ///
 /// Panics if `candidate.dependencies` is shorter than `previous.dependencies`.
-/// Environment edits preserve the previous dependency prefix, so this indicates
-/// an internal caller violated the edit contract.
-pub(in crate::environment) async fn apply(
-    previous: &EnvironmentState,
-    candidate: &EnvironmentState,
+/// Edits preserve the previous dependencies, so this indicates an internal
+/// caller violated the edit contract.
+pub(in crate::prefix) async fn apply(
+    previous: &PrefixState,
+    candidate: &PrefixState,
     root: &Path,
     cx: &Context,
     progress: &watch::Sender<Option<Progress>>,
@@ -84,11 +84,11 @@ pub(in crate::environment) async fn apply(
         .runner
         .load_runner(cx.directories(), candidate.umu.as_ref())
         .await?;
-    let prefix = root.join("prefix");
+    let wineprefix = root.join("prefix");
     let winebridge = candidate.winebridge.path(cx.directories());
     let staging = cx.directories().staging();
     let inputs = InstallInputs {
-        prefix: &prefix,
+        wineprefix: &wineprefix,
         staging: &staging,
         runner: runner.as_ref(),
         winebridge: &winebridge,
@@ -117,6 +117,6 @@ pub(in crate::environment) async fn apply(
         Ok(())
     }
     .await;
-    runtime::stop(runner.as_ref(), &prefix).await?;
+    runtime::stop(runner.as_ref(), &wineprefix).await?;
     applied
 }
