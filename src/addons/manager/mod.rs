@@ -10,8 +10,8 @@ mod refresh;
 mod storage;
 
 use super::{
-    Addon, Kind,
-    catalog::{AddonKind, Catalog, CatalogEntry},
+    Addon, AddonRole, RoleMarker,
+    catalog::{Catalog, CatalogEntry},
 };
 use crate::{Directories, error::Result};
 use download_manager::manager::DownloadManager;
@@ -35,14 +35,14 @@ use uuid::Uuid;
 /// # Examples
 ///
 /// ```
-/// use bottles_core::{AddonKind, Addons, CatalogEntry};
+/// use bottles_core::{AddonRole, Addons, CatalogEntry};
 ///
 /// fn supported_runners(addons: &Addons) -> Vec<CatalogEntry> {
 ///     addons
 ///         .state()
 ///         .component_entries()
 ///         .into_iter()
-///         .filter(|entry| entry.kind() == AddonKind::Runner && entry.is_supported())
+///         .filter(|entry| matches!(entry.role(), AddonRole::Runner(_)) && entry.is_supported())
 ///         .collect()
 /// }
 /// ```
@@ -67,7 +67,7 @@ struct AddonsInner {
 pub struct AddonsState {
     component_catalog: Option<Arc<Catalog>>,
     dependency_catalog: Option<Arc<Catalog>>,
-    releases: HashMap<Uuid, Addon<AddonKind>>,
+    releases: HashMap<Uuid, Addon<AddonRole>>,
 }
 
 impl Addons {
@@ -125,18 +125,18 @@ impl Addons {
 }
 
 impl AddonsState {
-    /// Returns all locally acquired releases of kind `K` in unspecified order.
+    /// Returns all locally acquired releases with role `R` in unspecified order.
     ///
-    /// Use [`AddonKind`] as `K` to list releases of every kind.
-    pub fn releases<K: Kind>(&self) -> Vec<Addon<K>> {
+    /// Use [`AddonRole`] as `R` to list releases of every role.
+    pub fn releases<R: RoleMarker>(&self) -> Vec<Addon<R>> {
         self.releases
             .values()
             .filter_map(|release| release.clone().cast())
             .collect()
     }
 
-    /// Returns the locally acquired release with UUID `id` if it is of kind `K`.
-    pub fn release<K: Kind>(&self, id: Uuid) -> Option<Addon<K>> {
+    /// Returns the locally acquired release with UUID `id` if it has role `R`.
+    pub fn release<R: RoleMarker>(&self, id: Uuid) -> Option<Addon<R>> {
         self.releases.get(&id)?.clone().cast()
     }
 
@@ -160,7 +160,7 @@ impl AddonsState {
         self.dependency_catalog
             .iter()
             .flat_map(|catalog| catalog.entries())
-            .filter(|entry| entry.kind() == AddonKind::Dependency)
+            .filter(|entry| matches!(entry.role(), AddonRole::Dependency(_)))
             .cloned()
             .collect()
     }
@@ -184,7 +184,7 @@ impl AddonsState {
         self.dependency_catalog
             .as_ref()
             .and_then(|catalog| catalog.entry(id))
-            .filter(|entry| entry.kind() == AddonKind::Dependency)
+            .filter(|entry| matches!(entry.role(), AddonRole::Dependency(_)))
             .cloned()
     }
 }

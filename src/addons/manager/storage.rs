@@ -2,7 +2,7 @@
 
 use super::{Addons, AddonsState};
 use crate::{
-    Addon, AddonError, AddonKind, Directories, Kind,
+    Addon, AddonError, AddonRole, Directories, RoleMarker,
     addons::catalog::Catalog,
     error::{Error, Result},
     utils::fs,
@@ -12,12 +12,12 @@ use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-impl next_config::Config for Addon<AddonKind> {
+impl next_config::Config for Addon<AddonRole> {
     const VERSION: u32 = 1;
 }
 
 impl Addons {
-    /// Removes an acquired release of any kind from shared storage.
+    /// Removes an acquired release of any role from shared storage.
     ///
     /// Existing environment selections retain their records but lose the payload.
     /// Built Virgo artifacts are unaffected. The release is moved to trash before
@@ -45,12 +45,12 @@ impl Addons {
     }
 
     /// Commits a prepared release and publishes the updated snapshot.
-    pub(super) async fn commit<K: Kind>(
+    pub(super) async fn commit<R: RoleMarker>(
         &self,
-        record: Addon<K>,
+        record: Addon<R>,
         prepared: &Path,
         cancellation: &CancellationToken,
-    ) -> Result<Addon<K>> {
+    ) -> Result<Addon<R>> {
         let id = record.id();
         let destination = record.directory(&self.0.directories);
         let _write = cancellation
@@ -62,7 +62,7 @@ impl Addons {
         }
         let mut next = self.state().as_ref().clone();
         if let Some(current) = next.releases.get(&id) {
-            let current = current.clone().cast().ok_or(AddonError::WrongKind(id))?;
+            let current = current.clone().cast().ok_or(AddonError::WrongRole(id))?;
             if current != record {
                 return Err(AddonError::InvalidRelease(destination).into());
             }
@@ -96,7 +96,7 @@ impl AddonsState {
             directories.dependency_releases(),
         ] {
             for (id, path) in release_manifests(&root).await? {
-                let record: Addon<AddonKind> = next_config::load(&path).await?;
+                let record: Addon<AddonRole> = next_config::load(&path).await?;
                 if record.id() != id {
                     return Err(AddonError::InvalidRelease(path).into());
                 }

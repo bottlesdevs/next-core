@@ -32,9 +32,9 @@ pub enum AddonError {
     /// The acquired record exists, but its shared payload is unavailable.
     #[error("source payload is missing for addon {0}")]
     PayloadMissing(Uuid),
-    /// The release with this UUID is of a different kind than requested.
-    #[error("addon {0} is of a different kind")]
-    WrongKind(Uuid),
+    /// The release with this UUID has a different role than requested.
+    #[error("addon {0} has a different role")]
+    WrongRole(Uuid),
     /// The UUID is already used by another local addon family or record.
     #[error("local storage contains duplicate addon {0}")]
     Duplicate(Uuid),

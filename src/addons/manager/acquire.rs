@@ -4,8 +4,8 @@
 //! payload, runtime metadata, and any frozen prefix recipe.
 
 use super::super::{
-    Addon, AddonError, CatalogError, Kind, Requirement,
-    catalog::{AddonKind, CatalogArtifact, Target},
+    Addon, AddonError, AddonRole, CatalogError, Component, Requirement, RoleMarker,
+    catalog::{CatalogArtifact, Target},
     defaults::steps as recipe_steps,
     recipe::InstallResource,
 };
@@ -23,10 +23,10 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 impl Addons {
-    /// Acquires the catalog release `id` as kind `K`, or returns the already
+    /// Acquires the catalog release `id` with role `R`, or returns the already
     /// acquired release.
     ///
-    /// Use [`AddonKind`] as `K` to acquire a release of any kind. Runtime tools
+    /// Use [`AddonRole`] as `R` to acquire a release of any role. Runtime tools
     /// and components require exactly one artifact matching the current platform.
     /// Components freeze the artifact's recipe, or the slot's default recipe when
     /// the artifact has none. Dependencies download every matching artifact in
@@ -36,12 +36,12 @@ impl Addons {
     /// # Errors
     ///
     /// Returns an error on cancellation, a missing or unsupported catalog entry,
-    /// a release of another kind, ambiguous artifacts, download, verification,
+    /// a release with another role, ambiguous artifacts, download, verification,
     /// extraction, or storage failure.
-    pub fn fetch<K: Kind>(&self, id: Uuid) -> Operation<Addon<K>> {
+    pub fn fetch<R: RoleMarker>(&self, id: Uuid) -> Operation<Addon<R>> {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
-            if let Some(release) = addons.acquired::<K>(id, &cancellation).await? {
+            if let Some(release) = addons.acquired::<R>(id, &cancellation).await? {
                 return Ok(release);
             }
             let state = addons.state();
@@ -51,13 +51,13 @@ impl Addons {
                 .chain(state.dependency_catalog.iter())
                 .find_map(|catalog| catalog.entry(id))
                 .ok_or(CatalogError::NotFound(id))?;
-            let kind = K::narrow(entry.kind()).ok_or(AddonError::WrongKind(id))?;
+            let role = R::try_from(entry.role()).map_err(|_| AddonError::WrongRole(id))?;
             let target = Target::current().ok_or(CatalogError::Unsupported(id))?;
             let artifacts: Vec<_> = entry.artifacts_for_target(target).collect();
             if artifacts.is_empty() {
                 return Err(CatalogError::Unsupported(id).into());
             }
-            let is_dependency = entry.kind() == AddonKind::Dependency;
+            let is_dependency = matches!(entry.role(), AddonRole::Dependency(_));
             if !is_dependency && artifacts.len() != 1 {
                 return Err(CatalogError::InvalidArchiveArtifactCount {
                     addon: id,
@@ -70,8 +70,8 @@ impl Addons {
                 entry.name().into(),
                 entry.version().into(),
                 entry.requirements().to_vec(),
-                resources(entry.kind(), &artifacts),
-                kind,
+                resources(entry.role(), &artifacts),
+                role,
             );
             fs::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
                 let downloads = stage.join("downloads");
@@ -101,11 +101,11 @@ impl Addons {
         })
     }
 
-    async fn acquired<K: Kind>(
+    async fn acquired<R: RoleMarker>(
         &self,
         id: Uuid,
         cancellation: &CancellationToken,
-    ) -> Result<Option<Addon<K>>> {
+    ) -> Result<Option<Addon<R>>> {
         let _write = cancellation
             .run_until_cancelled(self.0.write.lock())
             .await
@@ -115,38 +115,38 @@ impl Addons {
         }
         match self.state().releases.get(&id) {
             Some(release) => Ok(Some(
-                release.clone().cast().ok_or(AddonError::WrongKind(id))?,
+                release.clone().cast().ok_or(AddonError::WrongRole(id))?,
             )),
             None => Ok(None),
         }
     }
 
-    /// Imports a release of kind `kind` from a local tar archive under a fresh UUID.
+    /// Imports a release with role `role` from a local tar archive under a fresh UUID.
     ///
     /// The archive must contain one top-level directory. Components freeze the
-    /// default recipe for their slot; other kinds have no recipe. `requirements`
+    /// default recipe for their slot; other roles have no recipe. `requirements`
     /// are frozen into the release. The source archive is left unchanged.
     ///
     /// # Errors
     ///
     /// Returns an error on cancellation, extraction, an escaping payload link, or
     /// storage failure. Import only trusted archives.
-    pub fn import<K: Kind>(
+    pub fn import<R: RoleMarker>(
         &self,
         path: impl AsRef<Path>,
         name: impl Into<String>,
         version: impl Into<String>,
         requirements: Vec<Requirement>,
-        kind: K,
-    ) -> Operation<Addon<K>> {
-        let resources = resources(kind.widen(), &[]);
+        role: R,
+    ) -> Operation<Addon<R>> {
+        let resources = resources(role.into(), &[]);
         let record = Addon::new(
             Uuid::new_v4(),
             name.into(),
             version.into(),
             requirements,
             resources,
-            kind,
+            role,
         );
         let source = path.as_ref().to_path_buf();
         let addons = self.clone();
@@ -161,13 +161,13 @@ impl Addons {
     }
 }
 
-/// Freezes the installation resources of a release of `kind` from `artifacts`.
+/// Freezes the installation resources of a release with `role` from `artifacts`.
 ///
 /// Components use their single artifact's steps, or the slot's default recipe.
 /// Dependencies pair each artifact with its steps. Runtime tools have none.
-fn resources(kind: AddonKind, artifacts: &[&CatalogArtifact]) -> Vec<InstallResource> {
-    match kind {
-        AddonKind::Component { slot } => vec![InstallResource::new(
+fn resources(role: AddonRole, artifacts: &[&CatalogArtifact]) -> Vec<InstallResource> {
+    match role {
+        AddonRole::Component(Component { slot }) => vec![InstallResource::new(
             "",
             artifacts
                 .first()
@@ -175,7 +175,7 @@ fn resources(kind: AddonKind, artifacts: &[&CatalogArtifact]) -> Vec<InstallReso
                 .unwrap_or_else(|| recipe_steps(slot))
                 .to_vec(),
         )],
-        AddonKind::Dependency => artifacts
+        AddonRole::Dependency(_) => artifacts
             .iter()
             .map(|artifact| {
                 InstallResource::new(
@@ -184,7 +184,7 @@ fn resources(kind: AddonKind, artifacts: &[&CatalogArtifact]) -> Vec<InstallReso
                 )
             })
             .collect(),
-        AddonKind::Runner | AddonKind::WineBridge | AddonKind::Umu => Vec::new(),
+        AddonRole::Runner(_) | AddonRole::WineBridge(_) | AddonRole::Umu(_) => Vec::new(),
     }
 }
 
