@@ -19,7 +19,7 @@ use uuid::{NonNilUuid, Uuid};
 use crate::error::Result;
 
 use super::recipe::InstallStep;
-use super::{Requirement, Slot};
+use super::{AddonRole, Requirement};
 
 const CATALOG_VERSION: u32 = 1;
 
@@ -177,30 +177,10 @@ impl Catalog {
     }
 }
 
-/// Identifies the runtime role or prefix contribution advertised by a catalog entry.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum AddonKind {
-    /// A Wine or Proton runner.
-    Runner,
-    /// The Bottles `WineBridge` executable.
-    #[serde(rename = "winebridge")]
-    WineBridge,
-    /// The independently selected UMU launcher.
-    Umu,
-    /// A replaceable component occupying one prefix slot.
-    Component {
-        /// Prefix role occupied by the component.
-        slot: Slot,
-    },
-    /// An installable dependency.
-    Dependency,
-}
-
 /// Describes a release advertised by a remote addon catalog.
 ///
 /// An entry is only metadata. Acquire it with [`Addons::fetch`](super::Addons::fetch)
-/// as the [`Kind`](super::Kind) matching its [`kind`](Self::kind). Check
+/// as the marker matching its [`role`](Self::role). Check
 /// [`is_supported`](Self::is_supported) before offering it for the current platform.
 ///
 /// # Examples
@@ -221,7 +201,7 @@ pub struct CatalogEntry {
     requirements: Vec<Requirement>,
     artifacts: Vec<CatalogArtifact>,
     #[serde(flatten)]
-    kind: AddonKind,
+    role: AddonRole,
 }
 
 impl CatalogEntry {
@@ -240,9 +220,9 @@ impl CatalogEntry {
         &self.version
     }
 
-    /// Returns the runtime role or prefix contribution of this release.
-    pub fn kind(&self) -> AddonKind {
-        self.kind
+    /// Returns the role of this release.
+    pub fn role(&self) -> AddonRole {
+        self.role
     }
 
     /// Returns the constraints that an environment must satisfy for this release.

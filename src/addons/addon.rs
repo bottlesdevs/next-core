@@ -3,7 +3,8 @@
 //! An [`Addon`] is the durable form of a release, freezing its catalog metadata
 //! and any installation recipe when the release is acquired.
 //! Runtime tools have distinct types and empty installation resources.
-//! [`Kind`] connects each marker type to its catalog [`AddonKind`].
+//! [`AddonRole`] is the sum of the marker types, and [`RoleMarker`] is the bound
+//! satisfied by each marker and by [`AddonRole`] itself.
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
@@ -17,15 +18,12 @@ use crate::{
     runner::{Proton, Runner as RunnerBackend, RunnerError, RunnerKind, Wine, detect_runner_kind},
 };
 
-use super::{
-    AddonKind,
-    recipe::{InstallResource, InstallStep},
-};
+use super::recipe::{InstallResource, InstallStep};
 
 /// Describes an acquired addon and its frozen metadata.
 ///
-/// `K` identifies a [`Runner`], [`WineBridge`], [`Umu`], [`Component`], or
-/// [`Dependency`]. Records are
+/// `R` is a [`RoleMarker`]: [`Runner`], [`WineBridge`], [`Umu`], [`Component`],
+/// [`Dependency`], or [`AddonRole`] for a release of any role. Records are
 /// stored next to their shared payload and copied into environment state when the
 /// addon is selected. Because metadata is frozen at acquisition time, later
 /// catalog refreshes do not alter existing records.
@@ -34,11 +32,8 @@ use super::{
 /// that creates serialized records must assign a new UUID whenever the record's
 /// definition changes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(
-    deny_unknown_fields,
-    bound(serialize = "K: Serialize", deserialize = "K: Deserialize<'de>")
-)]
-pub struct Addon<K> {
+#[serde(bound(serialize = "R: Serialize", deserialize = "R: Deserialize<'de>"))]
+pub struct Addon<R> {
     id: Uuid,
     name: String,
     version: String,
@@ -47,17 +42,17 @@ pub struct Addon<K> {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     resources: Vec<InstallResource>,
     #[serde(flatten)]
-    kind: K,
+    role: R,
 }
 
-impl<K> Addon<K> {
+impl<R> Addon<R> {
     pub(crate) fn new(
         id: Uuid,
         name: String,
         version: String,
         requirements: Vec<Requirement>,
         resources: Vec<InstallResource>,
-        kind: K,
+        role: R,
     ) -> Self {
         Self {
             id,
@@ -65,7 +60,7 @@ impl<K> Addon<K> {
             version,
             requirements,
             resources,
-            kind,
+            role,
         }
     }
 
@@ -89,12 +84,12 @@ impl<K> Addon<K> {
         &self.requirements
     }
 
-    /// Returns the catalog kind of this release.
-    pub fn kind(&self) -> AddonKind
+    /// Returns the role of this release.
+    pub fn role(&self) -> AddonRole
     where
-        K: Kind,
+        R: RoleMarker,
     {
-        self.kind.widen()
+        self.role.into()
     }
 
     pub(crate) fn metadata(&self) -> (Uuid, &str, &[Requirement]) {
@@ -112,7 +107,7 @@ impl<K> Addon<K> {
     /// Returns the shared payload directory for this release.
     pub(crate) fn path(&self, directories: &Directories) -> PathBuf
     where
-        K: Kind,
+        R: RoleMarker,
     {
         self.directory(directories).join("payload")
     }
@@ -120,24 +115,24 @@ impl<K> Addon<K> {
     /// Returns the managed directory containing this release's manifest and payload.
     pub(super) fn directory(&self, directories: &Directories) -> PathBuf
     where
-        K: Kind,
+        R: RoleMarker,
     {
-        let releases = match self.kind.widen() {
-            AddonKind::Dependency => directories.dependency_releases(),
+        let releases = match self.role() {
+            AddonRole::Dependency(_) => directories.dependency_releases(),
             _ => directories.component_releases(),
         };
         releases.join(self.id().to_string())
     }
 
-    /// Converts this record to kind `J`, or returns `None` if its kind differs.
+    /// Converts this record to role `J`, or returns `None` if its role differs.
     ///
-    /// Casting to [`AddonKind`] always succeeds.
-    pub fn cast<J: Kind>(self) -> Option<Addon<J>>
+    /// Casting to [`AddonRole`] always succeeds.
+    pub fn cast<J: RoleMarker>(self) -> Option<Addon<J>>
     where
-        K: Kind,
+        R: RoleMarker,
     {
         Some(Addon {
-            kind: J::narrow(self.kind.widen())?,
+            role: J::try_from(self.role.into()).ok()?,
             id: self.id,
             name: self.name,
             version: self.version,
@@ -146,12 +141,12 @@ impl<K> Addon<K> {
         })
     }
 
-    pub(super) fn erase(self) -> Addon<AddonKind>
+    pub(super) fn erase(self) -> Addon<AddonRole>
     where
-        K: Kind,
+        R: RoleMarker,
     {
         Addon {
-            kind: self.kind.widen(),
+            role: self.role.into(),
             id: self.id,
             name: self.name,
             version: self.version,
@@ -162,9 +157,9 @@ impl<K> Addon<K> {
 }
 
 impl Addon<Component> {
-    /// Returns the mutually exclusive environment role occupied by the component.
+    /// Returns the mutually exclusive environment position occupied by the component.
     pub fn slot(&self) -> Slot {
-        self.kind.slot
+        self.role.slot
     }
 
     /// Returns whether this component satisfies `requirement`.
@@ -222,7 +217,7 @@ impl Addon<Dependency> {
     }
 }
 
-/// Identifies a mutually exclusive component role in an environment.
+/// Identifies a mutually exclusive component position in an environment.
 ///
 /// Environment state can select at most one [`Component`] for each slot. The
 /// string representation is the canonical spelling used by catalogs and storage.
@@ -283,7 +278,7 @@ impl FromStr for Slot {
 
 /// Describes another addon that must be present in an environment.
 ///
-/// Name and identifier constraints may be satisfied by any addon kind;
+/// Name and identifier constraints may be satisfied by an addon of any role;
 /// slot constraints may be satisfied only by a [`Component`].
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -296,93 +291,78 @@ pub enum Requirement {
     Id(Uuid),
 }
 
-mod sealed {
-    pub trait Sealed {}
-}
-
-/// Identifies the kind parameter of an [`Addon`].
+/// Identifies the role of an addon in an environment.
 ///
-/// Implemented by the marker types [`Runner`], [`WineBridge`], [`Umu`],
-/// [`Component`], and [`Dependency`], and by [`AddonKind`], which stands for a
-/// release of any kind.
-pub trait Kind: sealed::Sealed + Clone + PartialEq + Send + Sync + 'static {
-    /// Returns the marker for `kind`, or `None` if `kind` is another kind.
-    fn narrow(kind: AddonKind) -> Option<Self>;
-    /// Returns the catalog kind described by this marker.
-    fn widen(&self) -> AddonKind;
+/// Catalog entries and shared storage hold releases of every role, so this is
+/// the role checked at runtime. Each variant holds the marker used as the type
+/// parameter of [`Addon`], and `Addon<AddonRole>` is a release of any role.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    PartialEq,
+    Serialize,
+    derive_more::From,
+    derive_more::TryInto,
+)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum AddonRole {
+    /// A Wine or Proton runner.
+    Runner(Runner),
+    /// The Bottles `WineBridge` executable.
+    #[serde(rename = "winebridge")]
+    WineBridge(WineBridge),
+    /// The independently selected UMU launcher.
+    Umu(Umu),
+    /// A replaceable component occupying one prefix slot.
+    Component(Component),
+    /// An installable dependency.
+    Dependency(Dependency),
 }
 
-impl sealed::Sealed for AddonKind {}
-
-impl Kind for AddonKind {
-    fn narrow(kind: AddonKind) -> Option<Self> {
-        Some(kind)
-    }
-
-    fn widen(&self) -> AddonKind {
-        *self
-    }
+/// Bounds the type parameter of an [`Addon`].
+///
+/// Satisfied by the marker types [`Runner`], [`WineBridge`], [`Umu`],
+/// [`Component`], and [`Dependency`], and by [`AddonRole`], which stands for a
+/// release of any role.
+pub trait RoleMarker:
+    TryFrom<AddonRole> + Into<AddonRole> + Copy + PartialEq + Send + Sync + 'static
+{
 }
 
-macro_rules! unit_kinds {
-    ($($marker:ident),*) => {$(
-        impl sealed::Sealed for $marker {}
-
-        impl Kind for $marker {
-            fn narrow(kind: AddonKind) -> Option<Self> {
-                matches!(kind, AddonKind::$marker).then_some(Self {})
-            }
-
-            fn widen(&self) -> AddonKind {
-                AddonKind::$marker
-            }
-        }
-    )*};
-}
-
-unit_kinds!(Runner, WineBridge, Umu, Dependency);
-
-impl sealed::Sealed for Component {}
-
-impl Kind for Component {
-    fn narrow(kind: AddonKind) -> Option<Self> {
-        match kind {
-            AddonKind::Component { slot } => Some(Self { slot }),
-            _ => None,
-        }
-    }
-
-    fn widen(&self) -> AddonKind {
-        AddonKind::Component { slot: self.slot }
-    }
+impl<R> RoleMarker for R where
+    R: TryFrom<AddonRole> + Into<AddonRole> + Copy + PartialEq + Send + Sync + 'static
+{
 }
 
 /// Marks an acquired Wine or Proton runtime.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Runner {}
 
 /// Marks the acquired Bottles WineBridge service executable.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WineBridge {}
 
 /// Marks an acquired UMU launcher used with Proton.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Umu {}
 
 /// Marks an addon as a component that occupies one [`Slot`].
 ///
 /// Components are mutually exclusive by slot when selected in an environment.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
-    /// Environment role occupied by the component.
+    /// Environment position occupied by the component.
     pub slot: Slot,
 }
 
 /// Marks an addon as a dependency that may coexist with other dependencies.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dependency {}

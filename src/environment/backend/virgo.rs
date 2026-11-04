@@ -189,9 +189,9 @@ impl VirgoManager {
     ///
     /// Returns errors for missing build inputs, cancellation, runner loading,
     /// recipe execution, FVS, registry processing, filesystem work, or publication.
-    async fn prepare_addon<K: crate::Kind>(
+    async fn prepare_addon<R: crate::RoleMarker>(
         &self,
-        addon: &Addon<K>,
+        addon: &Addon<R>,
         base: &VirgoLayer,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,

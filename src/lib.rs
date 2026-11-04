@@ -26,8 +26,8 @@ mod virgo;
 mod winebridge;
 
 pub use addons::{
-    Addon, AddonError, AddonKind, Addons, AddonsState, CatalogEntry, CatalogError, Component,
-    Dependency, InstallerError, Kind, Requirement, Runner, Slot, Umu, WineBridge,
+    Addon, AddonError, AddonRole, Addons, AddonsState, CatalogEntry, CatalogError, Component,
+    Dependency, InstallerError, Requirement, RoleMarker, Runner, Slot, Umu, WineBridge,
 };
 pub use bottle::{Bottle, BottleData, BottleError, BottleState};
 pub use command::wrappers::{

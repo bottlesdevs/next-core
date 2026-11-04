@@ -11,8 +11,8 @@
 //! releases are appended in installation order. A release may declare
 //! [`Requirement`]s that environment validation must satisfy.
 //!
-//! The [`Kind`] trait ties each marker to its catalog [`AddonKind`], so one
-//! generic API acquires, imports, and lists every kind.
+//! [`AddonRole`] holds one marker, and [`RoleMarker`] bounds the type parameter
+//! of [`Addon`], so one generic API acquires, imports, and lists every role.
 //!
 //! Use [`crate::Bottles::addons`] to access the shared [`Addons`] manager. Acquiring
 //! a release only places it in shared storage. Selection remains an explicit owner
@@ -28,8 +28,10 @@ mod installer;
 mod manager;
 mod recipe;
 
-pub use addon::{Addon, Component, Dependency, Kind, Requirement, Runner, Slot, Umu, WineBridge};
-pub use catalog::{AddonKind, CatalogEntry};
+pub use addon::{
+    Addon, AddonRole, Component, Dependency, Requirement, RoleMarker, Runner, Slot, Umu, WineBridge,
+};
+pub use catalog::CatalogEntry;
 pub use error::{AddonError, CatalogError, InstallerError};
 pub(crate) use installer::{InstallInputs, execute, uninstall};
 pub use manager::{Addons, AddonsState};
