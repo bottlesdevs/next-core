@@ -9,8 +9,6 @@ use crate::{
     Addon, Component, Dependency, EnvVars, Runner, Slot, Umu, WineBridge, Wrappers, error::Result,
 };
 
-#[cfg(feature = "fvs")]
-use super::history;
 use super::{Inner, PrefixState, backend::standard};
 use crate::{
     Operation, PrefixBackend, PrefixError, Progress, Stage, error::Error,
@@ -193,8 +191,9 @@ impl Inner {
                 }
                 #[cfg(feature = "fvs")]
                 PrefixBackend::Virgo if prefix_changed || runner_changed => {
-                    let (base, overlays) = prefix
-                        .virgo
+                    use super::{backend::virgo::Virgo, history};
+
+                    let (base, overlays) = Virgo::new(&prefix.context)
                         .prepare_artifacts(after, &progress, &cancellation)
                         .await?;
                     let checkpoint = history::capture(
@@ -208,7 +207,8 @@ impl Inner {
                     .await?;
                     let applied = async {
                         prefix
-                            .virgo
+                            .context
+                            .fvs()
                             .layers
                             .prepare_workspace(&prefix.root, &base, &overlays, &cancellation)
                             .await?;

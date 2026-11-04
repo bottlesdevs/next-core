@@ -119,10 +119,8 @@ pub enum Stage {
     Extracting,
     /// Initializes a Wine prefix.
     CreatingPrefix,
-    #[cfg(feature = "fvs")]
     /// Records an FVS revision before a change.
     Checkpointing,
-    #[cfg(feature = "fvs")]
     /// Restores an FVS revision.
     Restoring,
     /// Reconstructs prefix state after a selection changes.
@@ -131,7 +129,6 @@ pub enum Stage {
     Configuring,
     /// Removes installed data.
     Removing,
-    #[cfg(feature = "fvs")]
     /// Publishes an immutable FVS layer.
     Committing,
 }
@@ -145,14 +142,11 @@ impl fmt::Display for Stage {
             Self::Verifying { file } => write!(formatter, "Verifying {file}"),
             Self::Extracting => formatter.write_str("Extracting"),
             Self::CreatingPrefix => formatter.write_str("Creating prefix"),
-            #[cfg(feature = "fvs")]
             Self::Checkpointing => formatter.write_str("Checkpointing"),
-            #[cfg(feature = "fvs")]
             Self::Restoring => formatter.write_str("Restoring"),
             Self::Rebuilding => formatter.write_str("Rebuilding"),
             Self::Configuring => formatter.write_str("Configuring"),
             Self::Removing => formatter.write_str("Removing"),
-            #[cfg(feature = "fvs")]
             Self::Committing => formatter.write_str("Committing"),
         }
     }

@@ -2,8 +2,6 @@
 
 use crate::{Addons, Directories, error::Result};
 use download_manager::manager::{DownloadManager, DownloadManagerConfig};
-#[cfg(feature = "fvs")]
-use fvs_rs::Fvs2dClient;
 use http_client::HttpClient;
 use std::sync::Arc;
 use url::Url;
@@ -14,7 +12,7 @@ struct ContextInner {
     downloader: Arc<DownloadManager>,
     addons: Addons,
     #[cfg(feature = "fvs")]
-    fvs: Arc<Fvs2dClient>,
+    fvs: crate::virgo::Fvs,
 }
 
 #[derive(Clone)]
@@ -28,9 +26,9 @@ impl Context {
     /// Returns an error if the download manager cannot initialize or either
     /// addon catalog cannot be loaded from storage.
     pub(crate) async fn new(
+        #[cfg(feature = "fvs")] fvs: crate::virgo::Fvs,
         directories: Directories,
         http_client: Arc<dyn HttpClient>,
-        #[cfg(feature = "fvs")] fvs: Arc<Fvs2dClient>,
         component_catalog: Option<Url>,
         dependency_catalog: Option<Url>,
     ) -> Result<Self> {
@@ -70,26 +68,11 @@ impl Context {
         let client = Arc::new(http_client::MockClient::new(|_| {
             Ok(http::Response::new(http_client::body([])))
         }));
-        #[cfg(feature = "fvs")]
-        let fvs = {
-            // Metadata and cancellation tests never issue FVS RPCs.
-            static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> =
-                std::sync::LazyLock::new(|| {
-                    tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap()
-                });
-            let _entered = RUNTIME.enter();
-            Arc::new(Fvs2dClient::from_channel(
-                tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy(),
-            ))
-        };
         Self::new(
+            #[cfg(feature = "fvs")]
+            crate::virgo::Fvs::for_test(&directories),
             directories,
             client,
-            #[cfg(feature = "fvs")]
-            fvs,
             None,
             None,
         )
@@ -113,7 +96,7 @@ impl Context {
     }
 
     #[cfg(feature = "fvs")]
-    pub(crate) fn fvs(&self) -> &Arc<Fvs2dClient> {
+    pub(crate) fn fvs(&self) -> &crate::virgo::Fvs {
         &self.0.fvs
     }
 }

@@ -16,8 +16,6 @@ mod runtime;
 mod state;
 
 pub use backend::PrefixBackend;
-#[cfg(feature = "fvs")]
-pub(crate) use backend::virgo::VirgoManager;
 pub use edit::Edit;
 pub use error::PrefixError;
 pub use handle::Prefix;
@@ -47,8 +45,6 @@ pub(crate) struct Inner {
     pub(crate) control: Mutex<()>,
     pub(crate) root: PathBuf,
     pub(crate) context: Context,
-    #[cfg(feature = "fvs")]
-    pub(crate) virgo: Arc<VirgoManager>,
 }
 
 impl Inner {
@@ -63,7 +59,6 @@ impl Inner {
         root: PathBuf,
         inventory: watch::Sender<Inventory>,
         context: Context,
-        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
     ) -> Result<Arc<Self>> {
         let id = root
             .file_name()
@@ -81,8 +76,6 @@ impl Inner {
             control: Mutex::new(()),
             root,
             context,
-            #[cfg(feature = "fvs")]
-            virgo,
         }))
     }
 
@@ -118,11 +111,11 @@ impl Inner {
             }
             #[cfg(feature = "fvs")]
             PrefixBackend::Virgo => {
-                let (base, overlays) = self
-                    .virgo
+                let (base, overlays) = backend::virgo::Virgo::new(&self.context)
                     .prepare_artifacts(state, progress, cancellation)
                     .await?;
-                self.virgo
+                self.context
+                    .fvs()
                     .layers
                     .prepare_workspace(&self.root, &base, &overlays, cancellation)
                     .await?;

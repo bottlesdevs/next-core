@@ -6,8 +6,6 @@ use crate::{
     error::Result,
     proto::{DllOverride, DllOverrideMode, Process},
 };
-#[cfg(feature = "fvs")]
-use crate::{Snapshot, SnapshotSummary};
 use futures_core::Stream;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -190,7 +188,7 @@ impl Prefix {
     /// Awaiting the operation returns an invalid-input I/O error when `message`
     /// is the reserved internal checkpoint message. It can also fail during
     /// cancellation, Wine shutdown, repository initialization, or commit.
-    pub fn create_snapshot(&self, message: impl Into<String>) -> Operation<Snapshot> {
+    pub fn create_snapshot(&self, message: impl Into<String>) -> Operation<crate::Snapshot> {
         self.0.create_snapshot(message.into())
     }
 
@@ -203,7 +201,7 @@ impl Prefix {
     ///
     /// Returns an error if the prefix was deleted, history metadata cannot
     /// be read, or FVS cannot list revisions.
-    pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
+    pub async fn snapshots(&self) -> Result<Vec<crate::SnapshotSummary>> {
         self.0.snapshots().await
     }
 

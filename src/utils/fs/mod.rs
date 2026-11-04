@@ -41,26 +41,6 @@ where
     result
 }
 
-#[cfg(feature = "fvs")]
-/// Converts `path` to an absolute path without accessing the target.
-///
-/// Relative paths are joined to the process's current directory. Collecting the
-/// path components removes redundant separators and current-directory components,
-/// but preserves parent-directory components; symbolic links are not resolved.
-///
-/// # Errors
-///
-/// Returns an I/O error if the current directory cannot be read.
-pub fn absolute_path(path: PathBuf) -> crate::error::Result<PathBuf> {
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-
-    Ok(path.components().collect())
-}
-
 /// Tests whether `path` exists without masking errors other than not-found.
 ///
 /// Metadata lookup follows symbolic links, so a dangling symlink returns `false`.

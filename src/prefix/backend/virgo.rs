@@ -4,27 +4,27 @@
 //! component layers, and dependency layers in composition order.
 
 use crate::{
-    Addon, AddonError, Context, PrefixError, PrefixState, Progress, Stage,
+    Addon, AddonError, Context, PrefixState, Progress, Stage,
     addons::{InstallInputs, execute},
     error::{Error, Result},
     prefix::runtime,
-    virgo::{LayerStore, VirgoLayer},
+    virgo::{LayerStore, VirgoError, VirgoLayer},
 };
 use std::path::Path;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-pub(crate) struct VirgoManager {
-    cx: Context,
-    pub(in crate::prefix) layers: LayerStore,
+/// Resolves and builds Virgo artifacts with the services of one core instance.
+pub(in crate::prefix) struct Virgo<'a> {
+    cx: &'a Context,
+    layers: &'a LayerStore,
 }
 
-impl VirgoManager {
-    /// Creates a manager without touching storage or connecting to FVS.
-    pub(crate) fn new(cx: Context) -> Self {
+impl<'a> Virgo<'a> {
+    pub(in crate::prefix) fn new(cx: &'a Context) -> Self {
         Self {
-            layers: LayerStore::new(cx.directories().clone(), cx.fvs().clone()),
             cx,
+            layers: &cx.fvs().layers,
         }
     }
 
@@ -103,7 +103,7 @@ impl VirgoManager {
     ///
     /// # Errors
     ///
-    /// Returns [`PrefixError::SodaNotDownloaded`] when no eligible local
+    /// Returns [`VirgoError::SodaNotDownloaded`] when no eligible local
     /// runner exists, plus cancellation, runner, FVS, registry, or filesystem errors.
     async fn prepare_base(&self, cancellation: &CancellationToken) -> Result<VirgoLayer> {
         let destination = Path::new("soda");
@@ -117,7 +117,7 @@ impl VirgoManager {
                         .into_iter()
                         .filter(|addon| addon.name().eq_ignore_ascii_case("soda")),
                 )
-                .ok_or(PrefixError::SodaNotDownloaded)?;
+                .ok_or(VirgoError::SodaNotDownloaded)?;
                 let runner = soda.load_runner(self.cx.directories(), None).await?;
                 let workspace = self
                     .layers
@@ -206,7 +206,7 @@ impl VirgoManager {
                     .ok_or(AddonError::NotFound(base.id))?;
                 let runner = soda.load_runner(self.cx.directories(), None).await?;
                 let winebridge = latest_addon(addons.releases::<crate::WineBridge>().into_iter())
-                    .ok_or(PrefixError::WineBridgeNotDownloaded)?
+                    .ok_or(VirgoError::WineBridgeNotDownloaded)?
                     .path(self.cx.directories());
                 let workspace = self
                     .layers

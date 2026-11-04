@@ -63,7 +63,7 @@ impl LayerStore {
     /// Returns an error for filesystem or manifest failures, an identity mismatch,
     /// or an empty FVS commit identifier.
     pub(crate) async fn load(&self, key: &Path, id: Option<Uuid>) -> Result<Option<VirgoLayer>> {
-        let root = self.directories.virgo().join(key);
+        let root = self.root().join(key);
         match async_fs::symlink_metadata(&root).await {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -85,7 +85,7 @@ impl LayerStore {
     pub(crate) async fn require(&self, key: &Path, id: Option<Uuid>) -> Result<VirgoLayer> {
         self.load(key, id)
             .await?
-            .ok_or_else(|| VirgoError::MissingArtifact(self.directories.virgo().join(key)).into())
+            .ok_or_else(|| VirgoError::MissingArtifact(self.root().join(key)).into())
     }
 
     /// Lists immediate published children of a collection.
@@ -99,8 +99,7 @@ impl LayerStore {
     /// Returns an error while reading the collection or any discovered manifest.
     #[allow(dead_code)] // Internal storage API; no public owner-facing layer API.
     pub(crate) async fn list(&self, collection: &Path) -> Result<Vec<(PathBuf, VirgoLayer)>> {
-        let mut entries = match async_fs::read_dir(self.directories.virgo().join(collection)).await
-        {
+        let mut entries = match async_fs::read_dir(self.root().join(collection)).await {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
@@ -137,7 +136,7 @@ impl LayerStore {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            async_fs::rename(self.directories.virgo().join(key), trash.join("artifact")).await?;
+            async_fs::rename(self.root().join(key), trash.join("artifact")).await?;
             Ok(())
         })
         .await
@@ -166,7 +165,7 @@ impl LayerStore {
         commit: String,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
-        let destination = self.directories.virgo().join(key);
+        let destination = self.root().join(key);
         let manifest = VirgoLayerManifest { id, commit };
         next_config::save(artifact.join("manifest.toml"), &manifest).await?;
         async_fs::create_dir_all(destination.parent().expect("artifact has a parent")).await?;
