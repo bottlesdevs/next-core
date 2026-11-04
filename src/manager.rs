@@ -4,34 +4,28 @@
 //! edit, rollback, and delete operations. It does not poll the filesystem for
 //! changes made outside this crate.
 
-use crate::environment::Inner;
 #[cfg(feature = "fvs")]
 use crate::environment::VirgoManager;
+use crate::environment::{Inner, Inventory};
 use crate::{
     Addon, Context, Environment, EnvironmentError, EnvironmentState, Operation, PrefixBackend,
     Progress, Runner, Stage, Umu, WineBridge, error::Result,
 };
 use futures_core::Stream;
-use futures_util::{
-    StreamExt,
-    stream::{self, SelectAll},
-};
+use futures_util::StreamExt;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     path::PathBuf,
-    pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
-type Members = Arc<HashMap<Uuid, Environment>>;
-
 /// Tracks the live collection of environments.
 ///
 /// Obtain it from [`crate::Bottles::environments`]. Clones share collection
-/// membership. Opening the same UUID through clones
+/// membership and its [`Inventory`]. Opening the same UUID through clones
 /// returns handles to the same live state. The collection is loaded once from
 /// library-managed storage and updated by manager operations; it does not
 /// observe external filesystem changes.
@@ -41,24 +35,21 @@ pub struct Manager {
     context: Context,
     #[cfg(feature = "fvs")]
     virgo: Arc<VirgoManager>,
-    published: watch::Sender<Members>,
+    inventory: watch::Sender<Inventory>,
+    members: Arc<Mutex<HashMap<Uuid, Environment>>>,
 }
-enum Event {
-    Membership(Members),
-    Changed,
-}
-type Events = Pin<Box<dyn Stream<Item = Option<Event>> + Send>>;
 
 impl Manager {
     /// Returns cloned handles for the currently known members.
-    /// Configuration changes do not change collection membership.
+    ///
     /// Order is unspecified and must not be used as an identity or stable
     /// presentation order.
     pub fn list(&self) -> Vec<Environment> {
-        self.published.borrow().values().cloned().collect()
+        self.members.lock().unwrap().values().cloned().collect()
     }
 
     /// Looks up a member without filesystem or runtime work.
+    ///
     /// Repeated calls through this manager or its clones return handles to the
     /// same live state. Only members loaded at startup or created through this
     /// manager are opened.
@@ -67,25 +58,40 @@ impl Manager {
     ///
     /// Returns [`EnvironmentError::NotFound`] if `id` is not in the collection.
     pub fn open(&self, id: Uuid) -> Result<Environment> {
-        self.published
-            .borrow()
+        self.members
+            .lock()
+            .unwrap()
             .get(&id)
             .cloned()
             .ok_or_else(|| EnvironmentError::NotFound(id).into())
     }
 
-    pub(crate) fn new(
-        root: PathBuf,
-        context: Context,
-        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
-    ) -> Self {
-        Self {
-            root,
-            context,
-            #[cfg(feature = "fvs")]
-            virgo,
-            published: watch::channel(Arc::new(HashMap::new())).0,
-        }
+    /// Returns the current state of every environment, ordered by identifier.
+    pub fn inventory(&self) -> Inventory {
+        self.inventory.borrow().clone()
+    }
+
+    /// Observes the inventory, including creation, edits, rollback, and deletion.
+    ///
+    /// First yields the current inventory, then the latest one after each
+    /// change. Slow consumers may miss intermediate inventories. The stream ends
+    /// when the manager, its clones, and every environment handle are dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::Manager;
+    /// # use futures_lite::StreamExt;
+    /// # async fn observe(manager: &Manager) {
+    /// let updates = manager.watch();
+    /// futures_lite::pin!(updates);
+    /// if let Some(inventory) = updates.next().await {
+    ///     println!("{} environments", inventory.len());
+    /// }
+    /// # }
+    /// ```
+    pub fn watch(&self) -> impl Stream<Item = Inventory> + Send + 'static + use<> {
+        WatchStream::new(self.inventory.subscribe())
     }
 
     /// Loads valid UUID-named environments found below `root`.
@@ -103,12 +109,15 @@ impl Manager {
         context: Context,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
     ) -> Result<Self> {
-        let manager = Self::new(
+        let manager = Self {
             root,
             context,
             #[cfg(feature = "fvs")]
             virgo,
-        );
+            inventory: watch::channel(Arc::default()).0,
+            members: Arc::default(),
+        };
+        let mut states = BTreeMap::new();
         let mut members = HashMap::new();
         let mut entries = match async_fs::read_dir(&manager.root).await {
             Ok(entries) => entries,
@@ -130,17 +139,24 @@ impl Manager {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let environment = Environment(Inner::from_state(
-                state,
-                root,
-                manager.context.clone(),
-                #[cfg(feature = "fvs")]
-                manager.virgo.clone(),
-            )?);
+            state.validate()?;
+            let environment = manager.environment(root)?;
+            states.insert(environment.id(), Arc::new(state));
             members.insert(environment.id(), environment);
         }
-        manager.published.send_replace(Arc::new(members));
+        *manager.members.lock().unwrap() = members;
+        manager.inventory.send_replace(Arc::new(states));
         Ok(manager)
+    }
+
+    fn environment(&self, root: PathBuf) -> Result<Environment> {
+        Ok(Environment(Inner::new(
+            root,
+            self.inventory.clone(),
+            self.context.clone(),
+            #[cfg(feature = "fvs")]
+            self.virgo.clone(),
+        )?))
     }
 
     /// Creates an operation that initializes and persists an environment.
@@ -172,23 +188,21 @@ impl Manager {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            let id = Uuid::new_v4();
             let state = EnvironmentState::new(backend, runner, winebridge, umu);
-            let environment = Inner::create(
-                state,
-                manager.root.join(id.to_string()),
-                manager.context.clone(),
-                #[cfg(feature = "fvs")]
-                manager.virgo.clone(),
-                &progress,
-                &cancellation,
-            )
-            .await?;
-            let handle = Environment(environment);
-            manager.published.send_modify(|published| {
-                Arc::make_mut(published).insert(id, handle.clone());
-            });
-            Ok(handle)
+            state.validate()?;
+            let environment = manager.environment(manager.root.join(Uuid::new_v4().to_string()))?;
+            environment
+                .0
+                .create(&state, &progress, &cancellation)
+                .await?;
+            // Join membership first so watchers can open what they observe.
+            manager
+                .members
+                .lock()
+                .unwrap()
+                .insert(environment.id(), environment.clone());
+            environment.0.publish(state);
+            Ok(environment)
         })
     }
 
@@ -215,76 +229,9 @@ impl Manager {
             handle
                 .0
                 .delete(&progress, &cancellation, || {
-                    manager.published.send_modify(|published| {
-                        Arc::make_mut(published).remove(&id);
-                    });
+                    manager.members.lock().unwrap().remove(&id);
                 })
                 .await
         })
-    }
-
-    /// Observes collection membership and member state changes, including edits
-    /// and rollback. First yields the current list, then the latest list after
-    /// each observed change. Slow consumers may miss intermediate states.
-    ///
-    /// Each list contains live handles, not state snapshots from the time of the
-    /// event. Order is unspecified. The stream ends when all manager clones and
-    /// operations retaining this collection are dropped, even if item handles
-    /// remain alive.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use bottles_core::Manager;
-    /// # use futures_lite::StreamExt;
-    /// # async fn observe(manager: &Manager) {
-    /// let updates = manager.watch();
-    /// futures_lite::pin!(updates);
-    /// if let Some(environments) = updates.next().await {
-    ///     println!("{} environments", environments.len());
-    /// }
-    /// # }
-    /// ```
-    pub fn watch(&self) -> impl Stream<Item = Vec<Environment>> + Send + 'static + use<> {
-        let published = self.published.subscribe();
-        let mut events = SelectAll::<Events>::new();
-        // End the aggregate when the manager closes, even if callers retain handles.
-        events.push(Box::pin(
-            WatchStream::new(published.clone())
-                .map(|members| Some(Event::Membership(members)))
-                .chain(stream::once(async { None })),
-        ));
-        stream::unfold(
-            (published, events, HashSet::new()),
-            |(published, mut events, mut subscribed)| async move {
-                let event = events.next().await??;
-                match event {
-                    Event::Membership(members) => {
-                        subscribed.retain(|id| members.contains_key(id));
-                        for (id, handle) in members.iter() {
-                            if subscribed.insert(*id) {
-                                let environment = &handle.0;
-                                let mut previous = environment.state().ok();
-                                events.push(Box::pin(environment.watch().filter_map(
-                                    move |state| {
-                                        let changed = previous
-                                            .as_ref()
-                                            .is_none_or(|current| !Arc::ptr_eq(current, &state));
-                                        previous = Some(state);
-                                        std::future::ready(changed.then_some(Some(Event::Changed)))
-                                    },
-                                )));
-                            }
-                        }
-                        let list = members.values().cloned().collect();
-                        Some((list, (published, events, subscribed)))
-                    }
-                    Event::Changed => {
-                        let list = published.borrow().values().cloned().collect();
-                        Some((list, (published, events, subscribed)))
-                    }
-                }
-            },
-        )
     }
 }

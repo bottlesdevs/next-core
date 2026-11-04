@@ -1,9 +1,10 @@
 //! Coordinates environment state, persistence, runtime control, and storage.
 //!
-//! An [`Environment`] exposes immutable [`EnvironmentState`] snapshots.
-//! Mutations are serialized by one control lock and publish a replacement
-//! snapshot only after persistence succeeds. Deletion closes the
-//! publication stream without invalidating snapshots already held by callers.
+//! An [`Environment`] exposes immutable [`EnvironmentState`] snapshots, which
+//! every environment publishes into one shared [`Inventory`]. Mutations are
+//! serialized by one control lock per environment and publish a replacement
+//! snapshot only after persistence succeeds. Deletion removes the snapshot from
+//! the inventory without invalidating snapshots already held by callers.
 
 mod backend;
 mod edit;
@@ -31,15 +32,18 @@ use crate::{
 };
 use backend::standard;
 use futures_core::Stream;
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, MutexGuard, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// Every environment's published state, keyed by environment identifier.
+pub type Inventory = Arc<BTreeMap<Uuid, Arc<EnvironmentState>>>;
+
 pub(crate) struct Inner {
     pub(crate) id: Uuid,
-    pub(crate) published: watch::Sender<Option<Arc<EnvironmentState>>>,
+    pub(crate) inventory: watch::Sender<Inventory>,
     pub(crate) control: Mutex<()>,
     pub(crate) root: PathBuf,
     pub(crate) context: Context,
@@ -48,18 +52,19 @@ pub(crate) struct Inner {
 }
 
 impl Inner {
-    /// Constructs an environment around already-loaded state without touching storage.
+    /// Constructs the environment stored at `root` without touching storage.
+    ///
+    /// Its state is read from `inventory`, where it is absent until published.
     ///
     /// # Errors
     ///
-    /// Returns an error if the state is invalid or `root` is not named by a UUID.
-    pub(crate) fn from_state(
-        state: EnvironmentState,
+    /// Returns an error if `root` is not named by a UUID.
+    pub(crate) fn new(
         root: PathBuf,
+        inventory: watch::Sender<Inventory>,
         context: Context,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
     ) -> Result<Arc<Self>> {
-        state.validate()?;
         let id = root
             .file_name()
             .and_then(|s| s.to_str())
@@ -70,10 +75,9 @@ impl Inner {
                     "environment directory must be a UUID",
                 )
             })?;
-        let (published, _) = watch::channel(Some(Arc::new(state)));
         Ok(Arc::new(Self {
             id,
-            published,
+            inventory,
             control: Mutex::new(()),
             root,
             context,
@@ -82,13 +86,12 @@ impl Inner {
         }))
     }
 
-    /// Initializes storage and persists a new environment before returning it.
+    /// Initializes storage for `state` and persists it without publishing it.
     ///
-    /// The environment remains private until both backend initialization and saving
-    /// `state.toml` succeed. Failure during backend initialization can leave a
-    /// partial environment root and any already-published shared Virgo artifacts. After
-    /// initialization succeeds, cancellation or a failed save moves the environment
-    /// root to trash on a best-effort basis.
+    /// Failure during backend initialization can leave a partial environment
+    /// root and any already-published shared Virgo artifacts. After
+    /// initialization succeeds, cancellation or a failed save moves the
+    /// environment root to trash on a best-effort basis.
     ///
     /// Cancellation is sampled before backend initialization and before and after
     /// the final save. Backend-specific work may add safe points, but in-flight
@@ -96,24 +99,14 @@ impl Inner {
     ///
     /// # Errors
     ///
-    /// Returns configuration, cancellation, runner, storage, backend, or
-    /// persistence errors encountered during initialization.
+    /// Returns cancellation, runner, storage, backend, or persistence errors
+    /// encountered during initialization.
     pub(crate) async fn create(
-        state: EnvironmentState,
-        root: PathBuf,
-        context: Context,
-        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
+        &self,
+        state: &EnvironmentState,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
-    ) -> Result<Arc<Self>> {
-        let environment = Self::from_state(
-            state,
-            root,
-            context,
-            #[cfg(feature = "fvs")]
-            virgo,
-        )?;
-        let state = environment.state()?;
+    ) -> Result<()> {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
@@ -121,18 +114,17 @@ impl Inner {
         // Initialization owns shutdown. Retain storage when it cannot finish safely.
         match state.backend {
             PrefixBackend::Standard => {
-                standard::create(&state, &environment.root, &environment.context).await?;
+                standard::create(state, &self.root, &self.context).await?;
             }
             #[cfg(feature = "fvs")]
             PrefixBackend::Virgo => {
-                let (base, overlays) = environment
+                let (base, overlays) = self
                     .virgo
-                    .prepare_artifacts(&state, progress, cancellation)
+                    .prepare_artifacts(state, progress, cancellation)
                     .await?;
-                environment
-                    .virgo
+                self.virgo
                     .layers
-                    .prepare_workspace(&environment.root, &base, &overlays, cancellation)
+                    .prepare_workspace(&self.root, &base, &overlays, cancellation)
                     .await?;
             }
         }
@@ -141,7 +133,7 @@ impl Inner {
                 return Err(Error::Cancelled);
             }
             progress.send_replace(Some(Progress::new(Stage::Configuring)));
-            environment.save(&state).await?;
+            self.save(state).await?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
@@ -149,25 +141,26 @@ impl Inner {
         }
         .await;
         if result.is_err() {
-            fs::with_temp_dir(&environment.context.directories().trash(), |trash| {
-                async_fs::rename(&environment.root, trash.join("environment"))
+            fs::with_temp_dir(&self.context.directories().trash(), |trash| {
+                async_fs::rename(&self.root, trash.join("environment"))
             })
             .await
             .log_warn();
         }
-        result?;
-        Ok(environment)
+        result
     }
 
     /// Returns the currently published state snapshot.
     ///
     /// # Errors
     ///
-    /// Returns [`EnvironmentError::Deleted`] after deletion has been published.
+    /// Returns [`EnvironmentError::Deleted`] once the environment is absent from
+    /// the inventory.
     pub(crate) fn state(&self) -> Result<Arc<EnvironmentState>> {
-        self.published
+        self.inventory
             .borrow()
-            .clone()
+            .get(&self.id)
+            .cloned()
             .ok_or_else(|| EnvironmentError::Deleted.into())
     }
 
@@ -175,19 +168,29 @@ impl Inner {
     pub(crate) fn watch(
         &self,
     ) -> impl Stream<Item = Arc<EnvironmentState>> + Send + 'static + use<> {
-        WatchStream::new(self.published.subscribe())
+        let id = self.id;
+        let mut previous: Option<Arc<EnvironmentState>> = None;
+        WatchStream::new(self.inventory.subscribe())
+            .map(move |inventory| inventory.get(&id).cloned())
             .take_while(Option::is_some)
-            .filter_map(|state| state)
+            .filter_map(move |state| {
+                let state = state?;
+                // Changes to other environments republish this one unchanged.
+                let changed = previous
+                    .as_ref()
+                    .is_none_or(|previous| !Arc::ptr_eq(previous, &state));
+                previous = Some(state.clone());
+                changed.then_some(state)
+            })
     }
 
     /// Publishes `state` when it differs from the current snapshot.
     pub(crate) fn publish(&self, state: EnvironmentState) {
-        let next = Arc::new(state);
-        self.published.send_if_modified(|published| {
-            if published.as_deref() == Some(next.as_ref()) {
+        self.inventory.send_if_modified(|inventory| {
+            if inventory.get(&self.id).map(AsRef::as_ref) == Some(&state) {
                 return false;
             }
-            *published = Some(next);
+            Arc::make_mut(inventory).insert(self.id, Arc::new(state));
             true
         });
     }
@@ -252,7 +255,9 @@ impl Inner {
         progress.send_replace(Some(Progress::new(Stage::Removing)));
         let destination = trash.join(Uuid::new_v4().to_string());
         async_fs::rename(&self.root, &destination).await?;
-        self.published.send_replace(None);
+        self.inventory.send_modify(|inventory| {
+            Arc::make_mut(inventory).remove(&self.id);
+        });
         on_deleted();
         async_fs::remove_dir_all(destination).await.log_warn();
         Ok(())
