@@ -26,7 +26,9 @@ pub use command::wrappers::{
     GamescopeConfig, GamescopeFilter, GamescopeScaler, MangoHudConfig, Wrappers,
 };
 pub use core::{Bottles, Config};
-pub use environment::{Edit, Environment, EnvironmentError, EnvironmentState, PrefixBackend};
+pub use environment::{
+    Edit, Environment, EnvironmentError, EnvironmentState, Inventory, PrefixBackend,
+};
 #[cfg(feature = "fvs")]
 pub use environment::{Snapshot, SnapshotSummary};
 pub use manager::Manager;

@@ -35,7 +35,8 @@ core.shutdown().await?;
 ## Core concepts
 
 - [`Bottles`] owns the shared services and top-level managers.
-- [`Manager`] provides the current collection of [`Environment`] handles.
+- [`Manager`] provides the current collection of [`Environment`] handles and
+  publishes every environment's state as one [`Inventory`].
 - [`EnvironmentState`] values are immutable snapshots. Handle watchers publish
   later snapshots without mutating earlier ones.
 - [`Edit`] collects a draft configuration change and publishes it only after
