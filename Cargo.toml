@@ -29,7 +29,6 @@ http-client = { workspace = true, features = ["reqwest"] }
 next-config.workspace = true
 next-proto.workspace = true
 fvs-rs = { workspace = true, optional = true }
-keyvalues-parser.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -51,12 +50,10 @@ semver.workspace = true
 strum.workspace = true
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde", "v5"] }
-keyring.workspace = true
 
 [dev-dependencies]
 async-executor.workspace = true
 http.workspace = true
-keyring-core.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "time"] }
 
 [package.metadata.docs.rs]

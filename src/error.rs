@@ -11,7 +11,6 @@ pub use crate::{
     addons::{AddonError, CatalogError, InstallerError},
     bottle::BottleError,
     environment::EnvironmentError,
-    profiles::ProfileError,
     runner::RunnerError,
     utils::fs::archive::ArchiveError,
     winebridge::BridgeError,
@@ -70,12 +69,6 @@ pub enum Error {
     /// Addon catalog, download, installation, or storage failed.
     #[error("addon error: {0}")]
     Addon(#[from] AddonError),
-    /// Profile or account management failed.
-    #[error("profile error: {0}")]
-    Profile(#[from] ProfileError),
-    /// The operating system credential store failed.
-    #[error("credential error: {0}")]
-    Credential(#[from] keyring::Error),
     /// Cooperative cancellation was observed at an operation-defined checkpoint.
     #[error("operation cancelled")]
     Cancelled,

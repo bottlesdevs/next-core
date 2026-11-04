@@ -1,8 +1,8 @@
 # bottles-core
 
 `bottles-core` is the application library behind Bottles Next. It manages Wine
-and Proton environments, runtime tools and prefix components, saved Windows launch
-definitions, and user profiles.
+and Proton environments, runtime tools and prefix components, and saved Windows
+launch definitions.
 
 The main entry point is [`Bottles`]. Opening it resolves the application's data
 directories, validates persisted state, initializes addon and environment
@@ -44,9 +44,6 @@ core.shutdown().await?;
 - [`Addons`] downloads, imports, and removes Wine runners and other managed
   components. [`AddonsState`] provides immutable catalog and release snapshots
   through [`Addons::state`] and [`Addons::watch`].
-- [`Profiles`] stores application profiles and their linked external accounts.
-
-Applications can register account providers through [`Profiles`].
 
 ## Operations and cancellation
 
