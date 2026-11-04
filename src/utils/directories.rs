@@ -132,11 +132,6 @@ impl Directories {
         self.dependencies().join("catalog.json")
     }
 
-    #[cfg(feature = "fvs")]
-    pub(crate) fn virgo(&self) -> PathBuf {
-        self.data_dir().join("virgo")
-    }
-
     /// Returns the persistent directory containing installed plugins.
     pub fn plugins(&self) -> PathBuf {
         self.data_dir().join("plugins")

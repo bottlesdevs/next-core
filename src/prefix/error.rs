@@ -10,14 +10,6 @@ use uuid::Uuid;
 /// variants of [`crate::error::Error`].
 #[derive(Debug, Error)]
 pub enum PrefixError {
-    /// No locally acquired Soda runner has a parseable semantic version.
-    #[cfg(feature = "fvs")]
-    #[error("no locally recorded Soda runner with a valid semantic version")]
-    SodaNotDownloaded,
-    /// No locally acquired WineBridge has a parseable semantic version.
-    #[cfg(feature = "fvs")]
-    #[error("no locally recorded WineBridge with a valid semantic version")]
-    WineBridgeNotDownloaded,
     /// The collection has no prefix with the requested identifier.
     #[error("prefix {0} was not found")]
     NotFound(Uuid),
@@ -25,7 +17,6 @@ pub enum PrefixError {
     #[error("prefix was deleted")]
     Deleted,
     /// Restoring the automatic checkpoint after a failed mutation also failed.
-    #[cfg(feature = "fvs")]
     #[error("rollback failed for {root}; repair or restore this prefix before retrying: {source}")]
     Rollback {
         /// Root directory of the prefix that could not be recovered.

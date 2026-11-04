@@ -14,8 +14,6 @@ pub use crate::{
     utils::fs::archive::ArchiveError,
     winebridge::BridgeError,
 };
-#[cfg(feature = "fvs")]
-use fvs_rs::error::Error as FvsError;
 
 /// A core operation result using [`enum@Error`].
 pub type Result<T> = std::result::Result<T, Error>;
@@ -54,7 +52,7 @@ pub enum Error {
     #[cfg(feature = "fvs")]
     /// The FVS client or daemon failed.
     #[error("FVS error: {0}")]
-    Fvs(#[from] FvsError),
+    Fvs(#[from] fvs_rs::error::Error),
     /// Prefix state, lifecycle, or validation failed.
     #[error("Prefix error: {0}")]
     Prefix(#[from] PrefixError),

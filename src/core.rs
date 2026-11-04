@@ -1,10 +1,5 @@
 //! Initialization and shared services for a Bottles application.
 
-#[cfg(feature = "fvs")]
-use crate::prefix::VirgoManager;
-
-#[cfg(feature = "fvs")]
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use http_client::{HttpClient, ReqwestClient};
@@ -23,7 +18,7 @@ pub struct Config {
     /// Explicit path to the `fvs2d` executable, or `None` to resolve it through
     /// `PATH`. Relative paths are resolved against the process's current directory.
     #[cfg(feature = "fvs")]
-    pub fvs2d: Option<PathBuf>,
+    pub fvs2d: Option<std::path::PathBuf>,
     /// Remote runner, WineBridge, UMU, and prefix-component catalog downloaded by
     /// [`Addons::refresh`](crate::Addons::refresh).
     pub component_catalog: Option<Url>,
@@ -68,41 +63,19 @@ impl Bottles {
     /// # }
     /// ```
     pub async fn open(config: Config) -> Result<Self> {
-        let Config {
-            #[cfg(feature = "fvs")]
-            fvs2d,
-            component_catalog,
-            dependency_catalog,
-        } = config;
         let directories = Directories::new().await?;
         let http_client: Arc<dyn HttpClient> =
             Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
-        #[cfg(feature = "fvs")]
-        let fvs = Arc::new(
-            fvs_rs::Fvs2dClient::connect_or_spawn(
-                fvs_executable(fvs2d)?,
-                directories.runtime_dir().join("fvs2d.sock"),
-            )
-            .await?,
-        );
         let context = Context::new(
+            #[cfg(feature = "fvs")]
+            crate::virgo::Fvs::connect(config.fvs2d, &directories).await?,
             directories,
             http_client,
-            #[cfg(feature = "fvs")]
-            fvs,
-            component_catalog,
-            dependency_catalog,
+            config.component_catalog,
+            config.dependency_catalog,
         )
         .await?;
-        #[cfg(feature = "fvs")]
-        let virgo = Arc::new(VirgoManager::new(context.clone()));
-        let prefixes = Prefixes::load(
-            context.directories().prefixes(),
-            context.clone(),
-            #[cfg(feature = "fvs")]
-            virgo,
-        )
-        .await?;
+        let prefixes = Prefixes::load(context.directories().prefixes(), context.clone()).await?;
         Ok(Self { context, prefixes })
     }
 
@@ -142,23 +115,5 @@ impl Bottles {
     /// Returns the HTTP transport shared by core services.
     pub fn http_client(&self) -> &Arc<dyn HttpClient> {
         self.context.http_client()
-    }
-}
-
-#[cfg(feature = "fvs")]
-fn fvs_executable(configured: Option<PathBuf>) -> Result<PathBuf> {
-    Ok(configured
-        .map(crate::utils::fs::absolute_path)
-        .transpose()?
-        .unwrap_or_else(|| PathBuf::from("fvs2d")))
-}
-
-#[cfg(all(test, feature = "fvs"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn uses_path_lookup_when_fvs2d_is_not_configured() {
-        assert_eq!(fvs_executable(None).unwrap(), PathBuf::from("fvs2d"));
     }
 }

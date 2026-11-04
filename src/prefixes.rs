@@ -4,8 +4,6 @@
 //! edit, rollback, and delete operations. It does not poll the filesystem for
 //! changes made outside this crate.
 
-#[cfg(feature = "fvs")]
-use crate::prefix::VirgoManager;
 use crate::prefix::{Inner, Inventory};
 use crate::{
     Addon, Context, Operation, Prefix, PrefixBackend, PrefixError, PrefixState, Progress, Runner,
@@ -33,8 +31,6 @@ use uuid::Uuid;
 pub struct Prefixes {
     root: PathBuf,
     context: Context,
-    #[cfg(feature = "fvs")]
-    virgo: Arc<VirgoManager>,
     inventory: watch::Sender<Inventory>,
     members: Arc<Mutex<HashMap<Uuid, Prefix>>>,
 }
@@ -104,16 +100,10 @@ impl Prefixes {
     ///
     /// Returns an error when directory enumeration, state loading, validation,
     /// or prefix reconstruction fails.
-    pub(crate) async fn load(
-        root: PathBuf,
-        context: Context,
-        #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
-    ) -> Result<Self> {
+    pub(crate) async fn load(root: PathBuf, context: Context) -> Result<Self> {
         let prefixes = Self {
             root,
             context,
-            #[cfg(feature = "fvs")]
-            virgo,
             inventory: watch::channel(Arc::default()).0,
             members: Arc::default(),
         };
@@ -154,8 +144,6 @@ impl Prefixes {
             root,
             self.inventory.clone(),
             self.context.clone(),
-            #[cfg(feature = "fvs")]
-            self.virgo.clone(),
         )?))
     }
 

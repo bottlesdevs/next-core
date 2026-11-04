@@ -125,18 +125,20 @@ impl Inner {
     /// Returns an error if a Virgo mount cannot be released or discovery files
     /// cannot be cleared.
     async fn release_storage(&self, backend: PrefixBackend) -> Result<()> {
-        #[cfg(feature = "fvs")]
-        if backend == PrefixBackend::Virgo {
-            self.virgo.layers.unmount_workspace(&self.root).await?;
+        let wineprefix = self.root.join("prefix");
+        match backend {
+            PrefixBackend::Standard => WineBridgeClient::clear_discovery(&wineprefix).await,
+            #[cfg(feature = "fvs")]
+            PrefixBackend::Virgo => {
+                self.context
+                    .fvs()
+                    .layers
+                    .unmount_workspace(&self.root)
+                    .await?;
+                WineBridgeClient::clear_discovery(&wineprefix).await?;
+                WineBridgeClient::clear_discovery(&self.root.join("upper")).await
+            }
         }
-        #[cfg(not(feature = "fvs"))]
-        let _ = backend;
-        WineBridgeClient::clear_discovery(&self.root.join("prefix")).await?;
-        #[cfg(feature = "fvs")]
-        if backend == PrefixBackend::Virgo {
-            WineBridgeClient::clear_discovery(&self.root.join("upper")).await?;
-        }
-        Ok(())
     }
 
     /// Returns an operation that starts or attaches `WineBridge` and lists DLL overrides.
@@ -220,9 +222,12 @@ impl Inner {
         }
         #[cfg(feature = "fvs")]
         if backend == PrefixBackend::Virgo {
-            let (base, overlays) = self.virgo.composition(state).await?;
+            let (base, overlays) = super::backend::virgo::Virgo::new(&self.context)
+                .composition(state)
+                .await?;
             let mounted = self
-                .virgo
+                .context
+                .fvs()
                 .layers
                 .mount_workspace(&self.root, &base, &overlays, cancellation)
                 .await;
