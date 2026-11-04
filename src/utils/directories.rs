@@ -63,7 +63,8 @@ impl Directories {
         Ok(directories)
     }
 
-    pub(crate) fn config_dir(&self) -> &Path {
+    /// Returns the persistent, platform-local configuration directory for Bottles.
+    pub fn config_dir(&self) -> &Path {
         self.0.config_dir()
     }
 
@@ -143,10 +144,6 @@ impl Directories {
     /// Returns the persistent directory containing installed plugins.
     pub fn plugins(&self) -> PathBuf {
         self.data_dir().join("plugins")
-    }
-
-    pub(crate) fn profiles(&self) -> PathBuf {
-        self.config_dir().join("profiles.toml")
     }
 
     fn paths(&self) -> [PathBuf; 9] {

@@ -11,7 +11,6 @@ mod environment;
 pub mod error;
 mod manager;
 mod operation;
-mod profiles;
 #[cfg(feature = "fvs")]
 mod program;
 #[cfg(feature = "fvs")]
@@ -38,10 +37,6 @@ pub use environment::{Edit, EnvironmentConfig, EnvironmentError, PrefixBackend, 
 pub use environment::{Snapshot, SnapshotSummary};
 pub use manager::Manager;
 pub use operation::{Operation, Progress, Stage, Transfer};
-pub use profiles::{
-    AccountIdentity, AccountLink, AccountLinkInteraction, AccountProvider, AccountProviderInfo,
-    LinkedAccount, Profile, ProfileError, Profiles, ProfilesState,
-};
 pub use proto::{DllOverride, DllOverrideMode, Process, RegistryHive};
 pub use utils::directories::Directories;
 pub use utils::env_vars::EnvVars;

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use http_client::{HttpClient, ReqwestClient};
 use url::Url;
 
-use crate::{Addons, Bottle, Context, Directories, Manager, Profiles, error::Result};
+use crate::{Addons, Bottle, Context, Directories, Manager, error::Result};
 
 /// Startup options for [`Bottles::open`].
 ///
@@ -42,13 +42,12 @@ pub struct Bottles {
     bottles: Manager<Bottle>,
     #[cfg(feature = "fvs")]
     programs: Manager<Program>,
-    profiles: Profiles,
 }
 
 impl Bottles {
     /// Opens the application core and loads persisted state.
     ///
-    /// This resolves application directories, loads profiles, cached addon
+    /// This resolves application directories, loads cached addon
     /// catalogs, installed addons, and environment registries.
     /// With the `fvs` feature, it connects to or starts `fvs2d` before loading
     /// Virgo-backed environments.
@@ -56,7 +55,7 @@ impl Bottles {
     /// # Errors
     ///
     /// Returns an error if application directories are unavailable; persisted
-    /// profiles, addons, or environments cannot be read or validated; the HTTP
+    /// addons or environments cannot be read or validated; the HTTP
     /// or download service cannot initialize; an FVS executable cannot be
     /// resolved or contacted.
     ///
@@ -66,7 +65,6 @@ impl Bottles {
     /// # use bottles_core::{Bottles, Config};
     /// # async fn example() -> Result<(), bottles_core::error::Error> {
     /// let core = Bottles::open(Config::default()).await?;
-    /// assert!(!core.profiles().selected().name().is_empty());
     /// core.shutdown().await?;
     /// # Ok(())
     /// # }
@@ -98,7 +96,6 @@ impl Bottles {
             dependency_catalog,
         )
         .await?;
-        let profiles = Profiles::load(context.clone()).await?;
         #[cfg(feature = "fvs")]
         let virgo = Arc::new(VirgoManager::new(context.clone()));
         let bottles = Manager::<Bottle>::load(
@@ -117,7 +114,6 @@ impl Bottles {
             bottles,
             #[cfg(feature = "fvs")]
             programs,
-            profiles,
         })
     }
 
@@ -159,11 +155,6 @@ impl Bottles {
     /// Returns the shared addon catalog and installation manager.
     pub fn addons(&self) -> &Addons {
         self.context.addons()
-    }
-
-    /// Returns the persisted application profiles.
-    pub fn profiles(&self) -> &Profiles {
-        &self.profiles
     }
 
     /// Returns the HTTP transport shared by core services.
