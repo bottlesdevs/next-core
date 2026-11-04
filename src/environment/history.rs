@@ -1,11 +1,11 @@
 //! Captures and restores complete environment history with FVS.
 //!
-//! A snapshot includes the persisted owner state, private files, registry
-//! baseline, and configuration. History operations run while holding owner
+//! A snapshot includes the persisted environment state, private files, registry
+//! baseline, and configuration. History operations run while holding environment
 //! coordination and after runtime storage has been released. Automatic
 //! checkpoints protect mutations and are hidden from user-facing listings.
 
-use super::{BackendSource, Environment, State};
+use super::{EnvironmentState, Inner};
 use crate::virgo::FVS_BLOCK_SIZE;
 use crate::{
     Context, EnvironmentError, Operation, Progress, Stage, Transfer,
@@ -41,7 +41,7 @@ pub(crate) fn repository(root: &Path) -> Repository {
     }
 }
 
-/// Commits the complete owner root, creating its FVS repository if necessary.
+/// Commits the complete environment root, creating its FVS repository if necessary.
 ///
 /// # Errors
 ///
@@ -65,7 +65,7 @@ pub(crate) async fn capture(
         .await?)
 }
 
-/// Restores `revision` into the owner root and reports transfer progress.
+/// Restores `revision` into the environment root and reports transfer progress.
 ///
 /// # Errors
 ///
@@ -121,10 +121,7 @@ pub(crate) async fn recover<T>(
     result
 }
 
-impl<T: BackendSource> Environment<T>
-where
-    State<T>: next_config::Config + Clone + PartialEq + Send + Sync,
-{
+impl Inner {
     /// Creates a user-visible snapshot after stopping the environment.
     ///
     /// Cancellation is observed before capture starts, but does not interrupt an
@@ -231,22 +228,15 @@ where
                     &progress,
                 )
                 .await?;
-                let state: State<T> =
+                let state: EnvironmentState =
                     next_config::load(environment.root.join("state.toml")).await?;
-                if state.id() != current.id() {
-                    return Err(EnvironmentError::IdMismatch {
-                        expected: current.id(),
-                        actual: state.id(),
-                    }
-                    .into());
-                }
-                if state.data.backend() != current.data.backend() {
+                if state.backend != current.backend {
                     return Err(EnvironmentError::InvalidEdit(
-                        "snapshot backend does not match owner",
+                        "snapshot backend does not match environment",
                     )
                     .into());
                 }
-                state.config.validate()?;
+                state.validate()?;
                 Ok((restored.state_id, state))
             }
             .await;

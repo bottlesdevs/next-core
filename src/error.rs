@@ -9,7 +9,6 @@ use thiserror::Error;
 pub use crate::virgo::VirgoError;
 pub use crate::{
     addons::{AddonError, CatalogError, InstallerError},
-    bottle::BottleError,
     environment::EnvironmentError,
     runner::RunnerError,
     utils::fs::archive::ArchiveError,
@@ -56,9 +55,6 @@ pub enum Error {
     /// The FVS client or daemon failed.
     #[error("FVS error: {0}")]
     Fvs(#[from] FvsError),
-    /// A bottle-specific request was invalid.
-    #[error("Bottle error: {0}")]
-    Bottle(#[from] BottleError),
     /// Environment state, lifecycle, or validation failed.
     #[error("Environment error: {0}")]
     Environment(#[from] EnvironmentError),

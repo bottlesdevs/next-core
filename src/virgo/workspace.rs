@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 impl LayerStore {
     /// Composes selected registry effects into a stopped, unmounted workspace.
     ///
-    /// The caller is responsible for checkpointing an existing owner and recovering
+    /// The caller is responsible for checkpointing an existing environment and recovering
     /// failures before publishing a new selection. Cancellation is sampled before
     /// and after composition but does not interrupt the blocking registry work.
     ///

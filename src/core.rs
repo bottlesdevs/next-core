@@ -1,7 +1,7 @@
 //! Initialization and shared services for a Bottles application.
 
 #[cfg(feature = "fvs")]
-use crate::{Program, environment::VirgoManager};
+use crate::environment::VirgoManager;
 
 #[cfg(feature = "fvs")]
 use std::path::PathBuf;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use http_client::{HttpClient, ReqwestClient};
 use url::Url;
 
-use crate::{Addons, Bottle, Context, Directories, Manager, error::Result};
+use crate::{Addons, Context, Directories, Manager, error::Result};
 
 /// Startup options for [`Bottles::open`].
 ///
@@ -39,9 +39,7 @@ pub struct Config {
 /// outstanding [`Operation`](crate::Operation) values have completed.
 pub struct Bottles {
     context: Context,
-    bottles: Manager<Bottle>,
-    #[cfg(feature = "fvs")]
-    programs: Manager<Program>,
+    environments: Manager,
 }
 
 impl Bottles {
@@ -98,22 +96,16 @@ impl Bottles {
         .await?;
         #[cfg(feature = "fvs")]
         let virgo = Arc::new(VirgoManager::new(context.clone()));
-        let bottles = Manager::<Bottle>::load(
-            context.directories().bottles(),
+        let environments = Manager::load(
+            context.directories().environments(),
             context.clone(),
             #[cfg(feature = "fvs")]
-            virgo.clone(),
+            virgo,
         )
         .await?;
-        #[cfg(feature = "fvs")]
-        let programs =
-            Manager::<Program>::load(context.directories().programs(), context.clone(), virgo)
-                .await?;
         Ok(Self {
             context,
-            bottles,
-            #[cfg(feature = "fvs")]
-            programs,
+            environments,
         })
     }
 
@@ -123,8 +115,7 @@ impl Bottles {
     /// outstanding operations before shutdown. Shutdown cancels queued and
     /// in-flight downloads, waits for their workers to exit, and prevents later
     /// download requests from being accepted. It does not stop Wine processes;
-    /// call [`Bottle::stop`](crate::Bottle::stop) and stop any standalone program
-    /// handles explicitly. With `fvs` enabled, the connected or spawned `fvs2d`
+    /// call [`Environment::stop`](crate::Environment::stop) explicitly. With `fvs` enabled, the connected or spawned `fvs2d`
     /// daemon remains running for later clients. Calling shutdown more than once
     /// is safe.
     ///
@@ -136,15 +127,9 @@ impl Bottles {
         Ok(())
     }
 
-    /// Returns the manager for persisted [`Bottle`] environments.
-    pub fn bottles(&self) -> &Manager<Bottle> {
-        &self.bottles
-    }
-
-    #[cfg(feature = "fvs")]
-    /// Returns the manager for standalone Virgo [`Program`] environments.
-    pub fn programs(&self) -> &Manager<Program> {
-        &self.programs
+    /// Returns the manager for persisted [`Environment`](crate::Environment) handles.
+    pub fn environments(&self) -> &Manager {
+        &self.environments
     }
 
     /// Returns the resolved application directories.

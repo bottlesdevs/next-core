@@ -4,7 +4,7 @@
 //! component layers, and dependency layers in composition order.
 
 use crate::{
-    Addon, AddonError, Context, EnvironmentConfig, EnvironmentError, Progress, Stage,
+    Addon, AddonError, Context, EnvironmentError, EnvironmentState, Progress, Stage,
     addons::{InstallInputs, execute},
     environment::runtime,
     error::{Error, Result},
@@ -41,7 +41,7 @@ impl VirgoManager {
     /// filesystem errors encountered while resolving or building an artifact.
     pub(in crate::environment) async fn prepare_artifacts(
         &self,
-        config: &EnvironmentConfig,
+        config: &EnvironmentState,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
@@ -79,7 +79,7 @@ impl VirgoManager {
     /// entry, or an error when a manifest is unreadable or invalid.
     pub(in crate::environment) async fn composition(
         &self,
-        config: &EnvironmentConfig,
+        config: &EnvironmentState,
     ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
         let base = self.layers.require(Path::new("soda"), None).await?;
         let runner = config.runner.id();
@@ -150,7 +150,7 @@ impl VirgoManager {
     /// filesystem, or publication errors.
     async fn prepare_adapter(
         &self,
-        config: &EnvironmentConfig,
+        config: &EnvironmentState,
         base: &VirgoLayer,
         cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {

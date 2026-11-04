@@ -15,7 +15,7 @@
 //! of [`Addon`], so one generic API acquires, imports, and lists every role.
 //!
 //! Use [`crate::Bottles::addons`] to access the shared [`Addons`] manager. Acquiring
-//! a release only places it in shared storage. Selection remains an explicit owner
+//! a release only places it in shared storage. Selection remains an explicit environment
 //! edit through [`crate::Edit`].
 
 #![warn(missing_docs)]

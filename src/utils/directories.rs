@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 ///
 /// Paths follow the host platform's conventions. Constructing this type with
 /// [`new`](Self::new) creates the persistent directories required by core
-/// services. Cache, staging, trash, program, and Virgo directories are created
+/// services. Cache, staging, trash, and Virgo directories are created
 /// lazily by the workflows that use them.
 ///
 /// # Examples
@@ -31,7 +31,7 @@ pub struct Directories(ProjectDirs);
 impl Directories {
     /// Resolves platform paths and creates the directories needed at startup.
     ///
-    /// Configuration, local data, runtime, bottle, component, dependency, plugin,
+    /// Configuration, local data, runtime, environment, component, dependency, plugin,
     /// and addon-release metadata directories are created recursively.
     ///
     /// # Errors
@@ -104,14 +104,10 @@ impl Directories {
             .unwrap_or_else(|| self.data_dir().join("runtime"))
     }
 
-    pub(crate) fn bottles(&self) -> PathBuf {
-        self.data_dir().join("bottles")
+    pub(crate) fn environments(&self) -> PathBuf {
+        self.data_dir().join("environments")
     }
 
-    #[cfg(feature = "fvs")]
-    pub(crate) fn programs(&self) -> PathBuf {
-        self.data_dir().join("programs")
-    }
     pub(crate) fn components(&self) -> PathBuf {
         self.data_dir().join("components")
     }
@@ -151,7 +147,7 @@ impl Directories {
             self.config_dir().to_path_buf(),
             self.data_dir().to_path_buf(),
             self.runtime_dir(),
-            self.bottles(),
+            self.environments(),
             self.components(),
             self.dependencies(),
             self.plugins(),

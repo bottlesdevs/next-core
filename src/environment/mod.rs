@@ -1,6 +1,6 @@
 //! Coordinates environment state, persistence, runtime control, and storage.
 //!
-//! Bottles and standalone programs expose immutable [`State`] snapshots.
+//! An [`Environment`] exposes immutable [`EnvironmentState`] snapshots.
 //! Mutations are serialized by one control lock and publish a replacement
 //! snapshot only after persistence succeeds. Deletion closes the
 //! publication stream without invalidating snapshots already held by callers.
@@ -8,6 +8,7 @@
 mod backend;
 mod edit;
 mod error;
+mod handle;
 #[cfg(feature = "fvs")]
 mod history;
 mod runtime;
@@ -18,9 +19,10 @@ pub use backend::PrefixBackend;
 pub(crate) use backend::virgo::VirgoManager;
 pub use edit::Edit;
 pub use error::EnvironmentError;
+pub use handle::Environment;
 #[cfg(feature = "fvs")]
 pub use history::{Snapshot, SnapshotSummary};
-pub use state::{EnvironmentConfig, State};
+pub use state::EnvironmentState;
 
 use crate::{
     Context, Progress, Stage,
@@ -29,19 +31,15 @@ use crate::{
 };
 use backend::standard;
 use futures_core::Stream;
-use next_config::Config;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, MutexGuard, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-pub(crate) trait BackendSource {
-    fn backend(&self) -> PrefixBackend;
-}
-
-pub(crate) struct Environment<T> {
-    pub(crate) published: watch::Sender<Option<Arc<State<T>>>>,
+pub(crate) struct Inner {
+    pub(crate) id: Uuid,
+    pub(crate) published: watch::Sender<Option<Arc<EnvironmentState>>>,
     pub(crate) control: Mutex<()>,
     pub(crate) root: PathBuf,
     pub(crate) context: Context,
@@ -49,24 +47,20 @@ pub(crate) struct Environment<T> {
     pub(crate) virgo: Arc<VirgoManager>,
 }
 
-impl<T: BackendSource> Environment<T>
-where
-    State<T>: Config + Clone + PartialEq + Send + Sync,
-{
-    /// Constructs an owner around already-loaded state without touching storage.
+impl Inner {
+    /// Constructs an environment around already-loaded state without touching storage.
     ///
     /// # Errors
     ///
-    /// Returns an error if the configuration is invalid, `root` is not named by
-    /// a UUID, or that UUID differs from [`State::id`].
+    /// Returns an error if the state is invalid or `root` is not named by a UUID.
     pub(crate) fn from_state(
-        state: State<T>,
+        state: EnvironmentState,
         root: PathBuf,
         context: Context,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
     ) -> Result<Arc<Self>> {
-        state.config.validate()?;
-        let expected = root
+        state.validate()?;
+        let id = root
             .file_name()
             .and_then(|s| s.to_str())
             .and_then(|s| s.parse::<Uuid>().ok())
@@ -76,15 +70,9 @@ where
                     "environment directory must be a UUID",
                 )
             })?;
-        if state.id() != expected {
-            return Err(EnvironmentError::IdMismatch {
-                expected,
-                actual: state.id(),
-            }
-            .into());
-        }
         let (published, _) = watch::channel(Some(Arc::new(state)));
         Ok(Arc::new(Self {
+            id,
             published,
             control: Mutex::new(()),
             root,
@@ -94,12 +82,12 @@ where
         }))
     }
 
-    /// Initializes storage and persists a new owner before returning it.
+    /// Initializes storage and persists a new environment before returning it.
     ///
-    /// The owner remains private until both backend initialization and saving
+    /// The environment remains private until both backend initialization and saving
     /// `state.toml` succeed. Failure during backend initialization can leave a
-    /// partial owner root and any already-published shared Virgo artifacts. After
-    /// initialization succeeds, cancellation or a failed save moves the owner
+    /// partial environment root and any already-published shared Virgo artifacts. After
+    /// initialization succeeds, cancellation or a failed save moves the environment
     /// root to trash on a best-effort basis.
     ///
     /// Cancellation is sampled before backend initialization and before and after
@@ -111,7 +99,7 @@ where
     /// Returns configuration, cancellation, runner, storage, backend, or
     /// persistence errors encountered during initialization.
     pub(crate) async fn create(
-        state: State<T>,
+        state: EnvironmentState,
         root: PathBuf,
         context: Context,
         #[cfg(feature = "fvs")] virgo: Arc<VirgoManager>,
@@ -131,15 +119,15 @@ where
         }
         progress.send_replace(Some(Progress::new(Stage::CreatingPrefix)));
         // Initialization owns shutdown. Retain storage when it cannot finish safely.
-        match state.data.backend() {
+        match state.backend {
             PrefixBackend::Standard => {
-                standard::create(&state.config, &environment.root, &environment.context).await?;
+                standard::create(&state, &environment.root, &environment.context).await?;
             }
             #[cfg(feature = "fvs")]
             PrefixBackend::Virgo => {
                 let (base, overlays) = environment
                     .virgo
-                    .prepare_artifacts(&state.config, progress, cancellation)
+                    .prepare_artifacts(&state, progress, cancellation)
                     .await?;
                 environment
                     .virgo
@@ -176,7 +164,7 @@ where
     /// # Errors
     ///
     /// Returns [`EnvironmentError::Deleted`] after deletion has been published.
-    pub(crate) fn state(&self) -> Result<Arc<State<T>>> {
+    pub(crate) fn state(&self) -> Result<Arc<EnvironmentState>> {
         self.published
             .borrow()
             .clone()
@@ -184,14 +172,16 @@ where
     }
 
     /// Streams the current state and later distinct publications until deletion.
-    pub(crate) fn watch(&self) -> impl Stream<Item = Arc<State<T>>> + Send + 'static + use<T> {
+    pub(crate) fn watch(
+        &self,
+    ) -> impl Stream<Item = Arc<EnvironmentState>> + Send + 'static + use<> {
         WatchStream::new(self.published.subscribe())
             .take_while(Option::is_some)
             .filter_map(|state| state)
     }
 
     /// Publishes `state` when it differs from the current snapshot.
-    pub(crate) fn publish(&self, state: State<T>) {
+    pub(crate) fn publish(&self, state: EnvironmentState) {
         let next = Arc::new(state);
         self.published.send_if_modified(|published| {
             if published.as_deref() == Some(next.as_ref()) {
@@ -202,7 +192,7 @@ where
         });
     }
 
-    /// Atomically saves `state` as the owner's `state.toml`.
+    /// Atomically saves `state` as the environment's `state.toml`.
     ///
     /// Failure before the final rename can leave `state.tmp` beside the previous
     /// configuration.
@@ -210,7 +200,7 @@ where
     /// # Errors
     ///
     /// Returns an error if serialization or filesystem persistence fails.
-    pub(crate) async fn save(&self, state: &State<T>) -> Result<()> {
+    pub(crate) async fn save(&self, state: &EnvironmentState) -> Result<()> {
         Ok(next_config::save(self.root.join("state.toml"), state).await?)
     }
 

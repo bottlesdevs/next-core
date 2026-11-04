@@ -24,17 +24,11 @@ pub enum EnvironmentError {
     /// The environment was deleted while a handle to it remained alive.
     #[error("environment was deleted")]
     Deleted,
-    /// Persisted state belongs to a different environment directory.
-    #[error("environment ID {actual} does not match expected ID {expected}")]
-    IdMismatch {
-        /// Identifier encoded by the environment directory.
-        expected: Uuid,
-        /// Identifier stored in the loaded state.
-        actual: Uuid,
-    },
     /// Restoring the automatic checkpoint after a failed mutation also failed.
     #[cfg(feature = "fvs")]
-    #[error("rollback failed for {root}; repair or restore this owner before retrying: {source}")]
+    #[error(
+        "rollback failed for {root}; repair or restore this environment before retrying: {source}"
+    )]
     Rollback {
         /// Root directory of the environment that could not be recovered.
         root: std::path::PathBuf,
