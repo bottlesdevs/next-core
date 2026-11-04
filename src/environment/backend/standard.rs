@@ -6,7 +6,7 @@
 
 use super::super::runtime;
 use crate::{
-    Context, EnvironmentConfig, Progress, Slot, Stage,
+    Context, EnvironmentState, Progress, Slot, Stage,
     addons::{InstallInputs, execute, uninstall},
     error::Result,
 };
@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 /// Returns an error if directory creation, runner loading, Wine initialization,
 /// or shutdown fails. A shutdown failure retains the prefix.
 pub(in crate::environment) async fn create(
-    config: &EnvironmentConfig,
+    config: &EnvironmentState,
     root: &Path,
     cx: &Context,
 ) -> Result<()> {
@@ -40,7 +40,7 @@ pub(in crate::environment) async fn create(
 /// Removed prefix components use the previous selection's embedded recipe and prefix
 /// backups. Replacements and newly appended dependencies read their payloads as
 /// each recipe runs, so a late failure can leave earlier steps applied. The
-/// caller must stop the owner first; this function performs one final shutdown
+/// caller must stop the environment first; this function performs one final shutdown
 /// after the batch whether application succeeds or fails.
 /// `candidate.dependencies` must retain `previous.dependencies` as an exact
 /// prefix; environment edits enforce this by exposing append-only dependencies.
@@ -57,8 +57,8 @@ pub(in crate::environment) async fn create(
 /// Environment edits preserve the previous dependency prefix, so this indicates
 /// an internal caller violated the edit contract.
 pub(in crate::environment) async fn apply(
-    previous: &EnvironmentConfig,
-    candidate: &EnvironmentConfig,
+    previous: &EnvironmentState,
+    candidate: &EnvironmentState,
     root: &Path,
     cx: &Context,
     progress: &watch::Sender<Option<Progress>>,

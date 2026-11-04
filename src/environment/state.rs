@@ -1,10 +1,9 @@
-//! Persisted environment snapshots and executable configuration.
+//! The persisted record of an environment's contents and startup settings.
 //!
-//! [`EnvironmentConfig`] freezes addon selections, ordering, environment
-//! overrides, and command wrappers. [`State`] pairs that configuration with the
-//! owner-specific data stored by a bottle or standalone program.
+//! [`EnvironmentState`] records the prefix backend, the frozen addon selections
+//! applied to the prefix, and the settings used to start its runtime.
 
-use super::EnvironmentError;
+use super::{EnvironmentError, PrefixBackend};
 use crate::{
     Addon, Component, Dependency, EnvVars, Requirement, Runner, Slot, Umu, WineBridge, Wrappers,
     addons::InstallStep, error::Result,
@@ -15,12 +14,15 @@ use std::collections::{HashMap, HashSet};
 use strum::IntoEnumIterator;
 use uuid::Uuid;
 
-/// Describes the software and launch behavior of one environment.
+/// Captures one immutable, published view of an environment.
 ///
 /// Addon selections are frozen records. They preserve their metadata and any
-/// installation recipe even if the shared catalog later changes.
+/// installation recipe even if the shared catalog later changes. Acquired
+/// snapshots remain readable after later edits or deletion.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct EnvironmentConfig {
+pub struct EnvironmentState {
+    /// Storage strategy chosen when the environment was created.
+    pub backend: PrefixBackend,
     /// Wine or Proton runtime selected for this environment.
     pub runner: Addon<Runner>,
     /// WineBridge service selected for this environment.
@@ -31,7 +33,7 @@ pub struct EnvironmentConfig {
     pub components: HashMap<Slot, Addon<Component>>,
     /// Dependency releases in installation order.
     pub dependencies: Vec<Addon<Dependency>>,
-    /// Owner-level environment variables applied after addon variables.
+    /// User-set environment variables applied after addon variables.
     #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
     pub env_vars: EnvVars,
     /// Host command wrappers applied when `WineBridge` is started.
@@ -39,14 +41,16 @@ pub struct EnvironmentConfig {
     pub wrappers: Wrappers,
 }
 
-impl EnvironmentConfig {
-    /// Creates the initial configuration from its selected runtime tools.
+impl EnvironmentState {
+    /// Creates the initial state from its backend and selected runtime tools.
     pub(crate) fn new(
+        backend: PrefixBackend,
         runner: Addon<Runner>,
         winebridge: Addon<WineBridge>,
         umu: Option<Addon<Umu>>,
     ) -> Self {
         Self {
+            backend,
             runner,
             winebridge,
             umu,
@@ -159,32 +163,6 @@ impl EnvironmentConfig {
     }
 }
 
-/// Captures one immutable, published view of an environment.
-///
-/// `T` is owner-specific state such as bottle metadata or a standalone program
-/// specification. Acquired snapshots remain readable after later edits or deletion.
-#[derive(Clone, Debug, serde::Deserialize, PartialEq, serde::Serialize)]
-pub struct State<T> {
-    /// Stable identifier, which must match the environment directory name.
-    pub(crate) id: Uuid,
-    /// Frozen executable configuration for this publication.
-    pub(crate) config: EnvironmentConfig,
-    /// Bottle- or program-specific state published with the configuration.
-    pub(crate) data: T,
-}
-
-impl<T> State<T> {
-    /// Returns the stable environment identifier.
-    pub fn id(&self) -> Uuid {
-        self.id
-    }
-
-    /// Returns the executable configuration stored in this snapshot.
-    pub fn config(&self) -> &EnvironmentConfig {
-        &self.config
-    }
-}
-
-impl<T: serde::Serialize + serde::de::DeserializeOwned + 'static> Config for State<T> {
+impl Config for EnvironmentState {
     const VERSION: u32 = 1;
 }

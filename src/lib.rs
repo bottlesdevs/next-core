@@ -4,17 +4,12 @@
 #![warn(rustdoc::all)]
 
 mod addons;
-mod bottle;
 mod command;
 mod core;
 mod environment;
 pub mod error;
 mod manager;
 mod operation;
-#[cfg(feature = "fvs")]
-mod program;
-#[cfg(feature = "fvs")]
-pub use program::{Program, ProgramState};
 mod program_spec;
 pub use program_spec::ProgramSpec;
 mod runner;
@@ -27,12 +22,11 @@ pub use addons::{
     Addon, AddonError, AddonRole, Addons, AddonsState, CatalogEntry, CatalogError, Component,
     Dependency, InstallerError, Requirement, RoleMarker, Runner, Slot, Umu, WineBridge,
 };
-pub use bottle::{Bottle, BottleData, BottleError, BottleState};
 pub use command::wrappers::{
     GamescopeConfig, GamescopeFilter, GamescopeScaler, MangoHudConfig, Wrappers,
 };
 pub use core::{Bottles, Config};
-pub use environment::{Edit, EnvironmentConfig, EnvironmentError, PrefixBackend, State};
+pub use environment::{Edit, Environment, EnvironmentError, EnvironmentState, PrefixBackend};
 #[cfg(feature = "fvs")]
 pub use environment::{Snapshot, SnapshotSummary};
 pub use manager::Manager;

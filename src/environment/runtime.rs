@@ -5,7 +5,7 @@
 //! from the currently published configuration. Virgo mounts are created before
 //! startup and released only after Wine processes stop.
 
-use super::{BackendSource, Environment, State};
+use super::{EnvironmentState, Inner};
 use crate::runner::Runner;
 use crate::{
     Operation, PrefixBackend, ProgramSpec, Progress, Stage,
@@ -18,33 +18,26 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-impl<T: BackendSource> Environment<T>
-where
-    State<T>: next_config::Config + Clone + PartialEq + Send + Sync,
-{
-    /// Resolves a program from the locked state and launches it through `WineBridge`.
+impl Inner {
+    /// Launches `launch` through `WineBridge` in process group `group`.
     ///
     /// Once startup succeeds, a rejected process launch leaves the runtime running.
     ///
     /// # Errors
     ///
-    /// Returns an error if selection fails, startup or attachment fails, the
-    /// operation is cancelled, or `WineBridge` rejects the launch.
-    pub(crate) fn launch(
-        self: &Arc<Self>,
-        select: impl FnOnce(&State<T>) -> Result<(Uuid, ProgramSpec)> + Send + 'static,
-    ) -> Operation<u32> {
+    /// Returns an error if startup or attachment fails, the operation is
+    /// cancelled, or `WineBridge` rejects the launch.
+    pub(crate) fn launch(self: &Arc<Self>, group: Uuid, launch: ProgramSpec) -> Operation<u32> {
         let environment = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let _control = environment.lock_control(&cancellation).await?;
             let state = environment.state()?;
-            let (id, launch) = select(&state)?;
             let bridge = environment
                 .attach_or_start(&state, &progress, &cancellation)
                 .await?;
             bridge
                 .launch_process(
-                    id,
+                    group,
                     launch.executable().into(),
                     launch.args().to_vec(),
                     launch.working_directory().map(str::to_owned),
@@ -69,20 +62,19 @@ where
         }
     }
 
-    /// Resolves and kills a process when `WineBridge` is currently running.
+    /// Kills process group `group` when `WineBridge` is currently running.
     ///
     /// A stopped runtime is a successful no-op.
     ///
     /// # Errors
     ///
-    /// Returns an error if selection or discovery fails, or `WineBridge` cannot
-    /// terminate the selected process.
-    pub(crate) async fn kill(&self, select: impl FnOnce(&State<T>) -> Result<Uuid>) -> Result<()> {
+    /// Returns an error if discovery fails or `WineBridge` cannot terminate the
+    /// process group.
+    pub(crate) async fn kill(&self, group: Uuid) -> Result<()> {
         let _control = self.control.lock().await;
-        let state = self.state()?;
-        let id = select(&state)?;
+        self.state()?;
         if let Some(bridge) = WineBridgeClient::try_connect(&self.root.join("prefix")).await? {
-            bridge.kill_process(id).await?;
+            bridge.kill_process(group).await?;
         }
         Ok(())
     }
@@ -114,14 +106,13 @@ where
         let state = self.state()?;
         let prefix = self.root.join("prefix");
         if crate::utils::fs::exists(&prefix).await? {
-            let config = &state.config;
-            let runner = config
+            let runner = state
                 .runner
-                .load_runner(self.context.directories(), config.umu.as_ref())
+                .load_runner(self.context.directories(), state.umu.as_ref())
                 .await?;
             stop(runner.as_ref(), &prefix).await?;
         }
-        self.release_storage(state.data.backend()).await
+        self.release_storage(state.backend).await
     }
 
     /// Releases mounts and discovery files after Wine has stopped.
@@ -199,7 +190,7 @@ where
     /// cleanup errors encountered while obtaining a usable client.
     async fn attach_or_start(
         &self,
-        state: &State<T>,
+        state: &EnvironmentState,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<WineBridgeClient> {
@@ -214,23 +205,22 @@ where
             }
             return Ok(bridge);
         }
-        let config = &state.config;
-        let backend = state.data.backend();
-        let vars = config.effective_env_vars();
+        let backend = state.backend;
+        let vars = state.effective_env_vars();
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
         self.stop_locked().await?;
-        let runner = config
+        let runner = state
             .runner
-            .load_runner(self.context.directories(), config.umu.as_ref())
+            .load_runner(self.context.directories(), state.umu.as_ref())
             .await?;
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
         #[cfg(feature = "fvs")]
         if backend == PrefixBackend::Virgo {
-            let (base, overlays) = self.virgo.composition(config).await?;
+            let (base, overlays) = self.virgo.composition(state).await?;
             let mounted = self
                 .virgo
                 .layers
@@ -245,10 +235,10 @@ where
             self.release_storage(backend).await?;
             return Err(Error::Cancelled);
         }
-        let command = config.wrappers.apply(WineBridgeClient::command(
+        let command = state.wrappers.apply(WineBridgeClient::command(
             runner.as_ref(),
             &prefix,
-            config.winebridge.path(self.context.directories()),
+            state.winebridge.path(self.context.directories()),
             vars.iter(),
         ));
         let result = WineBridgeClient::connect_or_spawn(&prefix, command)

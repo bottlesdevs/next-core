@@ -1,0 +1,232 @@
+//! The public handle to one persisted environment.
+
+use super::{Edit, EnvironmentState, Inner};
+use crate::{
+    Operation, ProgramSpec,
+    error::Result,
+    proto::{DllOverride, DllOverrideMode, Process},
+};
+#[cfg(feature = "fvs")]
+use crate::{Snapshot, SnapshotSummary};
+use futures_core::Stream;
+use std::sync::Arc;
+use uuid::Uuid;
+
+/// A live handle to one persisted Wine-prefix environment.
+///
+/// Clones share state and operation coordination. Dropping the last handle does
+/// not stop Wine; call [`Environment::stop`] when shutdown is required. A handle
+/// kept after [`Manager::delete`](crate::Manager::delete) reports
+/// [`EnvironmentError::Deleted`](crate::EnvironmentError::Deleted).
+#[derive(Clone)]
+pub struct Environment(pub(crate) Arc<Inner>);
+
+impl Environment {
+    /// Returns the environment's persistent identifier.
+    pub fn id(&self) -> Uuid {
+        self.0.id
+    }
+
+    /// Returns the currently published immutable state snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EnvironmentError::Deleted`](crate::EnvironmentError::Deleted)
+    /// after the environment is deleted.
+    pub fn state(&self) -> Result<Arc<EnvironmentState>> {
+        self.0.state()
+    }
+
+    /// Streams the current state and later published replacements.
+    ///
+    /// The first item is the state current at subscription time. Slow consumers
+    /// may miss intermediate states, and deletion ends the stream.
+    pub fn watch(&self) -> impl Stream<Item = Arc<EnvironmentState>> + Send + 'static + use<> {
+        self.0.watch()
+    }
+
+    /// Creates an operation that edits a private draft of the latest state.
+    ///
+    /// The final draft is validated, applied, saved, and then published once.
+    /// Software selection changes require a stopped environment; startup
+    /// settings may change while Wine is running. An unchanged draft is not saved.
+    /// Any shutdown begun for the edit finishes before cancellation is returned.
+    /// Once application succeeds, persistence and publication are not cancelled.
+    /// Standard-prefix software edits are not rolled back: failure or cancellation
+    /// can leave files changed while the previous state remains published. Virgo
+    /// failures after checkpoint capture recover the previous files before returning.
+    ///
+    /// # Errors
+    ///
+    /// Awaiting the operation returns errors from the callback, validation,
+    /// cancellation, persistence, software application, or storage recovery.
+    /// [`EnvironmentError::MustBeStopped`](crate::EnvironmentError::MustBeStopped)
+    /// is returned when software changes are requested while Wine is running.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::Environment;
+    /// # fn prepare(environment: &Environment) {
+    /// let quiet = environment.edit(|edit| {
+    ///     edit.env_vars().insert("WINEDEBUG".into(), "-all".into());
+    ///     Ok(())
+    /// });
+    /// # let _ = quiet;
+    /// # }
+    /// ```
+    pub fn edit<R: Send + 'static>(
+        &self,
+        callback: impl FnOnce(&mut Edit<'_>) -> Result<R> + Send + 'static,
+    ) -> Operation<R> {
+        self.0.edit(callback)
+    }
+
+    /// Creates an operation that launches `program` in process group `group`.
+    ///
+    /// `group` is the `WineBridge` process-group identifier chosen by the
+    /// caller; it is not persisted. Success returns the new process ID; it does
+    /// not wait for the process to exit. Cancellation does not interrupt an
+    /// in-flight launch request.
+    ///
+    /// # Errors
+    ///
+    /// Awaiting the operation may return environment, runner, storage,
+    /// cancellation, or `WineBridge` errors while starting the process.
+    pub fn launch(&self, group: Uuid, program: ProgramSpec) -> Operation<u32> {
+        self.0.launch(group, program)
+    }
+
+    /// Terminates a `WineBridge` process group without starting a stopped runtime.
+    ///
+    /// A stopped runtime is a successful no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the environment was deleted, discovery fails, or
+    /// `WineBridge` cannot terminate the process group.
+    pub async fn kill(&self, group: Uuid) -> Result<()> {
+        self.0.kill(group).await
+    }
+
+    /// Lists processes currently reported by `WineBridge`.
+    ///
+    /// A stopped environment returns an empty vector and is not started.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the environment was deleted, discovery fails, or the
+    /// connected `WineBridge` cannot list its processes.
+    pub async fn processes(&self) -> Result<Vec<Process>> {
+        self.0.processes().await
+    }
+
+    /// Stops Wine and releases storage mounted for the environment.
+    ///
+    /// Calling this for an already stopped environment is safe.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if state or runner resolution, Wine shutdown, storage
+    /// release, or discovery cleanup fails.
+    pub async fn stop(&self) -> Result<()> {
+        self.0.stop().await
+    }
+
+    /// Creates an operation that lists configured DLL overrides.
+    ///
+    /// The operation starts or reconnects to `WineBridge` if necessary and
+    /// leaves the runtime running. Cancellation does not interrupt an in-flight
+    /// `WineBridge` request.
+    ///
+    /// # Errors
+    ///
+    /// Awaiting the operation can fail during environment access, runner or
+    /// `WineBridge` startup, cancellation, or the `WineBridge` request.
+    pub fn dll_overrides(&self) -> Operation<Vec<DllOverride>> {
+        self.0.dll_overrides()
+    }
+
+    /// Creates an operation that sets one Wine DLL override.
+    ///
+    /// A stopped runtime is started and left running. Cancellation does not
+    /// interrupt an in-flight `WineBridge` request.
+    ///
+    /// # Errors
+    ///
+    /// Awaiting the operation can fail during environment access, runner or
+    /// `WineBridge` startup, cancellation, or the `WineBridge` request.
+    pub fn set_dll_override(&self, dll: impl Into<String>, mode: DllOverrideMode) -> Operation<()> {
+        self.0.set_dll_override(dll.into(), mode)
+    }
+
+    /// Creates an operation that removes one Wine DLL override.
+    ///
+    /// A stopped runtime is started and left running. A missing override is a
+    /// successful no-op. Cancellation does not interrupt an in-flight
+    /// `WineBridge` request.
+    ///
+    /// # Errors
+    ///
+    /// Awaiting the operation can fail during environment access, runner or
+    /// `WineBridge` startup, cancellation, or the `WineBridge` request.
+    pub fn unset_dll_override(&self, dll: impl Into<String>) -> Operation<()> {
+        self.0.unset_dll_override(dll.into())
+    }
+}
+
+#[cfg(feature = "fvs")]
+impl Environment {
+    /// Creates an operation that captures the environment's managed state.
+    ///
+    /// Shared artifacts and external files are not copied or rebuilt on
+    /// restoration. Explicit snapshots create a revision even without changes.
+    /// The environment is stopped before capture and is not restarted afterward.
+    /// Shutdown and capture are not interrupted by cancellation;
+    /// [`Operation::cancel`] waits for the current step to finish.
+    ///
+    /// # Errors
+    ///
+    /// Awaiting the operation returns an invalid-input I/O error when `message`
+    /// is the reserved internal checkpoint message. It can also fail during
+    /// cancellation, Wine shutdown, repository initialization, or commit.
+    pub fn create_snapshot(&self, message: impl Into<String>) -> Operation<Snapshot> {
+        self.0.create_snapshot(message.into())
+    }
+
+    /// Lists user snapshots from newest to oldest.
+    ///
+    /// Internal checkpoints are excluded. An environment with no history
+    /// returns an empty vector without contacting FVS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the environment was deleted, history metadata cannot
+    /// be read, or FVS cannot list revisions.
+    pub async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
+        self.0.snapshots().await
+    }
+
+    /// Creates an operation that restores a snapshot into the managed root.
+    ///
+    /// The restored backend must match the environment, and its state must
+    /// validate. A failed restore or invalid state recovers the previous files
+    /// before returning; failed recovery reports the root requiring repair.
+    /// Shutdown and checkpoint capture finish before cancellation is observed.
+    /// Once restoration begins, cancellation does not interrupt restoration or
+    /// recovery. Working files change without moving the FVS repository's
+    /// current commit. Rollback first attempts to stop the environment and never
+    /// restarts it.
+    ///
+    /// On success, the operation returns the full state ID resolved from
+    /// `revision` and publishes the state stored in that revision.
+    ///
+    /// # Errors
+    ///
+    /// Awaiting the operation fails on cancellation before restoration, Wine
+    /// shutdown or checkpoint failure, an unknown revision, mismatched or
+    /// invalid restored state, or failed restoration or recovery.
+    pub fn rollback(&self, revision: &str) -> Operation<String> {
+        self.0.rollback(revision)
+    }
+}

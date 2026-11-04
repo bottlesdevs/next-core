@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 
 /// Selects how an environment stores and materializes its Wine prefix.
 ///
-/// This choice is persisted with the owner and cannot be changed by an edit.
+/// This choice is persisted with the environment and cannot be changed by an edit.
 /// Without the `fvs` feature, the `Virgo` variant is absent and persisted Virgo
-/// owners cannot be deserialized.
+/// environments cannot be deserialized.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Serialize)]
 pub enum PrefixBackend {
     /// Stores installed software and user data together in one mutable prefix.

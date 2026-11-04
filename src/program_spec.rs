@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProgramSpec {
-    name: String,
     executable: String,
     #[serde(default)]
     args: Vec<String>,
@@ -27,11 +26,9 @@ pub struct ProgramSpec {
 impl ProgramSpec {
     /// Creates a launch definition with no arguments, working directory, or new console.
     ///
-    /// The display `name` is not required to be unique. The `executable` is
-    /// preserved verbatim for `WineBridge`.
-    pub fn new(name: impl Into<String>, executable: impl Into<String>) -> Self {
+    /// The `executable` is preserved verbatim for `WineBridge`.
+    pub fn new(executable: impl Into<String>) -> Self {
         Self {
-            name: name.into(),
             executable: executable.into(),
             args: Vec::new(),
             working_directory: None,
@@ -67,16 +64,6 @@ impl ProgramSpec {
     pub fn with_new_console(mut self, new_console: bool) -> Self {
         self.new_console = new_console;
         self
-    }
-
-    /// Replaces the display name without changing launch behavior.
-    pub fn rename(&mut self, name: impl Into<String>) {
-        self.name = name.into();
-    }
-
-    /// Returns the display name.
-    pub fn name(&self) -> &str {
-        &self.name
     }
 
     /// Returns the Windows executable path passed to `WineBridge`.

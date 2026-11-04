@@ -4,12 +4,12 @@
 //! edit, rollback, and delete operations. It does not poll the filesystem for
 //! changes made outside this crate.
 
+use crate::environment::Inner;
 #[cfg(feature = "fvs")]
 use crate::environment::VirgoManager;
-use crate::environment::{BackendSource, Environment, State};
 use crate::{
-    Addon, Context, EnvironmentConfig, EnvironmentError, Operation, Progress, Runner, Stage, Umu,
-    WineBridge, error::Result,
+    Addon, Context, Environment, EnvironmentError, EnvironmentState, Operation, PrefixBackend,
+    Progress, Runner, Stage, Umu, WineBridge, error::Result,
 };
 use futures_core::Stream;
 use futures_util::{
@@ -26,43 +26,35 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
-pub(crate) trait Managed {
-    type Data;
+type Members = Arc<HashMap<Uuid, Environment>>;
 
-    fn from_environment(environment: Arc<Environment<Self::Data>>) -> Self;
-    fn environment(&self) -> &Environment<Self::Data>;
-}
-
-type Members<T> = Arc<HashMap<Uuid, T>>;
-
-/// Tracks the live collection of bottles or standalone programs.
+/// Tracks the live collection of environments.
 ///
-/// Obtain `Manager<Bottle>` from [`crate::Bottles::bottles`], or
-/// `Manager<Program>` from `Bottles::programs` with the `fvs` feature enabled.
-/// Clones share collection membership. Opening the same UUID through clones
+/// Obtain it from [`crate::Bottles::environments`]. Clones share collection
+/// membership. Opening the same UUID through clones
 /// returns handles to the same live state. The collection is loaded once from
 /// library-managed storage and updated by manager operations; it does not
 /// observe external filesystem changes.
 #[derive(Clone)]
-pub struct Manager<T> {
+pub struct Manager {
     root: PathBuf,
     context: Context,
     #[cfg(feature = "fvs")]
     virgo: Arc<VirgoManager>,
-    published: watch::Sender<Members<T>>,
+    published: watch::Sender<Members>,
 }
-enum Event<T> {
-    Membership(Members<T>),
+enum Event {
+    Membership(Members),
     Changed,
 }
-type Events<T> = Pin<Box<dyn Stream<Item = Option<Event<T>>> + Send>>;
+type Events = Pin<Box<dyn Stream<Item = Option<Event>> + Send>>;
 
-impl<T: Clone> Manager<T> {
+impl Manager {
     /// Returns cloned handles for the currently known members.
     /// Configuration changes do not change collection membership.
     /// Order is unspecified and must not be used as an identity or stable
     /// presentation order.
-    pub fn list(&self) -> Vec<T> {
+    pub fn list(&self) -> Vec<Environment> {
         self.published.borrow().values().cloned().collect()
     }
 
@@ -74,22 +66,14 @@ impl<T: Clone> Manager<T> {
     /// # Errors
     ///
     /// Returns [`EnvironmentError::NotFound`] if `id` is not in the collection.
-    pub fn open(&self, id: Uuid) -> Result<T> {
+    pub fn open(&self, id: Uuid) -> Result<Environment> {
         self.published
             .borrow()
             .get(&id)
             .cloned()
             .ok_or_else(|| EnvironmentError::NotFound(id).into())
     }
-}
 
-// Only core handles supply environment access; the adapter stays private.
-#[allow(private_bounds)]
-impl<T: Managed + Clone + Send + Sync + 'static> Manager<T>
-where
-    T::Data: BackendSource + Send,
-    State<T::Data>: next_config::Config + Clone + PartialEq + Send + Sync,
-{
     pub(crate) fn new(
         root: PathBuf,
         context: Context,
@@ -134,7 +118,7 @@ where
         while let Some(entry) = entries.next().await {
             let root = entry?.path();
             let file = root.join("state.toml");
-            let state: State<T::Data> = match next_config::load(&file).await {
+            let state: EnvironmentState = match next_config::load(&file).await {
                 Ok(state) => state,
                 Err(next_config::error::Error::Io(error))
                     if matches!(
@@ -146,41 +130,51 @@ where
                 }
                 Err(error) => return Err(error.into()),
             };
-            let id = state.id();
-            let environment = Environment::from_state(
+            let environment = Environment(Inner::from_state(
                 state,
                 root,
                 manager.context.clone(),
                 #[cfg(feature = "fvs")]
                 manager.virgo.clone(),
-            )?;
-            members.insert(id, T::from_environment(environment));
+            )?);
+            members.insert(environment.id(), environment);
         }
         manager.published.send_replace(Arc::new(members));
         Ok(manager)
     }
 
-    /// Creates and publishes one environment as a lazy operation.
+    /// Creates an operation that initializes and persists an environment.
     ///
-    /// The generated UUID is not added to collection membership until backend
-    /// initialization and state persistence have completed successfully.
-    pub(crate) fn create_environment(
+    /// A new UUID is assigned when the operation starts. Addon coexistence
+    /// requirements are checked before creating files; missing requirements fail
+    /// without selecting or downloading other addons. Standard creation
+    /// initializes Wine without FVS. Virgo, available with the `fvs` feature,
+    /// builds missing shared layers before composing private storage.
+    /// The environment is added to this manager only after initialization and
+    /// `state.toml` persistence succeed. Cancellation or persistence failure
+    /// after backend initialization attempts best-effort removal; earlier
+    /// backend failures, dropping a started operation, or cleanup failure can
+    /// leave an unregistered directory that a later core startup may discover.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EnvironmentError::RequiresAddon`] for missing coexistence
+    /// requirements before creating any files. Awaiting the operation can also
+    /// fail during cancellation, service startup, I/O, prefix initialization, or
+    /// state persistence.
+    pub fn create(
         &self,
-        data: T::Data,
+        backend: PrefixBackend,
         runner: Addon<Runner>,
         winebridge: Addon<WineBridge>,
         umu: Option<Addon<Umu>>,
-    ) -> Operation<T> {
+    ) -> Operation<Environment> {
         let manager = self.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
             let id = Uuid::new_v4();
-            let state = State {
-                id,
-                config: EnvironmentConfig::new(runner, winebridge, umu),
-                data,
-            };
-            let environment = Environment::create(
+            let state = EnvironmentState::new(backend, runner, winebridge, umu);
+            let environment = Inner::create(
                 state,
                 manager.root.join(id.to_string()),
                 manager.context.clone(),
@@ -190,7 +184,7 @@ where
                 &cancellation,
             )
             .await?;
-            let handle = T::from_environment(environment);
+            let handle = Environment(environment);
             manager.published.send_modify(|published| {
                 Arc::make_mut(published).insert(id, handle.clone());
             });
@@ -219,7 +213,7 @@ where
         Operation::new(move |progress, cancellation| async move {
             let handle = manager.open(id)?;
             handle
-                .environment()
+                .0
                 .delete(&progress, &cancellation, || {
                     manager.published.send_modify(|published| {
                         Arc::make_mut(published).remove(&id);
@@ -241,19 +235,19 @@ where
     /// # Examples
     ///
     /// ```
-    /// # use bottles_core::{Bottle, Manager};
+    /// # use bottles_core::Manager;
     /// # use futures_lite::StreamExt;
-    /// # async fn observe(manager: &Manager<Bottle>) {
+    /// # async fn observe(manager: &Manager) {
     /// let updates = manager.watch();
     /// futures_lite::pin!(updates);
-    /// if let Some(bottles) = updates.next().await {
-    ///     println!("{} bottles", bottles.len());
+    /// if let Some(environments) = updates.next().await {
+    ///     println!("{} environments", environments.len());
     /// }
     /// # }
     /// ```
-    pub fn watch(&self) -> impl Stream<Item = Vec<T>> + Send + 'static + use<T> {
+    pub fn watch(&self) -> impl Stream<Item = Vec<Environment>> + Send + 'static + use<> {
         let published = self.published.subscribe();
-        let mut events = SelectAll::<Events<T>>::new();
+        let mut events = SelectAll::<Events>::new();
         // End the aggregate when the manager closes, even if callers retain handles.
         events.push(Box::pin(
             WatchStream::new(published.clone())
@@ -269,7 +263,7 @@ where
                         subscribed.retain(|id| members.contains_key(id));
                         for (id, handle) in members.iter() {
                             if subscribed.insert(*id) {
-                                let environment = handle.environment();
+                                let environment = &handle.0;
                                 let mut previous = environment.state().ok();
                                 events.push(Box::pin(environment.watch().filter_map(
                                     move |state| {
