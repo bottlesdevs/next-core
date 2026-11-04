@@ -73,14 +73,6 @@ pub enum Error {
     /// Profile or account management failed.
     #[error("profile error: {0}")]
     Profile(#[from] ProfileError),
-    /// A library provider rejected enumeration or launch.
-    #[error("library provider {provider}: {message}")]
-    LibraryProvider {
-        /// Stable identifier of the provider that failed.
-        provider: String,
-        /// Provider-supplied diagnostic message.
-        message: String,
-    },
     /// The operating system credential store failed.
     #[error("credential error: {0}")]
     Credential(#[from] keyring::Error),

@@ -9,7 +9,6 @@ mod command;
 mod core;
 mod environment;
 pub mod error;
-mod library;
 mod manager;
 mod operation;
 mod profiles;
@@ -37,7 +36,6 @@ pub use core::{Bottles, Config};
 pub use environment::{Edit, EnvironmentConfig, EnvironmentError, PrefixBackend, State};
 #[cfg(feature = "fvs")]
 pub use environment::{Snapshot, SnapshotSummary};
-pub use library::{Library, LibraryEntry, LibraryItem, LibraryProvider};
 pub use manager::Manager;
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use profiles::{

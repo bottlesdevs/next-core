@@ -10,7 +10,7 @@ use std::sync::Arc;
 use http_client::{HttpClient, ReqwestClient};
 use url::Url;
 
-use crate::{Addons, Bottle, Context, Directories, Library, Manager, Profiles, error::Result};
+use crate::{Addons, Bottle, Context, Directories, Manager, Profiles, error::Result};
 
 /// Startup options for [`Bottles::open`].
 ///
@@ -42,7 +42,6 @@ pub struct Bottles {
     bottles: Manager<Bottle>,
     #[cfg(feature = "fvs")]
     programs: Manager<Program>,
-    library: Library,
     profiles: Profiles,
 }
 
@@ -50,8 +49,7 @@ impl Bottles {
     /// Opens the application core and loads persisted state.
     ///
     /// This resolves application directories, loads profiles, cached addon
-    /// catalogs, installed addons, and environment registries, then registers
-    /// native providers. Applications may register additional providers after opening.
+    /// catalogs, installed addons, and environment registries.
     /// With the `fvs` feature, it connects to or starts `fvs2d` before loading
     /// Virgo-backed environments.
     ///
@@ -101,7 +99,6 @@ impl Bottles {
         )
         .await?;
         let profiles = Profiles::load(context.clone()).await?;
-        let library = Library::default();
         #[cfg(feature = "fvs")]
         let virgo = Arc::new(VirgoManager::new(context.clone()));
         let bottles = Manager::<Bottle>::load(
@@ -115,15 +112,11 @@ impl Bottles {
         let programs =
             Manager::<Program>::load(context.directories().programs(), context.clone(), virgo)
                 .await?;
-        library.register_provider(Arc::new(bottles.clone()));
-        #[cfg(feature = "fvs")]
-        library.register_provider(Arc::new(programs.clone()));
         Ok(Self {
             context,
             bottles,
             #[cfg(feature = "fvs")]
             programs,
-            library,
             profiles,
         })
     }
@@ -166,11 +159,6 @@ impl Bottles {
     /// Returns the shared addon catalog and installation manager.
     pub fn addons(&self) -> &Addons {
         self.context.addons()
-    }
-
-    /// Returns the registry of installed, launchable library providers.
-    pub fn library(&self) -> &Library {
-        &self.library
     }
 
     /// Returns the persisted application profiles.
