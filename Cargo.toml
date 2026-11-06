@@ -25,6 +25,7 @@ async-trait.workspace = true
 blocking.workspace = true
 derive_more = { workspace = true, features = ["from", "try_into"] }
 download-manager.workspace = true
+http.workspace = true
 http-client = { workspace = true, features = ["reqwest"] }
 next-config.workspace = true
 next-paths.workspace = true

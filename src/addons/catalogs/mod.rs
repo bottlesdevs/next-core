@@ -48,6 +48,7 @@ use uuid::Uuid;
 pub struct Catalogs(Arc<CatalogsInner>);
 
 struct CatalogsInner {
+    http_client: Arc<dyn HttpClient>,
     downloader: DownloadManager,
     addons: Addons,
     component_catalog_url: Option<Url>,
@@ -87,7 +88,11 @@ impl Catalogs {
             dependency_catalog: Catalog::load(&paths::dependency_catalog()).await?,
         };
         Ok(Self(Arc::new(CatalogsInner {
-            downloader: DownloadManager::new(http_client, DownloadManagerConfig::default())?,
+            downloader: DownloadManager::new(
+                http_client.clone(),
+                DownloadManagerConfig::default(),
+            )?,
+            http_client,
             addons,
             component_catalog_url,
             dependency_catalog_url,

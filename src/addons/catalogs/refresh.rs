@@ -1,7 +1,8 @@
 //! Remote catalog refresh and publication.
 
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
+use futures_lite::AsyncReadExt;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -9,11 +10,11 @@ use url::Url;
 use crate::{
     Operation, Progress, Stage,
     error::{Error, Result},
-    utils::{fs, paths},
+    utils::paths,
 };
 
 use super::super::{CatalogError, catalog::Catalog};
-use super::{Catalogs, download::download};
+use super::Catalogs;
 
 impl Catalogs {
     /// Downloads and parses the component and dependency catalogs.
@@ -33,15 +34,15 @@ impl Catalogs {
     /// # Errors
     ///
     /// The operation fails if cancelled before cache writes begin, either URL is
-    /// missing, a download or schema parse fails, or a successful catalog cannot be
-    /// written to its cache. Per-source URL, download, and parse failures are
+    /// missing, a request or schema parse fails, or a successful catalog cannot be
+    /// written to its cache. Per-source URL, request, and parse failures are
     /// combined into [`CatalogError::Refresh`]; cache-write failures are returned
     /// directly.
     pub fn refresh(&self) -> Operation<()> {
         let catalogs = self.clone();
         Operation::new(move |progress, cancellation| async move {
             let component = catalogs
-                .download_catalog(
+                .request(
                     catalogs.0.component_catalog_url.clone(),
                     "components",
                     &progress,
@@ -52,7 +53,7 @@ impl Catalogs {
                 return Err(Error::Cancelled);
             }
             let dependency = catalogs
-                .download_catalog(
+                .request(
                     catalogs.0.dependency_catalog_url.clone(),
                     "dependencies",
                     &progress,
@@ -98,8 +99,8 @@ impl Catalogs {
         })
     }
 
-    /// Downloads and parses one catalog.
-    async fn download_catalog(
+    /// Requests and parses one catalog in memory.
+    async fn request(
         &self,
         url: Option<Url>,
         label: &'static str,
@@ -107,28 +108,27 @@ impl Catalogs {
         cancellation: &CancellationToken,
     ) -> Result<Arc<Catalog>> {
         let url = url.ok_or(CatalogError::UrlNotConfigured(label))?;
-        fs::with_temp_dir(&paths::staging(), |stage| async move {
-            let downloaded = stage.join("catalog.json");
-            download(
-                &self.0.downloader,
-                url,
-                &downloaded,
-                cancellation,
-                |transfer| {
-                    progress.send_replace(Some(Progress::transferring(
-                        Stage::Downloading {
-                            file: format!("{label} catalog"),
-                        },
-                        transfer,
-                    )));
-                },
-            )
-            .await?;
-            progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            Ok(Arc::new(serde_json::from_slice::<Catalog>(
-                &async_fs::read(&downloaded).await?,
-            )?))
-        })
-        .await
+        progress.send_replace(Some(Progress::new(Stage::Downloading {
+            file: format!("{label} catalog"),
+        })));
+        let request = http::Request::get(url.as_str())
+            .body(Vec::new())
+            .map_err(io::Error::other)?;
+        let body = async {
+            let response = self
+                .0
+                .http_client
+                .send(request)
+                .await
+                .map_err(io::Error::other)?;
+            let mut body = Vec::new();
+            response.into_body().read_to_end(&mut body).await?;
+            Ok::<_, io::Error>(body)
+        };
+        let body = cancellation
+            .run_until_cancelled(body)
+            .await
+            .ok_or(Error::Cancelled)??;
+        Ok(Arc::new(serde_json::from_slice(&body)?))
     }
 }
