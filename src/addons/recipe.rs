@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::{AddonRole, Component, catalog::CatalogArtifact, defaults::steps as default_steps};
 use crate::{
     proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
     utils::env_vars::EnvVars,
@@ -114,4 +115,31 @@ pub(crate) enum InstallStep {
         /// Environment variable value.
         value: String,
     },
+}
+
+/// Freezes the installation resources of a release with `role` from `artifacts`.
+///
+/// Components use their single artifact's steps, or the slot's default recipe.
+/// Dependencies pair each artifact with its steps. Runtime tools have none.
+pub(crate) fn resources(role: AddonRole, artifacts: &[&CatalogArtifact]) -> Vec<InstallResource> {
+    match role {
+        AddonRole::Component(Component { slot }) => vec![InstallResource::new(
+            "",
+            artifacts
+                .first()
+                .and_then(|artifact| artifact.steps())
+                .unwrap_or_else(|| default_steps(slot))
+                .to_vec(),
+        )],
+        AddonRole::Dependency(_) => artifacts
+            .iter()
+            .map(|artifact| {
+                InstallResource::new(
+                    artifact.file_name(),
+                    artifact.steps().unwrap_or_default().to_vec(),
+                )
+            })
+            .collect(),
+        AddonRole::Runner(_) | AddonRole::WineBridge(_) | AddonRole::Umu(_) => Vec::new(),
+    }
 }

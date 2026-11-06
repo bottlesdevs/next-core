@@ -4,10 +4,9 @@
 //! payload, runtime metadata, and any frozen prefix recipe.
 
 use super::super::{
-    Addon, AddonError, AddonRole, CatalogError, Component, Requirement, RoleMarker,
+    Addon, AddonError, AddonRole, CatalogError, Requirement, RoleMarker,
     catalog::{CatalogArtifact, Target},
-    defaults::steps as recipe_steps,
-    recipe::InstallResource,
+    recipe::resources,
 };
 use super::{Addons, download::download};
 use crate::{
@@ -158,33 +157,6 @@ impl Addons {
             })
             .await
         })
-    }
-}
-
-/// Freezes the installation resources of a release with `role` from `artifacts`.
-///
-/// Components use their single artifact's steps, or the slot's default recipe.
-/// Dependencies pair each artifact with its steps. Runtime tools have none.
-fn resources(role: AddonRole, artifacts: &[&CatalogArtifact]) -> Vec<InstallResource> {
-    match role {
-        AddonRole::Component(Component { slot }) => vec![InstallResource::new(
-            "",
-            artifacts
-                .first()
-                .and_then(|artifact| artifact.steps())
-                .unwrap_or_else(|| recipe_steps(slot))
-                .to_vec(),
-        )],
-        AddonRole::Dependency(_) => artifacts
-            .iter()
-            .map(|artifact| {
-                InstallResource::new(
-                    artifact.file_name(),
-                    artifact.steps().unwrap_or_default().to_vec(),
-                )
-            })
-            .collect(),
-        AddonRole::Runner(_) | AddonRole::WineBridge(_) | AddonRole::Umu(_) => Vec::new(),
     }
 }
 
