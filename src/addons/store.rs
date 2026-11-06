@@ -134,7 +134,7 @@ impl Addons {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            fs::with_temp_dir(&paths::staging(), |stage| async move {
+            fs::with_staging(|stage| async move {
                 let prepared = prepare_archive(&source, &stage, &cancellation).await?;
                 addons.commit(record, &prepared, &cancellation).await
             })

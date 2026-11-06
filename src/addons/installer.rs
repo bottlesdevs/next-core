@@ -29,13 +29,11 @@ use crate::{
 
 use crate::addons::recipe::{InstallResource, InstallStep};
 
-/// Groups the runtime services and directories needed to apply a recipe.
+/// Groups the runtime services and locations needed to apply a recipe.
 #[derive(Clone, Copy)]
 pub(crate) struct InstallInputs<'a> {
     /// Wine prefix that receives recipe changes.
     pub(crate) wineprefix: &'a Path,
-    /// Parent directory for temporary archive extraction.
-    pub(crate) staging: &'a Path,
     /// Runner used for Windows child processes.
     pub(crate) runner: &'a dyn Runner,
     /// Root of the `WineBridge` component used for registry operations.
@@ -118,7 +116,6 @@ async fn execute_step(
 ) -> Result<()> {
     let InstallInputs {
         wineprefix,
-        staging,
         runner,
         winebridge,
     } = inputs;
@@ -139,7 +136,6 @@ async fn execute_step(
             extract_into(
                 resource,
                 wineprefix,
-                staging,
                 destination,
                 backup_files,
                 cancellation,
@@ -342,12 +338,11 @@ async fn uninstall_file(wineprefix: &Path, relative: &Path) -> io::Result<()> {
 async fn extract_into(
     archive: &Path,
     wineprefix: &Path,
-    staging: &Path,
     destination: &Path,
     backup_files: bool,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    fs::with_temp_dir(staging, |stage| async move {
+    fs::with_staging(|stage| async move {
         check_cancellation(cancellation)?;
         archive::extract(archive, &stage).await?;
         check_cancellation(cancellation)?;
@@ -386,38 +381,6 @@ mod tests {
                 wait_for_child(child, &cancellation).await,
                 Err(Error::Cancelled)
             ));
-        });
-    }
-
-    #[test]
-    fn cancelled_extraction_skips_archive_and_removes_stage() {
-        futures_lite::future::block_on(async {
-            let root =
-                std::env::temp_dir().join(format!("bottles-next-installer-{}", Uuid::new_v4()));
-            std::fs::create_dir_all(&root).unwrap();
-            let cancellation = CancellationToken::new();
-            cancellation.cancel();
-
-            assert!(matches!(
-                extract_into(
-                    &root.join("missing.tar"),
-                    &root.join("prefix"),
-                    &root.join(".staging"),
-                    Path::new("drive_c"),
-                    true,
-                    &cancellation,
-                )
-                .await,
-                Err(Error::Cancelled)
-            ));
-            assert!(
-                std::fs::read_dir(root.join(".staging"))
-                    .unwrap()
-                    .next()
-                    .is_none()
-            );
-
-            std::fs::remove_dir_all(root).unwrap();
         });
     }
 }

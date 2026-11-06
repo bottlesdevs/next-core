@@ -75,10 +75,8 @@ pub(in crate::prefix) async fn apply(
     let runner = candidate.runner.load_runner(candidate.umu.as_ref()).await?;
     let wineprefix = root.join("prefix");
     let winebridge = candidate.winebridge.path();
-    let staging = crate::utils::paths::staging();
     let inputs = InstallInputs {
         wineprefix: &wineprefix,
-        staging: &staging,
         runner: runner.as_ref(),
         winebridge: &winebridge,
     };

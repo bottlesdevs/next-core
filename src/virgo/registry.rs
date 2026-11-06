@@ -8,7 +8,7 @@
 use super::VirgoError;
 use crate::{
     error::{Error, Result},
-    utils::fs::with_temp_dir,
+    utils::fs::with_staging,
 };
 use regdiff_rs::prelude::{Diff, Hive, Registry, apply_files};
 use std::{
@@ -149,15 +149,10 @@ fn merge_private(previous: &Path, upper: &Path, baseline: &Path, merged: &Path) 
 ///
 /// Returns an I/O or [`VirgoError::Registry`] error while copying, parsing,
 /// diffing, applying, or replacing registry files.
-pub(super) async fn compose(
-    root: &Path,
-    staging: &Path,
-    initial: &Path,
-    patches: Vec<PathBuf>,
-) -> Result<()> {
+pub(super) async fn compose(root: &Path, initial: &Path, patches: Vec<PathBuf>) -> Result<()> {
     let root = root.to_path_buf();
     let initial = initial.to_path_buf();
-    with_temp_dir(staging, |scratch| {
+    with_staging(|scratch| {
         blocking::unblock(move || {
             let baseline = scratch.join("baseline");
             fs::create_dir_all(&baseline)?;

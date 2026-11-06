@@ -213,7 +213,6 @@ impl<'a> Virgo<'a> {
                 let executed = execute(
                     InstallInputs {
                         wineprefix: &workspace.wineprefix,
-                        staging: &crate::utils::paths::staging(),
                         runner: runner.as_ref(),
                         winebridge: &winebridge,
                     },

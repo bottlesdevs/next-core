@@ -1,6 +1,6 @@
-//! Filesystem queries, archive handling, and disposable workspaces.
+//! Filesystem queries, archive handling, staging workspaces, and discarding.
 //!
-//! Temporary-workspace cleanup is best effort: the work result determines
+//! Staging and trash cleanup is best effort: the work result determines
 //! success, and panicking or dropping an in-flight future does not schedule cleanup.
 
 pub(crate) mod archive;
@@ -15,7 +15,8 @@ use uuid::Uuid;
 
 use crate::{error::ResultExt, utils::paths};
 
-/// Creates an isolated child of `parent`, runs `work`, then removes the child.
+/// Creates an isolated child of the staging directory, runs `work`, then removes
+/// the child.
 ///
 /// The child directory is passed to `work` after successful creation. When
 /// `work` returns, cleanup is attempted for both [`Ok`] and [`Err`] results;
@@ -26,15 +27,12 @@ use crate::{error::ResultExt, utils::paths};
 ///
 /// Returns an error if the workspace cannot be created or if `work` returns an
 /// error. Removal failures are not returned.
-pub(crate) async fn with_temp_dir<T, E, F>(
-    parent: &Path,
-    work: impl FnOnce(PathBuf) -> F,
-) -> Result<T, E>
+pub(crate) async fn with_staging<T, E, F>(work: impl FnOnce(PathBuf) -> F) -> Result<T, E>
 where
     F: Future<Output = Result<T, E>>,
     E: From<io::Error>,
 {
-    let directory = parent.join(Uuid::new_v4().to_string());
+    let directory = paths::staging().join(Uuid::new_v4().to_string());
     async_fs::create_dir_all(&directory).await?;
     let result = work(directory.clone()).await;
     async_fs::remove_dir_all(directory).await.log_warn();

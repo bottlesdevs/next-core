@@ -13,7 +13,7 @@ use crate::{
         store::prepare_archive,
     },
     error::{Error, Result},
-    utils::{fs, paths},
+    utils::fs,
 };
 use download_manager::manager::DownloadManager;
 use std::path::Path;
@@ -73,7 +73,7 @@ impl Catalogs {
                 resources(entry.role(), &artifacts),
                 role,
             );
-            fs::with_temp_dir(&paths::staging(), |stage| async move {
+            fs::with_staging(|stage| async move {
                 let downloads = stage.join("downloads");
                 async_fs::create_dir(&downloads).await?;
                 for artifact in &artifacts {
