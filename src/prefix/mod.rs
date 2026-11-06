@@ -1,10 +1,9 @@
 //! Coordinates prefix state, persistence, runtime control, and storage.
 //!
-//! A [`Prefix`] exposes immutable [`PrefixState`] snapshots, which every
-//! prefix publishes into one shared [`Inventory`]. Mutations are
-//! serialized by one control lock per prefix and publish a replacement
-//! snapshot only after persistence succeeds. Deletion removes the snapshot from
-//! the inventory without invalidating snapshots already held by callers.
+//! A [`Prefix`] exposes immutable [`PrefixState`] snapshots. Mutations are
+//! serialized by one control lock and publish a replacement snapshot only
+//! after persistence succeeds. Deletion closes the publication stream without
+//! invalidating snapshots already held by callers.
 
 mod backend;
 mod edit;
@@ -41,25 +40,19 @@ pub type Inventory = Arc<BTreeMap<Uuid, Arc<PrefixState>>>;
 
 pub(crate) struct Inner {
     pub(crate) id: Uuid,
-    pub(crate) inventory: watch::Sender<Inventory>,
+    pub(crate) state: watch::Sender<Option<Arc<PrefixState>>>,
     pub(crate) control: Mutex<()>,
     pub(crate) root: PathBuf,
     pub(crate) context: Context,
 }
 
 impl Inner {
-    /// Constructs the prefix stored at `root` without touching storage.
-    ///
-    /// Its state is read from `inventory`, where it is absent until published.
+    /// Constructs the prefix stored at `root` around `state` without touching storage.
     ///
     /// # Errors
     ///
     /// Returns an error if `root` is not named by a UUID.
-    pub(crate) fn new(
-        root: PathBuf,
-        inventory: watch::Sender<Inventory>,
-        context: Context,
-    ) -> Result<Arc<Self>> {
+    pub(crate) fn new(state: PrefixState, root: PathBuf, context: Context) -> Result<Arc<Self>> {
         let id = root
             .file_name()
             .and_then(|s| s.to_str())
@@ -72,14 +65,14 @@ impl Inner {
             })?;
         Ok(Arc::new(Self {
             id,
-            inventory,
+            state: watch::channel(Some(Arc::new(state))).0,
             control: Mutex::new(()),
             root,
             context,
         }))
     }
 
-    /// Initializes storage for `state` and persists it without publishing it.
+    /// Initializes storage for the constructed state and persists it.
     ///
     /// Failure during backend initialization can leave a partial prefix
     /// root and any already-published shared Virgo artifacts. After
@@ -96,13 +89,14 @@ impl Inner {
     /// encountered during initialization.
     pub(crate) async fn create(
         &self,
-        state: &PrefixState,
         progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<()> {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
+        let state = self.state()?;
+        let state = state.as_ref();
         progress.send_replace(Some(Progress::new(Stage::CreatingPrefix)));
         // Initialization owns shutdown. Retain storage when it cannot finish safely.
         match state.backend {
@@ -147,41 +141,28 @@ impl Inner {
     ///
     /// # Errors
     ///
-    /// Returns [`PrefixError::Deleted`] once the prefix is absent from
-    /// the inventory.
+    /// Returns [`PrefixError::Deleted`] after deletion has been published.
     pub(crate) fn state(&self) -> Result<Arc<PrefixState>> {
-        self.inventory
+        self.state
             .borrow()
-            .get(&self.id)
-            .cloned()
+            .clone()
             .ok_or_else(|| PrefixError::Deleted.into())
     }
 
-    /// Streams the current state and later distinct publications until deletion.
+    /// Streams the current state and later publications until deletion.
     pub(crate) fn watch(&self) -> impl Stream<Item = Arc<PrefixState>> + Send + 'static + use<> {
-        let id = self.id;
-        let mut previous: Option<Arc<PrefixState>> = None;
-        WatchStream::new(self.inventory.subscribe())
-            .map(move |inventory| inventory.get(&id).cloned())
+        WatchStream::new(self.state.subscribe())
             .take_while(Option::is_some)
-            .filter_map(move |state| {
-                let state = state?;
-                // Changes to other prefixes republish this one unchanged.
-                let changed = previous
-                    .as_ref()
-                    .is_none_or(|previous| !Arc::ptr_eq(previous, &state));
-                previous = Some(state.clone());
-                changed.then_some(state)
-            })
+            .filter_map(|state| state)
     }
 
     /// Publishes `state` when it differs from the current snapshot.
     pub(crate) fn publish(&self, state: PrefixState) {
-        self.inventory.send_if_modified(|inventory| {
-            if inventory.get(&self.id).map(AsRef::as_ref) == Some(&state) {
+        self.state.send_if_modified(|current| {
+            if current.as_deref() == Some(&state) {
                 return false;
             }
-            Arc::make_mut(inventory).insert(self.id, Arc::new(state));
+            *current = Some(Arc::new(state));
             true
         });
     }
@@ -246,9 +227,7 @@ impl Inner {
         progress.send_replace(Some(Progress::new(Stage::Removing)));
         let destination = trash.join(Uuid::new_v4().to_string());
         async_fs::rename(&self.root, &destination).await?;
-        self.inventory.send_modify(|inventory| {
-            Arc::make_mut(inventory).remove(&self.id);
-        });
+        self.state.send_replace(None);
         on_deleted();
         async_fs::remove_dir_all(destination).await.log_warn();
         Ok(())
