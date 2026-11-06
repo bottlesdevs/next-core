@@ -14,25 +14,29 @@
 //! [`AddonRole`] holds one marker, and [`RoleMarker`] bounds the type parameter
 //! of [`Addon`], so one generic API acquires, imports, and lists every role.
 //!
-//! Use [`crate::Core::addons`] to access the shared [`Addons`] manager. Acquiring
-//! a release only places it in shared storage. Selection remains an explicit prefix
-//! edit through [`crate::Edit`].
+//! [`Addons`], from [`crate::Core::addons`], stores locally acquired releases.
+//! [`Catalogs`], from [`crate::Core::catalogs`], refreshes remote catalogs and
+//! fetches their releases into [`Addons`]. Acquiring a release only places it in
+//! shared storage. Selection remains an explicit prefix edit through
+//! [`crate::Edit`].
 
 #![warn(missing_docs)]
 
 mod addon;
 mod catalog;
+mod catalogs;
 mod defaults;
 mod error;
 mod installer;
-mod manager;
 mod recipe;
+mod store;
 
 pub use addon::{
     Addon, AddonRole, Component, Dependency, Requirement, RoleMarker, Runner, Slot, Umu, WineBridge,
 };
 pub use catalog::CatalogEntry;
+pub use catalogs::{Catalogs, CatalogsState};
 pub use error::{AddonError, CatalogError, InstallerError};
 pub(crate) use installer::{InstallInputs, execute, uninstall};
-pub use manager::{Addons, AddonsState};
 pub(crate) use recipe::InstallStep;
+pub use store::{Addons, AddonsState};

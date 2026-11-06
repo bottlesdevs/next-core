@@ -5,7 +5,7 @@ use std::sync::Arc;
 use http_client::{HttpClient, ReqwestClient};
 use url::Url;
 
-use crate::{Addons, Context, Prefixes, error::Result, utils::paths};
+use crate::{Addons, Catalogs, Context, Prefixes, error::Result, utils::paths};
 
 /// Owns the services and persisted collections used by Bottles Next.
 ///
@@ -14,13 +14,14 @@ use crate::{Addons, Context, Prefixes, error::Result, utils::paths};
 /// outstanding [`Operation`](crate::Operation) values have completed.
 pub struct Core {
     context: Context,
+    catalogs: Catalogs,
     prefixes: Prefixes,
 }
 
 /// Startup options for a [`Core`], opened with [`CoreBuilder::build`].
 ///
 /// Every option is optional. Catalog URLs are used by
-/// [`Addons::refresh`](crate::Addons::refresh); cached catalogs and installed
+/// [`Catalogs::refresh`]; cached catalogs and installed
 /// addons still load when a URL is absent, and refreshing a family without a
 /// URL reports an error for that family.
 #[must_use = "call `build` to open the core"]
@@ -64,7 +65,7 @@ impl Core {
     ///
     /// Shutdown is infallible.
     pub async fn shutdown(&self) -> Result<()> {
-        self.context.downloader().shutdown().await;
+        self.catalogs.shutdown().await;
         Ok(())
     }
 
@@ -73,9 +74,14 @@ impl Core {
         &self.prefixes
     }
 
-    /// Returns the shared addon catalog and installation manager.
+    /// Returns the store of locally acquired releases.
     pub fn addons(&self) -> &Addons {
         self.context.addons()
+    }
+
+    /// Returns the remote catalogs that acquire releases into [`Self::addons`].
+    pub fn catalogs(&self) -> &Catalogs {
+        &self.catalogs
     }
 }
 
@@ -132,12 +138,20 @@ impl CoreBuilder {
         let context = Context::new(
             #[cfg(feature = "fvs")]
             crate::virgo::Fvs::connect(self.fvs2d).await?,
+        )
+        .await?;
+        let catalogs = Catalogs::load(
             http_client,
+            context.addons().clone(),
             self.component_catalog,
             self.dependency_catalog,
         )
         .await?;
         let prefixes = Prefixes::load(paths::prefixes(), context.clone()).await?;
-        Ok(Core { context, prefixes })
+        Ok(Core {
+            context,
+            catalogs,
+            prefixes,
+        })
     }
 }

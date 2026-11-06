@@ -179,7 +179,7 @@ impl Catalog {
 
 /// Describes a release advertised by a remote addon catalog.
 ///
-/// An entry is only metadata. Acquire it with [`Addons::fetch`](super::Addons::fetch)
+/// An entry is only metadata. Acquire it with [`Catalogs::fetch`](super::Catalogs::fetch)
 /// as the marker matching its [`role`](Self::role). Check
 /// [`is_supported`](Self::is_supported) before offering it for the current platform.
 ///

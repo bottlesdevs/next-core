@@ -13,9 +13,9 @@ use crate::{
 };
 
 use super::super::{CatalogError, catalog::Catalog};
-use super::{Addons, download::download};
+use super::{Catalogs, download::download};
 
-impl Addons {
+impl Catalogs {
     /// Downloads and parses the component and dependency catalogs.
     ///
     /// Components are attempted first, then dependencies. A source failure other
@@ -38,36 +38,36 @@ impl Addons {
     /// combined into [`CatalogError::Refresh`]; cache-write failures are returned
     /// directly.
     pub fn refresh(&self) -> Operation<()> {
-        let addons = self.clone();
+        let catalogs = self.clone();
         Operation::new(move |progress, cancellation| async move {
-            let component = addons
+            let component = catalogs
                 .download_catalog(
-                    addons.0.component_catalog_url.clone(),
+                    catalogs.0.component_catalog_url.clone(),
                     "components",
-                    progress.clone(),
+                    &progress,
                     &cancellation,
                 )
                 .await;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            let dependency = addons
+            let dependency = catalogs
                 .download_catalog(
-                    addons.0.dependency_catalog_url.clone(),
+                    catalogs.0.dependency_catalog_url.clone(),
                     "dependencies",
-                    progress,
+                    &progress,
                     &cancellation,
                 )
                 .await;
 
             let _write = cancellation
-                .run_until_cancelled(addons.0.write.lock())
+                .run_until_cancelled(catalogs.0.write.lock())
                 .await
                 .ok_or(Error::Cancelled)?;
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            let current = addons.state();
+            let current = catalogs.state();
             let component_catalog = match &component {
                 Ok(catalog) => {
                     catalog.save(&paths::component_catalog()).await?;
@@ -82,10 +82,10 @@ impl Addons {
                 }
                 Err(_) => current.dependency_catalog.clone(),
             };
-            let mut next = current.as_ref().clone();
-            next.component_catalog = component_catalog;
-            next.dependency_catalog = dependency_catalog;
-            addons.publish(next);
+            catalogs.publish(super::CatalogsState {
+                component_catalog,
+                dependency_catalog,
+            });
 
             match (component, dependency) {
                 (Ok(_), Ok(_)) => Ok(()),
@@ -98,18 +98,12 @@ impl Addons {
         })
     }
 
-    /// Downloads and parses one catalog source in temporary storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the URL is absent, the operation is cancelled,
-    /// the transfer or temporary storage fails, or the document does not match the
-    /// current catalog schema.
+    /// Downloads and parses one catalog.
     async fn download_catalog(
         &self,
         url: Option<Url>,
         label: &'static str,
-        progress: watch::Sender<Option<Progress>>,
+        progress: &watch::Sender<Option<Progress>>,
         cancellation: &CancellationToken,
     ) -> Result<Arc<Catalog>> {
         let url = url.ok_or(CatalogError::UrlNotConfigured(label))?;
