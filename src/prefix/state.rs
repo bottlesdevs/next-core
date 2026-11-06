@@ -10,8 +10,7 @@ use crate::{
 };
 use next_config::Config;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use strum::IntoEnumIterator;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Captures one immutable, published view of a prefix.
@@ -61,20 +60,16 @@ impl PrefixState {
         }
     }
 
-    /// Iterates prefix-contributing components in [`Slot`] declaration order.
-    pub(crate) fn ordered_components(&self) -> impl Iterator<Item = &Addon<Component>> {
-        Slot::iter().filter_map(|slot| self.component(slot))
-    }
-
     /// Resolves the environment variables used to start `WineBridge`.
     ///
-    /// Recipe declarations are applied in component slot order, followed by
+    /// Recipe declarations from components are applied first, followed by
     /// dependencies in installation order and finally [`Self::env_vars`]. Later
     /// declarations override earlier values; command-local variables are excluded.
     pub(crate) fn effective_env_vars(&self) -> EnvVars {
         let mut vars = EnvVars::default();
         let steps = self
-            .ordered_components()
+            .components
+            .values()
             .flat_map(Addon::recipe)
             .chain(self.dependencies.iter().flat_map(Addon::recipe));
         for step in steps {
@@ -100,7 +95,7 @@ impl PrefixState {
 
     fn contains_addon_matching(&self, requirement: &Requirement) -> bool {
         match requirement {
-            Requirement::Slot(slot) => self.components.contains_key(slot),
+            Requirement::Slot(slot) => self.component(*slot).is_some(),
             Requirement::Name(name) => self
                 .addon_metadata()
                 .any(|(_, selected, _)| selected == name),
@@ -118,32 +113,12 @@ impl PrefixState {
             .chain(self.dependencies.iter().map(Addon::metadata))
     }
 
-    /// Verifies placement, uniqueness, and addon requirements.
+    /// Verifies that every selected addon's requirements are satisfied.
     ///
     /// # Errors
     ///
-    /// Returns [`PrefixError::InvalidEdit`] for duplicate dependencies,
-    /// [`PrefixError::InvalidComponentSlot`] for a misplaced component, or
-    /// [`PrefixError::RequiresAddon`] for any unsatisfied requirement.
+    /// Returns [`PrefixError::RequiresAddon`] for any unsatisfied requirement.
     pub(crate) fn validate(&self) -> Result<()> {
-        let mut dependencies = HashSet::new();
-        for addon in &self.dependencies {
-            if !dependencies.insert(addon.id()) {
-                return Err(
-                    PrefixError::InvalidEdit("a dependency may only be selected once").into(),
-                );
-            }
-        }
-        for (slot, component) in &self.components {
-            if component.slot() != *slot {
-                return Err(PrefixError::InvalidComponentSlot {
-                    component: component.id(),
-                    required: *slot,
-                }
-                .into());
-            }
-        }
-
         for (id, _, requirements) in self.addon_metadata() {
             let missing = requirements
                 .iter()

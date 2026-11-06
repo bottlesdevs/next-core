@@ -130,16 +130,16 @@ impl Prefixes {
         )
     }
 
-    /// Loads valid UUID-named prefixes found below `root`.
+    /// Loads UUID-named prefixes found below `root`.
     ///
     /// A missing root produces an empty collection. Entries without `state.toml`
-    /// and non-directory entries are ignored; malformed or invalid persisted
-    /// state aborts the entire load.
+    /// and non-directory entries are ignored; malformed persisted state aborts
+    /// the entire load.
     ///
     /// # Errors
     ///
-    /// Returns an error when directory enumeration, state loading, validation,
-    /// or prefix reconstruction fails.
+    /// Returns an error when directory enumeration, state loading, or prefix
+    /// reconstruction fails.
     pub(crate) async fn load(root: PathBuf, context: Context) -> Result<Self> {
         let prefixes = Self {
             root,
@@ -167,7 +167,6 @@ impl Prefixes {
                 }
                 Err(error) => return Err(error.into()),
             };
-            state.validate()?;
             let prefix = Prefix(Inner::new(state, root, prefixes.context.clone())?);
             members.insert(prefix.id(), prefix);
         }

@@ -112,7 +112,7 @@ pub(crate) async fn recover<T>(
     if let Err(error) = &result {
         if let Err(source) = restore(root, &checkpoint.state_id, cx, progress).await {
             tracing::error!(%error, "mutation failed before rollback failed");
-            return Err(super::PrefixError::Rollback {
+            return Err(PrefixError::Rollback {
                 root: root.to_path_buf(),
                 source: Box::new(source),
             }
@@ -185,25 +185,25 @@ impl Inner {
             .collect())
     }
 
-    /// Restores a snapshot and publishes the validated state stored within it.
+    /// Restores a snapshot and publishes the state stored within it.
     ///
     /// An automatic checkpoint is captured before restoration. Once restoration
-    /// begins, a failed restore, load, identity check, backend check, or validation
-    /// triggers recovery to that checkpoint before coordination is released.
+    /// begins, a failed restore or state load triggers recovery to that
+    /// checkpoint before coordination is released.
     /// Cancellation is sampled before and after checkpoint capture; once restore
     /// starts, the operation finishes restoration or recovery before returning.
     ///
     /// # Errors
     ///
     /// The operation fails for cancellation before restoration, shutdown or FVS
-    /// failures, invalid restored state, or [`PrefixError::Rollback`] if the
+    /// failures, an unreadable restored state, or [`PrefixError::Rollback`] if the
     /// automatic recovery also fails.
     pub(crate) fn rollback(self: &Arc<Self>, revision: &str) -> Operation<String> {
         let prefix = self.clone();
         let revision = revision.to_owned();
         Operation::new(move |progress, cancellation| async move {
             let _control = prefix.lock_control(&cancellation).await?;
-            let current = prefix.state()?;
+            prefix.state()?;
             progress.send_replace(Some(Progress::new(Stage::Stopping)));
             prefix.stop_locked().await?;
             if cancellation.is_cancelled() {
@@ -225,12 +225,6 @@ impl Inner {
             let result = async {
                 let restored = restore(&prefix.root, &revision, &prefix.context, &progress).await?;
                 let state: PrefixState = next_config::load(prefix.root.join("state.toml")).await?;
-                if state.backend != current.backend {
-                    return Err(
-                        PrefixError::InvalidEdit("snapshot backend does not match prefix").into(),
-                    );
-                }
-                state.validate()?;
                 Ok((restored.state_id, state))
             }
             .await;

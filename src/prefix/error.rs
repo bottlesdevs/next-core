@@ -29,9 +29,6 @@ pub enum PrefixError {
     /// Software selections cannot be changed while the prefix is running.
     #[error("stop the prefix before changing its settings")]
     MustBeStopped,
-    /// A proposed edit violates an invariant not represented by another variant.
-    #[error("invalid prefix edit: {0}")]
-    InvalidEdit(&'static str),
     /// No selected component occupies the requested [`Slot`].
     #[error("component slot {0:?} is not installed")]
     ComponentNotInstalled(Slot),
@@ -42,13 +39,5 @@ pub enum PrefixError {
         required_by: Uuid,
         /// Requirements not satisfied by any selected addon.
         requirements: Vec<Requirement>,
-    },
-    /// A component was stored under a [`Slot`] different from the one it declares.
-    #[error("component {component} must occupy slot {required:?}")]
-    InvalidComponentSlot {
-        /// Identifier of the component stored in the wrong slot.
-        component: Uuid,
-        /// Slot declared by the component.
-        required: Slot,
     },
 }

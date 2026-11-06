@@ -50,7 +50,7 @@ impl<'a> Virgo<'a> {
         }
         let base = self.prepare_base(cancellation).await?;
         let mut overlays = vec![self.prepare_adapter(config, &base, cancellation).await?];
-        for addon in config.ordered_components() {
+        for addon in config.components.values() {
             overlays.push(
                 self.prepare_addon(addon, &base, progress, cancellation)
                     .await?,
@@ -70,8 +70,8 @@ impl<'a> Virgo<'a> {
 
     /// Loads the exact cached composition recorded by `config`.
     ///
-    /// Layers are ordered as base, runner adapter, components in slot
-    /// order, and dependencies in installation order.
+    /// Layers are ordered as base, runner adapter, components, and
+    /// dependencies in installation order.
     ///
     /// # Errors
     ///
@@ -86,7 +86,8 @@ impl<'a> Virgo<'a> {
         let adapter = Path::new("adapters").join(runner.to_string());
         let mut overlays = vec![self.layers.require(&adapter, Some(runner)).await?];
         for id in config
-            .ordered_components()
+            .components
+            .values()
             .map(Addon::id)
             .chain(config.dependencies.iter().map(Addon::id))
         {

@@ -207,8 +207,7 @@ impl Prefix {
 
     /// Creates an operation that restores a snapshot into the managed root.
     ///
-    /// The restored backend must match the prefix, and its state must
-    /// validate. A failed restore or invalid state recovers the previous files
+    /// A failed restore or unreadable restored state recovers the previous files
     /// before returning; failed recovery reports the root requiring repair.
     /// Shutdown and checkpoint capture finish before cancellation is observed.
     /// Once restoration begins, cancellation does not interrupt restoration or

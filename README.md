@@ -5,7 +5,7 @@ and Proton prefixes, runtime tools and prefix components, and launches
 Windows programs in them.
 
 The main entry point is [`Bottles`]. Opening it resolves the application's data
-directories, validates persisted state, initializes addon and prefix
+directories, loads persisted state, initializes addon and prefix
 registries. Long-running changes
 return an [`Operation`]: a lazy future with progress reporting and cooperative
 cancellation.

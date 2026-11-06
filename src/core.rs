@@ -48,7 +48,7 @@ impl Bottles {
     /// # Errors
     ///
     /// Returns an error if application directories are unavailable; persisted
-    /// addons or prefixes cannot be read or validated; the HTTP
+    /// addons or prefixes cannot be read; the HTTP
     /// or download service cannot initialize; an FVS executable cannot be
     /// resolved or contacted.
     ///
