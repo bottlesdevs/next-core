@@ -2,10 +2,10 @@
 
 use super::{Addons, AddonsState};
 use crate::{
-    Addon, AddonError, AddonRole, Directories, RoleMarker,
+    Addon, AddonError, AddonRole, RoleMarker,
     addons::catalog::Catalog,
     error::{Error, Result},
-    utils::fs,
+    utils::{fs, paths},
 };
 use futures_util::TryStreamExt;
 use std::path::{Path, PathBuf};
@@ -28,15 +28,11 @@ impl Addons {
     /// Returns [`AddonError::NotFound`] when the release is absent, or an I/O error
     /// if its storage directory cannot be moved to trash.
     pub async fn remove(&self, id: Uuid) -> Result<()> {
-        fs::with_temp_dir(&self.0.directories.trash(), |trash| async move {
+        fs::with_temp_dir(&paths::trash(), |trash| async move {
             let _write = self.0.write.lock().await;
             let mut next = self.state().as_ref().clone();
             let release = next.releases.get(&id).ok_or(AddonError::NotFound(id))?;
-            async_fs::rename(
-                release.directory(&self.0.directories),
-                trash.join("release"),
-            )
-            .await?;
+            async_fs::rename(release.directory(), trash.join("release")).await?;
             next.releases.remove(&id);
             self.publish(next);
             Ok(())
@@ -52,7 +48,7 @@ impl Addons {
         cancellation: &CancellationToken,
     ) -> Result<Addon<R>> {
         let id = record.id();
-        let destination = record.directory(&self.0.directories);
+        let destination = record.directory();
         let _write = cancellation
             .run_until_cancelled(self.0.write.lock())
             .await
@@ -85,16 +81,13 @@ impl Addons {
 
 impl AddonsState {
     /// Loads cached catalogs and release manifests into the initial snapshot.
-    pub(super) async fn load_cached(directories: &Directories) -> Result<Self> {
+    pub(super) async fn load_cached() -> Result<Self> {
         let mut state = Self {
-            component_catalog: Catalog::load(&directories.component_catalog()).await?,
-            dependency_catalog: Catalog::load(&directories.dependency_catalog()).await?,
+            component_catalog: Catalog::load(&paths::component_catalog()).await?,
+            dependency_catalog: Catalog::load(&paths::dependency_catalog()).await?,
             ..Self::default()
         };
-        for root in [
-            directories.component_releases(),
-            directories.dependency_releases(),
-        ] {
+        for root in [paths::component_releases(), paths::dependency_releases()] {
             for (id, path) in release_manifests(&root).await? {
                 let record: Addon<AddonRole> = next_config::load(&path).await?;
                 if record.id() != id {

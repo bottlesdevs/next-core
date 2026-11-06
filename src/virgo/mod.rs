@@ -11,7 +11,7 @@ mod registry;
 mod workspace;
 pub(crate) use cache::VirgoLayer;
 
-use crate::{Directories, error::Result};
+use crate::{error::Result, utils::paths};
 use fvs_rs::Fvs2dClient;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
@@ -36,45 +36,14 @@ impl Fvs {
     ///
     /// Returns an error if the current directory cannot be read or the daemon
     /// cannot be started or contacted.
-    pub(crate) async fn connect(
-        executable: Option<PathBuf>,
-        directories: &Directories,
-    ) -> Result<Self> {
-        let client = Fvs2dClient::connect_or_spawn(
-            daemon(executable)?,
-            directories.runtime_dir().join("fvs2d.sock"),
-        )
-        .await?;
-        Ok(Self::new(Arc::new(client), directories))
-    }
-
-    fn new(client: Arc<Fvs2dClient>, directories: &Directories) -> Self {
-        Self {
-            layers: LayerStore::new(directories.clone(), client.clone()),
-            client,
-        }
-    }
-
-    #[cfg(test)]
-    /// Creates a client whose channel connects lazily, for tests that never issue RPCs.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the process cannot construct the test-only Tokio runtime used
-    /// to create the channel.
-    pub(crate) fn for_test(directories: &Directories) -> Self {
-        static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> =
-            std::sync::LazyLock::new(|| {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap()
-            });
-        let _entered = RUNTIME.enter();
-        let client = Fvs2dClient::from_channel(
-            tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy(),
+    pub(crate) async fn connect(executable: Option<PathBuf>) -> Result<Self> {
+        let client = Arc::new(
+            Fvs2dClient::connect_or_spawn(daemon(executable)?, paths::fvs2d_socket()).await?,
         );
-        Self::new(Arc::new(client), directories)
+        Ok(Self {
+            layers: LayerStore::new(client.clone()),
+            client,
+        })
     }
 }
 
@@ -96,27 +65,25 @@ fn daemon(configured: Option<PathBuf>) -> Result<PathBuf> {
 }
 
 pub(crate) struct LayerStore {
-    directories: Directories,
     fvs: Arc<Fvs2dClient>,
     build_lock: Mutex<()>,
 }
 
 impl LayerStore {
     /// Creates a store without touching storage or connecting the FVS client.
-    pub(crate) fn new(directories: Directories, fvs: Arc<Fvs2dClient>) -> Self {
+    pub(crate) fn new(fvs: Arc<Fvs2dClient>) -> Self {
         Self {
-            directories,
             fvs,
             build_lock: Mutex::new(()),
         }
     }
 
     fn root(&self) -> PathBuf {
-        self.directories.data_dir().join("virgo")
+        paths::virgo()
     }
 
     fn staging_path(&self) -> PathBuf {
-        self.directories.staging().join(Uuid::new_v4().to_string())
+        paths::staging().join(Uuid::new_v4().to_string())
     }
 }
 

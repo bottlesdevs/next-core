@@ -178,15 +178,7 @@ impl Inner {
             // Once application succeeds, finish saving even if cancellation arrives.
             match previous.backend {
                 PrefixBackend::Standard if prefix_changed => {
-                    standard::apply(
-                        before,
-                        after,
-                        &prefix.root,
-                        &prefix.context,
-                        &progress,
-                        &cancellation,
-                    )
-                    .await?;
+                    standard::apply(before, after, &prefix.root, &progress, &cancellation).await?;
                     prefix.save(&draft).await?;
                 }
                 #[cfg(feature = "fvs")]
@@ -225,10 +217,7 @@ impl Inner {
                     .await?;
                 }
                 _ if runner_changed || umu_changed => {
-                    after
-                        .runner
-                        .load_runner(prefix.context.directories(), after.umu.as_ref())
-                        .await?;
+                    after.runner.load_runner(after.umu.as_ref()).await?;
                     prefix.save(&draft).await?;
                 }
                 _ => prefix.save(&draft).await?,

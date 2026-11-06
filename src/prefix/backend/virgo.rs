@@ -119,7 +119,7 @@ impl<'a> Virgo<'a> {
                         .filter(|addon| addon.name().eq_ignore_ascii_case("soda")),
                 )
                 .ok_or(VirgoError::SodaNotDownloaded)?;
-                let runner = soda.load_runner(self.cx.directories(), None).await?;
+                let runner = soda.load_runner(None).await?;
                 let workspace = self
                     .layers
                     .prepare_build(destination, None, cancellation)
@@ -159,10 +159,7 @@ impl<'a> Virgo<'a> {
         let destination = Path::new("adapters").join(id.to_string());
         self.layers
             .get_or_build(&destination, Some(id), cancellation, || async {
-                let runner = config
-                    .runner
-                    .load_runner(self.cx.directories(), config.umu.as_ref())
-                    .await?;
+                let runner = config.runner.load_runner(config.umu.as_ref()).await?;
                 let workspace = self
                     .layers
                     .prepare_build(&destination, Some(base), cancellation)
@@ -205,10 +202,10 @@ impl<'a> Virgo<'a> {
                 let soda = addons
                     .release::<crate::Runner>(base.id)
                     .ok_or(AddonError::NotFound(base.id))?;
-                let runner = soda.load_runner(self.cx.directories(), None).await?;
+                let runner = soda.load_runner(None).await?;
                 let winebridge = latest_addon(addons.releases::<crate::WineBridge>().into_iter())
                     .ok_or(VirgoError::WineBridgeNotDownloaded)?
-                    .path(self.cx.directories());
+                    .path();
                 let workspace = self
                     .layers
                     .prepare_build(&destination, Some(base), cancellation)
@@ -216,11 +213,11 @@ impl<'a> Virgo<'a> {
                 let executed = execute(
                     InstallInputs {
                         wineprefix: &workspace.wineprefix,
-                        staging: &self.cx.directories().staging(),
+                        staging: &crate::utils::paths::staging(),
                         runner: runner.as_ref(),
                         winebridge: &winebridge,
                     },
-                    &addon.path(self.cx.directories()),
+                    &addon.path(),
                     addon.resources(),
                     false,
                     cancellation,

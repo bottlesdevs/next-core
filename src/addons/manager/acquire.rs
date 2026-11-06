@@ -13,7 +13,7 @@ use super::{Addons, download::download};
 use crate::{
     Operation, Progress, Stage,
     error::{Error, Result},
-    utils::fs,
+    utils::{fs, paths},
 };
 use download_manager::manager::DownloadManager;
 use futures_util::TryStreamExt;
@@ -73,7 +73,7 @@ impl Addons {
                 resources(entry.role(), &artifacts),
                 role,
             );
-            fs::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
+            fs::with_temp_dir(&paths::staging(), |stage| async move {
                 let downloads = stage.join("downloads");
                 async_fs::create_dir(&downloads).await?;
                 for artifact in &artifacts {
@@ -152,7 +152,7 @@ impl Addons {
         let addons = self.clone();
         Operation::new(move |progress, cancellation| async move {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
-            fs::with_temp_dir(&addons.0.directories.staging(), |stage| async move {
+            fs::with_temp_dir(&paths::staging(), |stage| async move {
                 let prepared = prepare_archive(&source, &stage, &cancellation).await?;
                 addons.commit(record, &prepared, &cancellation).await
             })

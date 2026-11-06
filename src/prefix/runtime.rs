@@ -106,10 +106,7 @@ impl Inner {
         let state = self.state()?;
         let wineprefix = self.root.join("prefix");
         if crate::utils::fs::exists(&wineprefix).await? {
-            let runner = state
-                .runner
-                .load_runner(self.context.directories(), state.umu.as_ref())
-                .await?;
+            let runner = state.runner.load_runner(state.umu.as_ref()).await?;
             stop(runner.as_ref(), &wineprefix).await?;
         }
         self.release_storage(state.backend).await
@@ -213,10 +210,7 @@ impl Inner {
             return Err(Error::Cancelled);
         }
         self.stop_locked().await?;
-        let runner = state
-            .runner
-            .load_runner(self.context.directories(), state.umu.as_ref())
-            .await?;
+        let runner = state.runner.load_runner(state.umu.as_ref()).await?;
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
@@ -243,7 +237,7 @@ impl Inner {
         let command = state.wrappers.apply(WineBridgeClient::command(
             runner.as_ref(),
             &wineprefix,
-            state.winebridge.path(self.context.directories()),
+            state.winebridge.path(),
             vars.iter(),
         ));
         let result = WineBridgeClient::connect_or_spawn(&wineprefix, command)

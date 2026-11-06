@@ -5,7 +5,7 @@ use std::sync::Arc;
 use http_client::{HttpClient, ReqwestClient};
 use url::Url;
 
-use crate::{Addons, Context, Directories, Prefixes, error::Result};
+use crate::{Addons, Context, Prefixes, error::Result, utils::paths};
 
 /// Startup options for [`Bottles::open`].
 ///
@@ -63,19 +63,18 @@ impl Bottles {
     /// # }
     /// ```
     pub async fn open(config: Config) -> Result<Self> {
-        let directories = Directories::new().await?;
+        paths::create().await?;
         let http_client: Arc<dyn HttpClient> =
             Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
         let context = Context::new(
             #[cfg(feature = "fvs")]
-            crate::virgo::Fvs::connect(config.fvs2d, &directories).await?,
-            directories,
+            crate::virgo::Fvs::connect(config.fvs2d).await?,
             http_client,
             config.component_catalog,
             config.dependency_catalog,
         )
         .await?;
-        let prefixes = Prefixes::load(context.directories().prefixes(), context.clone()).await?;
+        let prefixes = Prefixes::load(paths::prefixes(), context.clone()).await?;
         Ok(Self { context, prefixes })
     }
 
@@ -100,11 +99,6 @@ impl Bottles {
     /// Returns the collection of persisted [`Prefix`](crate::Prefix) handles.
     pub fn prefixes(&self) -> &Prefixes {
         &self.prefixes
-    }
-
-    /// Returns the resolved application directories.
-    pub fn directories(&self) -> &Directories {
-        self.context.directories()
     }
 
     /// Returns the shared addon catalog and installation manager.

@@ -13,9 +13,9 @@ use strum::EnumIter;
 use uuid::Uuid;
 
 use crate::{
-    Directories,
     error::Result,
     runner::{Proton, Runner as RunnerBackend, RunnerError, RunnerKind, Wine, detect_runner_kind},
+    utils::paths,
 };
 
 use super::recipe::{InstallResource, InstallStep};
@@ -105,21 +105,21 @@ impl<R> Addon<R> {
     }
 
     /// Returns the shared payload directory for this release.
-    pub(crate) fn path(&self, directories: &Directories) -> PathBuf
+    pub(crate) fn path(&self) -> PathBuf
     where
         R: RoleMarker,
     {
-        self.directory(directories).join("payload")
+        self.directory().join("payload")
     }
 
     /// Returns the managed directory containing this release's manifest and payload.
-    pub(super) fn directory(&self, directories: &Directories) -> PathBuf
+    pub(super) fn directory(&self) -> PathBuf
     where
         R: RoleMarker,
     {
         let releases = match self.role() {
-            AddonRole::Dependency(_) => directories.dependency_releases(),
-            _ => directories.component_releases(),
+            AddonRole::Dependency(_) => paths::dependency_releases(),
+            _ => paths::component_releases(),
         };
         releases.join(self.id().to_string())
     }
@@ -186,16 +186,15 @@ impl Addon<Runner> {
     /// without an UMU launcher.
     pub(crate) async fn load_runner(
         &self,
-        directories: &Directories,
         umu: Option<&Addon<Umu>>,
     ) -> Result<Box<dyn RunnerBackend>> {
-        let path = self.path(directories);
+        let path = self.path();
         match detect_runner_kind(&path).await? {
             RunnerKind::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
             RunnerKind::Proton => {
                 let umu = umu
                     .ok_or(RunnerError::UmuExecutableMissing)?
-                    .path(directories)
+                    .path()
                     .join("umu-run");
                 Ok(Box::new(Proton::new(&path, umu)))
             }

@@ -132,7 +132,7 @@ impl LayerStore {
             .run_until_cancelled(self.build_lock.lock())
             .await
             .ok_or(Error::Cancelled)?;
-        fs::with_temp_dir(&self.directories.trash(), |trash| async move {
+        fs::with_temp_dir(&crate::utils::paths::trash(), |trash| async move {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }

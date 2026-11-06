@@ -6,7 +6,7 @@
 
 use super::super::runtime;
 use crate::{
-    Context, PrefixState, Progress, Slot, Stage,
+    PrefixState, Progress, Slot, Stage,
     addons::{InstallInputs, execute, uninstall},
     error::Result,
 };
@@ -21,17 +21,10 @@ use tokio_util::sync::CancellationToken;
 ///
 /// Returns an error if directory creation, runner loading, Wine initialization,
 /// or shutdown fails. A shutdown failure retains the prefix.
-pub(in crate::prefix) async fn create(
-    config: &PrefixState,
-    root: &Path,
-    cx: &Context,
-) -> Result<()> {
+pub(in crate::prefix) async fn create(config: &PrefixState, root: &Path) -> Result<()> {
     let wineprefix = root.join("prefix");
     async_fs::create_dir_all(&wineprefix).await?;
-    let runner = config
-        .runner
-        .load_runner(cx.directories(), config.umu.as_ref())
-        .await?;
+    let runner = config.runner.load_runner(config.umu.as_ref()).await?;
     runtime::initialize(runner.as_ref(), &wineprefix).await
 }
 
@@ -60,7 +53,6 @@ pub(in crate::prefix) async fn apply(
     previous: &PrefixState,
     candidate: &PrefixState,
     root: &Path,
-    cx: &Context,
     progress: &watch::Sender<Option<Progress>>,
     cancellation: &CancellationToken,
 ) -> Result<()> {
@@ -80,13 +72,10 @@ pub(in crate::prefix) async fn apply(
             components.push(new);
         }
     }
-    let runner = candidate
-        .runner
-        .load_runner(cx.directories(), candidate.umu.as_ref())
-        .await?;
+    let runner = candidate.runner.load_runner(candidate.umu.as_ref()).await?;
     let wineprefix = root.join("prefix");
-    let winebridge = candidate.winebridge.path(cx.directories());
-    let staging = cx.directories().staging();
+    let winebridge = candidate.winebridge.path();
+    let staging = crate::utils::paths::staging();
     let inputs = InstallInputs {
         wineprefix: &wineprefix,
         staging: &staging,
@@ -102,12 +91,8 @@ pub(in crate::prefix) async fn apply(
         }
         let installations = components
             .iter()
-            .map(|r| (r.path(cx.directories()), r.resources()))
-            .chain(
-                dependencies
-                    .iter()
-                    .map(|r| (r.path(cx.directories()), r.resources())),
-            );
+            .map(|r| (r.path(), r.resources()))
+            .chain(dependencies.iter().map(|r| (r.path(), r.resources())));
         for (payload, resources) in installations {
             execute(inputs, &payload, resources, true, cancellation, |_| {
                 progress.send_replace(Some(Progress::new(Stage::Configuring)));

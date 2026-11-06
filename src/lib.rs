@@ -32,7 +32,6 @@ pub use prefix::{Edit, Inventory, Prefix, PrefixBackend, PrefixError, PrefixStat
 pub use prefix::{Snapshot, SnapshotSummary};
 pub use prefixes::Prefixes;
 pub use proto::{DllOverride, DllOverrideMode, Process, RegistryHive};
-pub use utils::directories::Directories;
 pub use utils::env_vars::EnvVars;
 
 pub(crate) use next_proto::winebridge as proto;

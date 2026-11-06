@@ -25,9 +25,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// category.
 #[derive(Error, Debug)]
 pub enum Error {
-    /// The operating system did not provide application data directories.
-    #[error("application directories are unavailable on this platform")]
-    ProjectDirectoriesUnavailable,
     /// A filesystem or process I/O operation failed.
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),

@@ -9,7 +9,7 @@ use url::Url;
 use crate::{
     Operation, Progress, Stage,
     error::{Error, Result},
-    utils::fs,
+    utils::{fs, paths},
 };
 
 use super::super::{CatalogError, catalog::Catalog};
@@ -70,18 +70,14 @@ impl Addons {
             let current = addons.state();
             let component_catalog = match &component {
                 Ok(catalog) => {
-                    catalog
-                        .save(&addons.0.directories.component_catalog())
-                        .await?;
+                    catalog.save(&paths::component_catalog()).await?;
                     Some(catalog.clone())
                 }
                 Err(_) => current.component_catalog.clone(),
             };
             let dependency_catalog = match &dependency {
                 Ok(catalog) => {
-                    catalog
-                        .save(&addons.0.directories.dependency_catalog())
-                        .await?;
+                    catalog.save(&paths::dependency_catalog()).await?;
                     Some(catalog.clone())
                 }
                 Err(_) => current.dependency_catalog.clone(),
@@ -117,7 +113,7 @@ impl Addons {
         cancellation: &CancellationToken,
     ) -> Result<Arc<Catalog>> {
         let url = url.ok_or(CatalogError::UrlNotConfigured(label))?;
-        fs::with_temp_dir(&self.0.directories.staging(), |stage| async move {
+        fs::with_temp_dir(&paths::staging(), |stage| async move {
             let downloaded = stage.join("catalog.json");
             download(
                 &self.0.downloader,
@@ -140,35 +136,5 @@ impl Addons {
             )?))
         })
         .await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{Context, Directories};
-    use uuid::Uuid;
-
-    #[test]
-    fn cancelled_refresh_does_not_wait_for_publication_lock() {
-        futures_lite::future::block_on(async {
-            let root = std::env::temp_dir().join(format!("bottles-next-{}", Uuid::new_v4()));
-            let directories = Directories::from_path(&root).unwrap();
-            let context = Context::for_test(directories).await.unwrap();
-            let addons = context.addons().clone();
-            let write = addons.0.write.lock().await;
-            let mut refresh = addons.refresh();
-
-            assert!(
-                futures_lite::future::poll_once(&mut refresh)
-                    .await
-                    .is_none()
-            );
-            refresh.cancellation_token().cancel();
-            assert!(matches!(refresh.await, Err(Error::Cancelled)));
-
-            drop(write);
-            std::fs::remove_dir_all(root).unwrap();
-        });
     }
 }

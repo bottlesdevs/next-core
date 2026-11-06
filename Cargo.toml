@@ -27,6 +27,7 @@ derive_more = { workspace = true, features = ["from", "try_into"] }
 download-manager.workspace = true
 http-client = { workspace = true, features = ["reqwest"] }
 next-config.workspace = true
+next-paths.workspace = true
 next-proto.workspace = true
 fvs-rs = { workspace = true, optional = true }
 serde.workspace = true
@@ -38,7 +39,6 @@ tracing.workspace = true
 tonic.workspace = true
 tonic-health.workspace = true
 tokio = { workspace = true, features = ["sync"] }
-directories.workspace = true
 futures-core.workspace = true
 futures-lite.workspace = true
 futures-util.workspace = true
@@ -53,7 +53,6 @@ uuid = { workspace = true, features = ["serde", "v5"] }
 
 [dev-dependencies]
 async-executor.workspace = true
-http.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "time"] }
 
 [package.metadata.docs.rs]

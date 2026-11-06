@@ -13,7 +13,7 @@ use super::{
     Addon, AddonRole, RoleMarker,
     catalog::{Catalog, CatalogEntry},
 };
-use crate::{Directories, error::Result};
+use crate::error::Result;
 use download_manager::manager::DownloadManager;
 use futures_core::Stream;
 use std::{collections::HashMap, sync::Arc};
@@ -50,7 +50,6 @@ use uuid::Uuid;
 pub struct Addons(Arc<AddonsInner>);
 
 struct AddonsInner {
-    directories: Directories,
     downloader: Arc<DownloadManager>,
     component_catalog_url: Option<Url>,
     dependency_catalog_url: Option<Url>,
@@ -83,15 +82,13 @@ impl Addons {
     /// parsed, a manifest UUID differs from its directory name, or duplicate UUIDs
     /// are found across addon families.
     pub(crate) async fn load(
-        directories: Directories,
         downloader: Arc<DownloadManager>,
         component_catalog_url: Option<Url>,
         dependency_catalog_url: Option<Url>,
     ) -> Result<Self> {
-        let state = AddonsState::load_cached(&directories).await?;
+        let state = AddonsState::load_cached().await?;
         let (published, _) = watch::channel(Arc::new(state));
         Ok(Self(Arc::new(AddonsInner {
-            directories,
             downloader,
             component_catalog_url,
             dependency_catalog_url,

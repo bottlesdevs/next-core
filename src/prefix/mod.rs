@@ -101,7 +101,7 @@ impl Inner {
         // Initialization owns shutdown. Retain storage when it cannot finish safely.
         match state.backend {
             PrefixBackend::Standard => {
-                standard::create(state, &self.root, &self.context).await?;
+                standard::create(state, &self.root).await?;
             }
             #[cfg(feature = "fvs")]
             PrefixBackend::Virgo => {
@@ -128,7 +128,7 @@ impl Inner {
         }
         .await;
         if result.is_err() {
-            fs::with_temp_dir(&self.context.directories().trash(), |trash| {
+            fs::with_temp_dir(&crate::utils::paths::trash(), |trash| {
                 async_fs::rename(&self.root, trash.join("prefix"))
             })
             .await
@@ -219,7 +219,7 @@ impl Inner {
         let _control = self.lock_control(cancellation).await?;
         progress.send_replace(Some(Progress::new(Stage::Stopping)));
         self.stop_locked().await?;
-        let trash = self.context.directories().trash();
+        let trash = crate::utils::paths::trash();
         async_fs::create_dir_all(&trash).await?;
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
