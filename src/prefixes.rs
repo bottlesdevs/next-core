@@ -10,20 +10,32 @@ use crate::{
     Stage, Umu, WineBridge, error::Result,
 };
 use futures_core::Stream;
-use futures_util::StreamExt;
+use futures_util::{
+    StreamExt,
+    stream::{self, SelectAll},
+};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    pin::Pin,
+    sync::Arc,
 };
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
+type Members = Arc<HashMap<Uuid, Prefix>>;
+
+enum Event {
+    Membership(Members),
+    Changed,
+}
+type Events = Pin<Box<dyn Stream<Item = Option<Event>> + Send>>;
+
 /// Tracks the live collection of prefixes.
 ///
 /// Obtain it from [`crate::Bottles::prefixes`]. Clones share collection
-/// membership and its [`Inventory`]. Opening the same UUID through clones
+/// membership. Opening the same UUID through clones
 /// returns handles to the same live state. The collection is loaded once from
 /// library-managed storage and updated by its operations; it does not
 /// observe external filesystem changes.
@@ -31,8 +43,7 @@ use uuid::Uuid;
 pub struct Prefixes {
     root: PathBuf,
     context: Context,
-    inventory: watch::Sender<Inventory>,
-    members: Arc<Mutex<HashMap<Uuid, Prefix>>>,
+    members: watch::Sender<Members>,
 }
 
 impl Prefixes {
@@ -41,7 +52,7 @@ impl Prefixes {
     /// Order is unspecified and must not be used as an identity or stable
     /// presentation order.
     pub fn list(&self) -> Vec<Prefix> {
-        self.members.lock().unwrap().values().cloned().collect()
+        self.members.borrow().values().cloned().collect()
     }
 
     /// Looks up a member without filesystem or runtime work.
@@ -55,8 +66,7 @@ impl Prefixes {
     /// Returns [`PrefixError::NotFound`] if `id` is not in the collection.
     pub fn open(&self, id: Uuid) -> Result<Prefix> {
         self.members
-            .lock()
-            .unwrap()
+            .borrow()
             .get(&id)
             .cloned()
             .ok_or_else(|| PrefixError::NotFound(id).into())
@@ -64,14 +74,15 @@ impl Prefixes {
 
     /// Returns the current state of every prefix, ordered by identifier.
     pub fn inventory(&self) -> Inventory {
-        self.inventory.borrow().clone()
+        inventory(&self.members.borrow())
     }
 
     /// Observes the inventory, including creation, edits, rollback, and deletion.
     ///
     /// First yields the current inventory, then the latest one after each
-    /// change. Slow consumers may miss intermediate inventories. The stream ends
-    /// when the collection, its clones, and every prefix handle are dropped.
+    /// observed change. Slow consumers may miss intermediate inventories. The
+    /// stream ends when all collection clones and operations retaining this
+    /// collection are dropped, even if prefix handles remain alive.
     ///
     /// # Examples
     ///
@@ -87,7 +98,36 @@ impl Prefixes {
     /// # }
     /// ```
     pub fn watch(&self) -> impl Stream<Item = Inventory> + Send + 'static + use<> {
-        WatchStream::new(self.inventory.subscribe())
+        let members = self.members.subscribe();
+        let mut events = SelectAll::<Events>::new();
+        // End the aggregate when the collection closes, even if callers retain handles.
+        events.push(Box::pin(
+            WatchStream::new(members.clone())
+                .map(|members| Some(Event::Membership(members)))
+                .chain(stream::once(async { None })),
+        ));
+        stream::unfold(
+            (members, events, HashSet::new()),
+            |(members, mut events, mut subscribed)| async move {
+                match events.next().await?? {
+                    Event::Membership(current) => {
+                        subscribed.retain(|id| current.contains_key(id));
+                        for (id, prefix) in current.iter() {
+                            if subscribed.insert(*id) {
+                                events.push(Box::pin(
+                                    WatchStream::from_changes(prefix.0.state.subscribe())
+                                        .take_while(|state| std::future::ready(state.is_some()))
+                                        .map(|_| Some(Event::Changed)),
+                                ));
+                            }
+                        }
+                    }
+                    Event::Changed => {}
+                }
+                let inventory = inventory(&members.borrow());
+                Some((inventory, (members, events, subscribed)))
+            },
+        )
     }
 
     /// Loads valid UUID-named prefixes found below `root`.
@@ -104,10 +144,8 @@ impl Prefixes {
         let prefixes = Self {
             root,
             context,
-            inventory: watch::channel(Arc::default()).0,
-            members: Arc::default(),
+            members: watch::channel(Arc::default()).0,
         };
-        let mut states = BTreeMap::new();
         let mut members = HashMap::new();
         let mut entries = match async_fs::read_dir(&prefixes.root).await {
             Ok(entries) => entries,
@@ -130,21 +168,11 @@ impl Prefixes {
                 Err(error) => return Err(error.into()),
             };
             state.validate()?;
-            let prefix = prefixes.prefix(root)?;
-            states.insert(prefix.id(), Arc::new(state));
+            let prefix = Prefix(Inner::new(state, root, prefixes.context.clone())?);
             members.insert(prefix.id(), prefix);
         }
-        *prefixes.members.lock().unwrap() = members;
-        prefixes.inventory.send_replace(Arc::new(states));
+        prefixes.members.send_replace(Arc::new(members));
         Ok(prefixes)
-    }
-
-    fn prefix(&self, root: PathBuf) -> Result<Prefix> {
-        Ok(Prefix(Inner::new(
-            root,
-            self.inventory.clone(),
-            self.context.clone(),
-        )?))
     }
 
     /// Creates an operation that initializes and persists a prefix.
@@ -178,15 +206,12 @@ impl Prefixes {
             progress.send_replace(Some(Progress::new(Stage::Preparing)));
             let state = PrefixState::new(backend, runner, winebridge, umu);
             state.validate()?;
-            let prefix = prefixes.prefix(prefixes.root.join(Uuid::new_v4().to_string()))?;
-            prefix.0.create(&state, &progress, &cancellation).await?;
-            // Join membership first so watchers can open what they observe.
-            prefixes
-                .members
-                .lock()
-                .unwrap()
-                .insert(prefix.id(), prefix.clone());
-            prefix.0.publish(state);
+            let root = prefixes.root.join(Uuid::new_v4().to_string());
+            let prefix = Prefix(Inner::new(state, root, prefixes.context.clone())?);
+            prefix.0.create(&progress, &cancellation).await?;
+            prefixes.members.send_modify(|members| {
+                Arc::make_mut(members).insert(prefix.id(), prefix.clone());
+            });
             Ok(prefix)
         })
     }
@@ -214,9 +239,21 @@ impl Prefixes {
             handle
                 .0
                 .delete(&progress, &cancellation, || {
-                    prefixes.members.lock().unwrap().remove(&id);
+                    prefixes.members.send_modify(|members| {
+                        Arc::make_mut(members).remove(&id);
+                    });
                 })
                 .await
         })
     }
+}
+
+/// Collects the published state of every member, ordered by identifier.
+fn inventory(members: &Members) -> Inventory {
+    Arc::new(
+        members
+            .iter()
+            .filter_map(|(id, prefix)| Some((*id, prefix.state().ok()?)))
+            .collect(),
+    )
 }
