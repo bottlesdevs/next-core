@@ -13,8 +13,14 @@ use crate::{
     proto::{DllOverride, DllOverrideMode, Process},
     winebridge::WineBridgeClient,
 };
+use futures_core::Stream;
+use futures_util::{
+    StreamExt, future,
+    stream::{self, BoxStream},
+};
 use std::{future::Future, path::Path, sync::Arc};
 use tokio::sync::watch;
+use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -47,19 +53,69 @@ impl Inner {
         })
     }
 
-    /// Lists `WineBridge` processes, returning an empty list when the runtime is stopped.
+    /// Lists the processes in `group`, or every process in the prefix, returning
+    /// an empty list when the runtime is stopped.
     ///
     /// # Errors
     ///
     /// Returns an error if the prefix was deleted, discovery fails, or the
     /// connected `WineBridge` cannot list its processes.
-    pub(crate) async fn processes(&self) -> Result<Vec<Process>> {
+    pub(crate) async fn processes(&self, group: Option<Uuid>) -> Result<Vec<Process>> {
         let _control = self.control.lock().await;
         self.state()?;
         match WineBridgeClient::try_connect(&self.root.join("prefix")).await? {
-            Some(bridge) => bridge.list_processes().await,
+            Some(bridge) => bridge.list_processes(group).await,
             None => Ok(Vec::new()),
         }
+    }
+
+    /// Streams the launched groups that have a running process, or `None` while
+    /// Wine is not running.
+    ///
+    /// The first item is the current state. The stream attaches to a running
+    /// `WineBridge` but never starts one; after Wine stops it yields `None` and
+    /// resumes when this prefix next starts `WineBridge`. It ends once the prefix
+    /// is deleted.
+    pub(crate) fn watch_groups(
+        self: &Arc<Self>,
+    ) -> impl Stream<Item = Option<Vec<Uuid>>> + Send + 'static + use<> {
+        let prefix = self.clone();
+        let mut state = self.state.subscribe();
+        let deleted = async move {
+            let _ = state.wait_for(Option::is_none).await;
+        };
+        // Attach now and again whenever this prefix starts `WineBridge`.
+        WatchStream::new(self.bridge_started.subscribe())
+            .take_until(deleted)
+            .then(move |_| prefix.clone().attach())
+            .flat_map(|run| match run {
+                Some(groups) => groups
+                    .map(Some)
+                    .chain(stream::once(future::ready(None)))
+                    .boxed(),
+                None => stream::once(future::ready(None)).boxed(),
+            })
+    }
+
+    /// Streams a reachable `WineBridge`'s running groups until its stream ends or fails.
+    async fn attach(self: Arc<Self>) -> Option<BoxStream<'static, Vec<Uuid>>> {
+        let bridge = WineBridgeClient::try_connect(&self.root.join("prefix"))
+            .await
+            .ok()??;
+        let events = bridge.watch_groups().await.ok()?;
+        Some(
+            events
+                .take_while(|running| future::ready(running.is_ok()))
+                .filter_map(|running| future::ready(running.ok()))
+                .map(|running| {
+                    running
+                        .ids
+                        .iter()
+                        .filter_map(|id| id.parse().ok())
+                        .collect()
+                })
+                .boxed(),
+        )
     }
 
     /// Kills process group `group` when `WineBridge` is currently running.
@@ -252,6 +308,8 @@ impl Inner {
         if result.is_err() {
             stop(runner.as_ref(), &wineprefix).await?;
             self.release_storage(backend).await?;
+        } else {
+            self.bridge_started.send_replace(());
         }
         result
     }

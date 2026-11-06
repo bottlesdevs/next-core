@@ -274,16 +274,35 @@ impl WineBridgeClient {
 
     // --- Process Management ---
 
-    /// Lists processes visible to this `WineBridge` server.
+    /// Lists the processes in `group`, or every process in the prefix.
+    ///
+    /// A group's processes include the children of the processes launched
+    /// into it.
     ///
     /// # Errors
     ///
     /// Returns a gRPC status or transport error if the request fails.
-    pub async fn list_processes(&self) -> Result<Vec<Process>> {
+    pub async fn list_processes(&self, group: Option<uuid::Uuid>) -> Result<Vec<Process>> {
         let mut client = self.client.clone();
-        let response = client.list_processes(()).await?.into_inner();
+        let request = proto::ListProcessesRequest {
+            group: group.map(|group| group.to_string()),
+        };
+        let response = client.list_processes(request).await?.into_inner();
 
         Ok(response.processes)
+    }
+
+    /// Streams the launched groups that have a running process, starting with
+    /// the current ones.
+    ///
+    /// The stream ends when `WineBridge` exits.
+    ///
+    /// # Errors
+    ///
+    /// Returns a gRPC status or transport error if the stream cannot be opened.
+    pub async fn watch_groups(&self) -> Result<tonic::Streaming<proto::RunningGroups>> {
+        let mut client = self.client.clone();
+        Ok(client.watch_groups(()).await?.into_inner())
     }
 
     /// Launches a process and returns its Wine process identifier.
