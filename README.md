@@ -21,7 +21,7 @@ may start an `fvs2d` process:
 use bottles_core::Core;
 
 # async fn run() -> Result<(), bottles_core::error::Error> {
-let core = Core::open().await?;
+let core = Core::builder().build().await?;
 
 for prefix in core.prefixes().list() {
     println!("{}: {:?}", prefix.id(), prefix.state()?.backend);
@@ -63,7 +63,7 @@ later clients.
 
 - `fvs` (enabled by default) adds Virgo layered-prefix storage and prefix
   history and rollback. It also starts or connects to an `fvs2d` process during
-  [`Core::open`]. Set
+  [`CoreBuilder::build`]. Set
   `CoreBuilder::fvs2d` to an explicit executable path or leave it unset to resolve
   `fvs2d` through `PATH`.
 

@@ -1,10 +1,6 @@
 //! Initialization and shared services for a Bottles application.
 
-use std::{
-    future::{Future, IntoFuture},
-    pin::Pin,
-    sync::Arc,
-};
+use std::sync::Arc;
 
 use http_client::{HttpClient, ReqwestClient};
 use url::Url;
@@ -13,7 +9,7 @@ use crate::{Addons, Context, Prefixes, error::Result, utils::paths};
 
 /// Owns the services and persisted collections used by Bottles Next.
 ///
-/// Create one instance with [`Core::open`], borrow its collections for the
+/// Create one instance with [`Core::builder`], borrow its collections for the
 /// lifetime of the application, then call [`Core::shutdown`] after all
 /// outstanding [`Operation`](crate::Operation) values have completed.
 pub struct Core {
@@ -21,13 +17,13 @@ pub struct Core {
     prefixes: Prefixes,
 }
 
-/// Startup options for [`Core::open`]; awaiting it opens the core.
+/// Startup options for a [`Core`], opened with [`CoreBuilder::build`].
 ///
 /// Every option is optional. Catalog URLs are used by
 /// [`Addons::refresh`](crate::Addons::refresh); cached catalogs and installed
 /// addons still load when a URL is absent, and refreshing a family without a
 /// URL reports an error for that family.
-#[must_use = "await the builder to open the core"]
+#[must_use = "call `build` to open the core"]
 #[derive(Default)]
 pub struct CoreBuilder {
     http_client: Option<Arc<dyn HttpClient>>,
@@ -38,31 +34,19 @@ pub struct CoreBuilder {
 }
 
 impl Core {
-    /// Starts opening the application core.
-    ///
-    /// Awaiting the returned builder creates the application directories,
-    /// loads cached addon catalogs, installed addons, and prefixes. With the
-    /// `fvs` feature, it connects to or starts `fvs2d` before loading
-    /// Virgo-backed prefixes.
-    ///
-    /// # Errors
-    ///
-    /// Awaiting the builder returns an error if application directories cannot
-    /// be created; persisted addons or prefixes cannot be read; the HTTP or
-    /// download service cannot initialize; or an FVS executable cannot be
-    /// resolved or contacted.
+    /// Returns a builder with the default startup options.
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # use bottles_core::Core;
     /// # async fn example() -> Result<(), bottles_core::error::Error> {
-    /// let core = Core::open().await?;
+    /// let core = Core::builder().build().await?;
     /// core.shutdown().await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn open() -> CoreBuilder {
+    pub fn builder() -> CoreBuilder {
         CoreBuilder::default()
     }
 
@@ -127,7 +111,19 @@ impl CoreBuilder {
         self
     }
 
-    async fn open(self) -> Result<Core> {
+    /// Opens the application core and loads persisted state.
+    ///
+    /// This creates the application directories and loads cached addon
+    /// catalogs, installed addons, and prefixes. With the `fvs` feature, it
+    /// connects to or starts `fvs2d` before loading Virgo-backed prefixes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if application directories cannot be created;
+    /// persisted addons or prefixes cannot be read; the HTTP or download
+    /// service cannot initialize; or an FVS executable cannot be resolved or
+    /// contacted.
+    pub async fn build(self) -> Result<Core> {
         paths::create().await?;
         let http_client = match self.http_client {
             Some(http_client) => http_client,
@@ -143,14 +139,5 @@ impl CoreBuilder {
         .await?;
         let prefixes = Prefixes::load(paths::prefixes(), context.clone()).await?;
         Ok(Core { context, prefixes })
-    }
-}
-
-impl IntoFuture for CoreBuilder {
-    type Output = Result<Core>;
-    type IntoFuture = Pin<Box<dyn Future<Output = Result<Core>> + Send>>;
-
-    fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.open())
     }
 }
