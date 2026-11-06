@@ -29,14 +29,14 @@ use crate::{
 };
 use backend::standard;
 use futures_core::Stream;
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, MutexGuard, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 /// Every prefix's published state, keyed by prefix identifier.
-pub type Inventory = Arc<BTreeMap<Uuid, Arc<PrefixState>>>;
+pub type Inventory = Arc<HashMap<Uuid, Arc<PrefixState>>>;
 
 pub(crate) struct Inner {
     pub(crate) id: Uuid,
