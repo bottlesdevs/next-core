@@ -72,7 +72,7 @@ impl Prefixes {
             .ok_or_else(|| PrefixError::NotFound(id).into())
     }
 
-    /// Returns the current state of every prefix, ordered by identifier.
+    /// Returns the current state of every prefix.
     pub fn inventory(&self) -> Inventory {
         inventory(&self.members.borrow())
     }
@@ -248,7 +248,7 @@ impl Prefixes {
     }
 }
 
-/// Collects the published state of every member, ordered by identifier.
+/// Collects the published state of every member.
 fn inventory(members: &Members) -> Inventory {
     Arc::new(
         members
