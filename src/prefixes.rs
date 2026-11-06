@@ -1,6 +1,6 @@
 //! Live collections of persisted prefixes.
 //!
-//! [`Prefixes`] is loaded once by [`crate::Bottles`] and then updated by create,
+//! [`Prefixes`] is loaded once by [`crate::Core`] and then updated by create,
 //! edit, rollback, and delete operations. It does not poll the filesystem for
 //! changes made outside this crate.
 
@@ -34,7 +34,7 @@ type Events = Pin<Box<dyn Stream<Item = Option<Event>> + Send>>;
 
 /// Tracks the live collection of prefixes.
 ///
-/// Obtain it from [`crate::Bottles::prefixes`]. Clones share collection
+/// Obtain it from [`crate::Core::prefixes`]. Clones share collection
 /// membership. Opening the same UUID through clones
 /// returns handles to the same live state. The collection is loaded once from
 /// library-managed storage and updated by its operations; it does not

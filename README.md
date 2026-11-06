@@ -4,7 +4,7 @@
 and Proton prefixes, runtime tools and prefix components, and launches
 Windows programs in them.
 
-The main entry point is [`Bottles`]. Opening it resolves the application's data
+The main entry point is [`Core`]. Opening it resolves the application's data
 directories, loads persisted state, initializes addon and prefix
 registries. Long-running changes
 return an [`Operation`]: a lazy future with progress reporting and cooperative
@@ -18,10 +18,10 @@ exiting. Opening performs filesystem I/O and, with `fvs` enabled,
 may start an `fvs2d` process:
 
 ```rust,no_run
-use bottles_core::{Bottles, Config};
+use bottles_core::Core;
 
 # async fn run() -> Result<(), bottles_core::error::Error> {
-let core = Bottles::open(Config::default()).await?;
+let core = Core::open().await?;
 
 for prefix in core.prefixes().list() {
     println!("{}: {:?}", prefix.id(), prefix.state()?.backend);
@@ -34,7 +34,7 @@ core.shutdown().await?;
 
 ## Core concepts
 
-- [`Bottles`] owns the shared services and top-level managers.
+- [`Core`] owns the shared services and top-level managers.
 - [`Prefixes`] provides the current collection of [`Prefix`] handles and
   publishes every prefix's state as one [`Inventory`].
 - [`PrefixState`] values are immutable snapshots. Handle watchers publish
@@ -52,7 +52,7 @@ on an executor, or call [`Operation::cancel`] and await the result. Dropping an
 operation merely stops polling it; it does not guarantee cleanup or cancellation.
 Progress is advisory and intermediate updates may be coalesced.
 
-Call [`Bottles::shutdown`] only after application work has stopped. Shutdown
+Call [`Core::shutdown`] only after application work has stopped. Shutdown
 cancels queued and in-flight downloads, waits for download workers to exit, and
 prevents later download-backed operations from starting successfully. It does
 not stop Wine processes; stop each running [`Prefix`] explicitly. With
@@ -63,8 +63,8 @@ later clients.
 
 - `fvs` (enabled by default) adds Virgo layered-prefix storage and prefix
   history and rollback. It also starts or connects to an `fvs2d` process during
-  [`Bottles::open`]. Set
-  `Config::fvs2d` to an explicit executable path or leave it unset to resolve
+  [`Core::open`]. Set
+  `CoreBuilder::fvs2d` to an explicit executable path or leave it unset to resolve
   `fvs2d` through `PATH`.
 
 Disable default features when an application only needs conventional mutable

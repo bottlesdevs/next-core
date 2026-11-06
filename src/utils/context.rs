@@ -7,7 +7,6 @@ use std::sync::Arc;
 use url::Url;
 
 struct ContextInner {
-    http_client: Arc<dyn HttpClient>,
     downloader: Arc<DownloadManager>,
     addons: Addons,
     #[cfg(feature = "fvs")]
@@ -31,13 +30,12 @@ impl Context {
         dependency_catalog: Option<Url>,
     ) -> Result<Self> {
         let downloader = Arc::new(DownloadManager::new(
-            http_client.clone(),
+            http_client,
             DownloadManagerConfig::default(),
         )?);
         let addons =
             Addons::load(downloader.clone(), component_catalog, dependency_catalog).await?;
         Ok(Self(Arc::new(ContextInner {
-            http_client,
             downloader,
             addons,
             #[cfg(feature = "fvs")]
@@ -51,10 +49,6 @@ impl Context {
 
     pub(crate) fn downloader(&self) -> &DownloadManager {
         &self.0.downloader
-    }
-
-    pub(crate) fn http_client(&self) -> &Arc<dyn HttpClient> {
-        &self.0.http_client
     }
 
     #[cfg(feature = "fvs")]

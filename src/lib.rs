@@ -25,7 +25,7 @@ pub use addons::{
 pub use command::wrappers::{
     GamescopeConfig, GamescopeFilter, GamescopeScaler, MangoHudConfig, Wrappers,
 };
-pub use core::{Bottles, Config};
+pub use core::{Core, CoreBuilder};
 pub use operation::{Operation, Progress, Stage, Transfer};
 pub use prefix::{Edit, Inventory, Prefix, PrefixBackend, PrefixError, PrefixState};
 #[cfg(feature = "fvs")]

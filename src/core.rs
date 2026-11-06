@@ -1,81 +1,69 @@
 //! Initialization and shared services for a Bottles application.
 
-use std::sync::Arc;
+use std::{
+    future::{Future, IntoFuture},
+    pin::Pin,
+    sync::Arc,
+};
 
 use http_client::{HttpClient, ReqwestClient};
 use url::Url;
 
 use crate::{Addons, Context, Prefixes, error::Result, utils::paths};
 
-/// Startup options for [`Bottles::open`].
-///
-/// Catalog URLs are used by [`Addons::refresh`](crate::Addons::refresh); cached
-/// catalogs and installed addons still load when a URL is absent. Refreshing a
-/// family without a configured URL reports an error for that family. With the
-/// `fvs` feature enabled, an unset daemon path resolves `fvs2d` through `PATH`.
-#[derive(Clone, Debug, Default)]
-pub struct Config {
-    /// Explicit path to the `fvs2d` executable, or `None` to resolve it through
-    /// `PATH`. Relative paths are resolved against the process's current directory.
-    #[cfg(feature = "fvs")]
-    pub fvs2d: Option<std::path::PathBuf>,
-    /// Remote runner, WineBridge, UMU, and prefix-component catalog downloaded by
-    /// [`Addons::refresh`](crate::Addons::refresh).
-    pub component_catalog: Option<Url>,
-    /// Remote dependency catalog downloaded by
-    /// [`Addons::refresh`](crate::Addons::refresh).
-    pub dependency_catalog: Option<Url>,
-}
-
 /// Owns the services and persisted collections used by Bottles Next.
 ///
-/// Create one instance with [`Bottles::open`], borrow its collections for the
-/// lifetime of the application, then call [`Bottles::shutdown`] after all
+/// Create one instance with [`Core::open`], borrow its collections for the
+/// lifetime of the application, then call [`Core::shutdown`] after all
 /// outstanding [`Operation`](crate::Operation) values have completed.
-pub struct Bottles {
+pub struct Core {
     context: Context,
     prefixes: Prefixes,
 }
 
-impl Bottles {
-    /// Opens the application core and loads persisted state.
+/// Startup options for [`Core::open`]; awaiting it opens the core.
+///
+/// Every option is optional. Catalog URLs are used by
+/// [`Addons::refresh`](crate::Addons::refresh); cached catalogs and installed
+/// addons still load when a URL is absent, and refreshing a family without a
+/// URL reports an error for that family.
+#[must_use = "await the builder to open the core"]
+#[derive(Default)]
+pub struct CoreBuilder {
+    http_client: Option<Arc<dyn HttpClient>>,
+    #[cfg(feature = "fvs")]
+    fvs2d: Option<std::path::PathBuf>,
+    component_catalog: Option<Url>,
+    dependency_catalog: Option<Url>,
+}
+
+impl Core {
+    /// Starts opening the application core.
     ///
-    /// This resolves application directories, loads cached addon
-    /// catalogs, installed addons, and prefix registries.
-    /// With the `fvs` feature, it connects to or starts `fvs2d` before loading
+    /// Awaiting the returned builder creates the application directories,
+    /// loads cached addon catalogs, installed addons, and prefixes. With the
+    /// `fvs` feature, it connects to or starts `fvs2d` before loading
     /// Virgo-backed prefixes.
     ///
     /// # Errors
     ///
-    /// Returns an error if application directories are unavailable; persisted
-    /// addons or prefixes cannot be read; the HTTP
-    /// or download service cannot initialize; an FVS executable cannot be
+    /// Awaiting the builder returns an error if application directories cannot
+    /// be created; persisted addons or prefixes cannot be read; the HTTP or
+    /// download service cannot initialize; or an FVS executable cannot be
     /// resolved or contacted.
     ///
     /// # Examples
     ///
     /// ```no_run
-    /// # use bottles_core::{Bottles, Config};
+    /// # use bottles_core::Core;
     /// # async fn example() -> Result<(), bottles_core::error::Error> {
-    /// let core = Bottles::open(Config::default()).await?;
+    /// let core = Core::open().await?;
     /// core.shutdown().await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn open(config: Config) -> Result<Self> {
-        paths::create().await?;
-        let http_client: Arc<dyn HttpClient> =
-            Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?);
-        let context = Context::new(
-            #[cfg(feature = "fvs")]
-            crate::virgo::Fvs::connect(config.fvs2d).await?,
-            http_client,
-            config.component_catalog,
-            config.dependency_catalog,
-        )
-        .await?;
-        let prefixes = Prefixes::load(paths::prefixes(), context.clone()).await?;
-        Ok(Self { context, prefixes })
+    pub fn open() -> CoreBuilder {
+        CoreBuilder::default()
     }
 
     /// Cancels downloads and stops the background download service.
@@ -105,9 +93,64 @@ impl Bottles {
     pub fn addons(&self) -> &Addons {
         self.context.addons()
     }
+}
 
-    /// Returns the HTTP transport shared by core services.
-    pub fn http_client(&self) -> &Arc<dyn HttpClient> {
-        self.context.http_client()
+impl CoreBuilder {
+    /// Uses `http_client` for core downloads instead of creating a client.
+    ///
+    /// Pass the application's client to share its connections and settings
+    /// with core.
+    pub fn http_client(mut self, http_client: Arc<dyn HttpClient>) -> Self {
+        self.http_client = Some(http_client);
+        self
+    }
+
+    /// Starts `fvs2d` from `executable` when no daemon is listening.
+    ///
+    /// When unset, `fvs2d` is resolved through `PATH`. Relative paths are
+    /// resolved against the process's current directory.
+    #[cfg(feature = "fvs")]
+    pub fn fvs2d(mut self, executable: impl Into<Option<std::path::PathBuf>>) -> Self {
+        self.fvs2d = executable.into();
+        self
+    }
+
+    /// Sets the remote runner, WineBridge, UMU, and prefix-component catalog.
+    pub fn component_catalog(mut self, url: impl Into<Option<Url>>) -> Self {
+        self.component_catalog = url.into();
+        self
+    }
+
+    /// Sets the remote dependency catalog.
+    pub fn dependency_catalog(mut self, url: impl Into<Option<Url>>) -> Self {
+        self.dependency_catalog = url.into();
+        self
+    }
+
+    async fn open(self) -> Result<Core> {
+        paths::create().await?;
+        let http_client = match self.http_client {
+            Some(http_client) => http_client,
+            None => Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?),
+        };
+        let context = Context::new(
+            #[cfg(feature = "fvs")]
+            crate::virgo::Fvs::connect(self.fvs2d).await?,
+            http_client,
+            self.component_catalog,
+            self.dependency_catalog,
+        )
+        .await?;
+        let prefixes = Prefixes::load(paths::prefixes(), context.clone()).await?;
+        Ok(Core { context, prefixes })
+    }
+}
+
+impl IntoFuture for CoreBuilder {
+    type Output = Result<Core>;
+    type IntoFuture = Pin<Box<dyn Future<Output = Result<Core>> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.open())
     }
 }

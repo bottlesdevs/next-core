@@ -14,7 +14,7 @@
 //! [`AddonRole`] holds one marker, and [`RoleMarker`] bounds the type parameter
 //! of [`Addon`], so one generic API acquires, imports, and lists every role.
 //!
-//! Use [`crate::Bottles::addons`] to access the shared [`Addons`] manager. Acquiring
+//! Use [`crate::Core::addons`] to access the shared [`Addons`] manager. Acquiring
 //! a release only places it in shared storage. Selection remains an explicit prefix
 //! edit through [`crate::Edit`].
 
