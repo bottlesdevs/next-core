@@ -13,7 +13,7 @@ use std::{
 
 use uuid::Uuid;
 
-use crate::error::ResultExt;
+use crate::{error::ResultExt, utils::paths};
 
 /// Creates an isolated child of `parent`, runs `work`, then removes the child.
 ///
@@ -39,6 +39,24 @@ where
     let result = work(directory.clone()).await;
     async_fs::remove_dir_all(directory).await.log_warn();
     result
+}
+
+/// Moves `path` into the trash directory, then removes it.
+///
+/// Once the rename succeeds, `path` is gone; removal from the trash is logged
+/// rather than returned.
+///
+/// # Errors
+///
+/// Returns an error if the trash directory cannot be created or `path` cannot
+/// be moved into it.
+pub(crate) async fn discard(path: &Path) -> io::Result<()> {
+    let trash = paths::trash();
+    async_fs::create_dir_all(&trash).await?;
+    let destination = trash.join(Uuid::new_v4().to_string());
+    async_fs::rename(path, &destination).await?;
+    async_fs::remove_dir_all(destination).await.log_warn();
+    Ok(())
 }
 
 /// Tests whether `path` exists without masking errors other than not-found.

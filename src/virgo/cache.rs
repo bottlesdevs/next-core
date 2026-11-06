@@ -132,14 +132,10 @@ impl LayerStore {
             .run_until_cancelled(self.build_lock.lock())
             .await
             .ok_or(Error::Cancelled)?;
-        fs::with_temp_dir(&crate::utils::paths::trash(), |trash| async move {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            async_fs::rename(self.root().join(key), trash.join("artifact")).await?;
-            Ok(())
-        })
-        .await
+        if cancellation.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        Ok(fs::discard(&self.root().join(key)).await?)
     }
 
     /// Publishes a completed staged artifact at its immutable cache key.

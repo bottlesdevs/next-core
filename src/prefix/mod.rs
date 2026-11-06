@@ -128,11 +128,7 @@ impl Inner {
         }
         .await;
         if result.is_err() {
-            fs::with_temp_dir(&crate::utils::paths::trash(), |trash| {
-                async_fs::rename(&self.root, trash.join("prefix"))
-            })
-            .await
-            .log_warn();
+            fs::discard(&self.root).await.log_warn();
         }
         result
     }
@@ -199,12 +195,11 @@ impl Inner {
         Ok(guard)
     }
 
-    /// Stops the runtime, withdraws the root into trash, and publishes deletion.
+    /// Stops the runtime, discards the root, and publishes deletion.
     ///
-    /// `on_deleted` runs synchronously after the successful rename and publication,
-    /// before best-effort removal of the trashed directory.
-    /// Cancellation is not sampled during runtime shutdown; it is checked again
-    /// before the rename into trash.
+    /// `on_deleted` runs synchronously after the root is discarded and deletion
+    /// is published. Cancellation is not sampled during runtime shutdown; it is
+    /// checked again before the root is discarded.
     ///
     /// # Errors
     ///
@@ -219,17 +214,13 @@ impl Inner {
         let _control = self.lock_control(cancellation).await?;
         progress.send_replace(Some(Progress::new(Stage::Stopping)));
         self.stop_locked().await?;
-        let trash = crate::utils::paths::trash();
-        async_fs::create_dir_all(&trash).await?;
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
         progress.send_replace(Some(Progress::new(Stage::Removing)));
-        let destination = trash.join(Uuid::new_v4().to_string());
-        async_fs::rename(&self.root, &destination).await?;
+        fs::discard(&self.root).await?;
         self.state.send_replace(None);
         on_deleted();
-        async_fs::remove_dir_all(destination).await.log_warn();
         Ok(())
     }
 }

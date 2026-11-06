@@ -153,16 +153,13 @@ impl Addons {
     /// Returns [`AddonError::NotFound`] when the release is absent, or an I/O error
     /// if its storage directory cannot be moved to trash.
     pub async fn remove(&self, id: Uuid) -> Result<()> {
-        fs::with_temp_dir(&paths::trash(), |trash| async move {
-            let _write = self.0.write.lock().await;
-            let mut next = self.state().as_ref().clone();
-            let release = next.releases.get(&id).ok_or(AddonError::NotFound(id))?;
-            async_fs::rename(release.directory(), trash.join("release")).await?;
-            next.releases.remove(&id);
-            self.publish(next);
-            Ok(())
-        })
-        .await
+        let _write = self.0.write.lock().await;
+        let mut next = self.state().as_ref().clone();
+        let release = next.releases.get(&id).ok_or(AddonError::NotFound(id))?;
+        fs::discard(&release.directory()).await?;
+        next.releases.remove(&id);
+        self.publish(next);
+        Ok(())
     }
 
     /// Returns the release `id` if it is already acquired with role `R`.
