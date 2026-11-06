@@ -42,6 +42,8 @@ pub(crate) struct Inner {
     pub(crate) id: Uuid,
     pub(crate) state: watch::Sender<Option<Arc<PrefixState>>>,
     pub(crate) control: Mutex<()>,
+    /// Notified each time this prefix starts `WineBridge`.
+    pub(crate) bridge_started: watch::Sender<()>,
     pub(crate) root: PathBuf,
     pub(crate) context: Context,
 }
@@ -67,6 +69,7 @@ impl Inner {
             id,
             state: watch::channel(Some(Arc::new(state))).0,
             control: Mutex::new(()),
+            bridge_started: watch::channel(()).0,
             root,
             context,
         }))

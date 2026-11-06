@@ -107,16 +107,29 @@ impl Prefix {
         self.0.kill(group).await
     }
 
-    /// Lists processes currently reported by `WineBridge`.
+    /// Lists the processes in process group `group`, or every process in the
+    /// prefix when `group` is `None`.
     ///
-    /// A stopped prefix returns an empty vector and is not started.
+    /// A group's processes include the children of the programs launched into
+    /// it. A stopped prefix returns an empty vector and is not started.
     ///
     /// # Errors
     ///
     /// Returns an error if the prefix was deleted, discovery fails, or the
     /// connected `WineBridge` cannot list its processes.
-    pub async fn processes(&self) -> Result<Vec<Process>> {
-        self.0.processes().await
+    pub async fn processes(&self, group: Option<Uuid>) -> Result<Vec<Process>> {
+        self.0.processes(group).await
+    }
+
+    /// Streams the process groups that have a running process, or `None` while
+    /// Wine is not running.
+    ///
+    /// The first item is the current state; later items follow every change.
+    /// Use [`Self::processes`] for the processes in a group. Watching never
+    /// starts Wine. After Wine stops, the stream yields `None` and resumes when
+    /// this prefix next starts it. The stream ends once the prefix is deleted.
+    pub fn watch_groups(&self) -> impl Stream<Item = Option<Vec<Uuid>>> + Send + 'static + use<> {
+        self.0.watch_groups()
     }
 
     /// Stops Wine and releases storage mounted for the prefix.
