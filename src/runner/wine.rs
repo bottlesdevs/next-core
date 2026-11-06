@@ -41,9 +41,9 @@ impl Runner for Wine {
         .spawn()?
         .status()
         .await?;
-        if !status.success() {
-            return Err(RunnerError::WineserverFailed(status).into());
+        if status.success() || (arg == "-k" && status.code() == Some(1)) {
+            return Ok(());
         }
-        Ok(())
+        Err(RunnerError::WineserverFailed(status).into())
     }
 }
