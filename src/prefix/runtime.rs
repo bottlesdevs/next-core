@@ -63,7 +63,7 @@ impl Inner {
     pub(crate) async fn processes(&self, group: Option<Uuid>) -> Result<Vec<Process>> {
         let _control = self.control.lock().await;
         self.state()?;
-        match WineBridgeClient::try_connect(&self.root.join("prefix")).await? {
+        match self.bridge().await? {
             Some(bridge) => bridge.list_processes(group).await,
             None => Ok(Vec::new()),
         }
@@ -97,11 +97,18 @@ impl Inner {
             })
     }
 
+    /// Connects to this prefix's running `WineBridge`, if there is one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if discovery fails or a discovered `WineBridge` is unreachable.
+    pub(super) async fn bridge(&self) -> Result<Option<WineBridgeClient>> {
+        WineBridgeClient::try_connect(&self.root.join("prefix")).await
+    }
+
     /// Streams a reachable `WineBridge`'s running groups until its stream ends or fails.
     async fn attach(self: Arc<Self>) -> Option<BoxStream<'static, Vec<Uuid>>> {
-        let bridge = WineBridgeClient::try_connect(&self.root.join("prefix"))
-            .await
-            .ok()??;
+        let bridge = self.bridge().await.ok()??;
         let events = bridge.watch_groups().await.ok()?;
         Some(
             events
@@ -129,7 +136,7 @@ impl Inner {
     pub(crate) async fn kill(&self, group: Uuid) -> Result<()> {
         let _control = self.control.lock().await;
         self.state()?;
-        if let Some(bridge) = WineBridgeClient::try_connect(&self.root.join("prefix")).await? {
+        if let Some(bridge) = self.bridge().await? {
             bridge.kill_process(group).await?;
         }
         Ok(())
@@ -253,13 +260,13 @@ impl Inner {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let wineprefix = self.root.join("prefix");
-        if let Some(bridge) = WineBridgeClient::try_connect(&wineprefix).await? {
+        if let Some(bridge) = self.bridge().await? {
             if cancellation.is_cancelled() {
                 return Err(Error::Cancelled);
             }
             return Ok(bridge);
         }
+        let wineprefix = self.root.join("prefix");
         let backend = state.backend;
         let vars = state.effective_env_vars();
         if cancellation.is_cancelled() {

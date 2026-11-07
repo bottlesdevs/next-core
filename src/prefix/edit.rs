@@ -10,10 +10,7 @@ use crate::{
 };
 
 use super::{Inner, PrefixState, backend::standard};
-use crate::{
-    Operation, PrefixBackend, PrefixError, Progress, Stage, error::Error,
-    winebridge::WineBridgeClient,
-};
+use crate::{Operation, PrefixBackend, PrefixError, Progress, Stage, error::Error};
 use std::sync::Arc;
 
 /// Provides mutable access to a prefix's editable state.
@@ -163,10 +160,7 @@ impl Inner {
             let runtime_changed =
                 runner_changed || umu_changed || before.winebridge != after.winebridge;
             if prefix_changed || runtime_changed {
-                if WineBridgeClient::try_connect(&prefix.root.join("prefix"))
-                    .await?
-                    .is_some()
-                {
+                if prefix.bridge().await?.is_some() {
                     return Err(PrefixError::MustBeStopped.into());
                 }
                 progress.send_replace(Some(Progress::new(Stage::Stopping)));
