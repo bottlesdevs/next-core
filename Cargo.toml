@@ -45,7 +45,7 @@ futures-lite.workspace = true
 futures-util.workspace = true
 smol-tar.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
-tokio-util = { workspace = true, features = ["rt"] }
+tokio-util.workspace = true
 regdiff-rs = { workspace = true, optional = true }
 semver.workspace = true
 strum.workspace = true
