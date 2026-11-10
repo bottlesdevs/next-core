@@ -157,18 +157,6 @@ impl Addon<Component> {
     pub fn slot(&self) -> Slot {
         self.role.slot
     }
-
-    /// Returns whether this component satisfies `requirement`.
-    ///
-    /// Names and identifiers are compared exactly; a [`Requirement::Slot`]
-    /// matches this component's [`slot`](Self::slot).
-    pub fn satisfies(&self, requirement: &Requirement) -> bool {
-        match requirement {
-            Requirement::Name(name) => self.name == *name,
-            Requirement::Slot(slot) => self.slot() == *slot,
-            Requirement::Id(id) => self.id() == *id,
-        }
-    }
 }
 
 impl Addon<Runner> {
@@ -194,20 +182,6 @@ impl Addon<Runner> {
                     .join("umu-run");
                 Ok(Box::new(Proton::new(&path, umu)))
             }
-        }
-    }
-}
-
-impl Addon<Dependency> {
-    /// Returns whether this dependency satisfies `requirement`.
-    ///
-    /// Names and identifiers are compared exactly. A dependency never satisfies
-    /// [`Requirement::Slot`], because only components occupy slots.
-    pub fn satisfies(&self, requirement: &Requirement) -> bool {
-        match requirement {
-            Requirement::Name(name) => self.name == *name,
-            Requirement::Slot(_) => false,
-            Requirement::Id(id) => self.id() == *id,
         }
     }
 }
