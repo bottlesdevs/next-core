@@ -227,24 +227,19 @@ impl Inner {
         let vars = state.effective_env_vars();
         self.stop_locked().await?;
         let runner = state.runner.load_runner(state.umu.as_ref()).await?;
-        let mounted = self.storage.mount(state, &self.root).await;
-        if mounted.is_err() {
-            self.storage.release(&self.root).await?;
-        }
-        mounted?;
-        if let Err(error) = job.check_cancellation() {
-            self.storage.release(&self.root).await?;
-            return Err(error);
-        }
         let command = state.wrappers.apply(WineBridgeClient::command(
             runner.as_ref(),
             &wineprefix,
             state.winebridge.path(),
             vars.iter(),
         ));
-        let result = WineBridgeClient::connect_or_spawn(&wineprefix, command)
-            .await
-            .and_then(|bridge| job.check_cancellation().map(|()| bridge));
+        let result = async {
+            self.storage.mount(state, &self.root).await?;
+            job.check_cancellation()?;
+            let bridge = WineBridgeClient::connect_or_spawn(&wineprefix, command).await?;
+            job.check_cancellation().map(|()| bridge)
+        }
+        .await;
         if result.is_err() {
             stop(runner.as_ref(), &wineprefix).await?;
             self.storage.release(&self.root).await?;
