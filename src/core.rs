@@ -20,19 +20,22 @@ pub struct Core {
 
 /// Startup options for a [`Core`], opened with [`CoreBuilder::build`].
 ///
-/// Every option is optional. Catalog URLs are used by
-/// [`Catalogs::refresh`]; cached catalogs and installed
-/// addons still load when a URL is absent, and refreshing a family without a
-/// URL reports an error for that family.
+/// Every option is optional. Catalog sources default to the official Bottles
+/// catalogs and are used by [`Catalogs::refresh`]; cached catalogs and installed
+/// addons still load without them.
 #[must_use = "call `build` to open the core"]
 #[derive(Default)]
 pub struct CoreBuilder {
     http_client: Option<Arc<dyn HttpClient>>,
     #[cfg(feature = "fvs")]
     fvs2d: Option<std::path::PathBuf>,
-    component_catalog: Option<Url>,
-    dependency_catalog: Option<Url>,
+    catalogs: Option<Vec<Url>>,
 }
+
+const DEFAULT_CATALOGS: [&str; 2] = [
+    "https://bottles-next-deps.bromb.in/api/v1/catalog/components",
+    "https://bottles-next-deps.bromb.in/api/v1/catalog/dependencies",
+];
 
 impl Core {
     /// Returns a builder with the default startup options.
@@ -105,15 +108,11 @@ impl CoreBuilder {
         self
     }
 
-    /// Sets the remote runner, WineBridge, UMU, and prefix-component catalog.
-    pub fn component_catalog(mut self, url: impl Into<Option<Url>>) -> Self {
-        self.component_catalog = url.into();
-        self
-    }
-
-    /// Sets the remote dependency catalog.
-    pub fn dependency_catalog(mut self, url: impl Into<Option<Url>>) -> Self {
-        self.dependency_catalog = url.into();
+    /// Replaces the default catalog sources.
+    ///
+    /// When several sources list the same release, the earliest wins.
+    pub fn catalogs(mut self, urls: impl IntoIterator<Item = Url>) -> Self {
+        self.catalogs = Some(urls.into_iter().collect());
         self
     }
 
@@ -140,13 +139,13 @@ impl CoreBuilder {
             crate::virgo::Fvs::connect(self.fvs2d).await?,
         )
         .await?;
-        let catalogs = Catalogs::load(
-            http_client,
-            context.addons().clone(),
-            self.component_catalog,
-            self.dependency_catalog,
-        )
-        .await?;
+        let sources = self.catalogs.unwrap_or_else(|| {
+            DEFAULT_CATALOGS
+                .iter()
+                .map(|url| Url::parse(url).expect("default catalog URL is valid"))
+                .collect()
+        });
+        let catalogs = Catalogs::load(http_client, context.addons().clone(), sources).await?;
         let prefixes = Prefixes::load(paths::prefixes(), context.clone()).await?;
         Ok(Core {
             context,

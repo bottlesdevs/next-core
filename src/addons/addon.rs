@@ -117,11 +117,7 @@ impl<R> Addon<R> {
     where
         R: RoleMarker,
     {
-        let releases = match self.role() {
-            AddonRole::Dependency(_) => paths::dependency_releases(),
-            _ => paths::component_releases(),
-        };
-        releases.join(self.id().to_string())
+        paths::releases().join(self.id().to_string())
     }
 
     /// Converts this record to role `J`, or returns `None` if its role differs.

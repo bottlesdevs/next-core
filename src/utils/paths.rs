@@ -12,8 +12,8 @@ use crate::error::Result;
 
 /// Creates the directories needed at startup.
 ///
-/// Local data, runtime, prefix, component, dependency, and addon-release
-/// metadata directories are created recursively.
+/// Local data, runtime, prefix, and addon-release directories are created
+/// recursively.
 ///
 /// # Errors
 ///
@@ -23,8 +23,7 @@ pub(crate) async fn create() -> Result<()> {
         data_dir().to_path_buf(),
         runtime_dir().to_path_buf(),
         prefixes(),
-        component_releases(),
-        dependency_releases(),
+        releases(),
     ] {
         async_fs::create_dir_all(directory).await?;
     }
@@ -47,28 +46,12 @@ pub(crate) fn prefixes() -> PathBuf {
     data_dir().join("prefixes")
 }
 
-fn components() -> PathBuf {
-    data_dir().join("components")
+pub(crate) fn releases() -> PathBuf {
+    data_dir().join("releases")
 }
 
-fn dependencies() -> PathBuf {
-    data_dir().join("dependencies")
-}
-
-pub(crate) fn component_releases() -> PathBuf {
-    components().join("releases")
-}
-
-pub(crate) fn dependency_releases() -> PathBuf {
-    dependencies().join("releases")
-}
-
-pub(crate) fn component_catalog() -> PathBuf {
-    components().join("catalog.json")
-}
-
-pub(crate) fn dependency_catalog() -> PathBuf {
-    dependencies().join("catalog.json")
+pub(crate) fn catalogs() -> PathBuf {
+    data_dir().join("catalogs.json")
 }
 
 #[cfg(feature = "fvs")]

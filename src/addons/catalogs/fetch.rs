@@ -45,10 +45,7 @@ impl Catalogs {
             }
             let state = catalogs.state();
             let entry = state
-                .component_catalog
-                .iter()
-                .chain(state.dependency_catalog.iter())
-                .find_map(|catalog| catalog.entry(id))
+                .entry::<AddonRole>(id)
                 .ok_or(CatalogError::NotFound(id))?;
             let role = R::try_from(entry.role()).map_err(|_| AddonError::WrongRole(id))?;
             let target = Target::current().ok_or(CatalogError::Unsupported(id))?;

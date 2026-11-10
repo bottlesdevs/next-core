@@ -5,91 +5,78 @@ use std::{io, sync::Arc};
 use futures_lite::AsyncReadExt;
 use url::Url;
 
-use crate::{Job, Operation, Stage, error::Result, utils::paths};
+use crate::{Job, Operation, Stage, error::Result};
 
 use super::super::{CatalogError, catalog::Catalog};
-use super::Catalogs;
+use super::{Catalogs, CatalogsState, write_cache};
 
 impl Catalogs {
-    /// Downloads and parses the component and dependency catalogs.
+    /// Downloads and parses the catalog of every configured source.
     ///
-    /// Components are attempted first, then dependencies. A source failure other
-    /// than cancellation does not prevent the other attempt. Each successful
-    /// catalog is cached before a single snapshot is published; a failed source
-    /// retains its previous catalog. The operation then reports
-    /// [`CatalogError::Refresh`] if either attempt failed, after publishing any
-    /// successful source.
+    /// Sources are requested concurrently. A failed source retains its previous
+    /// catalog and does not prevent the others from updating. The cache is
+    /// written once and a single snapshot is published before the operation
+    /// reports [`CatalogError::Refresh`] for the sources that failed. Without
+    /// sources, this succeeds without publishing.
     ///
-    /// Cache writes occur in the same order. If a later write fails, earlier cache
-    /// writes remain on disk but no new snapshot is published. Cancellation is
-    /// checked through publication-lock acquisition; once cache writes begin, the
-    /// operation runs through publication unless a write fails.
+    /// Cancellation is checked through publication-lock acquisition; once the
+    /// cache write begins, the operation runs through publication unless the
+    /// write fails.
     ///
     /// # Errors
     ///
-    /// The operation fails if cancelled before cache writes begin, either URL is
-    /// missing, a request or schema parse fails, or a successful catalog cannot be
-    /// written to its cache. Per-source URL, request, and parse failures are
-    /// combined into [`CatalogError::Refresh`]; cache-write failures are returned
-    /// directly.
+    /// The operation fails if cancelled before the cache write begins, a
+    /// request or schema parse fails, or the cache cannot be written. Per-source
+    /// request and parse failures are combined into [`CatalogError::Refresh`];
+    /// cache-write failures are returned directly.
     pub fn refresh(&self) -> Operation<()> {
         let catalogs = self.clone();
         Operation::new(move |job| async move {
-            let component = catalogs
-                .request(catalogs.0.component_catalog_url.clone(), "components", &job)
-                .await;
-            let dependency = catalogs
-                .request(
-                    catalogs.0.dependency_catalog_url.clone(),
-                    "dependencies",
-                    &job,
-                )
-                .await;
+            let sources = &catalogs.0.sources;
+            if sources.is_empty() {
+                return Ok(());
+            }
+            job.transition(Stage::Downloading {
+                file: "catalogs".into(),
+            })?;
+            let requested = futures_util::future::join_all(
+                sources.iter().map(|source| catalogs.request(source, &job)),
+            )
+            .await;
 
             let _write = job.cancellable(catalogs.0.write.lock()).await?;
             let current = catalogs.state();
-            let component_catalog = match &component {
-                Ok(catalog) => {
-                    catalog.save(&paths::component_catalog()).await?;
-                    Some(catalog.clone())
+            let mut next = Vec::new();
+            let mut failures = Vec::new();
+            for (source, requested) in sources.iter().zip(requested) {
+                match requested {
+                    Ok(catalog) => next.push((source.clone(), catalog)),
+                    Err(error) => {
+                        failures.push((source.clone(), error.to_string()));
+                        next.extend(
+                            current
+                                .catalogs
+                                .iter()
+                                .find(|(cached, _)| cached == source)
+                                .cloned(),
+                        );
+                    }
                 }
-                Err(_) => current.component_catalog.clone(),
-            };
-            let dependency_catalog = match &dependency {
-                Ok(catalog) => {
-                    catalog.save(&paths::dependency_catalog()).await?;
-                    Some(catalog.clone())
-                }
-                Err(_) => current.dependency_catalog.clone(),
-            };
-            catalogs.publish(super::CatalogsState {
-                component_catalog,
-                dependency_catalog,
-            });
+            }
+            write_cache(&next).await?;
+            catalogs.publish(CatalogsState { catalogs: next });
 
-            match (component, dependency) {
-                (Ok(_), Ok(_)) => Ok(()),
-                (component, dependency) => Err(CatalogError::Refresh {
-                    components: component.err().map(|error| error.to_string()),
-                    dependencies: dependency.err().map(|error| error.to_string()),
-                }
-                .into()),
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(CatalogError::Refresh(failures).into())
             }
         })
     }
 
     /// Requests and parses one catalog in memory.
-    async fn request(
-        &self,
-        url: Option<Url>,
-        label: &'static str,
-        job: &Job,
-    ) -> Result<Arc<Catalog>> {
-        let url = url.ok_or(CatalogError::UrlNotConfigured(label))?;
-        job.transition(Stage::Downloading {
-            file: format!("{label} catalog"),
-        })?;
-        let request = http::Request::get(url.as_str())
+    async fn request(&self, source: &Url, job: &Job) -> Result<Arc<Catalog>> {
+        let request = http::Request::get(source.as_str())
             .body(Vec::new())
             .map_err(io::Error::other)?;
         let body = async {

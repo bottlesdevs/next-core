@@ -10,13 +10,11 @@
 
 use futures_lite::io::AsyncReadExt;
 use sha2::{Digest, Sha256, Sha512};
-use std::{io, path::Path, sync::Arc};
+use std::{io, path::Path};
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 use url::Url;
 use uuid::{NonNilUuid, Uuid};
-
-use crate::error::Result;
 
 use super::recipe::InstallStep;
 use super::{AddonRole, Requirement};
@@ -140,40 +138,9 @@ pub(crate) struct Catalog {
 }
 
 impl Catalog {
-    /// Loads the cached catalog at `path`.
-    ///
-    /// Returns `None` only when the catalog file does not exist.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the cache cannot be read or is not a valid catalog for
-    /// the current schema.
-    pub(crate) async fn load(path: &Path) -> Result<Option<Arc<Self>>> {
-        let bytes = match async_fs::read(path).await {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        Ok(Some(Arc::new(serde_json::from_slice(&bytes)?)))
-    }
-
-    /// Serializes this catalog over the cache at `path`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if serialization or writing the cache fails.
-    pub(crate) async fn save(&self, path: &Path) -> Result<()> {
-        async_fs::write(path, serde_json::to_vec(self)?).await?;
-        Ok(())
-    }
-
     /// Returns entries in their catalog-defined order.
     pub(crate) fn entries(&self) -> &[CatalogEntry] {
         &self.entries
-    }
-
-    pub(crate) fn entry(&self, id: Uuid) -> Option<&CatalogEntry> {
-        self.entries.iter().find(|entry| entry.id() == id)
     }
 }
 

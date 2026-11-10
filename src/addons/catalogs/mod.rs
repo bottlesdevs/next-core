@@ -1,21 +1,21 @@
 //! Remote catalogs and acquisition of their releases.
 //!
-//! [`Catalogs`] publishes immutable snapshots of the cached component and
-//! dependency catalogs behind a cheap cloneable handle. Refreshes replace the
+//! [`Catalogs`] publishes immutable snapshots of the cached catalogs from every
+//! configured source behind a cheap cloneable handle. Refreshes replace the
 //! snapshot; fetching a release downloads it and commits it to [`Addons`].
 
 mod fetch;
 mod refresh;
 
 use super::{
-    AddonRole, Addons,
+    Addons, RoleMarker,
     catalog::{Catalog, CatalogEntry},
 };
 use crate::{error::Result, utils::paths};
 use download_manager::manager::{DownloadManager, DownloadManagerConfig};
 use futures_core::Stream;
 use http_client::HttpClient;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, watch};
 use tokio_stream::wrappers::WatchStream;
 use url::Url;
@@ -32,14 +32,14 @@ use uuid::Uuid;
 /// # Examples
 ///
 /// ```
-/// use bottles_core::{AddonRole, CatalogEntry, Catalogs};
+/// use bottles_core::{CatalogEntry, Catalogs, Runner};
 ///
 /// fn supported_runners(catalogs: &Catalogs) -> Vec<CatalogEntry> {
 ///     catalogs
 ///         .state()
-///         .component_entries()
-///         .into_iter()
-///         .filter(|entry| matches!(entry.role(), AddonRole::Runner(_)) && entry.is_supported())
+///         .entries::<Runner>()
+///         .filter(|entry| entry.is_supported())
+///         .cloned()
 ///         .collect()
 /// }
 /// ```
@@ -50,8 +50,7 @@ struct CatalogsInner {
     http_client: Arc<dyn HttpClient>,
     downloader: DownloadManager,
     addons: Addons,
-    component_catalog_url: Option<Url>,
-    dependency_catalog_url: Option<Url>,
+    sources: Vec<Url>,
     published: watch::Sender<Arc<CatalogsState>>,
     /// Serializes cache writes and state publication, not transfers.
     write: Mutex<()>,
@@ -63,28 +62,37 @@ struct CatalogsInner {
 /// publications do not change this snapshot.
 #[derive(Clone, Debug, Default)]
 pub struct CatalogsState {
-    component_catalog: Option<Arc<Catalog>>,
-    dependency_catalog: Option<Arc<Catalog>>,
+    /// Cached catalogs in source order. Sources without a cache are absent.
+    catalogs: Vec<(Url, Arc<Catalog>)>,
 }
 
 impl Catalogs {
-    /// Opens the catalogs from their caches, acquiring releases into `addons`.
+    /// Opens the catalogs of `sources` from the cache, acquiring releases into `addons`.
     ///
-    /// A missing catalog cache is allowed.
+    /// A missing cache is allowed, and cached catalogs of sources no longer
+    /// configured are ignored.
     ///
     /// # Errors
     ///
     /// Returns an error if the download manager cannot initialize or a present
-    /// catalog cache cannot be read or parsed.
+    /// cache cannot be read or parsed.
     pub(crate) async fn load(
         http_client: Arc<dyn HttpClient>,
         addons: Addons,
-        component_catalog_url: Option<Url>,
-        dependency_catalog_url: Option<Url>,
+        sources: Vec<Url>,
     ) -> Result<Self> {
+        if sources.is_empty() {
+            tracing::warn!("no catalog sources are configured");
+        }
+        let mut cached = read_cache().await?;
         let state = CatalogsState {
-            component_catalog: Catalog::load(&paths::component_catalog()).await?,
-            dependency_catalog: Catalog::load(&paths::dependency_catalog()).await?,
+            catalogs: sources
+                .iter()
+                .filter_map(|source| {
+                    let catalog = cached.remove(source)?;
+                    Some((source.clone(), Arc::new(catalog)))
+                })
+                .collect(),
         };
         Ok(Self(Arc::new(CatalogsInner {
             downloader: DownloadManager::new(
@@ -93,8 +101,7 @@ impl Catalogs {
             )?,
             http_client,
             addons,
-            component_catalog_url,
-            dependency_catalog_url,
+            sources,
             published: watch::channel(Arc::new(state)).0,
             write: Mutex::new(()),
         })))
@@ -127,51 +134,46 @@ impl Catalogs {
 }
 
 impl CatalogsState {
-    /// Returns runner, `WineBridge`, UMU, and prefix-component entries in catalog order.
+    /// Returns entries with role `R` in source order, then catalog order.
     ///
-    /// The result is empty until the component catalog has been loaded from cache or
+    /// Use [`AddonRole`](super::AddonRole) as `R` to list entries of every role.
+    /// The result is empty until a catalog has been loaded from cache or
     /// published by [`Catalogs::refresh`].
-    pub fn component_entries(&self) -> Vec<CatalogEntry> {
-        self.component_catalog
+    pub fn entries<R: RoleMarker>(&self) -> impl Iterator<Item = &CatalogEntry> {
+        self.all().filter(|entry| R::try_from(entry.role()).is_ok())
+    }
+
+    /// Returns the entry with UUID `id` if it has role `R`.
+    ///
+    /// When several sources list `id`, the first source wins.
+    pub fn entry<R: RoleMarker>(&self, id: Uuid) -> Option<&CatalogEntry> {
+        self.all()
+            .find(|entry| entry.id() == id)
+            .filter(|entry| R::try_from(entry.role()).is_ok())
+    }
+
+    fn all(&self) -> impl Iterator<Item = &CatalogEntry> {
+        self.catalogs
             .iter()
-            .flat_map(|catalog| catalog.entries())
-            .cloned()
-            .collect()
+            .flat_map(|(_, catalog)| catalog.entries())
     }
+}
 
-    /// Returns dependency entries in their current catalog order.
-    ///
-    /// The result is empty until a dependency catalog has been loaded from cache or
-    /// published by [`Catalogs::refresh`].
-    pub fn dependency_entries(&self) -> Vec<CatalogEntry> {
-        self.dependency_catalog
-            .iter()
-            .flat_map(|catalog| catalog.entries())
-            .filter(|entry| matches!(entry.role(), AddonRole::Dependency(_)))
-            .cloned()
-            .collect()
+/// Reads the cached catalogs keyed by source. A missing cache is empty.
+async fn read_cache() -> Result<HashMap<Url, Catalog>> {
+    match async_fs::read(paths::catalogs()).await {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(error) => Err(error.into()),
     }
+}
 
-    /// Returns the entry with UUID `id` from the mixed component catalog.
-    ///
-    /// Returns `None` when no valid component catalog is loaded or the release
-    /// is absent from it.
-    pub fn component_entry(&self, id: Uuid) -> Option<CatalogEntry> {
-        self.component_catalog
-            .as_ref()
-            .and_then(|catalog| catalog.entry(id))
-            .cloned()
-    }
-
-    /// Returns the dependency catalog entry with UUID `id`.
-    ///
-    /// Returns `None` when no valid dependency catalog is loaded or the release
-    /// is absent from it.
-    pub fn dependency_entry(&self, id: Uuid) -> Option<CatalogEntry> {
-        self.dependency_catalog
-            .as_ref()
-            .and_then(|catalog| catalog.entry(id))
-            .filter(|entry| matches!(entry.role(), AddonRole::Dependency(_)))
-            .cloned()
-    }
+/// Replaces the cache with `catalogs`.
+async fn write_cache(catalogs: &[(Url, Arc<Catalog>)]) -> Result<()> {
+    let cache: HashMap<&Url, &Catalog> = catalogs
+        .iter()
+        .map(|(source, catalog)| (source, catalog.as_ref()))
+        .collect();
+    async_fs::write(paths::catalogs(), serde_json::to_vec(&cache)?).await?;
+    Ok(())
 }
