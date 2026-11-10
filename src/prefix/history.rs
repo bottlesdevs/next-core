@@ -5,12 +5,12 @@
 //! coordination and after runtime storage has been released. Automatic
 //! checkpoints protect mutations and are hidden from user-facing listings.
 
-use super::{Inner, PrefixState};
+use super::{Prefix, PrefixState};
 use crate::virgo::FVS_BLOCK_SIZE;
 use crate::{Operation, PrefixError, Stage, Transfer, error::Result, operation::ProgressReporter};
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 use fvs_rs::{Commit, Fvs2dClient, Progress as FvsProgress, Repository, RestoreResponse};
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 
 /// Identifies internal rollback checkpoints hidden from user snapshot listings.
 ///
@@ -115,17 +115,22 @@ pub(crate) async fn recover<T>(
     result
 }
 
-impl Inner {
-    /// Creates a user-visible snapshot after stopping the prefix.
+impl Prefix {
+    /// Creates an operation that captures the prefix's managed state.
     ///
-    /// Cancellation is observed before capture starts, but does not interrupt an
-    /// active FVS commit.
+    /// Shared artifacts and external files are not copied or rebuilt on
+    /// restoration. Explicit snapshots create a revision even without changes.
+    /// The prefix is stopped before capture and is not restarted afterward.
+    /// Shutdown and capture are not interrupted by cancellation;
+    /// [`Operation::cancel`] waits for the current step to finish.
     ///
     /// # Errors
     ///
-    /// The operation fails for the reserved checkpoint message, cancellation,
-    /// shutdown failures, or FVS repository and commit errors.
-    pub(crate) fn create_snapshot(self: &Arc<Self>, message: String) -> Operation<Snapshot> {
+    /// Awaiting the operation returns an invalid-input I/O error when `message`
+    /// is the reserved internal checkpoint message. It can also fail during
+    /// cancellation, Wine shutdown, repository initialization, or commit.
+    pub fn create_snapshot(&self, message: impl Into<String>) -> Operation<Snapshot> {
+        let message = message.into();
         let prefix = self.clone();
         Operation::new(move |job| async move {
             if message == AUTO_CHECKPOINT_MESSAGE {
@@ -135,89 +140,102 @@ impl Inner {
                 )
                 .into());
             }
-            let _control = job.cancellable(prefix.control.lock()).await?;
+            let _control = job.cancellable(prefix.0.control.lock()).await?;
             job.transition(Stage::Stopping)?;
             prefix.stop_locked().await?;
             job.transition(Stage::Committing)?;
             capture(
-                &prefix.root,
+                &prefix.0.root,
                 message,
                 true,
-                &prefix.fvs.client,
+                &prefix.0.fvs.client,
                 job.progress(),
             )
             .await
         })
     }
 
-    /// Lists user-visible snapshots in the prefix repository.
+    /// Lists user snapshots from newest to oldest.
     ///
-    /// Returns an empty list before the first snapshot and excludes automatic
-    /// recovery checkpoints.
+    /// Internal checkpoints are excluded. A prefix with no history
+    /// returns an empty vector without contacting FVS.
     ///
     /// # Errors
     ///
-    /// Returns an error if the prefix was deleted or FVS cannot list commits.
-    pub(crate) async fn snapshots(&self) -> Result<Vec<SnapshotSummary>> {
-        let _control = self.control.lock().await;
+    /// Returns an error if the prefix was deleted, history metadata cannot
+    /// be read, or FVS cannot list revisions.
+    pub async fn snapshots(&self) -> Result<Vec<crate::SnapshotSummary>> {
+        let _control = self.0.control.lock().await;
         self.state()?;
-        if !crate::utils::fs::exists(&self.root.join(".fvs2")).await? {
+        if !crate::utils::fs::exists(&self.0.root.join(".fvs2")).await? {
             return Ok(Vec::new());
         }
         Ok(self
+            .0
             .fvs
             .client
-            .list_commits(&repository(&self.root))
+            .list_commits(&repository(&self.0.root))
             .await?
             .into_iter()
             .filter(|snapshot| snapshot.message != AUTO_CHECKPOINT_MESSAGE)
             .collect())
     }
 
-    /// Restores a snapshot and publishes the state stored within it.
+    /// Creates an operation that restores a snapshot into the managed root.
     ///
-    /// An automatic checkpoint is captured before restoration. Once restoration
-    /// begins, a failed restore or state load triggers recovery to that
-    /// checkpoint before coordination is released.
-    /// Cancellation is sampled before and after checkpoint capture; once restore
-    /// starts, the operation finishes restoration or recovery before returning.
+    /// A failed restore or unreadable restored state recovers the previous files
+    /// before returning; failed recovery reports the root requiring repair.
+    /// Shutdown and checkpoint capture finish before cancellation is observed.
+    /// Once restoration begins, cancellation does not interrupt restoration or
+    /// recovery. Working files change without moving the FVS repository's
+    /// current commit. Rollback first attempts to stop the prefix and never
+    /// restarts it.
+    ///
+    /// On success, the operation returns the full state ID resolved from
+    /// `revision` and publishes the state stored in that revision.
     ///
     /// # Errors
     ///
-    /// The operation fails for cancellation before restoration, shutdown or FVS
-    /// failures, an unreadable restored state, or [`PrefixError::Rollback`] if the
-    /// automatic recovery also fails.
-    pub(crate) fn rollback(self: &Arc<Self>, revision: &str) -> Operation<String> {
+    /// Awaiting the operation fails on cancellation before restoration, Wine
+    /// shutdown or checkpoint failure, an unknown revision, mismatched or
+    /// invalid restored state, or failed restoration or recovery.
+    pub fn rollback(&self, revision: &str) -> Operation<String> {
         let prefix = self.clone();
         let revision = revision.to_owned();
         Operation::new(move |job| async move {
-            let _control = job.cancellable(prefix.control.lock()).await?;
+            let _control = job.cancellable(prefix.0.control.lock()).await?;
             prefix.state()?;
             job.transition(Stage::Stopping)?;
             prefix.stop_locked().await?;
             job.transition(Stage::Checkpointing)?;
             let checkpoint = capture(
-                &prefix.root,
+                &prefix.0.root,
                 AUTO_CHECKPOINT_MESSAGE.into(),
                 false,
-                &prefix.fvs.client,
+                &prefix.0.fvs.client,
                 job.progress(),
             )
             .await?;
             job.transition(Stage::Restoring)?;
             // Once restoration starts, finish it or recover before releasing coordination.
             let result = async {
-                let restored =
-                    restore(&prefix.root, &revision, &prefix.fvs.client, job.progress()).await?;
-                let state: PrefixState = next_config::load(prefix.root.join("state.toml")).await?;
+                let restored = restore(
+                    &prefix.0.root,
+                    &revision,
+                    &prefix.0.fvs.client,
+                    job.progress(),
+                )
+                .await?;
+                let state: PrefixState =
+                    next_config::load(prefix.0.root.join("state.toml")).await?;
                 Ok((restored.state_id, state))
             }
             .await;
             let (revision, state) = recover(
                 result,
-                &prefix.root,
+                &prefix.0.root,
                 &checkpoint,
-                &prefix.fvs.client,
+                &prefix.0.fvs.client,
                 job.progress(),
             )
             .await?;

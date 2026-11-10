@@ -218,7 +218,7 @@ impl Prefixes {
             let state = PrefixState::new(backend, runner, winebridge, umu);
             state.validate()?;
             let prefix = prefixes.member(Uuid::new_v4(), state);
-            prefix.0.create(&job).await?;
+            prefix.create(&job).await?;
             prefixes.members.send_modify(|members| {
                 Arc::make_mut(members).insert(prefix.id(), prefix.clone());
             });
@@ -247,7 +247,6 @@ impl Prefixes {
         Operation::new(move |job| async move {
             let handle = prefixes.open(id)?;
             handle
-                .0
                 .delete(&job, || {
                     prefixes.members.send_modify(|members| {
                         Arc::make_mut(members).remove(&id);

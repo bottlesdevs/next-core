@@ -70,7 +70,9 @@ impl Inner {
             fvs,
         })
     }
+}
 
+impl Prefix {
     /// Initializes storage for the constructed state and persists it.
     ///
     /// Failure during backend initialization can leave a partial prefix
@@ -91,40 +93,45 @@ impl Inner {
         let state = state.as_ref();
         job.transition(Stage::CreatingPrefix)?;
         // Initialization owns shutdown. Retain storage when it cannot finish safely.
-        self.storage.create(state, &self.root, job).await?;
+        self.0.storage.create(state, &self.0.root, job).await?;
         let result = async {
             job.transition(Stage::Configuring)?;
             self.save(state).await
         }
         .await;
         if result.is_err() {
-            fs::discard(&self.root).await.log_warn();
+            fs::discard(&self.0.root).await.log_warn();
         }
         result
     }
 
-    /// Returns the currently published state snapshot.
+    /// Returns the currently published immutable state snapshot.
     ///
     /// # Errors
     ///
-    /// Returns [`PrefixError::Deleted`] after deletion has been published.
-    pub(crate) fn state(&self) -> Result<Arc<PrefixState>> {
-        self.state
+    /// Returns [`PrefixError::Deleted`](crate::PrefixError::Deleted)
+    /// after the prefix is deleted.
+    pub fn state(&self) -> Result<Arc<PrefixState>> {
+        self.0
+            .state
             .borrow()
             .clone()
             .ok_or_else(|| PrefixError::Deleted.into())
     }
 
-    /// Streams the current state and later publications until deletion.
-    pub(crate) fn watch(&self) -> impl Stream<Item = Arc<PrefixState>> + Send + 'static + use<> {
-        WatchStream::new(self.state.subscribe())
+    /// Streams the current state and later published replacements.
+    ///
+    /// The first item is the state current at subscription time. Slow consumers
+    /// may miss intermediate states, and deletion ends the stream.
+    pub fn watch(&self) -> impl Stream<Item = Arc<PrefixState>> + Send + 'static + use<> {
+        WatchStream::new(self.0.state.subscribe())
             .take_while(Option::is_some)
             .filter_map(|state| state)
     }
 
     /// Publishes `state` when it differs from the current snapshot.
     pub(crate) fn publish(&self, state: PrefixState) {
-        self.state.send_if_modified(|current| {
+        self.0.state.send_if_modified(|current| {
             if current.as_deref() == Some(&state) {
                 return false;
             }
@@ -142,7 +149,7 @@ impl Inner {
     ///
     /// Returns an error if serialization or filesystem persistence fails.
     pub(crate) async fn save(&self, state: &PrefixState) -> Result<()> {
-        Ok(next_config::save(self.root.join("state.toml"), state).await?)
+        Ok(next_config::save(self.0.root.join("state.toml"), state).await?)
     }
 
     /// Stops the runtime, discards the root, and publishes deletion.
@@ -156,12 +163,12 @@ impl Inner {
     /// Returns cancellation, runtime shutdown, or filesystem errors that occur
     /// before the root has been withdrawn. Cleanup errors after withdrawal are logged.
     pub(crate) async fn delete(&self, job: &Job, on_deleted: impl FnOnce()) -> Result<()> {
-        let _control = job.cancellable(self.control.lock()).await?;
+        let _control = job.cancellable(self.0.control.lock()).await?;
         job.transition(Stage::Stopping)?;
         self.stop_locked().await?;
         job.transition(Stage::Removing)?;
-        fs::discard(&self.root).await?;
-        self.state.send_replace(None);
+        fs::discard(&self.0.root).await?;
+        self.0.state.send_replace(None);
         on_deleted();
         Ok(())
     }

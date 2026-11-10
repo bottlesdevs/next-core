@@ -10,9 +10,8 @@ use crate::{
     Addon, Component, Dependency, EnvVars, Runner, Slot, Umu, WineBridge, Wrappers, error::Result,
 };
 
-use super::{Inner, PrefixState};
+use super::{Prefix, PrefixState};
 use crate::{Job, Operation, PrefixError, Stage};
-use std::sync::Arc;
 
 /// Provides mutable access to a prefix's editable state.
 ///
@@ -115,30 +114,45 @@ impl Edit<'_> {
     }
 }
 
-impl Inner {
-    /// Runs a coordinated edit and publishes it only after application succeeds.
+impl Prefix {
+    /// Creates an operation that edits a private draft of the latest state.
     ///
-    /// Storage and runtime changes require a stopped prefix. When the storage
-    /// reports that the edit [changes](super::storage::Storage::changes) what it stores, the
-    /// change is applied and [checkpointed](Self::checkpointed) together with
-    /// the save that follows it; otherwise the draft is only saved.
-    ///
-    /// Cancellation is observed before a change starts and at backend-specific
-    /// safe points. Once backend application succeeds, saving and publication
-    /// finish without another cancellation check.
+    /// The final draft is validated, applied, saved, and then published once.
+    /// Software selection changes require a stopped prefix; startup
+    /// settings may change while Wine is running. An unchanged draft is not saved.
+    /// Any shutdown begun for the edit finishes before cancellation is returned.
+    /// Once application succeeds, persistence and publication are not cancelled.
+    /// With the `fvs` feature, a checkpoint is captured before storage changes,
+    /// and a failure after it recovers the previous files before returning.
+    /// Without it, failure or cancellation can leave files changed while the
+    /// previous state remains published.
     ///
     /// # Errors
     ///
-    /// Returns an error when the callback rejects the draft, validation fails,
-    /// the prefix is running during a software change, cancellation is
-    /// observed at a backend safe point, or backend application/persistence fails.
-    pub(crate) fn edit<R: Send + 'static>(
-        self: &Arc<Self>,
+    /// Awaiting the operation returns errors from the callback, validation,
+    /// cancellation, persistence, software application, or storage recovery.
+    /// [`PrefixError::MustBeStopped`](crate::PrefixError::MustBeStopped)
+    /// is returned when software changes are requested while Wine is running.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use bottles_core::Prefix;
+    /// # fn prepare(prefix: &Prefix) {
+    /// let quiet = prefix.edit(|edit| {
+    ///     edit.env_vars().insert("WINEDEBUG".into(), "-all".into());
+    ///     Ok(())
+    /// });
+    /// # let _ = quiet;
+    /// # }
+    /// ```
+    pub fn edit<R: Send + 'static>(
+        &self,
         callback: impl FnOnce(&mut Edit<'_>) -> Result<R> + Send + 'static,
     ) -> Operation<R> {
         let prefix = self.clone();
         Operation::new(move |job| async move {
-            let _control = job.cancellable(prefix.control.lock()).await?;
+            let _control = job.cancellable(prefix.0.control.lock()).await?;
             let previous = prefix.state()?;
             let mut draft = previous.as_ref().clone();
             let result = callback(&mut Edit { draft: &mut draft })?;
@@ -148,7 +162,7 @@ impl Inner {
             }
             let before = previous.as_ref();
             let after = &draft;
-            let storage_changed = prefix.storage.changes(before, after);
+            let storage_changed = prefix.0.storage.changes(before, after);
             let runner_changed = before.runner != after.runner;
             let umu_changed = before.umu != after.umu;
             let runtime_changed =
@@ -165,8 +179,9 @@ impl Inner {
                 prefix
                     .checkpointed(&job, async {
                         prefix
+                            .0
                             .storage
-                            .apply(before, after, &prefix.root, &job)
+                            .apply(before, after, &prefix.0.root, &job)
                             .await?;
                         prefix.save(&draft).await
                     })
@@ -204,18 +219,18 @@ impl Inner {
 
             job.transition(Stage::Checkpointing)?;
             let checkpoint = history::capture(
-                &self.root,
+                &self.0.root,
                 history::AUTO_CHECKPOINT_MESSAGE.into(),
                 false,
-                &self.fvs.client,
+                &self.0.fvs.client,
                 job.progress(),
             )
             .await?;
             history::recover(
                 change.await,
-                &self.root,
+                &self.0.root,
                 &checkpoint,
-                &self.fvs.client,
+                &self.0.fvs.client,
                 job.progress(),
             )
             .await

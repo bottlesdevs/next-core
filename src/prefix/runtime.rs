@@ -5,7 +5,7 @@
 //! from the currently published configuration. Virgo mounts are created before
 //! startup and released only after Wine processes stop.
 
-use super::{Inner, PrefixState};
+use super::{Prefix, PrefixState};
 use crate::runner::Runner;
 use crate::{
     Job, Operation, ProgramSpec, Stage,
@@ -18,46 +18,52 @@ use futures_util::{
     StreamExt, future,
     stream::{self, BoxStream},
 };
-use std::{future::Future, path::Path, sync::Arc};
+use std::{future::Future, path::Path};
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
-impl Inner {
-    /// Launches `launch` through `WineBridge` in process group `group`.
+impl Prefix {
+    /// Creates an operation that launches `program` in process group `group`.
     ///
-    /// Once startup succeeds, a rejected process launch leaves the runtime running.
+    /// `group` is the `WineBridge` process-group identifier chosen by the
+    /// caller; it is not persisted. Success returns the new process ID; it does
+    /// not wait for the process to exit. Cancellation does not interrupt an
+    /// in-flight launch request.
     ///
     /// # Errors
     ///
-    /// Returns an error if startup or attachment fails, the operation is
-    /// cancelled, or `WineBridge` rejects the launch.
-    pub(crate) fn launch(self: &Arc<Self>, group: Uuid, launch: ProgramSpec) -> Operation<u32> {
+    /// Awaiting the operation may return prefix, runner, storage,
+    /// cancellation, or `WineBridge` errors while starting the process.
+    pub fn launch(&self, group: Uuid, program: ProgramSpec) -> Operation<u32> {
         let prefix = self.clone();
         Operation::new(move |job| async move {
-            let _control = job.cancellable(prefix.control.lock()).await?;
+            let _control = job.cancellable(prefix.0.control.lock()).await?;
             let state = prefix.state()?;
             let bridge = prefix.attach_or_start(&state, &job).await?;
             bridge
                 .launch_process(
                     group,
-                    launch.executable().into(),
-                    launch.args().to_vec(),
-                    launch.working_directory().map(str::to_owned),
-                    launch.new_console(),
+                    program.executable().into(),
+                    program.args().to_vec(),
+                    program.working_directory().map(str::to_owned),
+                    program.new_console(),
                 )
                 .await
         })
     }
 
-    /// Lists the processes in `group`, or every process in the prefix, returning
-    /// an empty list when the runtime is stopped.
+    /// Lists the processes in process group `group`, or every process in the
+    /// prefix when `group` is `None`.
+    ///
+    /// A group's processes include the children of the programs launched into
+    /// it. A stopped prefix returns an empty vector and is not started.
     ///
     /// # Errors
     ///
     /// Returns an error if the prefix was deleted, discovery fails, or the
     /// connected `WineBridge` cannot list its processes.
-    pub(crate) async fn processes(&self, group: Option<Uuid>) -> Result<Vec<Process>> {
-        let _control = self.control.lock().await;
+    pub async fn processes(&self, group: Option<Uuid>) -> Result<Vec<Process>> {
+        let _control = self.0.control.lock().await;
         self.state()?;
         match self.bridge().await? {
             Some(bridge) => bridge.list_processes(group).await,
@@ -65,23 +71,21 @@ impl Inner {
         }
     }
 
-    /// Streams the launched groups that have a running process, or `None` while
+    /// Streams the process groups that have a running process, or `None` while
     /// Wine is not running.
     ///
-    /// The first item is the current state. The stream attaches to a running
-    /// `WineBridge` but never starts one; after Wine stops it yields `None` and
-    /// resumes when this prefix next starts `WineBridge`. It ends once the prefix
-    /// is deleted.
-    pub(crate) fn watch_groups(
-        self: &Arc<Self>,
-    ) -> impl Stream<Item = Option<Vec<Uuid>>> + Send + 'static + use<> {
+    /// The first item is the current state; later items follow every change.
+    /// Use [`Self::processes`] for the processes in a group. Watching never
+    /// starts Wine. After Wine stops, the stream yields `None` and resumes when
+    /// this prefix next starts it. The stream ends once the prefix is deleted.
+    pub fn watch_groups(&self) -> impl Stream<Item = Option<Vec<Uuid>>> + Send + 'static + use<> {
         let prefix = self.clone();
-        let mut state = self.state.subscribe();
+        let mut state = self.0.state.subscribe();
         let deleted = async move {
             let _ = state.wait_for(Option::is_none).await;
         };
         // Attach now and again whenever this prefix starts `WineBridge`.
-        WatchStream::new(self.bridge_started.subscribe())
+        WatchStream::new(self.0.bridge_started.subscribe())
             .take_until(deleted)
             .then(move |_| prefix.clone().attach())
             .flat_map(|run| match run {
@@ -99,11 +103,11 @@ impl Inner {
     ///
     /// Returns an error if discovery fails or a discovered `WineBridge` is unreachable.
     pub(super) async fn bridge(&self) -> Result<Option<WineBridgeClient>> {
-        WineBridgeClient::try_connect(&self.root.join("prefix")).await
+        WineBridgeClient::try_connect(&self.0.root.join("prefix")).await
     }
 
     /// Streams a reachable `WineBridge`'s running groups until its stream ends or fails.
-    async fn attach(self: Arc<Self>) -> Option<BoxStream<'static, Vec<Uuid>>> {
+    async fn attach(self) -> Option<BoxStream<'static, Vec<Uuid>>> {
         let bridge = self.bridge().await.ok()??;
         let events = bridge.watch_groups().await.ok()?;
         Some(
@@ -121,16 +125,16 @@ impl Inner {
         )
     }
 
-    /// Kills process group `group` when `WineBridge` is currently running.
+    /// Terminates a `WineBridge` process group without starting a stopped runtime.
     ///
     /// A stopped runtime is a successful no-op.
     ///
     /// # Errors
     ///
-    /// Returns an error if discovery fails or `WineBridge` cannot terminate the
-    /// process group.
-    pub(crate) async fn kill(&self, group: Uuid) -> Result<()> {
-        let _control = self.control.lock().await;
+    /// Returns an error if the prefix was deleted, discovery fails, or
+    /// `WineBridge` cannot terminate the process group.
+    pub async fn kill(&self, group: Uuid) -> Result<()> {
+        let _control = self.0.control.lock().await;
         self.state()?;
         if let Some(bridge) = self.bridge().await? {
             bridge.kill_process(group).await?;
@@ -138,17 +142,16 @@ impl Inner {
         Ok(())
     }
 
-    /// Stops Wine and releases backend storage under the prefix lock.
+    /// Stops Wine and releases storage mounted for the prefix.
     ///
-    /// Storage release is attempted only after Wine shutdown succeeds. A shutdown
-    /// error can therefore leave mounts and discovery files in place.
+    /// Calling this for an already stopped prefix is safe.
     ///
     /// # Errors
     ///
-    /// Returns an error if state loading, runner resolution, process shutdown,
-    /// unmounting, or discovery cleanup fails.
-    pub(crate) async fn stop(&self) -> Result<()> {
-        let _control = self.control.lock().await;
+    /// Returns an error if state or runner resolution, Wine shutdown, storage
+    /// release, or discovery cleanup fails.
+    pub async fn stop(&self) -> Result<()> {
+        let _control = self.0.control.lock().await;
         self.stop_locked().await
     }
 
@@ -163,36 +166,60 @@ impl Inner {
     /// unmounting, or discovery cleanup fails.
     pub(crate) async fn stop_locked(&self) -> Result<()> {
         let state = self.state()?;
-        let wineprefix = self.root.join("prefix");
+        let wineprefix = self.0.root.join("prefix");
         if crate::utils::fs::exists(&wineprefix).await? {
             let runner = state.runner.load_runner(state.umu.as_ref()).await?;
             stop(runner.as_ref(), &wineprefix).await?;
         }
-        self.storage.release(&self.root).await
+        self.0.storage.release(&self.0.root).await
     }
 
-    /// Returns an operation that starts or attaches `WineBridge` and lists DLL overrides.
-    pub(crate) fn dll_overrides(self: &Arc<Self>) -> Operation<Vec<DllOverride>> {
+    /// Creates an operation that lists configured DLL overrides.
+    ///
+    /// The operation starts or reconnects to `WineBridge` if necessary and
+    /// leaves the runtime running. Cancellation does not interrupt an in-flight
+    /// `WineBridge` request.
+    ///
+    /// # Errors
+    ///
+    /// Awaiting the operation can fail during prefix access, runner or
+    /// `WineBridge` startup, cancellation, or the `WineBridge` request.
+    pub fn dll_overrides(&self) -> Operation<Vec<DllOverride>> {
         self.with_bridge(async |bridge| bridge.list_dll_overrides().await)
     }
 
-    /// Returns an operation that sets one Wine DLL override through `WineBridge`.
-    pub(crate) fn set_dll_override(
-        self: &Arc<Self>,
-        dll: String,
-        mode: DllOverrideMode,
-    ) -> Operation<()> {
+    /// Creates an operation that sets one Wine DLL override.
+    ///
+    /// A stopped runtime is started and left running. Cancellation does not
+    /// interrupt an in-flight `WineBridge` request.
+    ///
+    /// # Errors
+    ///
+    /// Awaiting the operation can fail during prefix access, runner or
+    /// `WineBridge` startup, cancellation, or the `WineBridge` request.
+    pub fn set_dll_override(&self, dll: impl Into<String>, mode: DllOverrideMode) -> Operation<()> {
+        let dll = dll.into();
         self.with_bridge(async move |bridge| bridge.set_dll_override(dll, mode).await)
     }
 
-    /// Returns an operation that removes one Wine DLL override through `WineBridge`.
-    pub(crate) fn unset_dll_override(self: &Arc<Self>, dll: String) -> Operation<()> {
+    /// Creates an operation that removes one Wine DLL override.
+    ///
+    /// A stopped runtime is started and left running. A missing override is a
+    /// successful no-op. Cancellation does not interrupt an in-flight
+    /// `WineBridge` request.
+    ///
+    /// # Errors
+    ///
+    /// Awaiting the operation can fail during prefix access, runner or
+    /// `WineBridge` startup, cancellation, or the `WineBridge` request.
+    pub fn unset_dll_override(&self, dll: impl Into<String>) -> Operation<()> {
+        let dll = dll.into();
         self.with_bridge(async move |bridge| bridge.delete_dll_override(dll).await)
     }
 
     /// Runs one `WineBridge` request while holding prefix coordination.
     fn with_bridge<R, Fut>(
-        self: &Arc<Self>,
+        &self,
         work: impl FnOnce(WineBridgeClient) -> Fut + Send + 'static,
     ) -> Operation<R>
     where
@@ -201,7 +228,7 @@ impl Inner {
     {
         let prefix = self.clone();
         Operation::new(move |job| async move {
-            let _control = job.cancellable(prefix.control.lock()).await?;
+            let _control = job.cancellable(prefix.0.control.lock()).await?;
             let state = prefix.state()?;
             let bridge = prefix.attach_or_start(&state, &job).await?;
             work(bridge).await
@@ -223,7 +250,7 @@ impl Inner {
         if let Some(bridge) = self.bridge().await? {
             return Ok(bridge);
         }
-        let wineprefix = self.root.join("prefix");
+        let wineprefix = self.0.root.join("prefix");
         let vars = state.effective_env_vars();
         self.stop_locked().await?;
         let runner = state.runner.load_runner(state.umu.as_ref()).await?;
@@ -234,7 +261,7 @@ impl Inner {
             vars.iter(),
         ));
         let result = async {
-            self.storage.mount(state, &self.root).await?;
+            self.0.storage.mount(state, &self.0.root).await?;
             job.check_cancellation()?;
             let bridge = WineBridgeClient::connect_or_spawn(&wineprefix, command).await?;
             job.check_cancellation().map(|()| bridge)
@@ -242,9 +269,9 @@ impl Inner {
         .await;
         if result.is_err() {
             stop(runner.as_ref(), &wineprefix).await?;
-            self.storage.release(&self.root).await?;
+            self.0.storage.release(&self.0.root).await?;
         } else {
-            self.bridge_started.send_replace(());
+            self.0.bridge_started.send_replace(());
         }
         result
     }
