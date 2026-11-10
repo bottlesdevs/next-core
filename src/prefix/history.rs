@@ -8,13 +8,11 @@
 use super::{Inner, PrefixState};
 use crate::virgo::FVS_BLOCK_SIZE;
 use crate::{
-    Context, Operation, PrefixError, Progress, Stage, Transfer,
-    error::{Error, Result},
+    Context, Operation, PrefixError, Stage, Transfer, error::Result, operation::ProgressReporter,
 };
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 use fvs_rs::{Commit, Progress as FvsProgress, Repository, RestoreResponse};
 use std::{path::Path, sync::Arc};
-use tokio::sync::watch;
 
 /// Identifies internal rollback checkpoints hidden from user snapshot listings.
 ///
@@ -50,9 +48,8 @@ pub(crate) async fn capture(
     root: &Path,
     message: String,
     allow_empty: bool,
-    stage: Stage,
     cx: &Context,
-    progress: &watch::Sender<Option<Progress>>,
+    progress: &ProgressReporter,
 ) -> Result<Commit> {
     let client = &cx.fvs().client;
     if !crate::utils::fs::exists(&root.join(".fvs2")).await? {
@@ -60,7 +57,7 @@ pub(crate) async fn capture(
     }
     Ok(client
         .commit_with_progress(&repository(root), message, allow_empty, |event| {
-            progress.send_replace(Some(Progress::transferring(stage.clone(), event.into())));
+            progress.transfer(event.into());
         })
         .await?)
 }
@@ -74,7 +71,7 @@ pub(crate) async fn restore(
     root: &Path,
     revision: &str,
     cx: &Context,
-    progress: &watch::Sender<Option<Progress>>,
+    progress: &ProgressReporter,
 ) -> Result<RestoreResponse> {
     Ok(cx
         .fvs()
@@ -86,7 +83,7 @@ pub(crate) async fn restore(
             true,
             false,
             |event| {
-                progress.send_replace(Some(Progress::transferring(Stage::Restoring, event.into())));
+                progress.transfer(event.into());
             },
         )
         .await?)
@@ -107,9 +104,10 @@ pub(crate) async fn recover<T>(
     root: &Path,
     checkpoint: &Commit,
     cx: &Context,
-    progress: &watch::Sender<Option<Progress>>,
+    progress: &ProgressReporter,
 ) -> Result<T> {
     if let Err(error) = &result {
+        progress.stage(Stage::Restoring);
         if let Err(source) = restore(root, &checkpoint.state_id, cx, progress).await {
             tracing::error!(%error, "mutation failed before rollback failed");
             return Err(PrefixError::Rollback {
@@ -134,7 +132,7 @@ impl Inner {
     /// shutdown failures, or FVS repository and commit errors.
     pub(crate) fn create_snapshot(self: &Arc<Self>, message: String) -> Operation<Snapshot> {
         let prefix = self.clone();
-        Operation::new(move |progress, cancellation| async move {
+        Operation::new(move |job| async move {
             if message == AUTO_CHECKPOINT_MESSAGE {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -142,21 +140,11 @@ impl Inner {
                 )
                 .into());
             }
-            let _control = prefix.lock_control(&cancellation).await?;
-            progress.send_replace(Some(Progress::new(Stage::Stopping)));
+            let _control = job.cancellable(prefix.control.lock()).await?;
+            job.transition(Stage::Stopping)?;
             prefix.stop_locked().await?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            capture(
-                &prefix.root,
-                message,
-                true,
-                Stage::Committing,
-                &prefix.context,
-                &progress,
-            )
-            .await
+            job.transition(Stage::Committing)?;
+            capture(&prefix.root, message, true, &prefix.context, job.progress()).await
         })
     }
 
@@ -201,29 +189,25 @@ impl Inner {
     pub(crate) fn rollback(self: &Arc<Self>, revision: &str) -> Operation<String> {
         let prefix = self.clone();
         let revision = revision.to_owned();
-        Operation::new(move |progress, cancellation| async move {
-            let _control = prefix.lock_control(&cancellation).await?;
+        Operation::new(move |job| async move {
+            let _control = job.cancellable(prefix.control.lock()).await?;
             prefix.state()?;
-            progress.send_replace(Some(Progress::new(Stage::Stopping)));
+            job.transition(Stage::Stopping)?;
             prefix.stop_locked().await?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
+            job.transition(Stage::Checkpointing)?;
             let checkpoint = capture(
                 &prefix.root,
                 AUTO_CHECKPOINT_MESSAGE.into(),
                 false,
-                Stage::Checkpointing,
                 &prefix.context,
-                &progress,
+                job.progress(),
             )
             .await?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
+            job.transition(Stage::Restoring)?;
             // Once restoration starts, finish it or recover before releasing coordination.
             let result = async {
-                let restored = restore(&prefix.root, &revision, &prefix.context, &progress).await?;
+                let restored =
+                    restore(&prefix.root, &revision, &prefix.context, job.progress()).await?;
                 let state: PrefixState = next_config::load(prefix.root.join("state.toml")).await?;
                 Ok((restored.state_id, state))
             }
@@ -233,7 +217,7 @@ impl Inner {
                 &prefix.root,
                 &checkpoint,
                 &prefix.context,
-                &progress,
+                job.progress(),
             )
             .await?;
             prefix.publish(state);

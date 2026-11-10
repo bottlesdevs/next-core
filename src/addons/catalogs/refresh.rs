@@ -3,15 +3,9 @@
 use std::{io, sync::Arc};
 
 use futures_lite::AsyncReadExt;
-use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use crate::{
-    Operation, Progress, Stage,
-    error::{Error, Result},
-    utils::paths,
-};
+use crate::{Job, Operation, Stage, error::Result, utils::paths};
 
 use super::super::{CatalogError, catalog::Catalog};
 use super::Catalogs;
@@ -40,34 +34,19 @@ impl Catalogs {
     /// directly.
     pub fn refresh(&self) -> Operation<()> {
         let catalogs = self.clone();
-        Operation::new(move |progress, cancellation| async move {
+        Operation::new(move |job| async move {
             let component = catalogs
-                .request(
-                    catalogs.0.component_catalog_url.clone(),
-                    "components",
-                    &progress,
-                    &cancellation,
-                )
+                .request(catalogs.0.component_catalog_url.clone(), "components", &job)
                 .await;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
             let dependency = catalogs
                 .request(
                     catalogs.0.dependency_catalog_url.clone(),
                     "dependencies",
-                    &progress,
-                    &cancellation,
+                    &job,
                 )
                 .await;
 
-            let _write = cancellation
-                .run_until_cancelled(catalogs.0.write.lock())
-                .await
-                .ok_or(Error::Cancelled)?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
+            let _write = job.cancellable(catalogs.0.write.lock()).await?;
             let current = catalogs.state();
             let component_catalog = match &component {
                 Ok(catalog) => {
@@ -104,13 +83,12 @@ impl Catalogs {
         &self,
         url: Option<Url>,
         label: &'static str,
-        progress: &watch::Sender<Option<Progress>>,
-        cancellation: &CancellationToken,
+        job: &Job,
     ) -> Result<Arc<Catalog>> {
         let url = url.ok_or(CatalogError::UrlNotConfigured(label))?;
-        progress.send_replace(Some(Progress::new(Stage::Downloading {
+        job.transition(Stage::Downloading {
             file: format!("{label} catalog"),
-        })));
+        })?;
         let request = http::Request::get(url.as_str())
             .body(Vec::new())
             .map_err(io::Error::other)?;
@@ -125,10 +103,7 @@ impl Catalogs {
             response.into_body().read_to_end(&mut body).await?;
             Ok::<_, io::Error>(body)
         };
-        let body = cancellation
-            .run_until_cancelled(body)
-            .await
-            .ok_or(Error::Cancelled)??;
+        let body = job.cancellable(body).await??;
         Ok(Arc::new(serde_json::from_slice(&body)?))
     }
 }

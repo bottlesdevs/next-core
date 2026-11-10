@@ -6,8 +6,8 @@
 
 use crate::prefix::{Inner, Inventory};
 use crate::{
-    Addon, Context, Operation, Prefix, PrefixBackend, PrefixError, PrefixState, Progress, Runner,
-    Stage, Umu, WineBridge, error::Result,
+    Addon, Context, Operation, Prefix, PrefixBackend, PrefixError, PrefixState, Runner, Stage, Umu,
+    WineBridge, error::Result,
 };
 use futures_core::Stream;
 use futures_util::{
@@ -201,13 +201,13 @@ impl Prefixes {
         umu: Option<Addon<Umu>>,
     ) -> Operation<Prefix> {
         let prefixes = self.clone();
-        Operation::new(move |progress, cancellation| async move {
-            progress.send_replace(Some(Progress::new(Stage::Preparing)));
+        Operation::new(move |job| async move {
+            job.transition(Stage::Preparing)?;
             let state = PrefixState::new(backend, runner, winebridge, umu);
             state.validate()?;
             let root = prefixes.root.join(Uuid::new_v4().to_string());
             let prefix = Prefix(Inner::new(state, root, prefixes.context.clone())?);
-            prefix.0.create(&progress, &cancellation).await?;
+            prefix.0.create(&job).await?;
             prefixes.members.send_modify(|members| {
                 Arc::make_mut(members).insert(prefix.id(), prefix.clone());
             });
@@ -233,11 +233,11 @@ impl Prefixes {
     /// stopped, observes cancellation, or cannot move its root into trash.
     pub fn delete(&self, id: Uuid) -> Operation<()> {
         let prefixes = self.clone();
-        Operation::new(move |progress, cancellation| async move {
+        Operation::new(move |job| async move {
             let handle = prefixes.open(id)?;
             handle
                 .0
-                .delete(&progress, &cancellation, || {
+                .delete(&job, || {
                     prefixes.members.send_modify(|members| {
                         Arc::make_mut(members).remove(&id);
                     });

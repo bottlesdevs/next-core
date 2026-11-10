@@ -15,10 +15,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
+    Job, Stage,
     addons::InstallerError,
     command::{Command, Spawnable},
     error::{Error, Result},
@@ -42,7 +42,7 @@ pub(crate) struct InstallInputs<'a> {
 
 /// Applies all resource steps in declaration order.
 ///
-/// `on_step` runs immediately before each step. If `backup_files` is `true`, a
+/// Reports [`Stage::Configuring`] before each step. If `backup_files` is `true`, a
 /// displaced regular file is preserved once for later removal; layered builds pass
 /// `false` because their lower layer retains the original.
 ///
@@ -57,16 +57,13 @@ pub(crate) async fn execute(
     payload_root: &Path,
     resources: &[InstallResource],
     backup_files: bool,
-    cancellation: &CancellationToken,
-    on_step: impl Fn(&InstallStep) + Send,
+    job: &Job,
 ) -> Result<()> {
-    check_cancellation(cancellation)?;
     for resource in resources {
         let source = payload_root.join(&resource.path);
         for step in &resource.steps {
-            on_step(step);
-            execute_step(inputs, &source, step, backup_files, cancellation).await?;
-            check_cancellation(cancellation)?;
+            job.transition(Stage::Configuring)?;
+            execute_step(inputs, &source, step, backup_files, job).await?;
         }
     }
     Ok(())
@@ -86,14 +83,11 @@ pub(crate) async fn uninstall<'a>(
     inputs: InstallInputs<'_>,
     steps: impl DoubleEndedIterator<Item = &'a InstallStep>,
     item_id: Uuid,
-    cancellation: &CancellationToken,
-    on_step: impl Fn(&InstallStep) + Send,
+    job: &Job,
 ) -> Result<()> {
-    check_cancellation(cancellation)?;
     for step in steps.rev() {
-        on_step(step);
-        uninstall_step(inputs, step, item_id, cancellation).await?;
-        check_cancellation(cancellation)?;
+        job.transition(Stage::Removing)?;
+        uninstall_step(inputs, step, item_id).await?;
     }
     Ok(())
 }
@@ -112,7 +106,7 @@ async fn execute_step(
     resource: &Path,
     step: &InstallStep,
     backup_files: bool,
-    cancellation: &CancellationToken,
+    job: &Job,
 ) -> Result<()> {
     let InstallInputs {
         wineprefix,
@@ -133,14 +127,7 @@ async fn execute_step(
             install_file(&source, wineprefix, destination, backup_files).await?;
         }
         InstallStep::Extract { destination } => {
-            extract_into(
-                resource,
-                wineprefix,
-                destination,
-                backup_files,
-                cancellation,
-            )
-            .await?;
+            extract_into(resource, wineprefix, destination, backup_files, job).await?;
         }
         InstallStep::Execute {
             arguments,
@@ -153,22 +140,19 @@ async fn execute_step(
             for (name, value) in env_vars.iter() {
                 command = command.env(name, value);
             }
-            let status =
-                wait_for_child(runner.command(wineprefix, command).spawn()?, cancellation).await?;
+            let status = wait_for_child(runner.command(wineprefix, command).spawn()?, job).await?;
             if !status.success() {
                 return Err(InstallerError::InstallerFailed(status).into());
             }
         }
         InstallStep::RegisterDlls { dlls, env_vars } => {
             for dll in dlls {
-                check_cancellation(cancellation)?;
                 let mut command = Command::new("regsvr32").arg("/s").arg(wineprefix.join(dll));
                 for (name, value) in env_vars.iter() {
                     command = command.env(name, value);
                 }
                 let status =
-                    wait_for_child(runner.command(wineprefix, command).spawn()?, cancellation)
-                        .await?;
+                    wait_for_child(runner.command(wineprefix, command).spawn()?, job).await?;
                 if !status.success() {
                     return Err(InstallerError::RegisterDllFailed(status).into());
                 }
@@ -181,7 +165,6 @@ async fn execute_step(
             value,
         } => {
             let bridge = maintenance_bridge(runner, wineprefix, winebridge).await?;
-            check_cancellation(cancellation)?;
             bridge
                 .set_registry_value(*hive, key.clone(), name.clone(), value.clone())
                 .await?;
@@ -189,7 +172,6 @@ async fn execute_step(
         InstallStep::SetDllOverrides { dlls, mode } => {
             let bridge = maintenance_bridge(runner, wineprefix, winebridge).await?;
             for dll in dlls {
-                check_cancellation(cancellation)?;
                 bridge.set_dll_override(dll.clone(), *mode).await?;
             }
         }
@@ -201,7 +183,6 @@ async fn uninstall_step(
     inputs: InstallInputs<'_>,
     step: &InstallStep,
     addon_id: Uuid,
-    cancellation: &CancellationToken,
 ) -> Result<()> {
     let InstallInputs {
         wineprefix,
@@ -217,7 +198,6 @@ async fn uninstall_step(
         InstallStep::SetDllOverrides { dlls, .. } => {
             let bridge = maintenance_bridge(runner, wineprefix, winebridge).await?;
             for dll in dlls.iter().rev() {
-                check_cancellation(cancellation)?;
                 bridge.delete_dll_override(dll.clone()).await?;
             }
         }
@@ -229,15 +209,7 @@ async fn uninstall_step(
             );
         }
     }
-    check_cancellation(cancellation)
-}
-
-fn check_cancellation(cancellation: &CancellationToken) -> Result<()> {
-    if cancellation.is_cancelled() {
-        Err(Error::Cancelled)
-    } else {
-        Ok(())
-    }
+    Ok(())
 }
 
 /// Waits for a child to exit, killing and reaping it if cancellation wins.
@@ -251,19 +223,19 @@ fn check_cancellation(cancellation: &CancellationToken) -> Result<()> {
 /// [`Error::Cancelled`] after cancellation and successful cleanup.
 async fn wait_for_child(
     mut child: async_process::Child,
-    cancellation: &CancellationToken,
+    job: &Job,
 ) -> Result<std::process::ExitStatus> {
-    let status = cancellation.run_until_cancelled(child.status()).await;
-    if let Some(status) = status {
-        return Ok(status?);
-    }
+    let cancelled = match job.cancellable(child.status()).await {
+        Ok(status) => return Ok(status?),
+        Err(cancelled) => cancelled,
+    };
     if let Err(error) = child.kill()
         && error.kind() != io::ErrorKind::InvalidInput
     {
         return Err(error.into());
     }
     child.status().await?;
-    Err(Error::Cancelled)
+    Err(cancelled)
 }
 
 /// Copies `source` into the prefix and optionally preserves the displaced file.
@@ -340,18 +312,15 @@ async fn extract_into(
     wineprefix: &Path,
     destination: &Path,
     backup_files: bool,
-    cancellation: &CancellationToken,
+    job: &Job,
 ) -> Result<()> {
     fs::with_staging(|stage| async move {
-        check_cancellation(cancellation)?;
         archive::extract(archive, &stage).await?;
-        check_cancellation(cancellation)?;
         for source in archive::files(&stage).await? {
-            check_cancellation(cancellation)?;
+            job.check_cancellation()?;
             let relative = destination.join(source.strip_prefix(&stage).unwrap());
             install_file(&source, wineprefix, &relative, backup_files).await?;
         }
-        check_cancellation(cancellation)?;
         Ok::<_, Error>(())
     })
     .await
@@ -366,6 +335,8 @@ fn backup_path(path: &Path) -> PathBuf {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::Operation;
+    use tokio::sync::oneshot;
 
     #[test]
     fn cancellation_kills_and_reaps_child() {
@@ -374,13 +345,15 @@ mod tests {
                 .args(["-c", "sleep 30"])
                 .spawn()
                 .unwrap();
-            let cancellation = CancellationToken::new();
-            cancellation.cancel();
+            let (token_tx, token_rx) = oneshot::channel();
+            let operation = Operation::new(|job| async move {
+                let token: tokio_util::sync::CancellationToken = token_rx.await.unwrap();
+                token.cancel();
+                wait_for_child(child, &job).await
+            });
+            token_tx.send(operation.cancellation_token()).unwrap();
 
-            assert!(matches!(
-                wait_for_child(child, &cancellation).await,
-                Err(Error::Cancelled)
-            ));
+            assert!(matches!(operation.await, Err(Error::Cancelled)));
         });
     }
 }

@@ -23,16 +23,15 @@ pub use history::{Snapshot, SnapshotSummary};
 pub use state::PrefixState;
 
 use crate::{
-    Context, Progress, Stage,
-    error::{Error, Result, ResultExt},
+    Context, Job, Stage,
+    error::{Result, ResultExt},
     utils::fs,
 };
 use backend::standard;
 use futures_core::Stream;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
-use tokio::sync::{Mutex, MutexGuard, watch};
+use tokio::sync::{Mutex, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 /// Every prefix's published state, keyed by prefix identifier.
@@ -82,25 +81,18 @@ impl Inner {
     /// initialization succeeds, cancellation or a failed save moves the
     /// prefix root to trash on a best-effort basis.
     ///
-    /// Cancellation is sampled before backend initialization and before and after
-    /// the final save. Backend-specific work may add safe points, but in-flight
+    /// Cancellation is sampled before backend initialization and before the final
+    /// save. Backend-specific work may add safe points, but in-flight
     /// filesystem and FVS requests are not forcibly interrupted.
     ///
     /// # Errors
     ///
     /// Returns cancellation, runner, storage, backend, or persistence errors
     /// encountered during initialization.
-    pub(crate) async fn create(
-        &self,
-        progress: &watch::Sender<Option<Progress>>,
-        cancellation: &CancellationToken,
-    ) -> Result<()> {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
+    pub(crate) async fn create(&self, job: &Job) -> Result<()> {
         let state = self.state()?;
         let state = state.as_ref();
-        progress.send_replace(Some(Progress::new(Stage::CreatingPrefix)));
+        job.transition(Stage::CreatingPrefix)?;
         // Initialization owns shutdown. Retain storage when it cannot finish safely.
         match state.backend {
             PrefixBackend::Standard => {
@@ -109,25 +101,18 @@ impl Inner {
             #[cfg(feature = "fvs")]
             PrefixBackend::Virgo => {
                 let (base, overlays) = backend::virgo::Virgo::new(&self.context)
-                    .prepare_artifacts(state, progress, cancellation)
+                    .prepare_artifacts(state, job)
                     .await?;
                 self.context
                     .fvs()
                     .layers
-                    .prepare_workspace(&self.root, &base, &overlays, cancellation)
+                    .prepare_workspace(&self.root, &base, &overlays, job)
                     .await?;
             }
         }
         let result = async {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            progress.send_replace(Some(Progress::new(Stage::Configuring)));
-            self.save(state).await?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
-            Ok(())
+            job.transition(Stage::Configuring)?;
+            self.save(state).await
         }
         .await;
         if result.is_err() {
@@ -178,26 +163,6 @@ impl Inner {
         Ok(next_config::save(self.root.join("state.toml"), state).await?)
     }
 
-    /// Acquires mutation coordination unless cancellation wins the wait.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Cancelled`] if `cancellation` fires before or immediately
-    /// after the lock is acquired.
-    pub(crate) async fn lock_control(
-        &self,
-        cancellation: &CancellationToken,
-    ) -> Result<MutexGuard<'_, ()>> {
-        let guard = cancellation
-            .run_until_cancelled(self.control.lock())
-            .await
-            .ok_or(Error::Cancelled)?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        Ok(guard)
-    }
-
     /// Stops the runtime, discards the root, and publishes deletion.
     ///
     /// `on_deleted` runs synchronously after the root is discarded and deletion
@@ -208,19 +173,11 @@ impl Inner {
     ///
     /// Returns cancellation, runtime shutdown, or filesystem errors that occur
     /// before the root has been withdrawn. Cleanup errors after withdrawal are logged.
-    pub(crate) async fn delete(
-        &self,
-        progress: &watch::Sender<Option<Progress>>,
-        cancellation: &CancellationToken,
-        on_deleted: impl FnOnce(),
-    ) -> Result<()> {
-        let _control = self.lock_control(cancellation).await?;
-        progress.send_replace(Some(Progress::new(Stage::Stopping)));
+    pub(crate) async fn delete(&self, job: &Job, on_deleted: impl FnOnce()) -> Result<()> {
+        let _control = job.cancellable(self.control.lock()).await?;
+        job.transition(Stage::Stopping)?;
         self.stop_locked().await?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        progress.send_replace(Some(Progress::new(Stage::Removing)));
+        job.transition(Stage::Removing)?;
         fs::discard(&self.root).await?;
         self.state.send_replace(None);
         on_deleted();

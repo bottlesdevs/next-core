@@ -6,14 +6,12 @@
 
 use super::super::runtime;
 use crate::{
-    PrefixState, Progress, Slot, Stage,
+    Job, PrefixState, Slot,
     addons::{InstallInputs, execute, uninstall},
     error::Result,
 };
 use std::path::Path;
 use strum::IntoEnumIterator;
-use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 
 /// Creates the prefix directory, initializes Wine, and stops its processes.
 ///
@@ -53,8 +51,7 @@ pub(in crate::prefix) async fn apply(
     previous: &PrefixState,
     candidate: &PrefixState,
     root: &Path,
-    progress: &watch::Sender<Option<Progress>>,
-    cancellation: &CancellationToken,
+    job: &Job,
 ) -> Result<()> {
     let mut removals = Vec::new();
     let mut components = Vec::new();
@@ -82,20 +79,14 @@ pub(in crate::prefix) async fn apply(
     };
     let applied = async {
         for release in removals {
-            uninstall(inputs, release.recipe(), release.id(), cancellation, |_| {
-                progress.send_replace(Some(Progress::new(Stage::Removing)));
-            })
-            .await?;
+            uninstall(inputs, release.recipe(), release.id(), job).await?;
         }
         let installations = components
             .iter()
             .map(|r| (r.path(), r.resources()))
             .chain(dependencies.iter().map(|r| (r.path(), r.resources())));
         for (payload, resources) in installations {
-            execute(inputs, &payload, resources, true, cancellation, |_| {
-                progress.send_replace(Some(Progress::new(Stage::Configuring)));
-            })
-            .await?;
+            execute(inputs, &payload, resources, true, job).await?;
         }
         Ok(())
     }

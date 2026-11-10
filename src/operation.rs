@@ -16,7 +16,7 @@ use tokio::sync::watch;
 use tokio_stream::{StreamExt, wrappers::WatchStream};
 use tokio_util::sync::CancellationToken;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// Counts completed work within an operation stage.
 ///
@@ -49,13 +49,6 @@ impl Progress {
         Self {
             stage,
             transfer: None,
-        }
-    }
-
-    pub(crate) fn transferring(stage: Stage, transfer: Transfer) -> Self {
-        Self {
-            stage,
-            transfer: Some(transfer),
         }
     }
 
@@ -152,6 +145,89 @@ impl fmt::Display for Stage {
     }
 }
 
+/// Publishes an operation's progress without observing cancellation.
+///
+/// Work that must run to completion, such as rollback, receives this instead of
+/// a [`Job`].
+pub(crate) struct ProgressReporter(watch::Sender<Option<Progress>>);
+
+impl ProgressReporter {
+    /// Publishes `stage` with no quantified progress.
+    pub(crate) fn stage(&self, stage: Stage) {
+        self.0.send_replace(Some(Progress::new(stage)));
+    }
+
+    /// Publishes `transfer` as the progress of the current stage.
+    pub(crate) fn transfer(&self, transfer: Transfer) {
+        self.0.send_if_modified(|progress| match progress {
+            Some(progress) => {
+                progress.transfer = Some(transfer);
+                true
+            }
+            None => false,
+        });
+    }
+}
+
+/// The running side of an [`Operation`].
+///
+/// Cancellation surfaces as [`Error::Cancelled`] from the calls below, so work
+/// propagates it with `?` and cleans up as it would for any other failure.
+pub struct Job {
+    progress: ProgressReporter,
+    cancellation: CancellationToken,
+}
+
+impl Job {
+    /// Publishes `stage`, unless the operation has been cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Cancelled`] after cancellation has been requested.
+    pub fn transition(&self, stage: Stage) -> Result<()> {
+        self.check_cancellation()?;
+        self.progress.stage(stage);
+        Ok(())
+    }
+
+    /// Checks whether the operation has been cancelled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Cancelled`] after cancellation has been requested.
+    pub fn check_cancellation(&self) -> Result<()> {
+        if self.cancellation.is_cancelled() {
+            Err(Error::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Returns the handle for reporting progress from uncancellable work.
+    pub(crate) fn progress(&self) -> &ProgressReporter {
+        &self.progress
+    }
+
+    /// Completes when cancellation is requested.
+    pub(crate) async fn cancelled(&self) {
+        self.cancellation.cancelled().await;
+    }
+
+    /// Runs `work` unless cancellation wins, in which case `work` is dropped.
+    ///
+    /// `work` must be safe to abandon at any `.await`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Cancelled`] if cancellation wins.
+    pub(crate) async fn cancellable<F: Future>(&self, work: F) -> Result<F::Output> {
+        self.cancellation
+            .run_until_cancelled(work)
+            .await
+            .ok_or(Error::Cancelled)
+    }
+}
+
 /// A lazy future with progress reporting and cooperative cancellation.
 ///
 /// Creating an operation does not start it. Work begins on its first poll;
@@ -177,23 +253,23 @@ impl<T> Operation<T> {
     ///
     /// The work must treat cancellation as cooperative and keep any required
     /// asynchronous cleanup in the returned future so [`Operation::cancel`] can
-    /// drive it. Progress senders must not outlive that future so progress streams
-    /// close when the operation terminates.
+    /// drive it. The [`Job`] must not outlive that future so progress streams close
+    /// when the operation terminates.
     pub fn new<F, Fut>(work: F) -> Self
     where
         T: Send + 'static,
-        F: FnOnce(watch::Sender<Option<Progress>>, CancellationToken) -> Fut + Send + 'static,
+        F: FnOnce(Job) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
         let (progress, progress_rx) = watch::channel(None);
         let cancellation = CancellationToken::new();
-        let work_cancellation = cancellation.clone();
+        let job = Job {
+            progress: ProgressReporter(progress),
+            cancellation: cancellation.clone(),
+        };
         let future = Box::pin(async move {
-            if work_cancellation.is_cancelled() {
-                Err(crate::error::Error::Cancelled)
-            } else {
-                work(progress, work_cancellation).await
-            }
+            job.check_cancellation()?;
+            work(job).await
         });
 
         Self {
@@ -228,8 +304,8 @@ impl<T> Operation<T> {
     ///
     /// Cancelling the token does not poll the operation or wait for cleanup. If
     /// cancellation precedes the first poll, the work closure is skipped;
-    /// otherwise the running operation observes the token only at its documented
-    /// cancellation points. Await the operation to obtain its terminal result.
+    /// otherwise the running operation observes the token only when it calls
+    /// [`Job`] methods. Await the operation to obtain its terminal result.
     ///
     /// # Examples
     ///
@@ -277,7 +353,7 @@ impl<T> Operation<T> {
     ///
     /// An unpolled operation is cancelled without invoking its work closure.
     /// Once work has started, cancellation is cooperative and may only be
-    /// observed at operation-specific checkpoints. If the work has passed its
+    /// observed when the work calls [`Job`] methods. If the work has passed its
     /// cancellation boundary, this may return its successful result or another
     /// error instead of [`Error::Cancelled`](crate::error::Error::Cancelled).
     /// This method neither aborts the future nor imposes a timeout, so work that
@@ -322,15 +398,15 @@ mod tests {
     fn progress_fraction_is_bounded() {
         assert_eq!(Progress::new(Stage::Preparing).fraction(), None);
         assert_eq!(
-            Progress::transferring(
-                Stage::Downloading {
+            Progress {
+                stage: Stage::Downloading {
                     file: "runner".into(),
                 },
-                Transfer {
+                transfer: Some(Transfer {
                     current: 150,
                     total: Some(100),
-                },
-            )
+                }),
+            }
             .fraction(),
             Some(1.0)
         );
@@ -340,7 +416,7 @@ mod tests {
     fn operation_is_lazy() {
         let started = Arc::new(AtomicBool::new(false));
         let work_started = started.clone();
-        let operation: Operation<()> = Operation::new(move |_, _| {
+        let operation: Operation<()> = Operation::new(move |_| {
             work_started.store(true, Ordering::Relaxed);
             async { Ok(()) }
         });
@@ -357,13 +433,13 @@ mod tests {
             let (updated_tx, updated_rx) = oneshot::channel();
             let (later_tx, later_rx) = oneshot::channel();
             let (finish_tx, finish_rx) = oneshot::channel();
-            let operation = Operation::new(|progress, _cancellation| async move {
+            let operation = Operation::new(|job| async move {
                 start_rx.await.unwrap();
-                progress.send_replace(Some(update(Stage::Preparing)));
-                progress.send_replace(Some(update(Stage::Stopping)));
+                job.progress().stage(Stage::Preparing);
+                job.progress().stage(Stage::Stopping);
                 updated_tx.send(()).unwrap();
                 later_rx.await.unwrap();
-                progress.send_replace(Some(update(Stage::Removing)));
+                job.progress().stage(Stage::Removing);
                 finish_rx.await.unwrap();
                 Ok(())
             });
@@ -401,11 +477,10 @@ mod tests {
     #[test]
     fn explicit_cancellation_waits_for_the_terminal_result() {
         futures_lite::future::block_on(async {
-            let mut operation: Operation<()> =
-                Operation::new(|_progress, cancellation| async move {
-                    cancellation.cancelled().await;
-                    Err(Error::Cancelled)
-                });
+            let mut operation: Operation<()> = Operation::new(|job| async move {
+                job.cancelled().await;
+                Err(Error::Cancelled)
+            });
             let mut progress = Box::pin(operation.progress());
 
             assert!(
@@ -423,7 +498,7 @@ mod tests {
         futures_lite::future::block_on(async {
             let invoked = Arc::new(AtomicBool::new(false));
             let work_invoked = invoked.clone();
-            let operation: Operation<()> = Operation::new(move |_, _| {
+            let operation: Operation<()> = Operation::new(move |_| {
                 work_invoked.store(true, Ordering::Relaxed);
                 async { Ok(()) }
             });
@@ -438,12 +513,11 @@ mod tests {
     fn cancellation_after_commit_returns_the_result() {
         futures_lite::future::block_on(async {
             let (committed_tx, committed_rx) = oneshot::channel();
-            let mut operation: Operation<_> =
-                Operation::new(|_progress, _cancellation| async move {
-                    committed_tx.send(()).unwrap();
-                    futures_lite::future::yield_now().await;
-                    Ok(42)
-                });
+            let mut operation: Operation<_> = Operation::new(|_| async move {
+                committed_tx.send(()).unwrap();
+                futures_lite::future::yield_now().await;
+                Ok(42)
+            });
 
             assert!(
                 futures_lite::future::poll_once(&mut operation)
@@ -459,7 +533,7 @@ mod tests {
     fn dropping_abandons_without_requesting_cancellation() {
         futures_lite::future::block_on(async {
             let mut operation: Operation<()> =
-                Operation::new(|_, _| async { std::future::pending::<Result<()>>().await });
+                Operation::new(|_| async { std::future::pending::<Result<()>>().await });
             let cancellation = operation.cancellation_token();
 
             assert!(
@@ -478,7 +552,7 @@ mod tests {
         let executor = async_executor::Executor::new();
         futures_lite::future::block_on(executor.run(async {
             let (finished_tx, finished_rx) = oneshot::channel();
-            let operation: Operation<()> = Operation::new(|_, _| async move {
+            let operation: Operation<()> = Operation::new(|_| async move {
                 finished_tx.send(()).unwrap();
                 Ok(())
             });

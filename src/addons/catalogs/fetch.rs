@@ -3,9 +3,9 @@
 //! Downloads and extraction happen in staging. A committed release contains its
 //! payload, runtime metadata, and any frozen prefix recipe.
 
-use super::{Catalogs, download::download};
+use super::Catalogs;
 use crate::{
-    Operation, Progress, Stage,
+    Job, Operation, Stage, Transfer,
     addons::{
         Addon, AddonError, AddonRole, CatalogError, RoleMarker,
         catalog::{CatalogArtifact, Target},
@@ -15,10 +15,9 @@ use crate::{
     error::{Error, Result},
     utils::fs,
 };
-use download_manager::manager::DownloadManager;
+use download_manager::{events::Progress as DownloadProgress, manager::DownloadManager};
+use futures_util::{FutureExt, StreamExt};
 use std::path::Path;
-use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 impl Catalogs {
@@ -39,9 +38,9 @@ impl Catalogs {
     /// extraction, or storage failure.
     pub fn fetch<R: RoleMarker>(&self, id: Uuid) -> Operation<Addon<R>> {
         let catalogs = self.clone();
-        Operation::new(move |progress, cancellation| async move {
+        Operation::new(move |job| async move {
             let addons = catalogs.0.addons.clone();
-            if let Some(release) = addons.acquired::<R>(id, &cancellation).await? {
+            if let Some(release) = addons.acquired::<R>(id, &job).await? {
                 return Ok(release);
             }
             let state = catalogs.state();
@@ -81,8 +80,7 @@ impl Catalogs {
                         &catalogs.0.downloader,
                         artifact,
                         &downloads.join(artifact.file_name()),
-                        &progress,
-                        &cancellation,
+                        &job,
                     )
                     .await?;
                 }
@@ -93,43 +91,65 @@ impl Catalogs {
                     prepared
                 } else {
                     let archive = downloads.join(artifacts[0].file_name());
-                    prepare_archive(&archive, &stage, &cancellation).await?
+                    prepare_archive(&archive, &stage, &job).await?
                 };
-                addons.commit(record, &prepared, &cancellation).await
+                addons.commit(record, &prepared, &job).await
             })
             .await
         })
     }
 }
 
+/// Downloads `artifact` to `destination` and verifies its checksum.
+///
+/// If cancellation wins the race, the underlying transfer is cancelled before
+/// [`Error::Cancelled`] is returned.
+///
+/// # Errors
+///
+/// Returns an error if the transfer cannot be created or completed, cancelling the
+/// transfer fails, the checksum does not match, or the job is cancelled.
 async fn download_artifact(
     downloader: &DownloadManager,
     artifact: &CatalogArtifact,
     destination: &Path,
-    progress: &watch::Sender<Option<Progress>>,
-    cancellation: &CancellationToken,
+    job: &Job,
 ) -> Result<()> {
-    download(
-        downloader,
-        artifact.url().clone(),
-        destination,
-        cancellation,
-        |transfer| {
-            progress.send_replace(Some(Progress::transferring(
-                Stage::Downloading {
-                    file: artifact.file_name().into(),
-                },
-                transfer,
-            )));
-        },
-    )
-    .await?;
-    progress.send_replace(Some(Progress::new(Stage::Verifying {
+    job.transition(Stage::Downloading {
         file: artifact.file_name().into(),
-    })));
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancelled);
+    })?;
+    let download = downloader.download(artifact.url().clone(), destination)?;
+    let mut updates = Box::pin(
+        download
+            .progress()
+            .chain(futures_util::stream::pending::<DownloadProgress>()),
+    );
+    let result = download.clone().fuse();
+    let cancelled = job.cancelled().fuse();
+    futures_util::pin_mut!(result, cancelled);
+
+    loop {
+        futures_util::select_biased! {
+            result = result => {
+                result?;
+                break;
+            },
+            _ = cancelled => {
+                download.cancel().await?;
+                return Err(Error::Cancelled);
+            }
+            update = updates.next().fuse() => {
+                let update = update.expect("progress stream is chained with pending");
+                job.progress().transfer(Transfer {
+                    current: update.bytes_downloaded(),
+                    total: update.total_bytes(),
+                });
+            }
+        }
     }
+    job.transition(Stage::Verifying {
+        file: artifact.file_name().into(),
+    })?;
     if !artifact.checksum().verify(destination).await? {
         return Err(AddonError::ChecksumMismatch(destination.to_path_buf()).into());
     }

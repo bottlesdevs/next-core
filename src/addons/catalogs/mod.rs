@@ -4,7 +4,6 @@
 //! dependency catalogs behind a cheap cloneable handle. Refreshes replace the
 //! snapshot; fetching a release downloads it and commits it to [`Addons`].
 
-mod download;
 mod fetch;
 mod refresh;
 

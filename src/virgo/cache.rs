@@ -9,14 +9,10 @@ use std::path::{Path, PathBuf};
 use futures_lite::StreamExt;
 use fvs_rs::{Layer, Repository};
 use serde::{Deserialize, Serialize};
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{LayerStore, VirgoError};
-use crate::{
-    error::{Error, Result},
-    utils::fs,
-};
+use crate::{Job, error::Result, utils::fs};
 
 #[derive(Deserialize, Serialize, next_config::Config)]
 #[config(version = 1)]
@@ -127,14 +123,8 @@ impl LayerStore {
     ///
     /// Returns cancellation or filesystem errors before withdrawal completes.
     #[allow(dead_code)] // Internal storage API; callers own reference tracking.
-    pub(crate) async fn remove(&self, key: &Path, cancellation: &CancellationToken) -> Result<()> {
-        let _lock = cancellation
-            .run_until_cancelled(self.build_lock.lock())
-            .await
-            .ok_or(Error::Cancelled)?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
+    pub(crate) async fn remove(&self, key: &Path, job: &Job) -> Result<()> {
+        let _lock = job.cancellable(self.build_lock.lock()).await?;
         Ok(fs::discard(&self.root().join(key)).await?)
     }
 
@@ -148,7 +138,7 @@ impl LayerStore {
     /// # Errors
     ///
     /// Returns an error if the manifest cannot be saved, the destination parent
-    /// cannot be created, cancellation arrives before the rename, or publication fails.
+    /// cannot be created, or publication fails.
     ///
     /// # Panics
     ///
@@ -159,15 +149,11 @@ impl LayerStore {
         key: &Path,
         id: Uuid,
         commit: String,
-        cancellation: &CancellationToken,
     ) -> Result<VirgoLayer> {
         let destination = self.root().join(key);
         let manifest = VirgoLayerManifest { id, commit };
         next_config::save(artifact.join("manifest.toml"), &manifest).await?;
         async_fs::create_dir_all(destination.parent().expect("artifact has a parent")).await?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
         async_fs::rename(artifact, &destination).await?;
         Ok(manifest.resolve(&destination))
     }
