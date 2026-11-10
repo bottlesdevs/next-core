@@ -4,13 +4,44 @@
 //! component layers, and dependency layers in composition order.
 
 use crate::{
-    Addon, AddonError, Context, Job, PrefixState,
+    Addon, AddonError, Component, Context, Dependency, Job, PrefixState, Runner,
     addons::{InstallInputs, execute},
     error::Result,
     prefix::runtime,
     virgo::{LayerStore, VirgoError, VirgoLayer},
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use uuid::Uuid;
+
+/// Cache key of the base layer shared by every composition.
+const BASE: &str = "soda";
+
+/// One layer composed over the base, in composition order.
+enum Overlay<'a> {
+    Adapter(&'a Addon<Runner>),
+    Component(&'a Addon<Component>),
+    Dependency(&'a Addon<Dependency>),
+}
+
+impl Overlay<'_> {
+    /// Returns the layer's cache key and the release it is built from.
+    fn key(&self) -> (PathBuf, Uuid) {
+        let (collection, id) = match self {
+            Self::Adapter(runner) => ("adapters", runner.id()),
+            Self::Component(addon) => ("addons", addon.id()),
+            Self::Dependency(addon) => ("addons", addon.id()),
+        };
+        (Path::new(collection).join(id.to_string()), id)
+    }
+}
+
+/// Lists the overlays of `config`: the runner adapter, components, then
+/// dependencies in installation order.
+fn overlays(config: &PrefixState) -> impl Iterator<Item = Overlay<'_>> {
+    std::iter::once(Overlay::Adapter(&config.runner))
+        .chain(config.components.values().map(Overlay::Component))
+        .chain(config.dependencies.iter().map(Overlay::Dependency))
+}
 
 /// Resolves and builds Virgo artifacts with the services of one core instance.
 pub(in crate::prefix) struct Virgo<'a> {
@@ -43,14 +74,16 @@ impl<'a> Virgo<'a> {
         job: &Job,
     ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
         let base = self.prepare_base(job).await?;
-        let mut overlays = vec![self.prepare_adapter(config, &base, job).await?];
-        for addon in config.components.values() {
-            overlays.push(self.prepare_addon(addon, &base, job).await?);
+        let mut built = Vec::new();
+        for overlay in overlays(config) {
+            let (key, id) = overlay.key();
+            built.push(match overlay {
+                Overlay::Adapter(_) => self.prepare_adapter(config, &key, id, &base, job).await?,
+                Overlay::Component(addon) => self.prepare_addon(addon, &key, &base, job).await?,
+                Overlay::Dependency(addon) => self.prepare_addon(addon, &key, &base, job).await?,
+            });
         }
-        for addon in &config.dependencies {
-            overlays.push(self.prepare_addon(addon, &base, job).await?);
-        }
-        Ok((base, overlays))
+        Ok((base, built))
     }
 
     /// Loads the exact cached composition recorded by `config`.
@@ -66,20 +99,13 @@ impl<'a> Virgo<'a> {
         &self,
         config: &PrefixState,
     ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
-        let base = self.layers.require(Path::new("soda"), None).await?;
-        let runner = config.runner.id();
-        let adapter = Path::new("adapters").join(runner.to_string());
-        let mut overlays = vec![self.layers.require(&adapter, Some(runner)).await?];
-        for id in config
-            .components
-            .values()
-            .map(Addon::id)
-            .chain(config.dependencies.iter().map(Addon::id))
-        {
-            let addon = Path::new("addons").join(id.to_string());
-            overlays.push(self.layers.require(&addon, Some(id)).await?);
+        let base = self.layers.require(Path::new(BASE), None).await?;
+        let mut required = Vec::new();
+        for overlay in overlays(config) {
+            let (key, id) = overlay.key();
+            required.push(self.layers.require(&key, Some(id)).await?);
         }
-        Ok((base, overlays))
+        Ok((base, required))
     }
 
     /// Reuses the pinned base or builds it from the newest valid local Soda runner.
@@ -92,14 +118,14 @@ impl<'a> Virgo<'a> {
     /// Returns [`VirgoError::SodaNotDownloaded`] when no eligible local
     /// runner exists, plus cancellation, runner, FVS, registry, or filesystem errors.
     async fn prepare_base(&self, job: &Job) -> Result<VirgoLayer> {
-        let destination = Path::new("soda");
+        let destination = Path::new(BASE);
         self.layers
             .get_or_build(destination, None, job, || async {
                 let soda = latest_addon(
                     self.cx
                         .addons()
                         .state()
-                        .releases::<crate::Runner>()
+                        .releases::<Runner>()
                         .filter(|addon| addon.name().eq_ignore_ascii_case("soda")),
                 )
                 .ok_or(VirgoError::SodaNotDownloaded)?;
@@ -133,17 +159,17 @@ impl<'a> Virgo<'a> {
     async fn prepare_adapter(
         &self,
         config: &PrefixState,
+        destination: &Path,
+        id: Uuid,
         base: &VirgoLayer,
         job: &Job,
     ) -> Result<VirgoLayer> {
-        let id = config.runner.id();
-        let destination = Path::new("adapters").join(id.to_string());
         self.layers
-            .get_or_build(&destination, Some(id), job, || async {
+            .get_or_build(destination, Some(id), job, || async {
                 let runner = config.runner.load_runner(config.umu.as_ref()).await?;
                 let workspace = self
                     .layers
-                    .prepare_build(&destination, Some(base), job)
+                    .prepare_build(destination, Some(base), job)
                     .await?;
                 let executed = async {
                     job.check_cancellation()?;
@@ -171,16 +197,16 @@ impl<'a> Virgo<'a> {
     async fn prepare_addon<R: crate::RoleMarker>(
         &self,
         addon: &Addon<R>,
+        destination: &Path,
         base: &VirgoLayer,
         job: &Job,
     ) -> Result<VirgoLayer> {
         let id = addon.id();
-        let destination = Path::new("addons").join(id.to_string());
         self.layers
-            .get_or_build(&destination, Some(id), job, || async {
+            .get_or_build(destination, Some(id), job, || async {
                 let addons = self.cx.addons().state();
                 let soda = addons
-                    .release::<crate::Runner>(base.id)
+                    .release::<Runner>(base.id)
                     .ok_or(AddonError::NotFound(base.id))?;
                 let runner = soda.load_runner(None).await?;
                 let winebridge = latest_addon(addons.releases::<crate::WineBridge>())
@@ -188,7 +214,7 @@ impl<'a> Virgo<'a> {
                     .path();
                 let workspace = self
                     .layers
-                    .prepare_build(&destination, Some(base), job)
+                    .prepare_build(destination, Some(base), job)
                     .await?;
                 let executed = execute(
                     InstallInputs {
