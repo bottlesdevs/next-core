@@ -50,9 +50,10 @@ impl Prefix {
     /// settings may change while Wine is running. An unchanged draft is not saved.
     /// Any shutdown begun for the edit finishes before cancellation is returned.
     /// Once application succeeds, persistence and publication are not cancelled.
-    /// Standard-prefix software edits are not rolled back: failure or cancellation
-    /// can leave files changed while the previous state remains published. Virgo
-    /// failures after checkpoint capture recover the previous files before returning.
+    /// With the `fvs` feature, a checkpoint is captured before storage changes,
+    /// and a failure after it recovers the previous files before returning.
+    /// Without it, failure or cancellation can leave files changed while the
+    /// previous state remains published.
     ///
     /// # Errors
     ///

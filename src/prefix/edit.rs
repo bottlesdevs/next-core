@@ -2,15 +2,16 @@
 //!
 //! [`Edit`] is exposed only inside a prefix's edit callback. Changes are made to
 //! a private draft, validated as a whole, applied to storage, persisted, and
-//! published only after the callback succeeds. Virgo edits recover from a failed
-//! storage change; conventional prefixes can remain partially modified on failure.
+//! published only after the callback succeeds. With the `fvs` feature, a failed
+//! storage change is recovered from a checkpoint; without it, storage can remain
+//! partially modified on failure.
 
 use crate::{
     Addon, Component, Dependency, EnvVars, Runner, Slot, Umu, WineBridge, Wrappers, error::Result,
 };
 
 use super::{Inner, PrefixState, backend::standard};
-use crate::{Operation, PrefixBackend, PrefixError, Stage};
+use crate::{Job, Operation, PrefixBackend, PrefixError, Stage};
 use std::sync::Arc;
 
 /// Provides mutable access to a prefix's editable state.
@@ -120,10 +121,8 @@ impl Inner {
     /// Runtime and prefix changes require a stopped prefix. Runtime-only
     /// changes save directly for Standard prefixes. Virgo rebuilds the
     /// composition when the runner changes; UMU and WineBridge changes only save.
-    /// Standard prefix changes apply in place without rollback; Virgo prefixes
-    /// checkpoint and recover the prefix if workspace preparation or persistence fails. A
-    /// standard-prefix application or subsequent save failure can therefore leave
-    /// prefix contents inconsistent with the last published configuration.
+    /// Storage changes are [checkpointed](Self::checkpointed) together with the
+    /// save that follows them.
     ///
     /// Cancellation is observed before a change starts and at backend-specific
     /// safe points. Once backend application succeeds, saving and publication
@@ -166,43 +165,29 @@ impl Inner {
             // Once application succeeds, finish saving even if cancellation arrives.
             match previous.backend {
                 PrefixBackend::Standard if prefix_changed => {
-                    standard::apply(before, after, &prefix.root, &job).await?;
-                    prefix.save(&draft).await?;
+                    prefix
+                        .checkpointed(&job, async {
+                            standard::apply(before, after, &prefix.root, &job).await?;
+                            prefix.save(&draft).await
+                        })
+                        .await?;
                 }
                 #[cfg(feature = "fvs")]
                 PrefixBackend::Virgo if prefix_changed || runner_changed => {
-                    use super::{backend::virgo::Virgo, history};
-
-                    let (base, overlays) = Virgo::new(&prefix.context)
+                    let (base, overlays) = super::backend::virgo::Virgo::new(&prefix.context)
                         .prepare_artifacts(after, &job)
                         .await?;
-                    job.transition(Stage::Checkpointing)?;
-                    let checkpoint = history::capture(
-                        &prefix.root,
-                        history::AUTO_CHECKPOINT_MESSAGE.into(),
-                        false,
-                        &prefix.context,
-                        job.progress(),
-                    )
-                    .await?;
-                    let applied = async {
-                        prefix
-                            .context
-                            .fvs()
-                            .layers
-                            .prepare_workspace(&prefix.root, &base, &overlays, &job)
-                            .await?;
-                        prefix.save(&draft).await
-                    }
-                    .await;
-                    history::recover(
-                        applied,
-                        &prefix.root,
-                        &checkpoint,
-                        &prefix.context,
-                        job.progress(),
-                    )
-                    .await?;
+                    prefix
+                        .checkpointed(&job, async {
+                            prefix
+                                .context
+                                .fvs()
+                                .layers
+                                .prepare_workspace(&prefix.root, &base, &overlays, &job)
+                                .await?;
+                            prefix.save(&draft).await
+                        })
+                        .await?;
                 }
                 _ if runner_changed || umu_changed => {
                     after.runner.load_runner(after.umu.as_ref()).await?;
@@ -213,5 +198,50 @@ impl Inner {
             prefix.publish(draft);
             Ok(result)
         })
+    }
+
+    /// Runs `change` on stopped storage, recovering the prefix if it fails.
+    ///
+    /// With the `fvs` feature, a checkpoint of the whole root is captured first
+    /// and restored when `change` fails. Without it, a failed change is not
+    /// rolled back and can leave storage inconsistent with the published state.
+    ///
+    /// # Errors
+    ///
+    /// Returns cancellation before the checkpoint, checkpoint failures, the
+    /// error of `change` after a successful recovery, or
+    /// [`PrefixError::Rollback`] if recovery also fails.
+    async fn checkpointed(
+        &self,
+        job: &Job,
+        change: impl Future<Output = Result<()>>,
+    ) -> Result<()> {
+        #[cfg(feature = "fvs")]
+        {
+            use super::history;
+
+            job.transition(Stage::Checkpointing)?;
+            let checkpoint = history::capture(
+                &self.root,
+                history::AUTO_CHECKPOINT_MESSAGE.into(),
+                false,
+                &self.context,
+                job.progress(),
+            )
+            .await?;
+            history::recover(
+                change.await,
+                &self.root,
+                &checkpoint,
+                &self.context,
+                job.progress(),
+            )
+            .await
+        }
+        #[cfg(not(feature = "fvs"))]
+        {
+            let _ = job;
+            change.await
+        }
     }
 }
