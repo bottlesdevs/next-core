@@ -5,15 +5,18 @@
 
 use super::Storage;
 use crate::{
-    Addon, AddonError, Component, Context, Dependency, Job, PrefixState, Runner,
+    Addon, AddonError, Addons, Component, Dependency, Job, PrefixState, Runner,
     addons::{InstallInputs, execute},
     error::Result,
     prefix::runtime,
-    virgo::{LayerStore, VirgoError, VirgoLayer},
+    virgo::{Fvs, LayerStore, VirgoError, VirgoLayer},
     winebridge::WineBridgeClient,
 };
 use async_trait::async_trait;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use uuid::Uuid;
 
 /// Cache key of the base layer shared by every composition.
@@ -48,9 +51,10 @@ fn overlays(config: &PrefixState) -> impl Iterator<Item = Overlay<'_>> {
 
 /// Stores a prefix as a workspace composed from immutable layers.
 ///
-/// Resolves and builds layers with the services of one core instance.
+/// Builds layers from the locally acquired releases in `addons`.
 pub(super) struct Virgo {
-    cx: Context,
+    addons: Addons,
+    fvs: Arc<Fvs>,
 }
 
 #[async_trait]
@@ -98,12 +102,12 @@ impl Storage for Virgo {
 }
 
 impl Virgo {
-    pub(super) fn new(cx: Context) -> Self {
-        Self { cx }
+    pub(super) fn new(addons: Addons, fvs: Arc<Fvs>) -> Self {
+        Self { addons, fvs }
     }
 
     fn layers(&self) -> &LayerStore {
-        &self.cx.fvs().layers
+        &self.fvs.layers
     }
 
     /// Ensures every artifact needed by `config` exists and returns composition order.
@@ -168,8 +172,7 @@ impl Virgo {
         self.layers()
             .get_or_build(destination, None, job, || async {
                 let soda = latest_addon(
-                    self.cx
-                        .addons()
+                    self.addons
                         .state()
                         .releases::<Runner>()
                         .filter(|addon| addon.name().eq_ignore_ascii_case("soda")),
@@ -250,7 +253,7 @@ impl Virgo {
         let id = addon.id();
         self.layers()
             .get_or_build(destination, Some(id), job, || async {
-                let addons = self.cx.addons().state();
+                let addons = self.addons.state();
                 let soda = addons
                     .release::<Runner>(base.id)
                     .ok_or(AddonError::NotFound(base.id))?;

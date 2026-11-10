@@ -209,7 +209,7 @@ impl Inner {
                 &self.root,
                 history::AUTO_CHECKPOINT_MESSAGE.into(),
                 false,
-                &self.context,
+                &self.fvs.client,
                 job.progress(),
             )
             .await?;
@@ -217,7 +217,7 @@ impl Inner {
                 change.await,
                 &self.root,
                 &checkpoint,
-                &self.context,
+                &self.fvs.client,
                 job.progress(),
             )
             .await

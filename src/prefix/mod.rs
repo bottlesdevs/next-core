@@ -23,11 +23,12 @@ pub use history::{Snapshot, SnapshotSummary};
 pub use state::PrefixState;
 
 use crate::{
-    Context, Job, Stage,
+    Job, Stage,
     error::{Result, ResultExt},
     utils::fs,
 };
 use backend::Storage;
+pub(crate) use backend::Storages;
 use futures_core::Stream;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, watch};
@@ -44,8 +45,10 @@ pub(crate) struct Inner {
     /// Notified each time this prefix starts `WineBridge`.
     pub(crate) bridge_started: watch::Sender<()>,
     pub(crate) root: PathBuf,
-    pub(crate) context: Context,
     storage: Arc<dyn Storage>,
+    /// FVS services used by prefix history.
+    #[cfg(feature = "fvs")]
+    fvs: Arc<crate::virgo::Fvs>,
 }
 
 impl Inner {
@@ -54,7 +57,12 @@ impl Inner {
     /// # Errors
     ///
     /// Returns an error if `root` is not named by a UUID.
-    pub(crate) fn new(state: PrefixState, root: PathBuf, context: Context) -> Result<Arc<Self>> {
+    pub(crate) fn new(
+        state: PrefixState,
+        root: PathBuf,
+        storage: Arc<dyn Storage>,
+        #[cfg(feature = "fvs")] fvs: Arc<crate::virgo::Fvs>,
+    ) -> Result<Arc<Self>> {
         let id = root
             .file_name()
             .and_then(|s| s.to_str())
@@ -65,7 +73,6 @@ impl Inner {
                     "prefix directory must be a UUID",
                 )
             })?;
-        let storage = backend::storage(state.backend, &context);
         Ok(Arc::new(Self {
             id,
             storage,
@@ -73,7 +80,8 @@ impl Inner {
             control: Mutex::new(()),
             bridge_started: watch::channel(()).0,
             root,
-            context,
+            #[cfg(feature = "fvs")]
+            fvs,
         }))
     }
 
