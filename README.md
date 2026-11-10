@@ -59,6 +59,14 @@ not stop Wine processes; stop each running [`Prefix`] explicitly. With
 `fvs` enabled, the connected or spawned `fvs2d` daemon also remains running for
 later clients.
 
+## Async runtime
+
+The crate does not start or require a particular executor, with one
+exception: talking to a prefix's `WineBridge` goes through tonic's transport,
+which needs a Tokio runtime. Poll [`Prefix`] operations, and prefix creation,
+edits, and deletion, which may stop a running `WineBridge`, from within a Tokio
+runtime.
+
 ## Features
 
 - `fvs` (enabled by default) adds Virgo layered-prefix storage and prefix
