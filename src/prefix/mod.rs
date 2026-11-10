@@ -27,7 +27,7 @@ use crate::{
     error::{Result, ResultExt},
     utils::fs,
 };
-use backend::standard;
+use backend::Storage;
 use futures_core::Stream;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, watch};
@@ -45,6 +45,7 @@ pub(crate) struct Inner {
     pub(crate) bridge_started: watch::Sender<()>,
     pub(crate) root: PathBuf,
     pub(crate) context: Context,
+    storage: Arc<dyn Storage>,
 }
 
 impl Inner {
@@ -64,8 +65,10 @@ impl Inner {
                     "prefix directory must be a UUID",
                 )
             })?;
+        let storage = backend::storage(state.backend, &context);
         Ok(Arc::new(Self {
             id,
+            storage,
             state: watch::channel(Some(Arc::new(state))).0,
             control: Mutex::new(()),
             bridge_started: watch::channel(()).0,
@@ -94,22 +97,7 @@ impl Inner {
         let state = state.as_ref();
         job.transition(Stage::CreatingPrefix)?;
         // Initialization owns shutdown. Retain storage when it cannot finish safely.
-        match state.backend {
-            PrefixBackend::Standard => {
-                standard::create(state, &self.root).await?;
-            }
-            #[cfg(feature = "fvs")]
-            PrefixBackend::Virgo => {
-                let (base, overlays) = backend::virgo::Virgo::new(&self.context)
-                    .prepare_artifacts(state, job)
-                    .await?;
-                self.context
-                    .fvs()
-                    .layers
-                    .prepare_workspace(&self.root, &base, &overlays, job)
-                    .await?;
-            }
-        }
+        self.storage.create(state, &self.root, job).await?;
         let result = async {
             job.transition(Stage::Configuring)?;
             self.save(state).await

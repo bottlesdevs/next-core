@@ -8,7 +8,7 @@
 use super::{Inner, PrefixState};
 use crate::runner::Runner;
 use crate::{
-    Job, Operation, PrefixBackend, ProgramSpec, Stage,
+    Job, Operation, ProgramSpec, Stage,
     error::Result,
     proto::{DllOverride, DllOverrideMode, Process},
     winebridge::WineBridgeClient,
@@ -168,33 +168,7 @@ impl Inner {
             let runner = state.runner.load_runner(state.umu.as_ref()).await?;
             stop(runner.as_ref(), &wineprefix).await?;
         }
-        self.release_storage(state.backend).await
-    }
-
-    /// Releases mounts and discovery files after Wine has stopped.
-    ///
-    /// Cleanup is ordered and stops at the first error, so a successful unmount
-    /// can still be followed by partially cleared discovery state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a Virgo mount cannot be released or discovery files
-    /// cannot be cleared.
-    async fn release_storage(&self, backend: PrefixBackend) -> Result<()> {
-        let wineprefix = self.root.join("prefix");
-        match backend {
-            PrefixBackend::Standard => WineBridgeClient::clear_discovery(&wineprefix).await,
-            #[cfg(feature = "fvs")]
-            PrefixBackend::Virgo => {
-                self.context
-                    .fvs()
-                    .layers
-                    .unmount_workspace(&self.root)
-                    .await?;
-                WineBridgeClient::clear_discovery(&wineprefix).await?;
-                WineBridgeClient::clear_discovery(&self.root.join("upper")).await
-            }
-        }
+        self.storage.release(&self.root).await
     }
 
     /// Returns an operation that starts or attaches `WineBridge` and lists DLL overrides.
@@ -250,28 +224,16 @@ impl Inner {
             return Ok(bridge);
         }
         let wineprefix = self.root.join("prefix");
-        let backend = state.backend;
         let vars = state.effective_env_vars();
         self.stop_locked().await?;
         let runner = state.runner.load_runner(state.umu.as_ref()).await?;
-        #[cfg(feature = "fvs")]
-        if backend == PrefixBackend::Virgo {
-            let (base, overlays) = super::backend::virgo::Virgo::new(&self.context)
-                .composition(state)
-                .await?;
-            let mounted = self
-                .context
-                .fvs()
-                .layers
-                .mount_workspace(&self.root, &base, &overlays)
-                .await;
-            if mounted.is_err() {
-                self.release_storage(backend).await?;
-            }
-            mounted?;
+        let mounted = self.storage.mount(state, &self.root).await;
+        if mounted.is_err() {
+            self.storage.release(&self.root).await?;
         }
+        mounted?;
         if let Err(error) = job.check_cancellation() {
-            self.release_storage(backend).await?;
+            self.storage.release(&self.root).await?;
             return Err(error);
         }
         let command = state.wrappers.apply(WineBridgeClient::command(
@@ -285,7 +247,7 @@ impl Inner {
             .and_then(|bridge| job.check_cancellation().map(|()| bridge));
         if result.is_err() {
             stop(runner.as_ref(), &wineprefix).await?;
-            self.release_storage(backend).await?;
+            self.storage.release(&self.root).await?;
         } else {
             self.bridge_started.send_replace(());
         }

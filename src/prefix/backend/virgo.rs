@@ -3,13 +3,16 @@
 //! Frozen addon selections resolve to a base layer, a runner adapter,
 //! component layers, and dependency layers in composition order.
 
+use super::Storage;
 use crate::{
     Addon, AddonError, Component, Context, Dependency, Job, PrefixState, Runner,
     addons::{InstallInputs, execute},
     error::Result,
     prefix::runtime,
     virgo::{LayerStore, VirgoError, VirgoLayer},
+    winebridge::WineBridgeClient,
 };
+use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -43,18 +46,64 @@ fn overlays(config: &PrefixState) -> impl Iterator<Item = Overlay<'_>> {
         .chain(config.dependencies.iter().map(Overlay::Dependency))
 }
 
-/// Resolves and builds Virgo artifacts with the services of one core instance.
-pub(in crate::prefix) struct Virgo<'a> {
-    cx: &'a Context,
-    layers: &'a LayerStore,
+/// Stores a prefix as a workspace composed from immutable layers.
+///
+/// Resolves and builds layers with the services of one core instance.
+pub(super) struct Virgo {
+    cx: Context,
 }
 
-impl<'a> Virgo<'a> {
-    pub(in crate::prefix) fn new(cx: &'a Context) -> Self {
-        Self {
-            cx,
-            layers: &cx.fvs().layers,
-        }
+#[async_trait]
+impl Storage for Virgo {
+    /// Builds missing layers and composes the private workspace.
+    ///
+    /// Failure can leave a partial prefix root and any layers already
+    /// published.
+    async fn create(&self, state: &PrefixState, root: &Path, job: &Job) -> Result<()> {
+        let (base, overlays) = self.prepare_artifacts(state, job).await?;
+        self.layers()
+            .prepare_workspace(root, &base, &overlays, job)
+            .await
+    }
+
+    fn changes(&self, before: &PrefixState, after: &PrefixState) -> bool {
+        before.components != after.components
+            || before.dependencies != after.dependencies
+            || before.runner != after.runner
+    }
+
+    /// Builds missing layers and recomposes the private workspace.
+    async fn apply(
+        &self,
+        _before: &PrefixState,
+        after: &PrefixState,
+        root: &Path,
+        job: &Job,
+    ) -> Result<()> {
+        self.create(after, root, job).await
+    }
+
+    /// Mounts the cached layers recorded by `state` over the private workspace.
+    async fn mount(&self, state: &PrefixState, root: &Path) -> Result<()> {
+        let (base, overlays) = self.composition(state).await?;
+        self.layers().mount_workspace(root, &base, &overlays).await
+    }
+
+    /// Unmounts the workspace, then clears discovery files below and above it.
+    async fn release(&self, root: &Path) -> Result<()> {
+        self.layers().unmount_workspace(root).await?;
+        WineBridgeClient::clear_discovery(&root.join("prefix")).await?;
+        WineBridgeClient::clear_discovery(&root.join("upper")).await
+    }
+}
+
+impl Virgo {
+    pub(super) fn new(cx: Context) -> Self {
+        Self { cx }
+    }
+
+    fn layers(&self) -> &LayerStore {
+        &self.cx.fvs().layers
     }
 
     /// Ensures every artifact needed by `config` exists and returns composition order.
@@ -68,7 +117,7 @@ impl<'a> Virgo<'a> {
     ///
     /// Returns cancellation, catalog, runner, installer, FVS, registry, or
     /// filesystem errors encountered while resolving or building an artifact.
-    pub(in crate::prefix) async fn prepare_artifacts(
+    async fn prepare_artifacts(
         &self,
         config: &PrefixState,
         job: &Job,
@@ -95,15 +144,12 @@ impl<'a> Virgo<'a> {
     ///
     /// Returns [`crate::virgo::VirgoError::MissingArtifact`] for an absent cache
     /// entry, or an error when a manifest is unreadable or invalid.
-    pub(in crate::prefix) async fn composition(
-        &self,
-        config: &PrefixState,
-    ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
-        let base = self.layers.require(Path::new(BASE), None).await?;
+    async fn composition(&self, config: &PrefixState) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
+        let base = self.layers().require(Path::new(BASE), None).await?;
         let mut required = Vec::new();
         for overlay in overlays(config) {
             let (key, id) = overlay.key();
-            required.push(self.layers.require(&key, Some(id)).await?);
+            required.push(self.layers().require(&key, Some(id)).await?);
         }
         Ok((base, required))
     }
@@ -119,7 +165,7 @@ impl<'a> Virgo<'a> {
     /// runner exists, plus cancellation, runner, FVS, registry, or filesystem errors.
     async fn prepare_base(&self, job: &Job) -> Result<VirgoLayer> {
         let destination = Path::new(BASE);
-        self.layers
+        self.layers()
             .get_or_build(destination, None, job, || async {
                 let soda = latest_addon(
                     self.cx
@@ -130,14 +176,14 @@ impl<'a> Virgo<'a> {
                 )
                 .ok_or(VirgoError::SodaNotDownloaded)?;
                 let runner = soda.load_runner(None).await?;
-                let workspace = self.layers.prepare_build(destination, None, job).await?;
+                let workspace = self.layers().prepare_build(destination, None, job).await?;
                 let executed = async {
                     job.check_cancellation()?;
                     runner.wineboot(&workspace.wineprefix, "--init").await
                 }
                 .await;
                 runtime::stop(runner.as_ref(), &workspace.wineprefix).await?;
-                self.layers
+                self.layers()
                     .finish_build(
                         workspace,
                         soda.id(),
@@ -164,11 +210,11 @@ impl<'a> Virgo<'a> {
         base: &VirgoLayer,
         job: &Job,
     ) -> Result<VirgoLayer> {
-        self.layers
+        self.layers()
             .get_or_build(destination, Some(id), job, || async {
                 let runner = config.runner.load_runner(config.umu.as_ref()).await?;
                 let workspace = self
-                    .layers
+                    .layers()
                     .prepare_build(destination, Some(base), job)
                     .await?;
                 let executed = async {
@@ -177,7 +223,7 @@ impl<'a> Virgo<'a> {
                 }
                 .await;
                 runtime::stop(runner.as_ref(), &workspace.wineprefix).await?;
-                self.layers
+                self.layers()
                     .finish_build(workspace, id, id.to_string(), executed, job)
                     .await
             })
@@ -202,7 +248,7 @@ impl<'a> Virgo<'a> {
         job: &Job,
     ) -> Result<VirgoLayer> {
         let id = addon.id();
-        self.layers
+        self.layers()
             .get_or_build(destination, Some(id), job, || async {
                 let addons = self.cx.addons().state();
                 let soda = addons
@@ -213,7 +259,7 @@ impl<'a> Virgo<'a> {
                     .ok_or(VirgoError::WineBridgeNotDownloaded)?
                     .path();
                 let workspace = self
-                    .layers
+                    .layers()
                     .prepare_build(destination, Some(base), job)
                     .await?;
                 let executed = execute(
@@ -229,7 +275,7 @@ impl<'a> Virgo<'a> {
                 )
                 .await;
                 runtime::stop(runner.as_ref(), &workspace.wineprefix).await?;
-                self.layers
+                self.layers()
                     .finish_build(workspace, id, id.to_string(), executed, job)
                     .await
             })

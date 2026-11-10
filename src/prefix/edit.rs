@@ -10,14 +10,14 @@ use crate::{
     Addon, Component, Dependency, EnvVars, Runner, Slot, Umu, WineBridge, Wrappers, error::Result,
 };
 
-use super::{Inner, PrefixState, backend::standard};
-use crate::{Job, Operation, PrefixBackend, PrefixError, Stage};
+use super::{Inner, PrefixState};
+use crate::{Job, Operation, PrefixError, Stage};
 use std::sync::Arc;
 
 /// Provides mutable access to a prefix's editable state.
 ///
 /// Changes remain private until the edit operation completes. The
-/// [`PrefixBackend`] cannot be changed through this API.
+/// [`PrefixBackend`](crate::PrefixBackend) cannot be changed through this API.
 ///
 /// # Examples
 ///
@@ -163,37 +163,21 @@ impl Inner {
                 prefix.stop_locked().await?;
             }
             // Once application succeeds, finish saving even if cancellation arrives.
-            match previous.backend {
-                PrefixBackend::Standard if prefix_changed => {
-                    prefix
-                        .checkpointed(&job, async {
-                            standard::apply(before, after, &prefix.root, &job).await?;
-                            prefix.save(&draft).await
-                        })
-                        .await?;
-                }
-                #[cfg(feature = "fvs")]
-                PrefixBackend::Virgo if prefix_changed || runner_changed => {
-                    let (base, overlays) = super::backend::virgo::Virgo::new(&prefix.context)
-                        .prepare_artifacts(after, &job)
-                        .await?;
-                    prefix
-                        .checkpointed(&job, async {
-                            prefix
-                                .context
-                                .fvs()
-                                .layers
-                                .prepare_workspace(&prefix.root, &base, &overlays, &job)
-                                .await?;
-                            prefix.save(&draft).await
-                        })
-                        .await?;
-                }
-                _ if runner_changed || umu_changed => {
+            if prefix.storage.changes(before, after) {
+                prefix
+                    .checkpointed(&job, async {
+                        prefix
+                            .storage
+                            .apply(before, after, &prefix.root, &job)
+                            .await?;
+                        prefix.save(&draft).await
+                    })
+                    .await?;
+            } else {
+                if runner_changed || umu_changed {
                     after.runner.load_runner(after.umu.as_ref()).await?;
-                    prefix.save(&draft).await?;
                 }
-                _ => prefix.save(&draft).await?,
+                prefix.save(&draft).await?;
             }
             prefix.publish(draft);
             Ok(result)
