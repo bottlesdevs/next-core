@@ -3,6 +3,7 @@
 use std::{path::PathBuf, process::ExitStatus};
 
 use thiserror::Error;
+use url::Url;
 use uuid::Uuid;
 
 use crate::utils::fs::archive::ArchiveError;
@@ -35,9 +36,6 @@ pub enum AddonError {
     /// The release with this UUID has a different role than requested.
     #[error("addon {0} has a different role")]
     WrongRole(Uuid),
-    /// The UUID is already used by another local addon family or record.
-    #[error("local storage contains duplicate addon {0}")]
-    Duplicate(Uuid),
     /// A downloaded artifact did not match its catalog digest.
     #[error("checksum mismatch for {0}")]
     ChecksumMismatch(PathBuf),
@@ -61,17 +59,11 @@ pub enum CatalogError {
     /// The requested UUID is absent from the currently published catalog.
     #[error("catalog addon {0} was not found")]
     NotFound(Uuid),
-    /// At least one catalog failed during a two-source refresh.
-    #[error("catalog refresh failed (components: {components:?}, dependencies: {dependencies:?})")]
-    Refresh {
-        /// Text of the component-catalog failure, or `None` after success.
-        components: Option<String>,
-        /// Text of the dependency-catalog failure, or `None` after success.
-        dependencies: Option<String>,
-    },
-    /// No remote URL is configured for the named addon family.
-    #[error("{0} catalog URL is not configured")]
-    UrlNotConfigured(&'static str),
+    /// At least one catalog source failed during a refresh.
+    ///
+    /// Holds each failed source with the text of its error.
+    #[error("catalog refresh failed: {}", refresh_failures(.0))]
+    Refresh(Vec<(Url, String)>),
     /// The release has no artifact for the current build target.
     #[error("no artifact supports this system for addon {0}")]
     Unsupported(Uuid),
@@ -86,6 +78,14 @@ pub enum CatalogError {
     /// A catalog entry contains a file name unsafe for managed storage.
     #[error("catalog entry contains an invalid storage path: {0}")]
     InvalidEntry(Uuid),
+}
+
+fn refresh_failures(failures: &[(Url, String)]) -> String {
+    failures
+        .iter()
+        .map(|(url, error)| format!("{url}: {error}"))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Reports a recipe step that could not be completed safely or successfully.

@@ -59,21 +59,16 @@ impl Addons {
     ///
     /// # Errors
     ///
-    /// Returns an error if a release manifest cannot be read or parsed, a
-    /// manifest UUID differs from its directory name, or duplicate UUIDs are
-    /// found across addon families.
+    /// Returns an error if a release manifest cannot be read or parsed, or a
+    /// manifest UUID differs from its directory name.
     pub(crate) async fn load() -> Result<Self> {
         let mut state = AddonsState::default();
-        for root in [paths::component_releases(), paths::dependency_releases()] {
-            for (id, path) in release_manifests(&root).await? {
-                let record: Addon<AddonRole> = next_config::load(&path).await?;
-                if record.id() != id {
-                    return Err(AddonError::InvalidRelease(path).into());
-                }
-                if state.releases.insert(id, record).is_some() {
-                    return Err(AddonError::Duplicate(id).into());
-                }
+        for (id, path) in release_manifests(&paths::releases()).await? {
+            let record: Addon<AddonRole> = next_config::load(&path).await?;
+            if record.id() != id {
+                return Err(AddonError::InvalidRelease(path).into());
             }
+            state.releases.insert(id, record);
         }
         Ok(Self(Arc::new(AddonsInner {
             published: watch::channel(Arc::new(state)).0,
@@ -215,11 +210,10 @@ impl AddonsState {
     /// Returns all locally acquired releases with role `R` in unspecified order.
     ///
     /// Use [`AddonRole`] as `R` to list releases of every role.
-    pub fn releases<R: RoleMarker>(&self) -> Vec<Addon<R>> {
+    pub fn releases<R: RoleMarker>(&self) -> impl Iterator<Item = Addon<R>> + '_ {
         self.releases
             .values()
             .filter_map(|release| release.clone().cast())
-            .collect()
     }
 
     /// Returns the locally acquired release with UUID `id` if it has role `R`.

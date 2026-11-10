@@ -100,7 +100,6 @@ impl<'a> Virgo<'a> {
                         .addons()
                         .state()
                         .releases::<crate::Runner>()
-                        .into_iter()
                         .filter(|addon| addon.name().eq_ignore_ascii_case("soda")),
                 )
                 .ok_or(VirgoError::SodaNotDownloaded)?;
@@ -184,7 +183,7 @@ impl<'a> Virgo<'a> {
                     .release::<crate::Runner>(base.id)
                     .ok_or(AddonError::NotFound(base.id))?;
                 let runner = soda.load_runner(None).await?;
-                let winebridge = latest_addon(addons.releases::<crate::WineBridge>().into_iter())
+                let winebridge = latest_addon(addons.releases::<crate::WineBridge>())
                     .ok_or(VirgoError::WineBridgeNotDownloaded)?
                     .path();
                 let workspace = self
