@@ -16,6 +16,23 @@ mod runner;
 mod utils;
 #[cfg(feature = "fvs")]
 mod virgo;
+/// Stands in for the FVS services when the `fvs` feature is disabled.
+///
+/// The placeholder lets FVS handles be stored and passed without feature gates.
+/// It gives no access to FVS; every use of FVS is compiled only with the feature.
+#[cfg(not(feature = "fvs"))]
+mod virgo {
+    use crate::error::Result;
+    use std::path::PathBuf;
+
+    pub(crate) struct Fvs;
+
+    impl Fvs {
+        pub(crate) async fn connect(_executable: Option<PathBuf>) -> Result<Self> {
+            Ok(Self)
+        }
+    }
+}
 mod winebridge;
 
 pub use addons::{

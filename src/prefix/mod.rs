@@ -47,7 +47,7 @@ pub(crate) struct Inner {
     pub(crate) root: PathBuf,
     storage: Arc<dyn Storage>,
     /// FVS services used by prefix history.
-    #[cfg(feature = "fvs")]
+    #[cfg_attr(not(feature = "fvs"), allow(dead_code))]
     fvs: Arc<crate::virgo::Fvs>,
 }
 
@@ -61,7 +61,7 @@ impl Inner {
         state: PrefixState,
         root: PathBuf,
         storage: Arc<dyn Storage>,
-        #[cfg(feature = "fvs")] fvs: Arc<crate::virgo::Fvs>,
+        fvs: Arc<crate::virgo::Fvs>,
     ) -> Result<Arc<Self>> {
         let id = root
             .file_name()
@@ -80,7 +80,6 @@ impl Inner {
             control: Mutex::new(()),
             bridge_started: watch::channel(()).0,
             root,
-            #[cfg(feature = "fvs")]
             fvs,
         }))
     }

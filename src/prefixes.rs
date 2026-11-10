@@ -44,7 +44,6 @@ pub struct Prefixes {
     root: PathBuf,
     storages: Storages,
     /// FVS services used by prefix history.
-    #[cfg(feature = "fvs")]
     fvs: Arc<crate::virgo::Fvs>,
     members: watch::Sender<Members>,
 }
@@ -146,12 +145,11 @@ impl Prefixes {
     pub(crate) async fn load(
         root: PathBuf,
         storages: Storages,
-        #[cfg(feature = "fvs")] fvs: Arc<crate::virgo::Fvs>,
+        fvs: Arc<crate::virgo::Fvs>,
     ) -> Result<Self> {
         let prefixes = Self {
             root,
             storages,
-            #[cfg(feature = "fvs")]
             fvs,
             members: watch::channel(Arc::default()).0,
         };
@@ -264,13 +262,7 @@ impl Prefixes {
     /// Returns an error if `root` is not named by a UUID.
     fn member(&self, state: PrefixState, root: PathBuf) -> Result<Prefix> {
         let storage = self.storages.get(state.backend);
-        Ok(Prefix(Inner::new(
-            state,
-            root,
-            storage,
-            #[cfg(feature = "fvs")]
-            self.fvs.clone(),
-        )?))
+        Ok(Prefix(Inner::new(state, root, storage, self.fvs.clone())?))
     }
 }
 
