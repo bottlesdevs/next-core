@@ -119,7 +119,7 @@ impl Inner {
     /// Runs a coordinated edit and publishes it only after application succeeds.
     ///
     /// Storage and runtime changes require a stopped prefix. When the storage
-    /// reports that the edit [changes](super::backend::Storage::changes) what it stores, the
+    /// reports that the edit [changes](super::storage::Storage::changes) what it stores, the
     /// change is applied and [checkpointed](Self::checkpointed) together with
     /// the save that follows it; otherwise the draft is only saved.
     ///
