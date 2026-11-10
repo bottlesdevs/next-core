@@ -52,28 +52,15 @@ pub(crate) struct Inner {
 }
 
 impl Inner {
-    /// Constructs the prefix stored at `root` around `state` without touching storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `root` is not named by a UUID.
+    /// Constructs prefix `id`, stored at `root`, around `state` without touching storage.
     pub(crate) fn new(
+        id: Uuid,
         state: PrefixState,
         root: PathBuf,
         storage: Arc<dyn Storage>,
         fvs: Arc<crate::virgo::Fvs>,
-    ) -> Result<Arc<Self>> {
-        let id = root
-            .file_name()
-            .and_then(|s| s.to_str())
-            .and_then(|s| s.parse::<Uuid>().ok())
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "prefix directory must be a UUID",
-                )
-            })?;
-        Ok(Arc::new(Self {
+    ) -> Arc<Self> {
+        Arc::new(Self {
             id,
             storage,
             state: watch::channel(Some(Arc::new(state))).0,
@@ -81,7 +68,7 @@ impl Inner {
             bridge_started: watch::channel(()).0,
             root,
             fvs,
-        }))
+        })
     }
 
     /// Initializes storage for the constructed state and persists it.

@@ -134,14 +134,13 @@ impl Prefixes {
 
     /// Loads UUID-named prefixes found below `root`.
     ///
-    /// A missing root produces an empty collection. Entries without `state.toml`
-    /// and non-directory entries are ignored; malformed persisted state aborts
-    /// the entire load.
+    /// A missing root produces an empty collection. Entries not named by a UUID,
+    /// entries without `state.toml`, and non-directory entries are ignored;
+    /// malformed persisted state aborts the entire load.
     ///
     /// # Errors
     ///
-    /// Returns an error when directory enumeration, state loading, or prefix
-    /// reconstruction fails.
+    /// Returns an error when directory enumeration or state loading fails.
     pub(crate) async fn load(
         root: PathBuf,
         storages: Storages,
@@ -160,8 +159,15 @@ impl Prefixes {
             Err(error) => return Err(error.into()),
         };
         while let Some(entry) = entries.next().await {
-            let root = entry?.path();
-            let file = root.join("state.toml");
+            let entry = entry?;
+            let Some(id) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse().ok())
+            else {
+                continue;
+            };
+            let file = entry.path().join("state.toml");
             let state: PrefixState = match next_config::load(&file).await {
                 Ok(state) => state,
                 Err(next_config::error::Error::Io(error))
@@ -174,8 +180,7 @@ impl Prefixes {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let prefix = prefixes.member(state, root)?;
-            members.insert(prefix.id(), prefix);
+            members.insert(id, prefixes.member(id, state));
         }
         prefixes.members.send_replace(Arc::new(members));
         Ok(prefixes)
@@ -212,8 +217,7 @@ impl Prefixes {
             job.transition(Stage::Preparing)?;
             let state = PrefixState::new(backend, runner, winebridge, umu);
             state.validate()?;
-            let root = prefixes.root.join(Uuid::new_v4().to_string());
-            let prefix = prefixes.member(state, root)?;
+            let prefix = prefixes.member(Uuid::new_v4(), state);
             prefix.0.create(&job).await?;
             prefixes.members.send_modify(|members| {
                 Arc::make_mut(members).insert(prefix.id(), prefix.clone());
@@ -255,14 +259,11 @@ impl Prefixes {
 }
 
 impl Prefixes {
-    /// Constructs the handle of the prefix stored at `root` without touching storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `root` is not named by a UUID.
-    fn member(&self, state: PrefixState, root: PathBuf) -> Result<Prefix> {
+    /// Constructs the handle of prefix `id` without touching storage.
+    fn member(&self, id: Uuid, state: PrefixState) -> Prefix {
+        let root = self.root.join(id.to_string());
         let storage = self.storages.get(state.backend);
-        Ok(Prefix(Inner::new(state, root, storage, self.fvs.clone())?))
+        Prefix(Inner::new(id, state, root, storage, self.fvs.clone()))
     }
 }
 
