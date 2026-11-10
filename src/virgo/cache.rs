@@ -6,13 +6,12 @@
 
 use std::path::{Path, PathBuf};
 
-use futures_lite::StreamExt;
 use fvs_rs::{Layer, Repository};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{LayerStore, VirgoError};
-use crate::{Job, error::Result, utils::fs};
+use crate::error::Result;
 
 #[derive(Deserialize, Serialize, next_config::Config)]
 #[config(version = 1)]
@@ -82,50 +81,6 @@ impl LayerStore {
         self.load(key, id)
             .await?
             .ok_or_else(|| VirgoError::MissingArtifact(self.root().join(key)).into())
-    }
-
-    /// Lists immediate published children of a collection.
-    ///
-    /// A manifest identifies an artifact. Staging, files, and directories without
-    /// a manifest are skipped; results are sorted by relative key. An absent
-    /// collection returns an empty list.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error while reading the collection or any discovered manifest.
-    #[allow(dead_code)] // Internal storage API; no public owner-facing layer API.
-    pub(crate) async fn list(&self, collection: &Path) -> Result<Vec<(PathBuf, VirgoLayer)>> {
-        let mut entries = match async_fs::read_dir(self.root().join(collection)).await {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.into()),
-        };
-        let mut layers = Vec::new();
-        while let Some(entry) = entries.try_next().await? {
-            if entry.file_name() == ".staging" || !entry.file_type().await?.is_dir() {
-                continue;
-            }
-            if crate::utils::fs::exists(&entry.path().join("manifest.toml")).await? {
-                let key = collection.join(entry.file_name());
-                layers.push((key.clone(), self.require(&key, None).await?));
-            }
-        }
-        layers.sort_by(|(left, _), (right, _)| left.cmp(right));
-        Ok(layers)
-    }
-
-    /// Withdraws an explicitly addressed artifact into trash.
-    ///
-    /// The caller must ensure it is unmounted and unused by every workspace.
-    /// Cancellation is honored before the rename; cleanup afterward is best effort.
-    ///
-    /// # Errors
-    ///
-    /// Returns cancellation or filesystem errors before withdrawal completes.
-    #[allow(dead_code)] // Internal storage API; callers own reference tracking.
-    pub(crate) async fn remove(&self, key: &Path, job: &Job) -> Result<()> {
-        let _lock = job.cancellable(self.build_lock.lock()).await?;
-        Ok(fs::discard(&self.root().join(key)).await?)
     }
 
     /// Publishes a completed staged artifact at its immutable cache key.
