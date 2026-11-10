@@ -57,17 +57,11 @@ pub(crate) struct Storages {
 }
 
 impl Storages {
-    #[cfg(not(feature = "fvs"))]
-    pub(crate) fn new() -> Self {
-        Self {
-            standard: Arc::new(standard::Standard),
-        }
-    }
-
-    #[cfg(feature = "fvs")]
+    #[cfg_attr(not(feature = "fvs"), allow(unused_variables))]
     pub(crate) fn new(addons: crate::Addons, fvs: Arc<crate::virgo::Fvs>) -> Self {
         Self {
             standard: Arc::new(standard::Standard),
+            #[cfg(feature = "fvs")]
             virgo: Arc::new(virgo::Virgo::new(addons, fvs)),
         }
     }

@@ -27,7 +27,6 @@ pub struct Core {
 #[derive(Default)]
 pub struct CoreBuilder {
     http_client: Option<Arc<dyn HttpClient>>,
-    #[cfg(feature = "fvs")]
     fvs2d: Option<std::path::PathBuf>,
     catalogs: Option<Vec<Url>>,
 }
@@ -134,7 +133,6 @@ impl CoreBuilder {
             Some(http_client) => http_client,
             None => Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?),
         };
-        #[cfg(feature = "fvs")]
         let fvs = Arc::new(crate::virgo::Fvs::connect(self.fvs2d).await?);
         let addons = Addons::load().await?;
         let sources = self.catalogs.unwrap_or_else(|| {
@@ -144,17 +142,8 @@ impl CoreBuilder {
                 .collect()
         });
         let catalogs = Catalogs::load(http_client, addons.clone(), sources).await?;
-        #[cfg(feature = "fvs")]
         let storages = Storages::new(addons.clone(), fvs.clone());
-        #[cfg(not(feature = "fvs"))]
-        let storages = Storages::new();
-        let prefixes = Prefixes::load(
-            paths::prefixes(),
-            storages,
-            #[cfg(feature = "fvs")]
-            fvs,
-        )
-        .await?;
+        let prefixes = Prefixes::load(paths::prefixes(), storages, fvs).await?;
         Ok(Core {
             addons,
             catalogs,
