@@ -8,17 +8,16 @@ use std::path::Path;
 
 use futures_lite::StreamExt;
 use fvs_rs::UnmountMode;
-use tokio_util::sync::CancellationToken;
 
 use super::{LayerStore, VirgoError, VirgoLayer, registry};
-use crate::error::{Error, Result};
+use crate::{Job, error::Result};
 
 impl LayerStore {
     /// Composes selected registry effects into a stopped, unmounted workspace.
     ///
     /// The caller is responsible for checkpointing an existing prefix and recovering
     /// failures before publishing a new selection. Cancellation is sampled before
-    /// and after composition but does not interrupt the blocking registry work.
+    /// composition but does not interrupt the blocking registry work.
     ///
     /// # Errors
     ///
@@ -28,11 +27,9 @@ impl LayerStore {
         root: &Path,
         base: &VirgoLayer,
         overlays: &[VirgoLayer],
-        cancellation: &CancellationToken,
+        job: &Job,
     ) -> Result<()> {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
+        job.check_cancellation()?;
         async_fs::create_dir_all(root.join("upper")).await?;
         registry::compose(
             root,
@@ -42,32 +39,24 @@ impl LayerStore {
                 .map(|layer| layer.registry.clone())
                 .collect(),
         )
-        .await?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        Ok(())
+        .await
     }
 
     /// Mounts selected filesystem layers over the prepared private upper directory.
     ///
     /// Registry files are not recomposed here. The caller must release storage if
-    /// mounting fails or cancellation arrives after FVS creates the mount.
+    /// mounting fails.
     ///
     /// # Errors
     ///
-    /// Returns [`VirgoError::DirtyMountpoint`] when the prefix contains files,
-    /// [`Error::Cancelled`], or a filesystem/FVS error.
+    /// Returns [`VirgoError::DirtyMountpoint`] when the prefix contains files, or
+    /// a filesystem/FVS error.
     pub(crate) async fn mount_workspace(
         &self,
         root: &Path,
         base: &VirgoLayer,
         overlays: &[VirgoLayer],
-        cancellation: &CancellationToken,
     ) -> Result<()> {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
         let wineprefix = root.join("prefix");
         ensure_empty_dir(&wineprefix).await?;
         let upper = root.join("upper");
@@ -75,9 +64,6 @@ impl LayerStore {
             .chain(overlays.iter().map(|layer| layer.layer.clone()))
             .collect();
         self.fvs.mount(&wineprefix, layers, Some(&upper)).await?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
         Ok(())
     }
 

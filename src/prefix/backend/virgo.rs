@@ -4,15 +4,13 @@
 //! component layers, and dependency layers in composition order.
 
 use crate::{
-    Addon, AddonError, Context, PrefixState, Progress, Stage,
+    Addon, AddonError, Context, Job, PrefixState,
     addons::{InstallInputs, execute},
-    error::{Error, Result},
+    error::Result,
     prefix::runtime,
     virgo::{LayerStore, VirgoError, VirgoLayer},
 };
 use std::path::Path;
-use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 
 /// Resolves and builds Virgo artifacts with the services of one core instance.
 pub(in crate::prefix) struct Virgo<'a> {
@@ -42,28 +40,15 @@ impl<'a> Virgo<'a> {
     pub(in crate::prefix) async fn prepare_artifacts(
         &self,
         config: &PrefixState,
-        progress: &watch::Sender<Option<Progress>>,
-        cancellation: &CancellationToken,
+        job: &Job,
     ) -> Result<(VirgoLayer, Vec<VirgoLayer>)> {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        let base = self.prepare_base(cancellation).await?;
-        let mut overlays = vec![self.prepare_adapter(config, &base, cancellation).await?];
+        let base = self.prepare_base(job).await?;
+        let mut overlays = vec![self.prepare_adapter(config, &base, job).await?];
         for addon in config.components.values() {
-            overlays.push(
-                self.prepare_addon(addon, &base, progress, cancellation)
-                    .await?,
-            );
+            overlays.push(self.prepare_addon(addon, &base, job).await?);
         }
         for addon in &config.dependencies {
-            overlays.push(
-                self.prepare_addon(addon, &base, progress, cancellation)
-                    .await?,
-            );
-        }
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
+            overlays.push(self.prepare_addon(addon, &base, job).await?);
         }
         Ok((base, overlays))
     }
@@ -106,10 +91,10 @@ impl<'a> Virgo<'a> {
     ///
     /// Returns [`VirgoError::SodaNotDownloaded`] when no eligible local
     /// runner exists, plus cancellation, runner, FVS, registry, or filesystem errors.
-    async fn prepare_base(&self, cancellation: &CancellationToken) -> Result<VirgoLayer> {
+    async fn prepare_base(&self, job: &Job) -> Result<VirgoLayer> {
         let destination = Path::new("soda");
         self.layers
-            .get_or_build(destination, None, cancellation, || async {
+            .get_or_build(destination, None, job, || async {
                 let soda = latest_addon(
                     self.cx
                         .addons()
@@ -120,15 +105,12 @@ impl<'a> Virgo<'a> {
                 )
                 .ok_or(VirgoError::SodaNotDownloaded)?;
                 let runner = soda.load_runner(None).await?;
-                let workspace = self
-                    .layers
-                    .prepare_build(destination, None, cancellation)
-                    .await?;
-                let executed = if cancellation.is_cancelled() {
-                    Err(Error::Cancelled)
-                } else {
+                let workspace = self.layers.prepare_build(destination, None, job).await?;
+                let executed = async {
+                    job.check_cancellation()?;
                     runner.wineboot(&workspace.wineprefix, "--init").await
-                };
+                }
+                .await;
                 runtime::stop(runner.as_ref(), &workspace.wineprefix).await?;
                 self.layers
                     .finish_build(
@@ -136,7 +118,7 @@ impl<'a> Virgo<'a> {
                         soda.id(),
                         format!("Soda {} ({})", soda.version(), soda.id()),
                         executed,
-                        cancellation,
+                        job,
                     )
                     .await
             })
@@ -153,25 +135,25 @@ impl<'a> Virgo<'a> {
         &self,
         config: &PrefixState,
         base: &VirgoLayer,
-        cancellation: &CancellationToken,
+        job: &Job,
     ) -> Result<VirgoLayer> {
         let id = config.runner.id();
         let destination = Path::new("adapters").join(id.to_string());
         self.layers
-            .get_or_build(&destination, Some(id), cancellation, || async {
+            .get_or_build(&destination, Some(id), job, || async {
                 let runner = config.runner.load_runner(config.umu.as_ref()).await?;
                 let workspace = self
                     .layers
-                    .prepare_build(&destination, Some(base), cancellation)
+                    .prepare_build(&destination, Some(base), job)
                     .await?;
-                let executed = if cancellation.is_cancelled() {
-                    Err(Error::Cancelled)
-                } else {
+                let executed = async {
+                    job.check_cancellation()?;
                     runner.wineboot(&workspace.wineprefix, "--init").await
-                };
+                }
+                .await;
                 runtime::stop(runner.as_ref(), &workspace.wineprefix).await?;
                 self.layers
-                    .finish_build(workspace, id, id.to_string(), executed, cancellation)
+                    .finish_build(workspace, id, id.to_string(), executed, job)
                     .await
             })
             .await
@@ -191,13 +173,12 @@ impl<'a> Virgo<'a> {
         &self,
         addon: &Addon<R>,
         base: &VirgoLayer,
-        progress: &watch::Sender<Option<Progress>>,
-        cancellation: &CancellationToken,
+        job: &Job,
     ) -> Result<VirgoLayer> {
         let id = addon.id();
         let destination = Path::new("addons").join(id.to_string());
         self.layers
-            .get_or_build(&destination, Some(id), cancellation, || async {
+            .get_or_build(&destination, Some(id), job, || async {
                 let addons = self.cx.addons().state();
                 let soda = addons
                     .release::<crate::Runner>(base.id)
@@ -208,7 +189,7 @@ impl<'a> Virgo<'a> {
                     .path();
                 let workspace = self
                     .layers
-                    .prepare_build(&destination, Some(base), cancellation)
+                    .prepare_build(&destination, Some(base), job)
                     .await?;
                 let executed = execute(
                     InstallInputs {
@@ -219,15 +200,12 @@ impl<'a> Virgo<'a> {
                     &addon.path(),
                     addon.resources(),
                     false,
-                    cancellation,
-                    |_| {
-                        progress.send_replace(Some(Progress::new(Stage::Configuring)));
-                    },
+                    job,
                 )
                 .await;
                 runtime::stop(runner.as_ref(), &workspace.wineprefix).await?;
                 self.layers
-                    .finish_build(workspace, id, id.to_string(), executed, cancellation)
+                    .finish_build(workspace, id, id.to_string(), executed, job)
                     .await
             })
             .await

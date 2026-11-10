@@ -8,8 +8,8 @@
 use super::{Inner, PrefixState};
 use crate::runner::Runner;
 use crate::{
-    Operation, PrefixBackend, ProgramSpec, Progress, Stage,
-    error::{Error, Result},
+    Job, Operation, PrefixBackend, ProgramSpec, Stage,
+    error::Result,
     proto::{DllOverride, DllOverrideMode, Process},
     winebridge::WineBridgeClient,
 };
@@ -19,9 +19,7 @@ use futures_util::{
     stream::{self, BoxStream},
 };
 use std::{future::Future, path::Path, sync::Arc};
-use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 impl Inner {
@@ -35,12 +33,10 @@ impl Inner {
     /// cancelled, or `WineBridge` rejects the launch.
     pub(crate) fn launch(self: &Arc<Self>, group: Uuid, launch: ProgramSpec) -> Operation<u32> {
         let prefix = self.clone();
-        Operation::new(move |progress, cancellation| async move {
-            let _control = prefix.lock_control(&cancellation).await?;
+        Operation::new(move |job| async move {
+            let _control = job.cancellable(prefix.control.lock()).await?;
             let state = prefix.state()?;
-            let bridge = prefix
-                .attach_or_start(&state, &progress, &cancellation)
-                .await?;
+            let bridge = prefix.attach_or_start(&state, &job).await?;
             bridge
                 .launch_process(
                     group,
@@ -230,12 +226,10 @@ impl Inner {
         Fut: Future<Output = Result<R>> + Send + 'static,
     {
         let prefix = self.clone();
-        Operation::new(move |progress, cancellation| async move {
-            let _control = prefix.lock_control(&cancellation).await?;
+        Operation::new(move |job| async move {
+            let _control = job.cancellable(prefix.control.lock()).await?;
             let state = prefix.state()?;
-            let bridge = prefix
-                .attach_or_start(&state, &progress, &cancellation)
-                .await?;
+            let bridge = prefix.attach_or_start(&state, &job).await?;
             work(bridge).await
         })
     }
@@ -250,33 +244,16 @@ impl Inner {
     ///
     /// Returns cancellation, discovery, runner, mount, process, connection, or
     /// cleanup errors encountered while obtaining a usable client.
-    async fn attach_or_start(
-        &self,
-        state: &PrefixState,
-        progress: &watch::Sender<Option<Progress>>,
-        cancellation: &CancellationToken,
-    ) -> Result<WineBridgeClient> {
-        progress.send_replace(Some(Progress::new(Stage::Preparing)));
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
+    async fn attach_or_start(&self, state: &PrefixState, job: &Job) -> Result<WineBridgeClient> {
+        job.transition(Stage::Preparing)?;
         if let Some(bridge) = self.bridge().await? {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
             return Ok(bridge);
         }
         let wineprefix = self.root.join("prefix");
         let backend = state.backend;
         let vars = state.effective_env_vars();
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
         self.stop_locked().await?;
         let runner = state.runner.load_runner(state.umu.as_ref()).await?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
         #[cfg(feature = "fvs")]
         if backend == PrefixBackend::Virgo {
             let (base, overlays) = super::backend::virgo::Virgo::new(&self.context)
@@ -286,16 +263,16 @@ impl Inner {
                 .context
                 .fvs()
                 .layers
-                .mount_workspace(&self.root, &base, &overlays, cancellation)
+                .mount_workspace(&self.root, &base, &overlays)
                 .await;
             if mounted.is_err() {
                 self.release_storage(backend).await?;
             }
             mounted?;
         }
-        if cancellation.is_cancelled() {
+        if let Err(error) = job.check_cancellation() {
             self.release_storage(backend).await?;
-            return Err(Error::Cancelled);
+            return Err(error);
         }
         let command = state.wrappers.apply(WineBridgeClient::command(
             runner.as_ref(),
@@ -305,13 +282,7 @@ impl Inner {
         ));
         let result = WineBridgeClient::connect_or_spawn(&wineprefix, command)
             .await
-            .and_then(|bridge| {
-                if cancellation.is_cancelled() {
-                    Err(Error::Cancelled)
-                } else {
-                    Ok(bridge)
-                }
-            });
+            .and_then(|bridge| job.check_cancellation().map(|()| bridge));
         if result.is_err() {
             stop(runner.as_ref(), &wineprefix).await?;
             self.release_storage(backend).await?;

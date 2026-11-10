@@ -10,7 +10,7 @@ use crate::{
 };
 
 use super::{Inner, PrefixState, backend::standard};
-use crate::{Operation, PrefixBackend, PrefixError, Progress, Stage, error::Error};
+use crate::{Operation, PrefixBackend, PrefixError, Stage};
 use std::sync::Arc;
 
 /// Provides mutable access to a prefix's editable state.
@@ -139,15 +139,12 @@ impl Inner {
         callback: impl FnOnce(&mut Edit<'_>) -> Result<R> + Send + 'static,
     ) -> Operation<R> {
         let prefix = self.clone();
-        Operation::new(move |progress, cancellation| async move {
-            let _control = prefix.lock_control(&cancellation).await?;
+        Operation::new(move |job| async move {
+            let _control = job.cancellable(prefix.control.lock()).await?;
             let previous = prefix.state()?;
             let mut draft = previous.as_ref().clone();
             let result = callback(&mut Edit { draft: &mut draft })?;
             draft.validate()?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
             if draft == *previous {
                 return Ok(result);
             }
@@ -163,16 +160,13 @@ impl Inner {
                 if prefix.bridge().await?.is_some() {
                     return Err(PrefixError::MustBeStopped.into());
                 }
-                progress.send_replace(Some(Progress::new(Stage::Stopping)));
+                job.transition(Stage::Stopping)?;
                 prefix.stop_locked().await?;
-                if cancellation.is_cancelled() {
-                    return Err(Error::Cancelled);
-                }
             }
             // Once application succeeds, finish saving even if cancellation arrives.
             match previous.backend {
                 PrefixBackend::Standard if prefix_changed => {
-                    standard::apply(before, after, &prefix.root, &progress, &cancellation).await?;
+                    standard::apply(before, after, &prefix.root, &job).await?;
                     prefix.save(&draft).await?;
                 }
                 #[cfg(feature = "fvs")]
@@ -180,15 +174,15 @@ impl Inner {
                     use super::{backend::virgo::Virgo, history};
 
                     let (base, overlays) = Virgo::new(&prefix.context)
-                        .prepare_artifacts(after, &progress, &cancellation)
+                        .prepare_artifacts(after, &job)
                         .await?;
+                    job.transition(Stage::Checkpointing)?;
                     let checkpoint = history::capture(
                         &prefix.root,
                         history::AUTO_CHECKPOINT_MESSAGE.into(),
                         false,
-                        Stage::Checkpointing,
                         &prefix.context,
-                        &progress,
+                        job.progress(),
                     )
                     .await?;
                     let applied = async {
@@ -196,7 +190,7 @@ impl Inner {
                             .context
                             .fvs()
                             .layers
-                            .prepare_workspace(&prefix.root, &base, &overlays, &cancellation)
+                            .prepare_workspace(&prefix.root, &base, &overlays, &job)
                             .await?;
                         prefix.save(&draft).await
                     }
@@ -206,7 +200,7 @@ impl Inner {
                         &prefix.root,
                         &checkpoint,
                         &prefix.context,
-                        &progress,
+                        job.progress(),
                     )
                     .await?;
                 }

@@ -7,8 +7,8 @@
 
 use super::{Addon, AddonError, AddonRole, Requirement, RoleMarker, recipe::resources};
 use crate::{
-    Operation, Progress, Stage,
-    error::{Error, Result},
+    Job, Operation, Stage,
+    error::Result,
     utils::{fs, paths},
 };
 use futures_core::Stream;
@@ -20,7 +20,6 @@ use std::{
 };
 use tokio::sync::{Mutex, watch};
 use tokio_stream::wrappers::WatchStream;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 impl next_config::Config for Addon<AddonRole> {
@@ -132,11 +131,11 @@ impl Addons {
         );
         let source = path.as_ref().to_path_buf();
         let addons = self.clone();
-        Operation::new(move |progress, cancellation| async move {
-            progress.send_replace(Some(Progress::new(Stage::Preparing)));
+        Operation::new(move |job| async move {
+            job.transition(Stage::Preparing)?;
             fs::with_staging(|stage| async move {
-                let prepared = prepare_archive(&source, &stage, &cancellation).await?;
-                addons.commit(record, &prepared, &cancellation).await
+                let prepared = prepare_archive(&source, &stage, &job).await?;
+                addons.commit(record, &prepared, &job).await
             })
             .await
         })
@@ -171,15 +170,9 @@ impl Addons {
     pub(super) async fn acquired<R: RoleMarker>(
         &self,
         id: Uuid,
-        cancellation: &CancellationToken,
+        job: &Job,
     ) -> Result<Option<Addon<R>>> {
-        let _write = cancellation
-            .run_until_cancelled(self.0.write.lock())
-            .await
-            .ok_or(Error::Cancelled)?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
+        let _write = job.cancellable(self.0.write.lock()).await?;
         match self.state().releases.get(&id) {
             Some(release) => Ok(Some(
                 release.clone().cast().ok_or(AddonError::WrongRole(id))?,
@@ -193,17 +186,11 @@ impl Addons {
         &self,
         record: Addon<R>,
         prepared: &Path,
-        cancellation: &CancellationToken,
+        job: &Job,
     ) -> Result<Addon<R>> {
         let id = record.id();
         let destination = record.directory();
-        let _write = cancellation
-            .run_until_cancelled(self.0.write.lock())
-            .await
-            .ok_or(Error::Cancelled)?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
+        let _write = job.cancellable(self.0.write.lock()).await?;
         let mut next = self.state().as_ref().clone();
         if let Some(current) = next.releases.get(&id) {
             let current = current.clone().cast().ok_or(AddonError::WrongRole(id))?;
@@ -217,9 +204,6 @@ impl Addons {
         }
         let stored = record.clone().erase();
         next_config::save(prepared.join("release.toml"), &stored).await?;
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
         async_fs::rename(prepared, destination).await?;
         next.releases.insert(id, stored);
         self.publish(next);
@@ -266,20 +250,11 @@ async fn release_manifests(root: &Path) -> Result<Vec<(Uuid, PathBuf)>> {
 }
 
 // Addon archives have one top-level directory, which becomes the payload.
-pub(super) async fn prepare_archive(
-    archive: &Path,
-    stage: &Path,
-    cancellation: &CancellationToken,
-) -> Result<PathBuf> {
+pub(super) async fn prepare_archive(archive: &Path, stage: &Path, job: &Job) -> Result<PathBuf> {
     let extracted = stage.join("extracted");
     async_fs::create_dir(&extracted).await?;
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancelled);
-    }
+    job.check_cancellation()?;
     fs::archive::extract(archive, &extracted).await?;
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancelled);
-    }
     let mut entries = async_fs::read_dir(&extracted).await?;
     let Some(entry) = entries.try_next().await? else {
         return Err(AddonError::InvalidArchive.into());
@@ -288,7 +263,7 @@ pub(super) async fn prepare_archive(
         return Err(AddonError::InvalidArchive.into());
     }
     let source = entry.path();
-    check_payload_links(&source, cancellation).await?;
+    check_payload_links(&source).await?;
     let prepared = stage.join("release");
     async_fs::create_dir(&prepared).await?;
     async_fs::rename(source, prepared.join("payload")).await?;
@@ -296,15 +271,12 @@ pub(super) async fn prepare_archive(
 }
 
 // Addon links must stay inside the payload tree after it leaves staging.
-async fn check_payload_links(root: &Path, cancellation: &CancellationToken) -> Result<()> {
+async fn check_payload_links(root: &Path) -> Result<()> {
     let root = async_fs::canonicalize(root).await?;
     let mut pending = vec![root.clone()];
     while let Some(directory) = pending.pop() {
         let mut entries = async_fs::read_dir(directory).await?;
         while let Some(entry) = entries.try_next().await? {
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
             let path = entry.path();
             let kind = entry.file_type().await?;
             if kind.is_dir() {

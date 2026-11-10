@@ -10,11 +10,13 @@ use std::{
 };
 
 use fvs_rs::{Mount, UnmountMode};
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{FVS_BLOCK_SIZE, LayerStore, VirgoLayer, registry};
-use crate::error::{Error, Result, ResultExt};
+use crate::{
+    Job,
+    error::{Error, Result, ResultExt},
+};
 
 /// Holds staging paths and an optional base mount for one artifact build.
 ///
@@ -42,27 +44,18 @@ impl LayerStore {
         &self,
         key: &Path,
         id: Option<Uuid>,
-        cancellation: &CancellationToken,
+        job: &Job,
         build: impl FnOnce() -> Fut,
     ) -> Result<VirgoLayer>
     where
         Fut: Future<Output = Result<VirgoLayer>>,
     {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
         if let Some(layer) = self.load(key, id).await? {
             return Ok(layer);
         }
-        let _lock = cancellation
-            .run_until_cancelled(self.build_lock.lock())
-            .await
-            .ok_or(Error::Cancelled)?;
+        let _lock = job.cancellable(self.build_lock.lock()).await?;
         if let Some(layer) = self.load(key, id).await? {
             return Ok(layer);
-        }
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
         }
         build().await
     }
@@ -82,11 +75,9 @@ impl LayerStore {
         &self,
         key: &Path,
         base: Option<&VirgoLayer>,
-        cancellation: &CancellationToken,
+        job: &Job,
     ) -> Result<BuildWorkspace> {
-        if cancellation.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
+        job.check_cancellation()?;
         let stage = self.staging_path();
         let filesystem = stage.join("artifact/filesystem");
         let wineprefix = if base.is_some() {
@@ -129,8 +120,8 @@ impl LayerStore {
     /// The caller must stop build processes before calling this method inside
     /// [`Self::get_or_build`]. A failed recipe is discarded after a successful
     /// unmount; an unmount failure retains the workspace and returns immediately.
-    /// Cancellation is sampled before capture, before commit, and before the
-    /// publication rename; it does not interrupt an active FVS request.
+    /// Cancellation is sampled before commit; it does not interrupt an active FVS
+    /// request.
     ///
     /// # Errors
     ///
@@ -142,16 +133,13 @@ impl LayerStore {
         id: Uuid,
         message: String,
         executed: Result<()>,
-        cancellation: &CancellationToken,
+        job: &Job,
     ) -> Result<VirgoLayer> {
         let artifact = workspace.stage.join("artifact");
         let filesystem = artifact.join("filesystem");
         let registry = artifact.join("registry");
         let captured = async {
             executed?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
             if let Some((mount, base)) = &workspace.overlay {
                 registry::write_patches(base, &workspace.wineprefix, &registry).await?;
                 self.fvs.diff_mount(mount, true).await?;
@@ -166,22 +154,14 @@ impl LayerStore {
         }
         let result = async {
             captured?;
-            if cancellation.is_cancelled() {
-                return Err(Error::Cancelled);
-            }
+            job.check_cancellation()?;
             if workspace.overlay.is_some() {
                 registry::exclude_hives(&filesystem).await?;
             }
             let repository = self.fvs.new_repository(&filesystem, FVS_BLOCK_SIZE).await?;
             let commit = self.fvs.commit(&repository, message).await?;
-            self.publish(
-                &artifact,
-                &workspace.destination,
-                id,
-                commit.state_id,
-                cancellation,
-            )
-            .await
+            self.publish(&artifact, &workspace.destination, id, commit.state_id)
+                .await
         }
         .await;
         async_fs::remove_dir_all(workspace.stage).await.log_warn();

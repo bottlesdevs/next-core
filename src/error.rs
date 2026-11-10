@@ -60,7 +60,7 @@ pub enum Error {
     /// Addon catalog, download, installation, or storage failed.
     #[error("addon error: {0}")]
     Addon(#[from] AddonError),
-    /// Cooperative cancellation was observed at an operation-defined checkpoint.
+    /// Cancellation was observed by a [`Job`](crate::Job) call.
     #[error("operation cancelled")]
     Cancelled,
 }
