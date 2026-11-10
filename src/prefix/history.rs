@@ -7,11 +7,9 @@
 
 use super::{Inner, PrefixState};
 use crate::virgo::FVS_BLOCK_SIZE;
-use crate::{
-    Context, Operation, PrefixError, Stage, Transfer, error::Result, operation::ProgressReporter,
-};
+use crate::{Operation, PrefixError, Stage, Transfer, error::Result, operation::ProgressReporter};
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
-use fvs_rs::{Commit, Progress as FvsProgress, Repository, RestoreResponse};
+use fvs_rs::{Commit, Fvs2dClient, Progress as FvsProgress, Repository, RestoreResponse};
 use std::{path::Path, sync::Arc};
 
 /// Identifies internal rollback checkpoints hidden from user snapshot listings.
@@ -48,10 +46,9 @@ pub(crate) async fn capture(
     root: &Path,
     message: String,
     allow_empty: bool,
-    cx: &Context,
+    client: &Fvs2dClient,
     progress: &ProgressReporter,
 ) -> Result<Commit> {
-    let client = &cx.fvs().client;
     if !crate::utils::fs::exists(&root.join(".fvs2")).await? {
         client.new_repository(root, FVS_BLOCK_SIZE).await?;
     }
@@ -70,12 +67,10 @@ pub(crate) async fn capture(
 pub(crate) async fn restore(
     root: &Path,
     revision: &str,
-    cx: &Context,
+    client: &Fvs2dClient,
     progress: &ProgressReporter,
 ) -> Result<RestoreResponse> {
-    Ok(cx
-        .fvs()
-        .client
+    Ok(client
         .restore_with_progress(
             &repository(root),
             revision,
@@ -103,12 +98,12 @@ pub(crate) async fn recover<T>(
     result: Result<T>,
     root: &Path,
     checkpoint: &Commit,
-    cx: &Context,
+    client: &Fvs2dClient,
     progress: &ProgressReporter,
 ) -> Result<T> {
     if let Err(error) = &result {
         progress.stage(Stage::Restoring);
-        if let Err(source) = restore(root, &checkpoint.state_id, cx, progress).await {
+        if let Err(source) = restore(root, &checkpoint.state_id, client, progress).await {
             tracing::error!(%error, "mutation failed before rollback failed");
             return Err(PrefixError::Rollback {
                 root: root.to_path_buf(),
@@ -144,7 +139,14 @@ impl Inner {
             job.transition(Stage::Stopping)?;
             prefix.stop_locked().await?;
             job.transition(Stage::Committing)?;
-            capture(&prefix.root, message, true, &prefix.context, job.progress()).await
+            capture(
+                &prefix.root,
+                message,
+                true,
+                &prefix.fvs.client,
+                job.progress(),
+            )
+            .await
         })
     }
 
@@ -163,8 +165,7 @@ impl Inner {
             return Ok(Vec::new());
         }
         Ok(self
-            .context
-            .fvs()
+            .fvs
             .client
             .list_commits(&repository(&self.root))
             .await?
@@ -199,7 +200,7 @@ impl Inner {
                 &prefix.root,
                 AUTO_CHECKPOINT_MESSAGE.into(),
                 false,
-                &prefix.context,
+                &prefix.fvs.client,
                 job.progress(),
             )
             .await?;
@@ -207,7 +208,7 @@ impl Inner {
             // Once restoration starts, finish it or recover before releasing coordination.
             let result = async {
                 let restored =
-                    restore(&prefix.root, &revision, &prefix.context, job.progress()).await?;
+                    restore(&prefix.root, &revision, &prefix.fvs.client, job.progress()).await?;
                 let state: PrefixState = next_config::load(prefix.root.join("state.toml")).await?;
                 Ok((restored.state_id, state))
             }
@@ -216,7 +217,7 @@ impl Inner {
                 result,
                 &prefix.root,
                 &checkpoint,
-                &prefix.context,
+                &prefix.fvs.client,
                 job.progress(),
             )
             .await?;

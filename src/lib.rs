@@ -36,4 +36,3 @@ pub use proto::{DllOverride, DllOverrideMode, Process, RegistryHive};
 pub use utils::env_vars::EnvVars;
 
 pub(crate) use next_proto::winebridge as proto;
-pub(crate) use utils::context::Context;

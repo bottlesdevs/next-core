@@ -8,7 +8,7 @@ mod standard;
 #[cfg(feature = "fvs")]
 mod virgo;
 
-use crate::{Context, Job, PrefixState, error::Result};
+use crate::{Job, PrefixState, error::Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::{path::Path, sync::Arc};
@@ -48,13 +48,37 @@ pub(crate) trait Storage: Send + Sync {
     async fn release(&self, root: &Path) -> Result<()>;
 }
 
-/// Returns the storage implementing `backend`.
-#[cfg_attr(not(feature = "fvs"), allow(unused_variables))]
-pub(crate) fn storage(backend: PrefixBackend, cx: &Context) -> Arc<dyn Storage> {
-    match backend {
-        PrefixBackend::Standard => Arc::new(standard::Standard),
-        #[cfg(feature = "fvs")]
-        PrefixBackend::Virgo => Arc::new(virgo::Virgo::new(cx.clone())),
+/// The storage of every backend, shared by the prefixes of one core.
+#[derive(Clone)]
+pub(crate) struct Storages {
+    standard: Arc<dyn Storage>,
+    #[cfg(feature = "fvs")]
+    virgo: Arc<dyn Storage>,
+}
+
+impl Storages {
+    #[cfg(not(feature = "fvs"))]
+    pub(crate) fn new() -> Self {
+        Self {
+            standard: Arc::new(standard::Standard),
+        }
+    }
+
+    #[cfg(feature = "fvs")]
+    pub(crate) fn new(addons: crate::Addons, fvs: Arc<crate::virgo::Fvs>) -> Self {
+        Self {
+            standard: Arc::new(standard::Standard),
+            virgo: Arc::new(virgo::Virgo::new(addons, fvs)),
+        }
+    }
+
+    /// Returns the storage implementing `backend`.
+    pub(crate) fn get(&self, backend: PrefixBackend) -> Arc<dyn Storage> {
+        match backend {
+            PrefixBackend::Standard => self.standard.clone(),
+            #[cfg(feature = "fvs")]
+            PrefixBackend::Virgo => self.virgo.clone(),
+        }
     }
 }
 

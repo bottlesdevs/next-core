@@ -5,7 +5,7 @@ use std::sync::Arc;
 use http_client::{HttpClient, ReqwestClient};
 use url::Url;
 
-use crate::{Addons, Catalogs, Context, Prefixes, error::Result, utils::paths};
+use crate::{Addons, Catalogs, Prefixes, error::Result, prefix::Storages, utils::paths};
 
 /// Owns the services and persisted collections used by Bottles Next.
 ///
@@ -13,7 +13,7 @@ use crate::{Addons, Catalogs, Context, Prefixes, error::Result, utils::paths};
 /// lifetime of the application, then call [`Core::shutdown`] after all
 /// outstanding [`Operation`](crate::Operation) values have completed.
 pub struct Core {
-    context: Context,
+    addons: Addons,
     catalogs: Catalogs,
     prefixes: Prefixes,
 }
@@ -79,7 +79,7 @@ impl Core {
 
     /// Returns the store of locally acquired releases.
     pub fn addons(&self) -> &Addons {
-        self.context.addons()
+        &self.addons
     }
 
     /// Returns the remote catalogs that acquire releases into [`Self::addons`].
@@ -134,21 +134,29 @@ impl CoreBuilder {
             Some(http_client) => http_client,
             None => Arc::new(ReqwestClient::new().map_err(download_manager::error::Error::from)?),
         };
-        let context = Context::new(
-            #[cfg(feature = "fvs")]
-            crate::virgo::Fvs::connect(self.fvs2d).await?,
-        )
-        .await?;
+        #[cfg(feature = "fvs")]
+        let fvs = Arc::new(crate::virgo::Fvs::connect(self.fvs2d).await?);
+        let addons = Addons::load().await?;
         let sources = self.catalogs.unwrap_or_else(|| {
             DEFAULT_CATALOGS
                 .iter()
                 .map(|url| Url::parse(url).expect("default catalog URL is valid"))
                 .collect()
         });
-        let catalogs = Catalogs::load(http_client, context.addons().clone(), sources).await?;
-        let prefixes = Prefixes::load(paths::prefixes(), context.clone()).await?;
+        let catalogs = Catalogs::load(http_client, addons.clone(), sources).await?;
+        #[cfg(feature = "fvs")]
+        let storages = Storages::new(addons.clone(), fvs.clone());
+        #[cfg(not(feature = "fvs"))]
+        let storages = Storages::new();
+        let prefixes = Prefixes::load(
+            paths::prefixes(),
+            storages,
+            #[cfg(feature = "fvs")]
+            fvs,
+        )
+        .await?;
         Ok(Core {
-            context,
+            addons,
             catalogs,
             prefixes,
         })

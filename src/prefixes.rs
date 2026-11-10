@@ -4,9 +4,9 @@
 //! edit, rollback, and delete operations. It does not poll the filesystem for
 //! changes made outside this crate.
 
-use crate::prefix::{Inner, Inventory};
+use crate::prefix::{Inner, Inventory, Storages};
 use crate::{
-    Addon, Context, Operation, Prefix, PrefixBackend, PrefixError, PrefixState, Runner, Stage, Umu,
+    Addon, Operation, Prefix, PrefixBackend, PrefixError, PrefixState, Runner, Stage, Umu,
     WineBridge, error::Result,
 };
 use futures_core::Stream;
@@ -42,7 +42,10 @@ type Events = Pin<Box<dyn Stream<Item = Option<Event>> + Send>>;
 #[derive(Clone)]
 pub struct Prefixes {
     root: PathBuf,
-    context: Context,
+    storages: Storages,
+    /// FVS services used by prefix history.
+    #[cfg(feature = "fvs")]
+    fvs: Arc<crate::virgo::Fvs>,
     members: watch::Sender<Members>,
 }
 
@@ -140,10 +143,16 @@ impl Prefixes {
     ///
     /// Returns an error when directory enumeration, state loading, or prefix
     /// reconstruction fails.
-    pub(crate) async fn load(root: PathBuf, context: Context) -> Result<Self> {
+    pub(crate) async fn load(
+        root: PathBuf,
+        storages: Storages,
+        #[cfg(feature = "fvs")] fvs: Arc<crate::virgo::Fvs>,
+    ) -> Result<Self> {
         let prefixes = Self {
             root,
-            context,
+            storages,
+            #[cfg(feature = "fvs")]
+            fvs,
             members: watch::channel(Arc::default()).0,
         };
         let mut members = HashMap::new();
@@ -167,7 +176,7 @@ impl Prefixes {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let prefix = Prefix(Inner::new(state, root, prefixes.context.clone())?);
+            let prefix = prefixes.member(state, root)?;
             members.insert(prefix.id(), prefix);
         }
         prefixes.members.send_replace(Arc::new(members));
@@ -206,7 +215,7 @@ impl Prefixes {
             let state = PrefixState::new(backend, runner, winebridge, umu);
             state.validate()?;
             let root = prefixes.root.join(Uuid::new_v4().to_string());
-            let prefix = Prefix(Inner::new(state, root, prefixes.context.clone())?);
+            let prefix = prefixes.member(state, root)?;
             prefix.0.create(&job).await?;
             prefixes.members.send_modify(|members| {
                 Arc::make_mut(members).insert(prefix.id(), prefix.clone());
@@ -244,6 +253,24 @@ impl Prefixes {
                 })
                 .await
         })
+    }
+}
+
+impl Prefixes {
+    /// Constructs the handle of the prefix stored at `root` without touching storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `root` is not named by a UUID.
+    fn member(&self, state: PrefixState, root: PathBuf) -> Result<Prefix> {
+        let storage = self.storages.get(state.backend);
+        Ok(Prefix(Inner::new(
+            state,
+            root,
+            storage,
+            #[cfg(feature = "fvs")]
+            self.fvs.clone(),
+        )?))
     }
 }
 
