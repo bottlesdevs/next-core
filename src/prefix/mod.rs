@@ -5,7 +5,6 @@
 //! after persistence succeeds. Deletion closes the publication stream without
 //! invalidating snapshots already held by callers.
 
-mod backend;
 mod edit;
 mod error;
 mod handle;
@@ -13,24 +12,25 @@ mod handle;
 mod history;
 mod runtime;
 mod state;
+mod storage;
 
-pub use backend::PrefixBackend;
 pub use edit::Edit;
 pub use error::PrefixError;
 pub use handle::Prefix;
 #[cfg(feature = "fvs")]
 pub use history::{Snapshot, SnapshotSummary};
 pub use state::PrefixState;
+pub use storage::PrefixBackend;
 
 use crate::{
     Job, Stage,
     error::{Result, ResultExt},
     utils::fs,
 };
-use backend::Storage;
-pub(crate) use backend::Storages;
 use futures_core::Stream;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use storage::Storage;
+pub(crate) use storage::Storages;
 use tokio::sync::{Mutex, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
 use uuid::Uuid;
