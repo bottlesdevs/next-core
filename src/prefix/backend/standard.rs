@@ -37,6 +37,27 @@ impl Storage for Standard {
         before.components != after.components || before.dependencies != after.dependencies
     }
 
+    /// Applies the difference between two frozen selections to a stopped prefix.
+    ///
+    /// Removed prefix components use the previous selection's embedded recipe and prefix
+    /// backups. Replacements and newly appended dependencies read their payloads as
+    /// each recipe runs, so a late failure can leave earlier steps applied. The
+    /// caller must stop the prefix first; this method performs one final shutdown
+    /// after the batch whether application succeeds or fails.
+    /// `after.dependencies` must begin with exactly `before.dependencies`;
+    /// edits enforce this by exposing append-only dependencies.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if runner loading, uninstalling, installing, cancellation,
+    /// or the final Wine shutdown fails. A shutdown error takes precedence over the
+    /// application result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `after.dependencies` is shorter than `before.dependencies`.
+    /// Edits preserve the previous dependencies, so this indicates an internal
+    /// caller violated the edit contract.
     async fn apply(
         &self,
         before: &PrefixState,
@@ -44,7 +65,46 @@ impl Storage for Standard {
         root: &Path,
         job: &Job,
     ) -> Result<()> {
-        apply(before, after, root, job).await
+        let mut removals = Vec::new();
+        let mut components = Vec::new();
+        let dependencies = &after.dependencies[before.dependencies.len()..];
+        for slot in Slot::iter() {
+            let old = before.component(slot);
+            let new = after.component(slot);
+            if old == new {
+                continue;
+            }
+            if let Some(old) = old {
+                removals.push(old);
+            }
+            if let Some(new) = new {
+                components.push(new);
+            }
+        }
+        let runner = after.runner.load_runner(after.umu.as_ref()).await?;
+        let wineprefix = root.join("prefix");
+        let winebridge = after.winebridge.path();
+        let inputs = InstallInputs {
+            wineprefix: &wineprefix,
+            runner: runner.as_ref(),
+            winebridge: &winebridge,
+        };
+        let applied = async {
+            for release in removals {
+                uninstall(inputs, release.recipe(), release.id(), job).await?;
+            }
+            let installations = components
+                .iter()
+                .map(|r| (r.path(), r.resources()))
+                .chain(dependencies.iter().map(|r| (r.path(), r.resources())));
+            for (payload, resources) in installations {
+                execute(inputs, &payload, resources, true, job).await?;
+            }
+            Ok(())
+        }
+        .await;
+        runtime::stop(runner.as_ref(), &wineprefix).await?;
+        applied
     }
 
     async fn mount(&self, _state: &PrefixState, _root: &Path) -> Result<()> {
@@ -54,73 +114,4 @@ impl Storage for Standard {
     async fn release(&self, root: &Path) -> Result<()> {
         WineBridgeClient::clear_discovery(&root.join("prefix")).await
     }
-}
-
-/// Applies the difference between two frozen selections to a stopped prefix.
-///
-/// Removed prefix components use the previous selection's embedded recipe and prefix
-/// backups. Replacements and newly appended dependencies read their payloads as
-/// each recipe runs, so a late failure can leave earlier steps applied. The
-/// caller must stop the prefix first; this function performs one final shutdown
-/// after the batch whether application succeeds or fails.
-/// `candidate.dependencies` must begin with exactly `previous.dependencies`;
-/// edits enforce this by exposing append-only dependencies.
-///
-/// # Errors
-///
-/// Returns an error if runner loading, uninstalling, installing, cancellation,
-/// or the final Wine shutdown fails. A shutdown error takes precedence over the
-/// application result.
-///
-/// # Panics
-///
-/// Panics if `candidate.dependencies` is shorter than `previous.dependencies`.
-/// Edits preserve the previous dependencies, so this indicates an internal
-/// caller violated the edit contract.
-async fn apply(
-    previous: &PrefixState,
-    candidate: &PrefixState,
-    root: &Path,
-    job: &Job,
-) -> Result<()> {
-    let mut removals = Vec::new();
-    let mut components = Vec::new();
-    let dependencies = &candidate.dependencies[previous.dependencies.len()..];
-    for slot in Slot::iter() {
-        let old = previous.component(slot);
-        let new = candidate.component(slot);
-        if old == new {
-            continue;
-        }
-        if let Some(old) = old {
-            removals.push(old);
-        }
-        if let Some(new) = new {
-            components.push(new);
-        }
-    }
-    let runner = candidate.runner.load_runner(candidate.umu.as_ref()).await?;
-    let wineprefix = root.join("prefix");
-    let winebridge = candidate.winebridge.path();
-    let inputs = InstallInputs {
-        wineprefix: &wineprefix,
-        runner: runner.as_ref(),
-        winebridge: &winebridge,
-    };
-    let applied = async {
-        for release in removals {
-            uninstall(inputs, release.recipe(), release.id(), job).await?;
-        }
-        let installations = components
-            .iter()
-            .map(|r| (r.path(), r.resources()))
-            .chain(dependencies.iter().map(|r| (r.path(), r.resources())));
-        for (payload, resources) in installations {
-            execute(inputs, &payload, resources, true, job).await?;
-        }
-        Ok(())
-    }
-    .await;
-    runtime::stop(runner.as_ref(), &wineprefix).await?;
-    applied
 }

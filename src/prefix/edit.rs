@@ -118,11 +118,10 @@ impl Edit<'_> {
 impl Inner {
     /// Runs a coordinated edit and publishes it only after application succeeds.
     ///
-    /// Runtime and prefix changes require a stopped prefix. Runtime-only
-    /// changes save directly for Standard prefixes. Virgo rebuilds the
-    /// composition when the runner changes; UMU and WineBridge changes only save.
-    /// Storage changes are [checkpointed](Self::checkpointed) together with the
-    /// save that follows them.
+    /// Storage and runtime changes require a stopped prefix. When the storage
+    /// reports that the edit [changes](super::backend::Storage::changes) what it stores, the
+    /// change is applied and [checkpointed](Self::checkpointed) together with
+    /// the save that follows it; otherwise the draft is only saved.
     ///
     /// Cancellation is observed before a change starts and at backend-specific
     /// safe points. Once backend application succeeds, saving and publication
@@ -149,13 +148,12 @@ impl Inner {
             }
             let before = previous.as_ref();
             let after = &draft;
-            let prefix_changed =
-                before.components != after.components || before.dependencies != after.dependencies;
+            let storage_changed = prefix.storage.changes(before, after);
             let runner_changed = before.runner != after.runner;
             let umu_changed = before.umu != after.umu;
             let runtime_changed =
                 runner_changed || umu_changed || before.winebridge != after.winebridge;
-            if prefix_changed || runtime_changed {
+            if storage_changed || runtime_changed {
                 if prefix.bridge().await?.is_some() {
                     return Err(PrefixError::MustBeStopped.into());
                 }
@@ -163,7 +161,7 @@ impl Inner {
                 prefix.stop_locked().await?;
             }
             // Once application succeeds, finish saving even if cancellation arrives.
-            if prefix.storage.changes(before, after) {
+            if storage_changed {
                 prefix
                     .checkpointed(&job, async {
                         prefix
