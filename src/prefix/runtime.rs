@@ -261,19 +261,20 @@ impl Prefix {
             return Ok(bridge);
         }
         let wineprefix = self.0.root.join("prefix");
-        let vars = state.effective_env_vars();
+        let env = state.env();
         self.stop_locked().await?;
         let runner = state.runner.runner(state.umu.as_ref())?;
         let command = state.wrappers.apply(WineBridgeClient::command(
             runner.as_ref(),
             &wineprefix,
             state.winebridge.path(),
-            vars.iter(),
+            env.iter(),
         ));
         let result = async {
             self.0.storage.mount(state, &self.0.root).await?;
             job.check_cancellation()?;
             let bridge = WineBridgeClient::connect_or_spawn(&wineprefix, command).await?;
+            state.write_registry(&bridge).await?;
             job.check_cancellation().map(|()| bridge)
         }
         .await;

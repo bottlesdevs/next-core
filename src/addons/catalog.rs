@@ -166,7 +166,7 @@ pub struct CatalogEntry {
     version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
-    #[serde(default, skip_serializing_if = "AddonSettingsSchema::is_empty")]
+    #[serde(flatten)]
     settings: AddonSettingsSchema,
     artifacts: Vec<CatalogArtifact>,
     #[serde(flatten)]
@@ -199,7 +199,7 @@ impl CatalogEntry {
         &self.requirements
     }
 
-    /// Returns the settings this release declares.
+    /// Returns the settings this release declares and the effects they drive.
     pub fn settings(&self) -> &AddonSettingsSchema {
         &self.settings
     }

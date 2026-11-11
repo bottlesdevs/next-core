@@ -6,7 +6,7 @@
 use super::{PrefixBackend, PrefixError};
 use crate::{
     Addon, Component, Dependency, EnvVars, InstalledAddon, Requirement, Runner, Slot, Umu,
-    WineBridge, Wrappers, addons::InstallStep, error::Result,
+    WineBridge, Wrappers, error::Result,
 };
 use next_config::Config;
 use serde::{Deserialize, Serialize};
@@ -59,31 +59,6 @@ impl PrefixState {
             env_vars: Default::default(),
             wrappers: Default::default(),
         }
-    }
-
-    /// Resolves the environment variables used to start `WineBridge`.
-    ///
-    /// Recipe declarations from components are applied first, followed by
-    /// dependencies in installation order and finally [`Self::env_vars`]. Later
-    /// declarations override earlier values; command-local variables are excluded.
-    pub(crate) fn effective_env_vars(&self) -> EnvVars {
-        let mut vars = EnvVars::default();
-        let steps = self
-            .components
-            .values()
-            .flat_map(|component| component.recipe())
-            .chain(
-                self.dependencies
-                    .iter()
-                    .flat_map(|dependency| dependency.recipe()),
-            );
-        for step in steps {
-            if let InstallStep::SetEnvironment { name, value } = step {
-                vars.insert(name.clone(), value.clone());
-            }
-        }
-        vars.extend(self.env_vars.clone());
-        vars
     }
 
     /// Returns the component occupying `slot`, if the slot is selected.

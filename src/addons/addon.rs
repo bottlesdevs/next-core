@@ -42,7 +42,7 @@ pub struct Addon<R> {
     version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
-    #[serde(default, skip_serializing_if = "AddonSettingsSchema::is_empty")]
+    #[serde(flatten)]
     settings: AddonSettingsSchema,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     resources: Vec<InstallResource>,
@@ -70,7 +70,7 @@ impl<R> Addon<R> {
         }
     }
 
-    /// Adds the catalog's settings schema to a new record.
+    /// Adds the catalog's settings and effects to a new record.
     pub(crate) fn with_settings(mut self, settings: AddonSettingsSchema) -> Self {
         self.settings = settings;
         self
@@ -96,7 +96,7 @@ impl<R> Addon<R> {
         &self.requirements
     }
 
-    /// Returns the settings this release declares.
+    /// Returns the settings this release declares and the effects they drive.
     pub fn settings(&self) -> &AddonSettingsSchema {
         &self.settings
     }

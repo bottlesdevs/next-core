@@ -40,13 +40,7 @@ impl<R> InstalledAddon<R> {
     /// A stored value the setting's control does not accept is ignored in
     /// favor of the default.
     pub fn value(&self, key: &str) -> Option<&SettingValue> {
-        let setting = self.addon.settings().get(key)?;
-        Some(
-            self.settings
-                .get(key)
-                .filter(|value| setting.control.accepts(value))
-                .unwrap_or(&setting.default),
-        )
+        self.addon.settings().value(&self.settings, key)
     }
 
     /// Stores `value` for setting `key`, or removes it when it is the default.

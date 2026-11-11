@@ -26,6 +26,7 @@ mod addon;
 mod catalog;
 mod catalogs;
 mod defaults;
+mod effects;
 mod error;
 mod installed;
 mod installer;
@@ -39,6 +40,7 @@ pub use addon::{
 };
 pub use catalog::CatalogEntry;
 pub use catalogs::{Catalogs, CatalogsState};
+pub(crate) use effects::Effect;
 pub use error::{AddonError, CatalogError, InstallerError};
 pub use installed::InstalledAddon;
 pub(crate) use installer::{InstallInputs, execute, uninstall};
