@@ -3,14 +3,9 @@
 use crate::command::{Command, Wrapper};
 use serde::{Deserialize, Serialize};
 
+#[derive(derive_more::From)]
 pub(crate) struct MangoHud {
     config: MangoHudConfig,
-}
-
-impl From<MangoHudConfig> for MangoHud {
-    fn from(config: MangoHudConfig) -> Self {
-        Self { config }
-    }
 }
 
 impl Into<Command> for MangoHud {

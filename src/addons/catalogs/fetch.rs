@@ -53,7 +53,7 @@ impl Catalogs {
             if artifacts.is_empty() {
                 return Err(CatalogError::Unsupported(id).into());
             }
-            let is_dependency = matches!(entry.role(), AddonRole::Dependency(_));
+            let is_dependency = entry.role().is_dependency();
             if !is_dependency && artifacts.len() != 1 {
                 return Err(CatalogError::InvalidArchiveArtifactCount {
                     addon: id,

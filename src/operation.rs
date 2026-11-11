@@ -5,7 +5,6 @@
 //! Progress observation does not drive the work.
 
 use std::{
-    fmt,
     future::Future,
     pin::Pin,
     task::{Context, Poll},
@@ -92,18 +91,20 @@ impl Progress {
 ///     "Downloading runner",
 /// );
 /// ```
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, strum::Display)]
 pub enum Stage {
     /// Resolves inputs and validates prerequisites.
     Preparing,
     /// Stops an active prefix before mutation.
     Stopping,
     /// Downloads a named artifact.
+    #[strum(to_string = "Downloading {file}")]
     Downloading {
         /// The file name or caller-facing label of the current download.
         file: String,
     },
     /// Verifies a named artifact.
+    #[strum(to_string = "Verifying {file}")]
     Verifying {
         /// The file name or caller-facing label of the item being verified.
         file: String,
@@ -111,6 +112,7 @@ pub enum Stage {
     /// Extracts an archive.
     Extracting,
     /// Initializes a Wine prefix.
+    #[strum(to_string = "Creating prefix")]
     CreatingPrefix,
     /// Records an FVS revision before a change.
     Checkpointing,
@@ -124,25 +126,6 @@ pub enum Stage {
     Removing,
     /// Publishes an immutable FVS layer.
     Committing,
-}
-
-impl fmt::Display for Stage {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Preparing => formatter.write_str("Preparing"),
-            Self::Stopping => formatter.write_str("Stopping"),
-            Self::Downloading { file } => write!(formatter, "Downloading {file}"),
-            Self::Verifying { file } => write!(formatter, "Verifying {file}"),
-            Self::Extracting => formatter.write_str("Extracting"),
-            Self::CreatingPrefix => formatter.write_str("Creating prefix"),
-            Self::Checkpointing => formatter.write_str("Checkpointing"),
-            Self::Restoring => formatter.write_str("Restoring"),
-            Self::Rebuilding => formatter.write_str("Rebuilding"),
-            Self::Configuring => formatter.write_str("Configuring"),
-            Self::Removing => formatter.write_str("Removing"),
-            Self::Committing => formatter.write_str("Committing"),
-        }
-    }
 }
 
 /// Publishes an operation's progress without observing cancellation.

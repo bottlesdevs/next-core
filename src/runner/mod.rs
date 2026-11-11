@@ -42,19 +42,13 @@ pub enum RunnerError {
 }
 
 /// Wraps a host command that has already been lowered through a [`Runner`].
-#[derive(Debug)]
+#[derive(Debug, derive_more::Into)]
 pub(crate) struct RunnerCommand(Command);
 
 impl RunnerCommand {
     /// Places one host wrapper around the lowered command.
     pub(crate) fn wrapped_by(self, wrapper: impl Wrapper) -> Self {
         Self(wrapper.wrap(self.0).into())
-    }
-}
-
-impl From<RunnerCommand> for Command {
-    fn from(command: RunnerCommand) -> Self {
-        command.0
     }
 }
 

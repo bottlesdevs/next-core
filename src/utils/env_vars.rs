@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 /// construction also uses [`OsString`].
 ///
 /// [`OsString`]: std::ffi::OsString
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(
+    Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, derive_more::IntoIterator,
+)]
 #[serde(transparent)]
 pub struct EnvVars<T: Eq + Hash = String>(HashMap<T, T>);
 
@@ -69,14 +71,5 @@ impl EnvVars<String> {
     /// Returns `true` when no overrides are present.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
-    }
-}
-
-impl<T: Eq + Hash> IntoIterator for EnvVars<T> {
-    type Item = (T, T);
-    type IntoIter = std::collections::hash_map::IntoIter<T, T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
     }
 }

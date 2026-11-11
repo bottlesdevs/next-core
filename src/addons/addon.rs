@@ -247,6 +247,7 @@ pub enum Requirement {
     Serialize,
     derive_more::From,
     derive_more::TryInto,
+    strum::EnumIs,
 )]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum AddonRole {

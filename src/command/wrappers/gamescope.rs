@@ -84,8 +84,9 @@ pub struct GamescopeConfig {
 }
 
 /// Gamescope scaling policy used when input and output sizes differ.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, strum::Display)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum Scaler {
     /// Lets gamescope choose the scaling policy.
     Auto,
@@ -99,21 +100,10 @@ pub enum Scaler {
     Stretch,
 }
 
-impl Scaler {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Integer => "integer",
-            Self::Fit => "fit",
-            Self::Fill => "fill",
-            Self::Stretch => "stretch",
-        }
-    }
-}
-
 /// Filter gamescope uses while scaling the game image.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, strum::Display)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum Filter {
     /// Linear interpolation.
     Linear,
@@ -125,18 +115,6 @@ pub enum Filter {
     Nis,
     /// Pixel-oriented scaling.
     Pixel,
-}
-
-impl Filter {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Linear => "linear",
-            Self::Nearest => "nearest",
-            Self::Fsr => "fsr",
-            Self::Nis => "nis",
-            Self::Pixel => "pixel",
-        }
-    }
 }
 
 impl GamescopeConfig {
@@ -157,10 +135,10 @@ impl GamescopeConfig {
         }
 
         if let Some(scaler) = self.scaler {
-            args.extend(["-S".into(), scaler.as_str().into()]);
+            args.extend(["-S".into(), scaler.to_string()]);
         }
         if let Some(filter) = self.filter {
-            args.extend(["-F".into(), filter.as_str().into()]);
+            args.extend(["-F".into(), filter.to_string()]);
         }
         if let Some(sharpness) = self.sharpness {
             args.extend(["--sharpness".into(), sharpness.to_string()]);

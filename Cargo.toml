@@ -23,7 +23,7 @@ async-io.workspace = true
 async-process.workspace = true
 async-trait.workspace = true
 blocking.workspace = true
-derive_more = { workspace = true, features = ["from", "try_into"] }
+derive_more = { workspace = true, features = ["from", "into", "into_iterator", "try_into"] }
 download-manager.workspace = true
 http.workspace = true
 http-client = { workspace = true, features = ["reqwest"] }
