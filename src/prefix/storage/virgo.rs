@@ -264,9 +264,6 @@ impl Virgo {
                     .release::<Runner>(base.id)
                     .ok_or(AddonError::NotFound(base.id))?;
                 let runner = soda.runner(None)?;
-                let winebridge = latest_addon(addons.releases::<crate::WineBridge>())
-                    .ok_or(VirgoError::WineBridgeNotDownloaded)?
-                    .path();
                 let workspace = self
                     .layers()
                     .prepare_build(destination, Some(base), job)
@@ -275,7 +272,6 @@ impl Virgo {
                     InstallInputs {
                         wineprefix: &workspace.wineprefix,
                         runner: runner.as_ref(),
-                        winebridge: &winebridge,
                     },
                     &addon.path(),
                     addon.resources(),

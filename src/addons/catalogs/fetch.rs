@@ -62,15 +62,16 @@ impl Catalogs {
                 }
                 .into());
             }
+            let (resources, effects) = resources(entry.role(), &artifacts);
             let record = Addon::new(
                 entry.id(),
                 entry.name().into(),
                 entry.version().into(),
                 entry.requirements().to_vec(),
-                resources(entry.role(), &artifacts),
+                resources,
                 role,
             )
-            .with_settings(entry.settings().clone());
+            .with_settings(entry.settings().clone().with_default_effects(effects));
             fs::with_staging(|stage| async move {
                 let downloads = stage.join("downloads");
                 async_fs::create_dir(&downloads).await?;

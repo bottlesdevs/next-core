@@ -83,11 +83,9 @@ impl Storage for Standard {
         }
         let runner = after.runner.runner(after.umu.as_ref())?;
         let wineprefix = root.join("prefix");
-        let winebridge = after.winebridge.path();
         let inputs = InstallInputs {
             wineprefix: &wineprefix,
             runner: runner.as_ref(),
-            winebridge: &winebridge,
         };
         let applied = async {
             for release in removals {

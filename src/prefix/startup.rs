@@ -14,7 +14,7 @@ use strum::IntoEnumIterator;
 use super::PrefixState;
 use crate::{
     EnvVars, InstalledAddon, Slot,
-    addons::{Effect, InstallStep},
+    addons::Effect,
     error::Result,
     proto::DllOverrideMode,
     winebridge::WineBridgeClient,
@@ -106,16 +106,7 @@ impl PrefixState {
 
 /// Returns the effects of `addon` with templates rendered.
 fn effects<R>(addon: &InstalledAddon<R>) -> impl Iterator<Item = Effect> + '_ {
-    // Legacy recipes still set variables through install steps.
-    let steps = addon.recipe().filter_map(|step| match step {
-        InstallStep::SetEnvironment { name, value } => Some(Effect::Environment {
-            name: name.clone(),
-            value: value.clone(),
-            when: None,
-        }),
-        _ => None,
-    });
-    steps.chain(addon.addon.settings().effects(addon.settings()))
+    addon.addon.settings().effects(addon.settings())
 }
 
 /// Returns the `WINEDLLOVERRIDES` spelling of `mode`.
