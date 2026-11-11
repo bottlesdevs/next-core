@@ -1,8 +1,9 @@
 //! Execution and partial reversal of frozen addon recipes.
 //!
 //! Installation walks resources and steps in declaration order. Removal walks the
-//! saved steps in reverse, restoring copied files; steps without an inverse are
-//! logged and skipped. Completed changes are not rolled back if a later step fails.
+//! saved steps in reverse, unregistering DLLs and restoring copied files; steps
+//! without an inverse are logged and skipped. Completed changes are not rolled
+//! back if a later step fails.
 //!
 //! Cancellation is cooperative between steps and while child processes run. Archive
 //! extraction and individual file copies are not interrupted; cancellation is
@@ -22,7 +23,10 @@ use crate::{
     command::{Command, Spawnable},
     error::{Error, Result},
     runner::Runner,
-    utils::fs::{self, archive, exists},
+    utils::{
+        env_vars::EnvVars,
+        fs::{self, archive, exists},
+    },
 };
 
 use crate::addons::recipe::{InstallResource, InstallStep};
@@ -67,13 +71,16 @@ pub(crate) async fn execute(
 
 /// Reverses supported steps in reverse recipe order.
 ///
-/// Copied files are restored from backups or removed. Executable, extraction,
-/// and DLL-registration steps are logged and skipped because they have no inverse.
+/// Registered DLLs are unregistered with `regsvr32 /u` in reverse order, and
+/// copied files are restored from backups or removed. A failed unregistration
+/// is logged and does not stop removal. Executable and extraction steps are
+/// logged and skipped because they have no inverse.
 ///
 /// # Errors
 ///
-/// Returns an error if cancellation is requested or restoring files fails.
-/// Changes reversed before the failure remain reversed.
+/// Returns an error if cancellation is requested, a `regsvr32` child cannot be
+/// run, or restoring files fails. Changes reversed before the failure remain
+/// reversed.
 pub(crate) async fn uninstall<'a>(
     inputs: InstallInputs<'_>,
     steps: impl DoubleEndedIterator<Item = &'a InstallStep>,
@@ -82,7 +89,7 @@ pub(crate) async fn uninstall<'a>(
 ) -> Result<()> {
     for step in steps.rev() {
         job.transition(Stage::Removing)?;
-        uninstall_step(inputs, step, item_id).await?;
+        uninstall_step(inputs, step, item_id, job).await?;
     }
     Ok(())
 }
@@ -128,12 +135,7 @@ async fn execute_step(
         }
         InstallStep::RegisterDlls { dlls, env_vars } => {
             for dll in dlls {
-                let mut command = Command::new("regsvr32").arg("/s").arg(wineprefix.join(dll));
-                for (name, value) in env_vars.iter() {
-                    command = command.env(name, value);
-                }
-                let status =
-                    wait_for_child(runner.command(wineprefix, command).spawn()?, job).await?;
+                let status = regsvr32(inputs, &[], dll, env_vars, job).await?;
                 if !status.success() {
                     return Err(InstallerError::RegisterDllFailed(status).into());
                 }
@@ -147,10 +149,19 @@ async fn uninstall_step(
     inputs: InstallInputs<'_>,
     step: &InstallStep,
     addon_id: Uuid,
+    job: &Job,
 ) -> Result<()> {
     match step {
         InstallStep::Copy { destination, .. } => {
             uninstall_file(inputs.wineprefix, destination).await?;
+        }
+        InstallStep::RegisterDlls { dlls, env_vars } => {
+            for dll in dlls.iter().rev() {
+                let status = regsvr32(inputs, &["/u"], dll, env_vars, job).await?;
+                if !status.success() {
+                    tracing::warn!(%addon_id, dll = %dll.display(), %status, "failed to unregister DLL");
+                }
+            }
         }
         unsupported => {
             tracing::warn!(
@@ -161,6 +172,31 @@ async fn uninstall_step(
         }
     }
     Ok(())
+}
+
+/// Runs `regsvr32 /s` with `flags` on `dll`, relative to the Wine prefix.
+///
+/// # Errors
+///
+/// Returns an error if the child cannot be spawned or awaited, or on
+/// cancellation.
+async fn regsvr32(
+    inputs: InstallInputs<'_>,
+    flags: &[&str],
+    dll: &Path,
+    env_vars: &EnvVars,
+    job: &Job,
+) -> Result<std::process::ExitStatus> {
+    let InstallInputs { wineprefix, runner } = inputs;
+    let mut command = Command::new("regsvr32").arg("/s");
+    for flag in flags {
+        command = command.arg(flag);
+    }
+    command = command.arg(wineprefix.join(dll));
+    for (name, value) in env_vars.iter() {
+        command = command.env(name, value);
+    }
+    wait_for_child(runner.command(wineprefix, command).spawn()?, job).await
 }
 
 /// Waits for a child to exit, killing and reaping it if cancellation wins.

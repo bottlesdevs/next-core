@@ -13,10 +13,7 @@ use strum::IntoEnumIterator;
 
 use super::PrefixState;
 use crate::{
-    EnvVars, InstalledAddon, Slot,
-    addons::Effect,
-    error::Result,
-    proto::DllOverrideMode,
+    EnvVars, InstalledAddon, Slot, addons::Effect, error::Result, proto::DllOverrideMode,
     winebridge::WineBridgeClient,
 };
 
