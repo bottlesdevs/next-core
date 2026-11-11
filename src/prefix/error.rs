@@ -1,6 +1,6 @@
 //! Errors raised while loading, validating, or mutating prefixes.
 
-use crate::{Requirement, Slot};
+use crate::{Requirement, SettingValue, Slot};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -32,6 +32,27 @@ pub enum PrefixError {
     /// No selected component occupies the requested [`Slot`].
     #[error("component slot {0:?} is not installed")]
     ComponentNotInstalled(Slot),
+    /// The prefix has no runner, component, or dependency with this release UUID.
+    #[error("addon {0} is not selected in this prefix")]
+    AddonNotSelected(Uuid),
+    /// The selected release does not declare the requested setting.
+    #[error("addon {addon} has no setting `{key}`")]
+    UnknownSetting {
+        /// Release UUID of the addon.
+        addon: Uuid,
+        /// Requested setting key.
+        key: String,
+    },
+    /// The setting's control does not accept the value.
+    #[error("setting `{key}` of addon {addon} does not accept {value}")]
+    InvalidSettingValue {
+        /// Release UUID of the addon.
+        addon: Uuid,
+        /// Setting key.
+        key: String,
+        /// Rejected value.
+        value: SettingValue,
+    },
     /// One or more addon requirements are absent from the proposed configuration.
     #[error("addon requirements are not satisfied: {requirements:?}")]
     RequiresAddon {

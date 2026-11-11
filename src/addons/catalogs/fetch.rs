@@ -69,7 +69,8 @@ impl Catalogs {
                 entry.requirements().to_vec(),
                 resources(entry.role(), &artifacts),
                 role,
-            );
+            )
+            .with_settings(entry.settings().clone());
             fs::with_staging(|stage| async move {
                 let downloads = stage.join("downloads");
                 async_fs::create_dir(&downloads).await?;

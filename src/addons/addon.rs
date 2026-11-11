@@ -18,7 +18,10 @@ use crate::{
     utils::paths,
 };
 
-use super::recipe::{InstallResource, InstallStep};
+use super::{
+    AddonSettingsSchema,
+    recipe::{InstallResource, InstallStep},
+};
 
 /// Describes an acquired addon and its frozen metadata.
 ///
@@ -39,6 +42,8 @@ pub struct Addon<R> {
     version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
+    #[serde(default, skip_serializing_if = "AddonSettingsSchema::is_empty")]
+    settings: AddonSettingsSchema,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     resources: Vec<InstallResource>,
     #[serde(flatten)]
@@ -59,9 +64,16 @@ impl<R> Addon<R> {
             name,
             version,
             requirements,
+            settings: AddonSettingsSchema::default(),
             resources,
             role,
         }
+    }
+
+    /// Adds the catalog's settings schema to a new record.
+    pub(crate) fn with_settings(mut self, settings: AddonSettingsSchema) -> Self {
+        self.settings = settings;
+        self
     }
 
     /// Returns the stable identifier shared by the catalog and acquired record.
@@ -82,6 +94,11 @@ impl<R> Addon<R> {
     /// Returns the constraints that a prefix must satisfy for this addon.
     pub fn requirements(&self) -> &[Requirement] {
         &self.requirements
+    }
+
+    /// Returns the settings this release declares.
+    pub fn settings(&self) -> &AddonSettingsSchema {
+        &self.settings
     }
 
     /// Returns the role of this release.
@@ -133,6 +150,7 @@ impl<R> Addon<R> {
             name: self.name,
             version: self.version,
             requirements: self.requirements,
+            settings: self.settings,
             resources: self.resources,
         })
     }
@@ -147,6 +165,7 @@ impl<R> Addon<R> {
             name: self.name,
             version: self.version,
             requirements: self.requirements,
+            settings: self.settings,
             resources: self.resources,
         }
     }

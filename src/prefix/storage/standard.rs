@@ -34,7 +34,7 @@ impl Storage for Standard {
     }
 
     fn changes(&self, before: &PrefixState, after: &PrefixState) -> bool {
-        before.components != after.components || before.dependencies != after.dependencies
+        before.software_differs(after)
     }
 
     /// Applies the difference between two frozen selections to a stopped prefix.
@@ -71,7 +71,7 @@ impl Storage for Standard {
         for slot in Slot::iter() {
             let old = before.component(slot);
             let new = after.component(slot);
-            if old == new {
+            if old.map(|old| &old.addon) == new.map(|new| &new.addon) {
                 continue;
             }
             if let Some(old) = old {

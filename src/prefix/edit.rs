@@ -7,8 +7,10 @@
 //! partially modified on failure.
 
 use crate::{
-    Addon, Component, Dependency, EnvVars, Runner, Slot, Umu, WineBridge, Wrappers, error::Result,
+    Addon, Component, Dependency, EnvVars, InstalledAddon, Runner, SettingValue, Slot, Umu,
+    WineBridge, Wrappers, error::Result,
 };
+use uuid::Uuid;
 
 use super::{Prefix, PrefixState};
 use crate::{Job, Operation, PrefixError, Stage};
@@ -36,9 +38,10 @@ impl Edit<'_> {
     /// Selects the Wine or Proton runtime used on the next startup.
     ///
     /// Selecting the same identifier preserves the frozen record in the draft.
+    /// Another release keeps the runner's stored setting values.
     pub fn set_runner(&mut self, runner: Addon<Runner>) {
         if self.draft.runner.id() != runner.id() {
-            self.draft.runner = runner;
+            self.draft.runner.addon = runner;
         }
     }
 
@@ -63,16 +66,18 @@ impl Edit<'_> {
     /// Selects `component` for the slot declared by that component.
     ///
     /// Other slots are unchanged. Selecting the same addon identifier preserves
-    /// the frozen record already stored in the draft.
+    /// the frozen record already stored in the draft. Replacing another release
+    /// in the slot keeps its stored setting values.
     pub fn set_component(&mut self, component: Addon<Component>) {
-        if self
-            .draft
-            .component(component.slot())
-            .is_some_and(|old| old.id() == component.id())
-        {
-            return;
+        match self.draft.components.get_mut(&component.slot()) {
+            Some(old) if old.id() == component.id() => {}
+            Some(old) => old.addon = component,
+            None => {
+                self.draft
+                    .components
+                    .insert(component.slot(), InstalledAddon::new(component));
+            }
         }
-        self.draft.components.insert(component.slot(), component);
     }
 
     /// Removes the component selected in `slot`.
@@ -97,8 +102,42 @@ impl Edit<'_> {
     /// or reordered through the edit API.
     pub fn add_dependency(&mut self, dependency: Addon<Dependency>) {
         if self.draft.dependency(dependency.id()).is_none() {
-            self.draft.dependencies.push(dependency);
+            self.draft
+                .dependencies
+                .push(InstalledAddon::new(dependency));
         }
+    }
+
+    /// Sets setting `key` of the selected runner, component, or dependency
+    /// with release UUID `addon`.
+    ///
+    /// Setting the default removes the stored value. Settings apply on the
+    /// next startup and may change while Wine is running.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrefixError::AddonNotSelected`] if no runner, component, or
+    /// dependency has UUID `addon`, [`PrefixError::UnknownSetting`] if the
+    /// release does not declare `key`, or [`PrefixError::InvalidSettingValue`]
+    /// if the setting does not accept `value`.
+    pub fn set_setting(
+        &mut self,
+        addon: Uuid,
+        key: &str,
+        value: impl Into<SettingValue>,
+    ) -> Result<()> {
+        let value = value.into();
+        let draft = &mut *self.draft;
+        if draft.runner.id() == addon {
+            return draft.runner.set(key, value);
+        }
+        if let Some(component) = draft.components.values_mut().find(|c| c.id() == addon) {
+            return component.set(key, value);
+        }
+        if let Some(dependency) = draft.dependencies.iter_mut().find(|d| d.id() == addon) {
+            return dependency.set(key, value);
+        }
+        Err(PrefixError::AddonNotSelected(addon).into())
     }
 
     /// Returns user-set environment variables used on the next startup.
@@ -164,7 +203,7 @@ impl Prefix {
             let before = previous.as_ref();
             let after = &draft;
             let storage_changed = prefix.0.storage.changes(before, after);
-            let runner_changed = before.runner != after.runner;
+            let runner_changed = before.runner.addon != after.runner.addon;
             let umu_changed = before.umu != after.umu;
             let runtime_changed =
                 runner_changed || umu_changed || before.winebridge != after.winebridge;

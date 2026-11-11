@@ -5,8 +5,8 @@
 
 use super::{PrefixBackend, PrefixError};
 use crate::{
-    Addon, Component, Dependency, EnvVars, Requirement, Runner, Slot, Umu, WineBridge, Wrappers,
-    addons::InstallStep, error::Result,
+    Addon, Component, Dependency, EnvVars, InstalledAddon, Requirement, Runner, Slot, Umu,
+    WineBridge, Wrappers, addons::InstallStep, error::Result,
 };
 use next_config::Config;
 use serde::{Deserialize, Serialize};
@@ -16,22 +16,23 @@ use uuid::Uuid;
 /// Captures one immutable, published view of a prefix.
 ///
 /// Addon selections are frozen records. They preserve their metadata and any
-/// installation recipe even if the shared catalog later changes. Acquired
-/// snapshots remain readable after later edits or deletion.
+/// installation recipe even if the shared catalog later changes. The runner,
+/// components, and dependencies also hold the setting values chosen for this
+/// prefix. Acquired snapshots remain readable after later edits or deletion.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PrefixState {
     /// Storage strategy chosen when the prefix was created.
     pub backend: PrefixBackend,
     /// Wine or Proton runtime selected for this prefix.
-    pub runner: Addon<Runner>,
+    pub runner: InstalledAddon<Runner>,
     /// WineBridge service selected for this prefix.
     pub winebridge: Addon<WineBridge>,
     /// Optional UMU launcher used by Proton runtimes.
     pub umu: Option<Addon<Umu>>,
     /// Component release selected for each occupied [`Slot`].
-    pub components: HashMap<Slot, Addon<Component>>,
+    pub components: HashMap<Slot, InstalledAddon<Component>>,
     /// Dependency releases in installation order.
-    pub dependencies: Vec<Addon<Dependency>>,
+    pub dependencies: Vec<InstalledAddon<Dependency>>,
     /// User-set environment variables applied after addon variables.
     #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
     pub env_vars: EnvVars,
@@ -50,7 +51,7 @@ impl PrefixState {
     ) -> Self {
         Self {
             backend,
-            runner,
+            runner: InstalledAddon::new(runner),
             winebridge,
             umu,
             components: HashMap::new(),
@@ -70,8 +71,12 @@ impl PrefixState {
         let steps = self
             .components
             .values()
-            .flat_map(Addon::recipe)
-            .chain(self.dependencies.iter().flat_map(Addon::recipe));
+            .flat_map(|component| component.recipe())
+            .chain(
+                self.dependencies
+                    .iter()
+                    .flat_map(|dependency| dependency.recipe()),
+            );
         for step in steps {
             if let InstallStep::SetEnvironment { name, value } = step {
                 vars.insert(name.clone(), value.clone());
@@ -82,12 +87,12 @@ impl PrefixState {
     }
 
     /// Returns the component occupying `slot`, if the slot is selected.
-    pub fn component(&self, slot: Slot) -> Option<&Addon<Component>> {
+    pub fn component(&self, slot: Slot) -> Option<&InstalledAddon<Component>> {
         self.components.get(&slot)
     }
 
     /// Returns the dependency with the requested addon `id`, if selected.
-    pub fn dependency(&self, id: Uuid) -> Option<&Addon<Dependency>> {
+    pub fn dependency(&self, id: Uuid) -> Option<&InstalledAddon<Dependency>> {
         self.dependencies
             .iter()
             .find(|dependency| dependency.id() == id)
@@ -109,8 +114,38 @@ impl PrefixState {
         [self.runner.metadata(), self.winebridge.metadata()]
             .into_iter()
             .chain(self.umu.iter().map(Addon::metadata))
-            .chain(self.components.values().map(Addon::metadata))
-            .chain(self.dependencies.iter().map(Addon::metadata))
+            .chain(
+                self.components
+                    .values()
+                    .map(|component| component.metadata()),
+            )
+            .chain(
+                self.dependencies
+                    .iter()
+                    .map(|dependency| dependency.metadata()),
+            )
+    }
+
+    /// Returns whether `other` selects different component or dependency
+    /// releases. Setting values are not compared.
+    pub(crate) fn software_differs(&self, other: &Self) -> bool {
+        fn releases(
+            state: &PrefixState,
+        ) -> (HashMap<Slot, &Addon<Component>>, Vec<&Addon<Dependency>>) {
+            (
+                state
+                    .components
+                    .iter()
+                    .map(|(slot, component)| (*slot, &component.addon))
+                    .collect(),
+                state
+                    .dependencies
+                    .iter()
+                    .map(|dependency| &dependency.addon)
+                    .collect(),
+            )
+        }
+        releases(self) != releases(other)
     }
 
     /// Verifies that every selected addon's requirements are satisfied.

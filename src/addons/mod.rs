@@ -27,8 +27,10 @@ mod catalog;
 mod catalogs;
 mod defaults;
 mod error;
+mod installed;
 mod installer;
 mod recipe;
+mod settings;
 mod store;
 
 pub use addon::{
@@ -38,6 +40,11 @@ pub use addon::{
 pub use catalog::CatalogEntry;
 pub use catalogs::{Catalogs, CatalogsState};
 pub use error::{AddonError, CatalogError, InstallerError};
+pub use installed::InstalledAddon;
 pub(crate) use installer::{InstallInputs, execute, uninstall};
 pub(crate) use recipe::InstallStep;
+pub use settings::{
+    AddonSettings, AddonSettingsSchema, Category, Control, SchemaError, SelectOption, Setting,
+    SettingValue,
+};
 pub use store::{Addons, AddonsState};
