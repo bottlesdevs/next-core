@@ -21,18 +21,6 @@ use std::{
     process::ExitStatus,
 };
 
-/// Classifies the invocation protocol implied by an installed runner layout.
-///
-/// The value identifies how next-core invokes a component, not its Wine
-/// distribution or version.
-#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
-pub(crate) enum RunnerKind {
-    /// Uses `bin/wine` directly and its sibling `bin/wineserver` for server control.
-    Wine,
-    /// Uses a root-level `proton` marker and launches through a paired UMU executable.
-    Proton,
-}
-
 /// Describes runner discovery, configuration, and process failures.
 ///
 /// Process variants retain unsuccessful exit statuses. Failures to spawn or
@@ -48,9 +36,6 @@ pub enum RunnerError {
     /// A Proton component was selected without a paired UMU component.
     #[error("Proton runner requires an UMU executable")]
     UmuExecutableMissing,
-    /// The component directory contains no supported runner marker.
-    #[error("no supported runner executable was found in {0}")]
-    RunnerNotFound(PathBuf),
     /// A selected runner or launcher path is not a regular executable file.
     #[error("runner executable was not found: {0}")]
     RunnerExecutableNotFound(PathBuf),
@@ -108,30 +93,6 @@ pub(crate) trait Runner: Send + Sync {
     /// Returns an I/O error when the process cannot be spawned or waited for, or
     /// [`RunnerError::WineserverFailed`] for an unaccepted exit status.
     async fn wineserver(&self, prefix: &Path, arg: &str) -> Result<()>;
-}
-
-/// Classifies an installed component by its regular-file markers.
-///
-/// A root-level `proton` marker takes precedence over `bin/wine` when both exist.
-///
-/// # Errors
-///
-/// Returns [`RunnerError::RunnerNotFound`] when neither marker is a regular file.
-/// Metadata failures are treated the same as missing or non-file markers.
-pub(crate) async fn detect_runner_kind(path: &Path) -> Result<RunnerKind> {
-    if async_fs::metadata(path.join("proton"))
-        .await
-        .is_ok_and(|entry| entry.is_file())
-    {
-        Ok(RunnerKind::Proton)
-    } else if async_fs::metadata(path.join("bin/wine"))
-        .await
-        .is_ok_and(|entry| entry.is_file())
-    {
-        Ok(RunnerKind::Wine)
-    } else {
-        Err(RunnerError::RunnerNotFound(path.to_path_buf()).into())
-    }
 }
 
 #[cfg(test)]

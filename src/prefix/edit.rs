@@ -188,7 +188,7 @@ impl Prefix {
                     .await?;
             } else {
                 if runner_changed || umu_changed {
-                    after.runner.load_runner(after.umu.as_ref()).await?;
+                    after.runner.runner(after.umu.as_ref())?;
                 }
                 prefix.save(&draft).await?;
             }

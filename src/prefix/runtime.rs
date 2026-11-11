@@ -168,7 +168,7 @@ impl Prefix {
         let state = self.state()?;
         let wineprefix = self.0.root.join("prefix");
         if crate::utils::fs::exists(&wineprefix).await? {
-            let runner = state.runner.load_runner(state.umu.as_ref()).await?;
+            let runner = state.runner.runner(state.umu.as_ref())?;
             stop(runner.as_ref(), &wineprefix).await?;
         }
         self.0.storage.release(&self.0.root).await
@@ -253,7 +253,7 @@ impl Prefix {
         let wineprefix = self.0.root.join("prefix");
         let vars = state.effective_env_vars();
         self.stop_locked().await?;
-        let runner = state.runner.load_runner(state.umu.as_ref()).await?;
+        let runner = state.runner.runner(state.umu.as_ref())?;
         let command = state.wrappers.apply(WineBridgeClient::command(
             runner.as_ref(),
             &wineprefix,
