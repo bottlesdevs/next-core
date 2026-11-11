@@ -17,7 +17,7 @@ use url::Url;
 use uuid::{NonNilUuid, Uuid};
 
 use super::recipe::InstallStep;
-use super::{AddonRole, Requirement};
+use super::{AddonRole, AddonSettingsSchema, Requirement};
 
 const CATALOG_VERSION: u32 = 1;
 
@@ -166,6 +166,8 @@ pub struct CatalogEntry {
     version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
+    #[serde(default, skip_serializing_if = "AddonSettingsSchema::is_empty")]
+    settings: AddonSettingsSchema,
     artifacts: Vec<CatalogArtifact>,
     #[serde(flatten)]
     role: AddonRole,
@@ -195,6 +197,11 @@ impl CatalogEntry {
     /// Returns the constraints that a prefix must satisfy for this release.
     pub fn requirements(&self) -> &[Requirement] {
         &self.requirements
+    }
+
+    /// Returns the settings this release declares.
+    pub fn settings(&self) -> &AddonSettingsSchema {
+        &self.settings
     }
 
     /// Returns whether at least one artifact matches the current build target.

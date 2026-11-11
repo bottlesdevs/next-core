@@ -44,9 +44,19 @@ impl Overlay<'_> {
 /// Lists the overlays of `config`: the runner adapter, components, then
 /// dependencies in installation order.
 fn overlays(config: &PrefixState) -> impl Iterator<Item = Overlay<'_>> {
-    std::iter::once(Overlay::Adapter(&config.runner))
-        .chain(config.components.values().map(Overlay::Component))
-        .chain(config.dependencies.iter().map(Overlay::Dependency))
+    std::iter::once(Overlay::Adapter(&config.runner.addon))
+        .chain(
+            config
+                .components
+                .values()
+                .map(|component| Overlay::Component(&component.addon)),
+        )
+        .chain(
+            config
+                .dependencies
+                .iter()
+                .map(|dependency| Overlay::Dependency(&dependency.addon)),
+        )
 }
 
 /// Stores a prefix as a workspace composed from immutable layers.
@@ -71,9 +81,7 @@ impl Storage for Virgo {
     }
 
     fn changes(&self, before: &PrefixState, after: &PrefixState) -> bool {
-        before.components != after.components
-            || before.dependencies != after.dependencies
-            || before.runner != after.runner
+        before.software_differs(after) || before.runner.addon != after.runner.addon
     }
 
     /// Builds missing layers and recomposes the private workspace.

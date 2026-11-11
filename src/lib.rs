@@ -36,9 +36,10 @@ mod virgo {
 mod winebridge;
 
 pub use addons::{
-    Addon, AddonError, AddonRole, Addons, AddonsState, CatalogEntry, CatalogError, Catalogs,
-    CatalogsState, Component, Dependency, InstallerError, Requirement, RoleMarker, Runner,
-    RunnerFlavor, Slot, Umu, WineBridge,
+    Addon, AddonError, AddonRole, AddonSettings, AddonSettingsSchema, Addons, AddonsState,
+    CatalogEntry, CatalogError, Catalogs, CatalogsState, Category, Component, Control, Dependency,
+    InstalledAddon, InstallerError, Requirement, RoleMarker, Runner, RunnerFlavor, SchemaError,
+    SelectOption, Setting, SettingValue, Slot, Umu, WineBridge,
 };
 pub use command::wrappers::{
     GamescopeConfig, GamescopeFilter, GamescopeScaler, MangoHudConfig, Wrappers,
