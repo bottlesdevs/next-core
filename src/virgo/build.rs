@@ -57,6 +57,7 @@ impl LayerStore {
         if let Some(layer) = self.load(key, id).await? {
             return Ok(layer);
         }
+        tracing::info!(layer = %key.display(), "building Virgo layer");
         build().await
     }
 

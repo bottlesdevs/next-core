@@ -9,7 +9,7 @@ use super::{Prefix, PrefixState};
 use crate::runner::Runner;
 use crate::{
     Job, Operation, ProgramSpec, Stage,
-    error::Result,
+    error::{Result, ResultExt},
     proto::{DllOverride, DllOverrideMode, Process},
     winebridge::WineBridgeClient,
 };
@@ -34,6 +34,10 @@ impl Prefix {
     ///
     /// Awaiting the operation may return prefix, runner, storage,
     /// cancellation, or `WineBridge` errors while starting the process.
+    #[tracing::instrument(
+        skip_all,
+        fields(prefix = %self.id(), %group, executable = program.executable())
+    )]
     pub fn launch(&self, group: Uuid, program: ProgramSpec) -> Operation<u32> {
         let prefix = self.clone();
         Operation::new(move |job| async move {
@@ -49,6 +53,7 @@ impl Prefix {
                     program.new_console(),
                 )
                 .await
+                .inspect(|pid| tracing::info!(pid, "program launched"))
         })
     }
 
@@ -108,12 +113,13 @@ impl Prefix {
 
     /// Streams a reachable `WineBridge`'s running groups until its stream ends or fails.
     async fn attach(self) -> Option<BoxStream<'static, Vec<Uuid>>> {
-        let bridge = self.bridge().await.ok()??;
-        let events = bridge.watch_groups().await.ok()?;
+        let bridge = self.bridge().await.log_info()??;
+        let events = bridge.watch_groups().await.log_info()?;
         Some(
             events
-                .take_while(|running| future::ready(running.is_ok()))
-                .filter_map(|running| future::ready(running.ok()))
+                .map(|running| running.log_debug())
+                .take_while(|running| future::ready(running.is_some()))
+                .filter_map(future::ready)
                 .map(|running| {
                     running
                         .ids
@@ -133,6 +139,7 @@ impl Prefix {
     ///
     /// Returns an error if the prefix was deleted, discovery fails, or
     /// `WineBridge` cannot terminate the process group.
+    #[tracing::instrument(skip_all, fields(prefix = %self.id(), %group))]
     pub async fn kill(&self, group: Uuid) -> Result<()> {
         let _control = self.0.control.lock().await;
         self.state()?;
@@ -150,9 +157,12 @@ impl Prefix {
     ///
     /// Returns an error if state or runner resolution, Wine shutdown, storage
     /// release, or discovery cleanup fails.
+    #[tracing::instrument(skip_all, fields(prefix = %self.id()))]
     pub async fn stop(&self) -> Result<()> {
         let _control = self.0.control.lock().await;
-        self.stop_locked().await
+        self.stop_locked().await?;
+        tracing::info!("prefix stopped");
+        Ok(())
     }
 
     /// Stops Wine and releases storage while the caller retains coordination.
@@ -272,6 +282,7 @@ impl Prefix {
             self.0.storage.release(&self.0.root).await?;
         } else {
             self.0.bridge_started.send_replace(());
+            tracing::info!("WineBridge started");
         }
         result
     }
@@ -301,9 +312,9 @@ pub(super) async fn initialize(runner: &dyn Runner, wineprefix: &Path) -> Result
 ///
 /// Returns an error if either wineserver command or discovery cleanup fails.
 pub(super) async fn stop(runner: &dyn Runner, wineprefix: &Path) -> Result<()> {
-    if let Err(error) = WineBridgeClient::shutdown_existing(wineprefix).await {
-        tracing::debug!(%error, "WineBridge shutdown failed; stopping wineserver");
-    }
+    WineBridgeClient::shutdown_existing(wineprefix)
+        .await
+        .log_debug();
     for argument in ["-k", "-w"] {
         runner.wineserver(wineprefix, argument).await?;
     }

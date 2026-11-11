@@ -146,6 +146,7 @@ impl Prefix {
     /// # let _ = quiet;
     /// # }
     /// ```
+    #[tracing::instrument(skip_all, fields(prefix = %self.id()))]
     pub fn edit<R: Send + 'static>(
         &self,
         callback: impl FnOnce(&mut Edit<'_>) -> Result<R> + Send + 'static,
@@ -193,6 +194,7 @@ impl Prefix {
                 prefix.save(&draft).await?;
             }
             prefix.publish(draft);
+            tracing::info!(storage_changed, runtime_changed, "prefix edited");
             Ok(result)
         })
     }

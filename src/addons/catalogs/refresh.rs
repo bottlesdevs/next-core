@@ -29,6 +29,7 @@ impl Catalogs {
     /// request or schema parse fails, or the cache cannot be written. Per-source
     /// request and parse failures are combined into [`CatalogError::Refresh`];
     /// cache-write failures are returned directly.
+    #[tracing::instrument(skip_all)]
     pub fn refresh(&self) -> Operation<()> {
         let catalogs = self.clone();
         Operation::new(move |job| async move {
@@ -64,6 +65,11 @@ impl Catalogs {
                 }
             }
             write_cache(&next).await?;
+            tracing::info!(
+                catalogs = next.len(),
+                failed = failures.len(),
+                "catalogs refreshed"
+            );
             catalogs.publish(CatalogsState { catalogs: next });
 
             if failures.is_empty() {

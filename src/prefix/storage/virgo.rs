@@ -7,7 +7,7 @@ use super::Storage;
 use crate::{
     Addon, AddonError, Addons, Component, Dependency, Job, PrefixState, Runner, RunnerFlavor,
     addons::{InstallInputs, execute},
-    error::Result,
+    error::{Result, ResultExt},
     prefix::runtime,
     virgo::{Fvs, LayerStore, VirgoError, VirgoLayer},
     winebridge::WineBridgeClient,
@@ -289,7 +289,7 @@ fn latest_addon<K>(addons: impl Iterator<Item = Addon<K>>) -> Option<Addon<K>> {
     addons
         .filter_map(|addon| {
             semver::Version::parse(addon.version())
-                .ok()
+                .log_warn()
                 .map(|version| (version, addon))
         })
         .max_by(|(a, left), (b, right)| a.cmp(b).then_with(|| left.id().cmp(&right.id())))

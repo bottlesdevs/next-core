@@ -21,6 +21,7 @@ pub(crate) trait Spawnable: Into<Command> + Sized {
     /// Returns an I/O error if the process cannot be spawned.
     fn spawn(self) -> std::io::Result<Child> {
         let command = self.into();
+        tracing::debug!(executable = ?command.executable, args = ?command.args, "spawning process");
         AsyncCommand::new(command.executable)
             .args(command.args)
             .envs(command.env_vars)

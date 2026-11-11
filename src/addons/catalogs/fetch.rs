@@ -36,6 +36,7 @@ impl Catalogs {
     /// Returns an error on cancellation, a missing or unsupported catalog entry,
     /// a release with another role, ambiguous artifacts, download, verification,
     /// extraction, or storage failure.
+    #[tracing::instrument(skip(self))]
     pub fn fetch<R: RoleMarker>(&self, id: Uuid) -> Operation<Addon<R>> {
         let catalogs = self.clone();
         Operation::new(move |job| async move {

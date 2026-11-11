@@ -89,7 +89,6 @@ impl From<download_manager::error::Error> for Error {
     }
 }
 
-#[allow(dead_code)]
 /// Logs a failed [`Result`](std::result::Result) and converts it to an [`Option`].
 ///
 /// Successful values become `Some`; failures are emitted through `tracing` at

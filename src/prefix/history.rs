@@ -7,7 +7,11 @@
 
 use super::{Prefix, PrefixState};
 use crate::virgo::FVS_BLOCK_SIZE;
-use crate::{Operation, PrefixError, Stage, Transfer, error::Result, operation::ProgressReporter};
+use crate::{
+    Operation, PrefixError, Stage, Transfer,
+    error::{Result, ResultExt},
+    operation::ProgressReporter,
+};
 pub use fvs_rs::{Commit as Snapshot, CommitSummary as SnapshotSummary};
 use fvs_rs::{Commit, Fvs2dClient, Progress as FvsProgress, Repository, RestoreResponse};
 use std::path::Path;
@@ -101,16 +105,18 @@ pub(crate) async fn recover<T>(
     client: &Fvs2dClient,
     progress: &ProgressReporter,
 ) -> Result<T> {
-    if let Err(error) = &result {
+    if result.is_err() {
         progress.stage(Stage::Restoring);
         if let Err(source) = restore(root, &checkpoint.state_id, client, progress).await {
-            tracing::error!(%error, "mutation failed before rollback failed");
+            // The returned error reports the restore, so log what caused it here.
+            result.log_error();
             return Err(PrefixError::Rollback {
                 root: root.to_path_buf(),
                 source: Box::new(source),
             }
             .into());
         }
+        tracing::warn!(checkpoint = %checkpoint.state_id, "restored checkpoint after a failed change");
     }
     result
 }
@@ -129,6 +135,7 @@ impl Prefix {
     /// Awaiting the operation returns an invalid-input I/O error when `message`
     /// is the reserved internal checkpoint message. It can also fail during
     /// cancellation, Wine shutdown, repository initialization, or commit.
+    #[tracing::instrument(skip_all, fields(prefix = %self.id()))]
     pub fn create_snapshot(&self, message: impl Into<String>) -> Operation<Snapshot> {
         let message = message.into();
         let prefix = self.clone();
@@ -152,6 +159,7 @@ impl Prefix {
                 job.progress(),
             )
             .await
+            .inspect(|snapshot| tracing::info!(snapshot = %snapshot.state_id, "snapshot created"))
         })
     }
 
@@ -199,6 +207,7 @@ impl Prefix {
     /// Awaiting the operation fails on cancellation before restoration, Wine
     /// shutdown or checkpoint failure, an unknown revision, mismatched or
     /// invalid restored state, or failed restoration or recovery.
+    #[tracing::instrument(skip_all, fields(prefix = %self.id(), revision))]
     pub fn rollback(&self, revision: &str) -> Operation<String> {
         let prefix = self.clone();
         let revision = revision.to_owned();
@@ -240,6 +249,7 @@ impl Prefix {
             )
             .await?;
             prefix.publish(state);
+            tracing::info!(%revision, "prefix rolled back");
             Ok(revision)
         })
     }
