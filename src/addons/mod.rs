@@ -32,7 +32,8 @@ mod recipe;
 mod store;
 
 pub use addon::{
-    Addon, AddonRole, Component, Dependency, Requirement, RoleMarker, Runner, Slot, Umu, WineBridge,
+    Addon, AddonRole, Component, Dependency, Requirement, RoleMarker, Runner, RunnerFlavor, Slot,
+    Umu, WineBridge,
 };
 pub use catalog::CatalogEntry;
 pub use catalogs::{Catalogs, CatalogsState};

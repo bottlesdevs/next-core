@@ -5,7 +5,7 @@
 
 use super::Storage;
 use crate::{
-    Addon, AddonError, Addons, Component, Dependency, Job, PrefixState, Runner,
+    Addon, AddonError, Addons, Component, Dependency, Job, PrefixState, Runner, RunnerFlavor,
     addons::{InstallInputs, execute},
     error::Result,
     prefix::runtime,
@@ -171,14 +171,12 @@ impl Virgo {
         let destination = Path::new(BASE);
         self.layers()
             .get_or_build(destination, None, job, || async {
-                let soda = latest_addon(
-                    self.addons
-                        .state()
-                        .releases::<Runner>()
-                        .filter(|addon| addon.name().eq_ignore_ascii_case("soda")),
-                )
+                let soda = latest_addon(self.addons.state().releases::<Runner>().filter(|addon| {
+                    addon.flavor() == RunnerFlavor::Wine
+                        && addon.name().eq_ignore_ascii_case("soda")
+                }))
                 .ok_or(VirgoError::SodaNotDownloaded)?;
-                let runner = soda.load_runner(None).await?;
+                let runner = soda.runner(None)?;
                 let workspace = self.layers().prepare_build(destination, None, job).await?;
                 let executed = async {
                     job.check_cancellation()?;
@@ -215,7 +213,7 @@ impl Virgo {
     ) -> Result<VirgoLayer> {
         self.layers()
             .get_or_build(destination, Some(id), job, || async {
-                let runner = config.runner.load_runner(config.umu.as_ref()).await?;
+                let runner = config.runner.runner(config.umu.as_ref())?;
                 let workspace = self
                     .layers()
                     .prepare_build(destination, Some(base), job)
@@ -257,7 +255,7 @@ impl Virgo {
                 let soda = addons
                     .release::<Runner>(base.id)
                     .ok_or(AddonError::NotFound(base.id))?;
-                let runner = soda.load_runner(None).await?;
+                let runner = soda.runner(None)?;
                 let winebridge = latest_addon(addons.releases::<crate::WineBridge>())
                     .ok_or(VirgoError::WineBridgeNotDownloaded)?
                     .path();

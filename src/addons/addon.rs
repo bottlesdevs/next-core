@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::{
     error::Result,
-    runner::{Proton, Runner as RunnerBackend, RunnerError, RunnerKind, Wine, detect_runner_kind},
+    runner::{Proton, Runner as RunnerBackend, RunnerError, Wine},
     utils::paths,
 };
 
@@ -160,22 +160,24 @@ impl Addon<Component> {
 }
 
 impl Addon<Runner> {
+    /// Returns how this runner is launched.
+    pub fn flavor(&self) -> RunnerFlavor {
+        self.role.flavor
+    }
+
     /// Constructs the runner represented by this release's payload.
     ///
     /// Proton runners require an acquired UMU launcher supplied through `umu`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the runner kind cannot be detected or Proton is selected
+    /// Returns [`RunnerError::UmuExecutableMissing`] if Proton is selected
     /// without an UMU launcher.
-    pub(crate) async fn load_runner(
-        &self,
-        umu: Option<&Addon<Umu>>,
-    ) -> Result<Box<dyn RunnerBackend>> {
+    pub(crate) fn runner(&self, umu: Option<&Addon<Umu>>) -> Result<Box<dyn RunnerBackend>> {
         let path = self.path();
-        match detect_runner_kind(&path).await? {
-            RunnerKind::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
-            RunnerKind::Proton => {
+        match self.flavor() {
+            RunnerFlavor::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
+            RunnerFlavor::Proton => {
                 let umu = umu
                     .ok_or(RunnerError::UmuExecutableMissing)?
                     .path()
@@ -307,9 +309,22 @@ impl<R> RoleMarker for R where
 }
 
 /// Marks an acquired Wine or Proton runtime.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Runner {}
+pub struct Runner {
+    /// How the runner is launched.
+    pub flavor: RunnerFlavor,
+}
+
+/// Identifies how a [`Runner`] is launched.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RunnerFlavor {
+    /// Invokes the release's `bin/wine` directly.
+    Wine,
+    /// Launches the release through a paired [`Umu`] launcher.
+    Proton,
+}
 
 /// Marks the acquired Bottles WineBridge service executable.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
