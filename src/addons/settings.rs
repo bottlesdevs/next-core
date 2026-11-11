@@ -214,6 +214,12 @@ impl AddonSettingsSchema {
         )
     }
 
+    /// Returns this schema with `effects` applied before its own.
+    pub(crate) fn with_default_effects(mut self, effects: &[Effect]) -> Self {
+        self.effects.splice(0..0, effects.iter().cloned());
+        self
+    }
+
     /// Returns the effects whose conditions hold for the `stored` values, in
     /// declaration order, with each `{{ key }}` replaced by the value in
     /// effect.

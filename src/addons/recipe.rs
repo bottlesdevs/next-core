@@ -7,11 +7,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::{AddonRole, Component, catalog::CatalogArtifact, defaults::steps as default_steps};
-use crate::{
-    proto::{DllOverrideMode, RegistryHive, registry_value::Value as RegistryValue},
-    utils::env_vars::EnvVars,
-};
+use super::{AddonRole, Component, Effect, catalog::CatalogArtifact, defaults};
+use crate::utils::env_vars::EnvVars;
 
 /// Associates one payload path with the steps that consume it.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -32,7 +29,7 @@ impl InstallResource {
     }
 }
 
-/// Describes one installation action or runtime environment declaration.
+/// Describes one installation action, which only changes files in the prefix.
 ///
 /// Actions run in declaration order during installation and, where supported, in
 /// reverse order during removal. Paths are joined to trusted payload and prefix
@@ -82,64 +79,39 @@ pub(crate) enum InstallStep {
         #[serde(default, skip_serializing_if = "EnvVars::is_empty")]
         env_vars: EnvVars,
     },
-    /// Sets a registry value through `WineBridge`.
-    ///
-    /// `WineBridge` is started with the runner's maintenance environment when needed.
-    SetRegistryValue {
-        /// Root registry hive containing the target key.
-        hive: RegistryHive,
-        /// Registry key path passed to `WineBridge`.
-        key: String,
-        /// Value name within the key; an empty name addresses the default value.
-        name: String,
-        /// Registry value data written at `name`.
-        value: RegistryValue,
-    },
-    /// Applies the same Wine DLL override mode to each named DLL.
-    ///
-    /// `WineBridge` is started with the runner's maintenance environment when needed.
-    /// Uninstall deletes these overrides rather than restoring their previous modes.
-    SetDllOverrides {
-        /// DLL names whose overrides are changed, in application order.
-        dlls: Vec<String>,
-        /// Applied uniformly; mixed per-DLL modes require separate steps.
-        mode: DllOverrideMode,
-    },
-    /// Declares a launch variable derived from the frozen recipe at runtime.
-    ///
-    /// Later declarations win. Installation and uninstall ignore this declaration;
-    /// installer commands use their own explicit variables.
-    SetEnvironment {
-        /// Environment variable name.
-        name: String,
-        /// Environment variable value.
-        value: String,
-    },
 }
 
 /// Freezes the installation resources of a release with `role` from `artifacts`.
 ///
 /// Components use their single artifact's steps, or the slot's default recipe.
 /// Dependencies pair each artifact with its steps. Runtime tools have none.
-pub(crate) fn resources(role: AddonRole, artifacts: &[&CatalogArtifact]) -> Vec<InstallResource> {
+///
+/// Also returns the effects a default recipe brings, which apply before the
+/// release's own effects; they are empty when the artifact provides steps.
+pub(crate) fn resources(
+    role: AddonRole,
+    artifacts: &[&CatalogArtifact],
+) -> (Vec<InstallResource>, &'static [Effect]) {
     match role {
-        AddonRole::Component(Component { slot }) => vec![InstallResource::new(
-            "",
+        AddonRole::Component(Component { slot }) => {
+            let (steps, effects) = match artifacts.first().and_then(|artifact| artifact.steps()) {
+                Some(steps) => (steps, &[][..]),
+                None => (defaults::steps(slot), defaults::effects(slot)),
+            };
+            (vec![InstallResource::new("", steps.to_vec())], effects)
+        }
+        AddonRole::Dependency(_) => (
             artifacts
-                .first()
-                .and_then(|artifact| artifact.steps())
-                .unwrap_or_else(|| default_steps(slot))
-                .to_vec(),
-        )],
-        AddonRole::Dependency(_) => artifacts
-            .iter()
-            .map(|artifact| {
-                InstallResource::new(
-                    artifact.file_name(),
-                    artifact.steps().unwrap_or_default().to_vec(),
-                )
-            })
-            .collect(),
-        AddonRole::Runner(_) | AddonRole::WineBridge(_) | AddonRole::Umu(_) => Vec::new(),
+                .iter()
+                .map(|artifact| {
+                    InstallResource::new(
+                        artifact.file_name(),
+                        artifact.steps().unwrap_or_default().to_vec(),
+                    )
+                })
+                .collect(),
+            &[],
+        ),
+        AddonRole::Runner(_) | AddonRole::WineBridge(_) | AddonRole::Umu(_) => (Vec::new(), &[]),
     }
 }

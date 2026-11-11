@@ -93,9 +93,6 @@ pub enum VirgoError {
     /// No locally acquired Soda runner has a parseable semantic version.
     #[error("no locally recorded Soda runner with a valid semantic version")]
     SodaNotDownloaded,
-    /// No locally acquired WineBridge has a parseable semantic version.
-    #[error("no locally recorded WineBridge with a valid semantic version")]
-    WineBridgeNotDownloaded,
     /// Mounting would hide files already present at the prefix mountpoint.
     #[error("mountpoint is not empty: {0}")]
     DirtyMountpoint(std::path::PathBuf),

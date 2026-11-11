@@ -1,9 +1,8 @@
 //! Execution and partial reversal of frozen addon recipes.
 //!
 //! Installation walks resources and steps in declaration order. Removal walks the
-//! saved steps in reverse, restoring copied files and deleting DLL overrides.
-//! Environment declarations are ignored; other steps without an inverse are logged
-//! and skipped. Completed changes are not rolled back if a later step fails.
+//! saved steps in reverse, restoring copied files; steps without an inverse are
+//! logged and skipped. Completed changes are not rolled back if a later step fails.
 //!
 //! Cancellation is cooperative between steps and while child processes run. Archive
 //! extraction and individual file copies are not interrupted; cancellation is
@@ -24,7 +23,6 @@ use crate::{
     error::{Error, Result},
     runner::Runner,
     utils::fs::{self, archive, exists},
-    winebridge::WineBridgeClient,
 };
 
 use crate::addons::recipe::{InstallResource, InstallStep};
@@ -36,8 +34,6 @@ pub(crate) struct InstallInputs<'a> {
     pub(crate) wineprefix: &'a Path,
     /// Runner used for Windows child processes.
     pub(crate) runner: &'a dyn Runner,
-    /// Root of the `WineBridge` component used for registry operations.
-    pub(crate) winebridge: &'a Path,
 }
 
 /// Applies all resource steps in declaration order.
@@ -49,7 +45,7 @@ pub(crate) struct InstallInputs<'a> {
 /// # Errors
 ///
 /// Returns an error if cancellation is requested or any filesystem, archive,
-/// process, runner, or `WineBridge` operation fails. An unsuccessful installer or
+/// process, or runner operation fails. An unsuccessful installer or
 /// DLL-registration child is reported as [`InstallerError`]. Earlier steps are not
 /// rolled back.
 pub(crate) async fn execute(
@@ -71,14 +67,13 @@ pub(crate) async fn execute(
 
 /// Reverses supported steps in reverse recipe order.
 ///
-/// Copied files are restored from backups or removed, and DLL overrides are deleted.
-/// Environment declarations are ignored; executable, extraction, DLL-registration,
-/// and registry-write steps are logged and skipped because they have no inverse.
+/// Copied files are restored from backups or removed. Executable, extraction,
+/// and DLL-registration steps are logged and skipped because they have no inverse.
 ///
 /// # Errors
 ///
-/// Returns an error if cancellation is requested or restoring files or deleting DLL
-/// overrides fails. Changes reversed before the failure remain reversed.
+/// Returns an error if cancellation is requested or restoring files fails.
+/// Changes reversed before the failure remain reversed.
 pub(crate) async fn uninstall<'a>(
     inputs: InstallInputs<'_>,
     steps: impl DoubleEndedIterator<Item = &'a InstallStep>,
@@ -92,15 +87,6 @@ pub(crate) async fn uninstall<'a>(
     Ok(())
 }
 
-async fn maintenance_bridge(
-    runner: &dyn Runner,
-    wineprefix: &Path,
-    executable: &Path,
-) -> Result<WineBridgeClient> {
-    let command = WineBridgeClient::command(runner, wineprefix, executable, std::iter::empty());
-    WineBridgeClient::connect_or_spawn(wineprefix, command).await
-}
-
 async fn execute_step(
     inputs: InstallInputs<'_>,
     resource: &Path,
@@ -108,13 +94,8 @@ async fn execute_step(
     backup_files: bool,
     job: &Job,
 ) -> Result<()> {
-    let InstallInputs {
-        wineprefix,
-        runner,
-        winebridge,
-    } = inputs;
+    let InstallInputs { wineprefix, runner } = inputs;
     match step {
-        InstallStep::SetEnvironment { .. } => {}
         InstallStep::Copy {
             source,
             destination,
@@ -158,23 +139,6 @@ async fn execute_step(
                 }
             }
         }
-        InstallStep::SetRegistryValue {
-            hive,
-            key,
-            name,
-            value,
-        } => {
-            let bridge = maintenance_bridge(runner, wineprefix, winebridge).await?;
-            bridge
-                .set_registry_value(*hive, key.clone(), name.clone(), value.clone())
-                .await?;
-        }
-        InstallStep::SetDllOverrides { dlls, mode } => {
-            let bridge = maintenance_bridge(runner, wineprefix, winebridge).await?;
-            for dll in dlls {
-                bridge.set_dll_override(dll.clone(), *mode).await?;
-            }
-        }
     }
     Ok(())
 }
@@ -184,22 +148,9 @@ async fn uninstall_step(
     step: &InstallStep,
     addon_id: Uuid,
 ) -> Result<()> {
-    let InstallInputs {
-        wineprefix,
-        runner,
-        winebridge,
-        ..
-    } = inputs;
     match step {
-        InstallStep::SetEnvironment { .. } => {}
         InstallStep::Copy { destination, .. } => {
-            uninstall_file(wineprefix, destination).await?;
-        }
-        InstallStep::SetDllOverrides { dlls, .. } => {
-            let bridge = maintenance_bridge(runner, wineprefix, winebridge).await?;
-            for dll in dlls.iter().rev() {
-                bridge.delete_dll_override(dll.clone()).await?;
-            }
+            uninstall_file(inputs.wineprefix, destination).await?;
         }
         unsupported => {
             tracing::warn!(

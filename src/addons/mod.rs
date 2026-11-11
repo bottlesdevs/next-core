@@ -44,7 +44,6 @@ pub(crate) use effects::Effect;
 pub use error::{AddonError, CatalogError, InstallerError};
 pub use installed::InstalledAddon;
 pub(crate) use installer::{InstallInputs, execute, uninstall};
-pub(crate) use recipe::InstallStep;
 pub use settings::{
     AddonSettings, AddonSettingsSchema, Category, Control, SchemaError, SelectOption, Setting,
     SettingValue,

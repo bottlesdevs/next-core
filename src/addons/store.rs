@@ -5,7 +5,9 @@
 //! [`Catalogs::fetch`](crate::Catalogs::fetch), and removals replace the
 //! snapshot.
 
-use super::{Addon, AddonError, AddonRole, Requirement, RoleMarker, recipe::resources};
+use super::{
+    Addon, AddonError, AddonRole, AddonSettingsSchema, Requirement, RoleMarker, recipe::resources,
+};
 use crate::{
     Job, Operation, Stage,
     error::Result,
@@ -100,7 +102,7 @@ impl Addons {
     /// Imports a release with role `role` from a local tar archive under a fresh UUID.
     ///
     /// The archive must contain one top-level directory. Components freeze the
-    /// default recipe for their slot; other roles have no recipe. `requirements`
+    /// default recipe and its effects for their slot; other roles have no recipe. `requirements`
     /// are frozen into the release. The source archive is left unchanged.
     ///
     /// # Errors
@@ -116,7 +118,7 @@ impl Addons {
         requirements: Vec<Requirement>,
         role: R,
     ) -> Operation<Addon<R>> {
-        let resources = resources(role.into(), &[]);
+        let (resources, effects) = resources(role.into(), &[]);
         let record = Addon::new(
             Uuid::new_v4(),
             name.into(),
@@ -124,7 +126,8 @@ impl Addons {
             requirements,
             resources,
             role,
-        );
+        )
+        .with_settings(AddonSettingsSchema::default().with_default_effects(effects));
         let source = path.as_ref().to_path_buf();
         let addons = self.clone();
         Operation::new(move |job| async move {
