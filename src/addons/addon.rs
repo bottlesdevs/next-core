@@ -6,7 +6,7 @@
 //! [`AddonRole`] is the sum of the marker types, and [`RoleMarker`] is the bound
 //! satisfied by each marker and by [`AddonRole`] itself.
 
-use std::{fmt, path::PathBuf, str::FromStr};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use strum::EnumIter;
@@ -190,20 +190,22 @@ impl Addon<Runner> {
 
 /// Identifies a mutually exclusive component position in a prefix.
 ///
-/// Prefix state can select at most one [`Component`] for each slot. The
-/// string representation is the canonical spelling used by catalogs and storage.
-///
-/// # Examples
-///
-/// ```
-/// use bottles_core::Slot;
-///
-/// assert_eq!("dxvk".parse::<Slot>()?, Slot::Dxvk);
-/// assert_eq!(Slot::Dxvk.to_string(), "dxvk");
-/// # Ok::<(), String>(())
-/// ```
-#[derive(Clone, Copy, Debug, Deserialize, EnumIter, Eq, Hash, PartialEq, Serialize)]
+/// Prefix state can select at most one [`Component`] for each slot.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    EnumIter,
+    Eq,
+    Hash,
+    PartialEq,
+    Serialize,
+    strum::Display,
+    strum::IntoStaticStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum Slot {
     /// The DXVK Direct3D 8–11 translation layer.
     Dxvk,
@@ -213,38 +215,6 @@ pub enum Slot {
     Nvapi,
     /// The `LatencyFleX` Vulkan layer and Wine integration.
     LatencyFlex,
-}
-
-impl Slot {
-    /// Returns the canonical catalog and storage spelling of the slot.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Dxvk => "dxvk",
-            Self::Vkd3d => "vkd3d",
-            Self::Nvapi => "nvapi",
-            Self::LatencyFlex => "latency-flex",
-        }
-    }
-}
-
-impl fmt::Display for Slot {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl FromStr for Slot {
-    type Err = String;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        Ok(match value {
-            "dxvk" => Self::Dxvk,
-            "vkd3d" => Self::Vkd3d,
-            "nvapi" => Self::Nvapi,
-            "latency-flex" => Self::LatencyFlex,
-            _ => return Err(format!("unknown addon slot {value:?}")),
-        })
-    }
 }
 
 /// Describes another addon that must be present in a prefix.
