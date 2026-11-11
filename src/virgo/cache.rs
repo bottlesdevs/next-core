@@ -110,6 +110,7 @@ impl LayerStore {
         next_config::save(artifact.join("manifest.toml"), &manifest).await?;
         async_fs::create_dir_all(destination.parent().expect("artifact has a parent")).await?;
         async_fs::rename(artifact, &destination).await?;
+        tracing::info!(layer = %key.display(), "published Virgo layer");
         Ok(manifest.resolve(&destination))
     }
 }

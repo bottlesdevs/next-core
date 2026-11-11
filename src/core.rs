@@ -5,7 +5,7 @@ use std::sync::Arc;
 use http_client::{HttpClient, ReqwestClient};
 use url::Url;
 
-use crate::{Addons, Catalogs, Prefixes, error::Result, prefix::Storages, utils::paths};
+use crate::{AddonRole, Addons, Catalogs, Prefixes, error::Result, prefix::Storages, utils::paths};
 
 /// Owns the services and persisted collections used by Bottles Next.
 ///
@@ -127,6 +127,7 @@ impl CoreBuilder {
     /// persisted addons or prefixes cannot be read; the HTTP or download
     /// service cannot initialize; or an FVS executable cannot be resolved or
     /// contacted.
+    #[tracing::instrument(skip_all)]
     pub async fn build(self) -> Result<Core> {
         paths::create().await?;
         let http_client = match self.http_client {
@@ -144,6 +145,11 @@ impl CoreBuilder {
         let catalogs = Catalogs::load(http_client, addons.clone(), sources).await?;
         let storages = Storages::new(addons.clone(), fvs.clone());
         let prefixes = Prefixes::load(paths::prefixes(), storages, fvs).await?;
+        tracing::info!(
+            prefixes = prefixes.list().len(),
+            releases = addons.state().releases::<AddonRole>().count(),
+            "core opened"
+        );
         Ok(Core {
             addons,
             catalogs,

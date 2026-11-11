@@ -176,6 +176,7 @@ impl Prefixes {
                         std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
                     ) =>
                 {
+                    tracing::warn!(%id, "skipping prefix directory without a state file");
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -205,6 +206,7 @@ impl Prefixes {
     /// requirements before creating any files. Awaiting the operation can also
     /// fail during cancellation, service startup, I/O, prefix initialization, or
     /// state persistence.
+    #[tracing::instrument(skip_all, fields(?backend))]
     pub fn create(
         &self,
         backend: PrefixBackend,
@@ -222,6 +224,7 @@ impl Prefixes {
             prefixes.members.send_modify(|members| {
                 Arc::make_mut(members).insert(prefix.id(), prefix.clone());
             });
+            tracing::info!(prefix = %prefix.id(), "prefix created");
             Ok(prefix)
         })
     }
@@ -242,6 +245,7 @@ impl Prefixes {
     ///
     /// Awaiting the operation fails if the member does not exist, cannot be
     /// stopped, observes cancellation, or cannot move its root into trash.
+    #[tracing::instrument(skip_all, fields(prefix = %id))]
     pub fn delete(&self, id: Uuid) -> Operation<()> {
         let prefixes = self.clone();
         Operation::new(move |job| async move {
@@ -252,7 +256,9 @@ impl Prefixes {
                         Arc::make_mut(members).remove(&id);
                     });
                 })
-                .await
+                .await?;
+            tracing::info!("prefix deleted");
+            Ok(())
         })
     }
 }

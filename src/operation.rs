@@ -14,8 +14,9 @@ use futures_core::Stream;
 use tokio::sync::watch;
 use tokio_stream::{StreamExt, wrappers::WatchStream};
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, ResultExt};
 
 /// Counts completed work within an operation stage.
 ///
@@ -137,6 +138,7 @@ pub(crate) struct ProgressReporter(watch::Sender<Option<Progress>>);
 impl ProgressReporter {
     /// Publishes `stage` with no quantified progress.
     pub(crate) fn stage(&self, stage: Stage) {
+        tracing::debug!(%stage, "operation stage");
         self.0.send_replace(Some(Progress::new(stage)));
     }
 
@@ -237,7 +239,8 @@ impl<T> Operation<T> {
     /// The work must treat cancellation as cooperative and keep any required
     /// asynchronous cleanup in the returned future so [`Operation::cancel`] can
     /// drive it. The [`Job`] must not outlive that future so progress streams close
-    /// when the operation terminates.
+    /// when the operation terminates. The work runs in the caller's current
+    /// `tracing` span.
     pub fn new<F, Fut>(work: F) -> Self
     where
         T: Send + 'static,
@@ -250,10 +253,15 @@ impl<T> Operation<T> {
             progress: ProgressReporter(progress),
             cancellation: cancellation.clone(),
         };
-        let future = Box::pin(async move {
-            job.check_cancellation()?;
-            work(job).await
-        });
+        let future = Box::pin(
+            async move {
+                job.check_cancellation()?;
+                let result = work(job).await;
+                result.as_ref().log_debug();
+                result
+            }
+            .instrument(tracing::Span::current()),
+        );
 
         Self {
             future,

@@ -107,6 +107,7 @@ impl Addons {
     ///
     /// Returns an error on cancellation, extraction, an escaping payload link, or
     /// storage failure. Import only trusted archives.
+    #[tracing::instrument(skip_all, fields(path = %path.as_ref().display()))]
     pub fn import<R: RoleMarker>(
         &self,
         path: impl AsRef<Path>,
@@ -146,6 +147,7 @@ impl Addons {
     ///
     /// Returns [`AddonError::NotFound`] when the release is absent, or an I/O error
     /// if its storage directory cannot be moved to trash.
+    #[tracing::instrument(skip(self))]
     pub async fn remove(&self, id: Uuid) -> Result<()> {
         let _write = self.0.write.lock().await;
         let mut next = self.state().as_ref().clone();
@@ -153,6 +155,7 @@ impl Addons {
         fs::discard(&release.directory()).await?;
         next.releases.remove(&id);
         self.publish(next);
+        tracing::info!("release removed");
         Ok(())
     }
 
@@ -202,6 +205,7 @@ impl Addons {
         async_fs::rename(prepared, destination).await?;
         next.releases.insert(id, stored);
         self.publish(next);
+        tracing::info!(%id, name = record.name(), version = record.version(), "release stored");
         Ok(record)
     }
 }
