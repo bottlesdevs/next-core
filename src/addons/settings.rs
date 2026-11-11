@@ -1,6 +1,7 @@
 //! Settings a release declares and the values a prefix stores for them.
 //!
-//! A release freezes its [`AddonSettingsSchema`] when it is acquired. A prefix
+//! A release freezes its [`AddonSettingsSchema`], which also lists the effects
+//! its settings drive, when it is acquired. A prefix
 //! stores only the values the user changed in [`AddonSettings`]; every other
 //! setting reads its default.
 
@@ -8,6 +9,8 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
+
+use super::effects::{Effect, render};
 
 /// Values a prefix stores for one addon, keyed by [`Setting::key`].
 ///
@@ -150,54 +153,101 @@ fn children<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Setting>, 
     Ok(children)
 }
 
-/// Holds the settings a release declares, in display order.
+/// Holds the settings a release declares and the effects they drive.
 ///
 /// Deserialization validates the schema: keys are unique across both levels,
-/// top-level settings have a category, controls are well formed, and every
-/// default is accepted by its control.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(try_from = "Vec<Setting>", into = "Vec<Setting>")]
-pub struct AddonSettingsSchema(Vec<Setting>);
+/// top-level settings have a category, controls are well formed, every
+/// default is accepted by its control, and every condition and template in the
+/// effects names a declared setting and compares values it can hold.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct AddonSettingsSchema {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    settings: Vec<Setting>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    effects: Vec<Effect>,
+}
+
+impl<'de> Deserialize<'de> for AddonSettingsSchema {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Unchecked {
+            #[serde(default)]
+            settings: Vec<Setting>,
+            #[serde(default)]
+            effects: Vec<Effect>,
+        }
+        let Unchecked { settings, effects } = Unchecked::deserialize(deserializer)?;
+        let schema = Self { settings, effects };
+        schema.validate().map_err(de::Error::custom)?;
+        Ok(schema)
+    }
+}
 
 impl AddonSettingsSchema {
-    /// Returns whether the release declares no settings.
+    /// Returns whether the release declares no settings and no effects.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.settings.is_empty() && self.effects.is_empty()
     }
 
     /// Returns the top-level settings in display order.
     pub fn iter(&self) -> impl Iterator<Item = &Setting> {
-        self.0.iter()
+        self.settings.iter()
     }
 
     /// Returns the top-level or child setting with `key`, if declared.
     pub fn get(&self, key: &str) -> Option<&Setting> {
-        all(&self.0).find(|setting| setting.key == key)
+        all(&self.settings).find(|setting| setting.key == key)
     }
-}
 
-/// Lists `settings` and their children.
-fn all(settings: &[Setting]) -> impl Iterator<Item = &Setting> {
-    settings
-        .iter()
-        .flat_map(|setting| std::iter::once(setting).chain(&setting.children))
-}
-
-impl From<AddonSettingsSchema> for Vec<Setting> {
-    fn from(settings: AddonSettingsSchema) -> Self {
-        settings.0
+    /// Returns the value in effect for `key` given the `stored` values, or
+    /// `None` if `key` is not declared.
+    ///
+    /// A stored value the setting's control does not accept is ignored in
+    /// favor of the default.
+    pub fn value<'a>(&'a self, stored: &'a AddonSettings, key: &str) -> Option<&'a SettingValue> {
+        let setting = self.get(key)?;
+        Some(
+            stored
+                .get(key)
+                .filter(|value| setting.control.accepts(value))
+                .unwrap_or(&setting.default),
+        )
     }
-}
 
-impl TryFrom<Vec<Setting>> for AddonSettingsSchema {
-    type Error = SchemaError;
+    /// Returns the effects whose conditions hold for the `stored` values, in
+    /// declaration order, with each `{{ key }}` replaced by the value in
+    /// effect.
+    pub(crate) fn effects<'a>(
+        &'a self,
+        stored: &'a AddonSettings,
+    ) -> impl Iterator<Item = Effect> + 'a {
+        self.effects
+            .iter()
+            .filter(move |effect| {
+                effect.when().is_none_or(|condition| {
+                    self.value(stored, &condition.setting)
+                        .is_some_and(|value| condition.holds(value))
+                })
+            })
+            .map(move |effect| {
+                // Templates were checked against the settings when the schema was parsed.
+                effect.rendered(|text| {
+                    render(text, |key| self.value(stored, key).map(ToString::to_string))
+                        .unwrap_or_else(|_| text.to_owned())
+                })
+            })
+    }
 
-    fn try_from(settings: Vec<Setting>) -> Result<Self, Self::Error> {
-        if let Some(setting) = settings.iter().find(|setting| setting.category.is_none()) {
+    fn validate(&self) -> Result<(), SchemaError> {
+        if let Some(setting) = self
+            .settings
+            .iter()
+            .find(|setting| setting.category.is_none())
+        {
             return Err(SchemaError::MissingCategory(setting.key.clone()));
         }
         let mut keys = HashSet::new();
-        for setting in all(&settings) {
+        for setting in all(&self.settings) {
             if !keys.insert(&setting.key) {
                 return Err(SchemaError::DuplicateKey(setting.key.clone()));
             }
@@ -208,8 +258,33 @@ impl TryFrom<Vec<Setting>> for AddonSettingsSchema {
                 return Err(SchemaError::InvalidDefault(setting.key.clone()));
             }
         }
-        Ok(Self(settings))
+        for effect in &self.effects {
+            if let Some(condition) = effect.when() {
+                let setting = self
+                    .get(&condition.setting)
+                    .ok_or_else(|| SchemaError::UnknownSetting(condition.setting.clone()))?;
+                if !setting.control.accepts(condition.value()) {
+                    return Err(SchemaError::InvalidCondition(condition.setting.clone()));
+                }
+            }
+            if let Some(text) = effect.template() {
+                render(text, |key| self.get(key).map(|_| String::new())).map_err(
+                    |key| match key {
+                        Some(key) => SchemaError::UnknownSetting(key),
+                        None => SchemaError::InvalidTemplate(text.to_owned()),
+                    },
+                )?;
+            }
+        }
+        Ok(())
     }
+}
+
+/// Lists `settings` and their children.
+fn all(settings: &[Setting]) -> impl Iterator<Item = &Setting> {
+    settings
+        .iter()
+        .flat_map(|setting| std::iter::once(setting).chain(&setting.children))
 }
 
 /// Reports a release settings schema that cannot be used.
@@ -228,4 +303,13 @@ pub enum SchemaError {
     /// A top-level setting has no category.
     #[error("setting `{0}` has no category")]
     MissingCategory(String),
+    /// An effect's condition or template names an undeclared setting.
+    #[error("effects refer to undeclared setting `{0}`")]
+    UnknownSetting(String),
+    /// An effect's condition compares a setting with a value it cannot hold.
+    #[error("a condition on setting `{0}` compares a value its control does not accept")]
+    InvalidCondition(String),
+    /// An effect's text has an unclosed `{{` placeholder.
+    #[error("effect text `{0}` has an unclosed placeholder")]
+    InvalidTemplate(String),
 }

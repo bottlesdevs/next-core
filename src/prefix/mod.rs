@@ -11,6 +11,7 @@ mod handle;
 #[cfg(feature = "fvs")]
 mod history;
 mod runtime;
+mod startup;
 mod state;
 mod storage;
 
