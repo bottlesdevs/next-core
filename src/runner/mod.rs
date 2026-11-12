@@ -41,6 +41,32 @@ pub enum RunnerError {
     RunnerExecutableNotFound(PathBuf),
 }
 
+/// Selects the Windows architecture of a Wine prefix.
+///
+/// Wine fixes the architecture when it first initializes a prefix, so it is
+/// chosen at creation and cannot be changed afterwards.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    serde::Deserialize,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    strum::Display,
+    strum::IntoStaticStr,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum WineArch {
+    /// A 64-bit prefix, which also runs 32-bit programs.
+    #[default]
+    Win64,
+    /// A 32-bit prefix. Proton runners do not support it.
+    Win32,
+}
+
 /// Wraps a host command that has already been lowered through a [`Runner`].
 #[derive(Debug, derive_more::Into)]
 pub(crate) struct RunnerCommand(Command);

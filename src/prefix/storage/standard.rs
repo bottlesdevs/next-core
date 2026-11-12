@@ -29,7 +29,7 @@ impl Storage for Standard {
     async fn create(&self, state: &PrefixState, root: &Path, _job: &Job) -> Result<()> {
         let wineprefix = root.join("prefix");
         async_fs::create_dir_all(&wineprefix).await?;
-        let runner = state.runner.runner(state.umu.as_ref())?;
+        let runner = state.runner.runner(state.umu.as_ref(), state.arch)?;
         runtime::initialize(runner.as_ref(), &wineprefix).await
     }
 
@@ -81,7 +81,7 @@ impl Storage for Standard {
                 components.push(new);
             }
         }
-        let runner = after.runner.runner(after.umu.as_ref())?;
+        let runner = after.runner.runner(after.umu.as_ref(), after.arch)?;
         let wineprefix = root.join("prefix");
         let inputs = InstallInputs {
             wineprefix: &wineprefix,

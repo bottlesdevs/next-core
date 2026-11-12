@@ -1,6 +1,6 @@
 //! Errors raised while loading, validating, or mutating prefixes.
 
-use crate::{Requirement, SettingValue, Slot};
+use crate::{Requirement, SettingValue, Slot, WineArch};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -61,6 +61,9 @@ pub enum PrefixError {
         /// Rejected value.
         value: SettingValue,
     },
+    /// Proton runners support only 64-bit prefixes.
+    #[error("Proton runners do not support {0} prefixes")]
+    UnsupportedArch(WineArch),
     /// One or more addon requirements are absent from the proposed configuration.
     #[error("addon requirements are not satisfied: {requirements:?}")]
     RequiresAddon {
