@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::{
     error::Result,
-    runner::{Proton, Runner as RunnerBackend, RunnerError, Wine},
+    runner::{Proton, Runner as RunnerBackend, RunnerError, Wine, WineArch},
     utils::paths,
 };
 
@@ -186,16 +186,22 @@ impl Addon<Runner> {
 
     /// Constructs the runner represented by this release's payload.
     ///
-    /// Proton runners require an acquired UMU launcher supplied through `umu`.
+    /// Proton runners require an acquired UMU launcher supplied through `umu`
+    /// and always use [`WineArch::Win64`]; prefix validation rejects any other
+    /// `arch` for them.
     ///
     /// # Errors
     ///
     /// Returns [`RunnerError::UmuExecutableMissing`] if Proton is selected
     /// without an UMU launcher.
-    pub(crate) fn runner(&self, umu: Option<&Addon<Umu>>) -> Result<Box<dyn RunnerBackend>> {
+    pub(crate) fn runner(
+        &self,
+        umu: Option<&Addon<Umu>>,
+        arch: WineArch,
+    ) -> Result<Box<dyn RunnerBackend>> {
         let path = self.path();
         match self.flavor() {
-            RunnerFlavor::Wine => Ok(Box::new(Wine::new(path.join("bin/wine")))),
+            RunnerFlavor::Wine => Ok(Box::new(Wine::new(path.join("bin/wine"), arch))),
             RunnerFlavor::Proton => {
                 let umu = umu
                     .ok_or(RunnerError::UmuExecutableMissing)?

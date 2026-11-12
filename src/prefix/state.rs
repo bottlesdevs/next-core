@@ -5,8 +5,8 @@
 
 use super::{PrefixBackend, PrefixError};
 use crate::{
-    Addon, Component, Dependency, EnvVars, InstalledAddon, Requirement, Runner, Slot, Umu,
-    WineBridge, Wrappers, error::Result,
+    Addon, Component, Dependency, EnvVars, InstalledAddon, Requirement, Runner, RunnerFlavor, Slot,
+    Umu, WineArch, WineBridge, Wrappers, error::Result,
 };
 use next_config::Config;
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,9 @@ use uuid::Uuid;
 pub struct PrefixState {
     /// Storage strategy chosen when the prefix was created.
     pub backend: PrefixBackend,
+    /// Windows architecture chosen when the prefix was created.
+    #[serde(default)]
+    pub arch: WineArch,
     /// Wine or Proton runtime selected for this prefix.
     pub runner: InstalledAddon<Runner>,
     /// WineBridge service selected for this prefix.
@@ -45,12 +48,14 @@ impl PrefixState {
     /// Creates the initial state from its backend and selected runtime tools.
     pub(crate) fn new(
         backend: PrefixBackend,
+        arch: WineArch,
         runner: Addon<Runner>,
         winebridge: Addon<WineBridge>,
         umu: Option<Addon<Umu>>,
     ) -> Self {
         Self {
             backend,
+            arch,
             runner: InstalledAddon::new(runner),
             winebridge,
             umu,
@@ -123,12 +128,18 @@ impl PrefixState {
         releases(self) != releases(other)
     }
 
-    /// Verifies that every selected addon's requirements are satisfied.
+    /// Verifies that the runner supports the architecture and that every
+    /// selected addon's requirements are satisfied.
     ///
     /// # Errors
     ///
-    /// Returns [`PrefixError::RequiresAddon`] for any unsatisfied requirement.
+    /// Returns [`PrefixError::UnsupportedArch`] for a Proton runner in a prefix
+    /// that is not 64-bit, or [`PrefixError::RequiresAddon`] for any unsatisfied
+    /// requirement.
     pub(crate) fn validate(&self) -> Result<()> {
+        if self.runner.flavor() == RunnerFlavor::Proton && self.arch != WineArch::Win64 {
+            return Err(PrefixError::UnsupportedArch(self.arch).into());
+        }
         for (id, _, requirements) in self.addon_metadata() {
             let missing = requirements
                 .iter()

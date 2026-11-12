@@ -7,7 +7,7 @@
 use crate::prefix::{Inner, Inventory, Storages};
 use crate::{
     Addon, Operation, Prefix, PrefixBackend, PrefixError, PrefixState, Runner, Stage, Umu,
-    WineBridge, error::Result,
+    WineArch, WineBridge, error::Result,
 };
 use futures_core::Stream;
 use futures_util::{
@@ -189,9 +189,10 @@ impl Prefixes {
 
     /// Creates an operation that initializes and persists a prefix.
     ///
-    /// A new UUID is assigned when the operation starts. Addon coexistence
-    /// requirements are checked before creating files; missing requirements fail
-    /// without selecting or downloading other addons. Standard creation
+    /// A new UUID is assigned when the operation starts. The architecture is
+    /// fixed for the life of the prefix. The runner's support for it and addon
+    /// coexistence requirements are checked before creating files; missing
+    /// requirements fail without selecting or downloading other addons. Standard creation
     /// initializes Wine without FVS. Virgo, available with the `fvs` feature,
     /// builds missing shared layers before composing private storage.
     /// The prefix is added to this collection only after initialization and
@@ -202,14 +203,16 @@ impl Prefixes {
     ///
     /// # Errors
     ///
-    /// Returns [`PrefixError::RequiresAddon`] for missing coexistence
-    /// requirements before creating any files. Awaiting the operation can also
+    /// Returns [`PrefixError::UnsupportedArch`] for a Proton runner with a
+    /// 32-bit architecture, or [`PrefixError::RequiresAddon`] for missing
+    /// coexistence requirements, before creating any files. Awaiting the operation can also
     /// fail during cancellation, service startup, I/O, prefix initialization, or
     /// state persistence.
     #[tracing::instrument(skip_all, fields(?backend))]
     pub fn create(
         &self,
         backend: PrefixBackend,
+        arch: WineArch,
         runner: Addon<Runner>,
         winebridge: Addon<WineBridge>,
         umu: Option<Addon<Umu>>,
@@ -217,7 +220,7 @@ impl Prefixes {
         let prefixes = self.clone();
         Operation::new(move |job| async move {
             job.transition(Stage::Preparing)?;
-            let state = PrefixState::new(backend, runner, winebridge, umu);
+            let state = PrefixState::new(backend, arch, runner, winebridge, umu);
             state.validate()?;
             let prefix = prefixes.member(Uuid::new_v4(), state);
             prefix.create(&job).await?;

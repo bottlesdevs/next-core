@@ -18,7 +18,8 @@ use crate::{Job, Operation, PrefixError, Stage};
 /// Provides mutable access to a prefix's editable state.
 ///
 /// Changes remain private until the edit operation completes. The
-/// [`PrefixBackend`](crate::PrefixBackend) cannot be changed through this API.
+/// [`PrefixBackend`](crate::PrefixBackend) and [`WineArch`](crate::WineArch)
+/// cannot be changed through this API.
 ///
 /// # Examples
 ///
@@ -228,7 +229,7 @@ impl Prefix {
                     .await?;
             } else {
                 if runner_changed || umu_changed {
-                    after.runner.runner(after.umu.as_ref())?;
+                    after.runner.runner(after.umu.as_ref(), after.arch)?;
                 }
                 prefix.save(&draft).await?;
             }
