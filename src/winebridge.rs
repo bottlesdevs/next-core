@@ -787,11 +787,19 @@ impl WineBridgeClient {
 
     // --- System ---
 
-    /// Runs `wineboot` in the prefix with the requested mode.
+    /// Runs `wineboot` in the prefix with the requested mode and waits for it
+    /// to exit.
+    ///
+    /// [`WinebootMode::Shutdown`] asks every program to end its session and
+    /// terminates the ones that agreed. It has no time limit: Wine shows its
+    /// End Task dialog for a program that does not answer and waits for the
+    /// user.
     ///
     /// # Errors
     ///
-    /// Returns an error if the gRPC request fails or `WineBridge` reports failure.
+    /// Returns an error if the gRPC request fails, or an `ABORTED` status if
+    /// `wineboot` exits unsuccessfully, as it does when a program or the user
+    /// refuses to end the session.
     pub async fn wineboot(&self, mode: WinebootMode) -> Result<()> {
         let mut client = self.client.clone();
         client

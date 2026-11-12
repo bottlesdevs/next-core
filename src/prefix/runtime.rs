@@ -5,12 +5,12 @@
 //! from the currently published configuration. Virgo mounts are created before
 //! startup and released only after Wine processes stop.
 
-use super::{Prefix, PrefixState};
+use super::{Prefix, PrefixError, PrefixState};
 use crate::runner::Runner;
 use crate::{
     Job, Operation, ProgramSpec, Stage,
-    error::{Result, ResultExt},
-    proto::{DllOverride, DllOverrideMode, Process},
+    error::{Error, Result, ResultExt},
+    proto::{DllOverride, DllOverrideMode, Process, WinebootMode},
     winebridge::WineBridgeClient,
 };
 use futures_core::Stream;
@@ -149,20 +149,59 @@ impl Prefix {
         Ok(())
     }
 
-    /// Stops Wine and releases storage mounted for the prefix.
+    /// Creates an operation that stops Wine and releases storage mounted for
+    /// the prefix.
     ///
-    /// Calling this for an already stopped prefix is safe.
+    /// Running programs are first asked to end their session, with no time
+    /// limit. Cancelling the operation while they are asked forces the stop:
+    /// whatever is still running is killed and the operation completes
+    /// normally. When the programs cannot be asked, for example because
+    /// `WineBridge` is unreachable, they are killed straight away. Calling this
+    /// for an already stopped prefix is safe.
     ///
     /// # Errors
     ///
-    /// Returns an error if state or runner resolution, Wine shutdown, storage
-    /// release, or discovery cleanup fails.
+    /// Awaiting the operation returns [`PrefixError::StopRefused`] if a
+    /// program or the user refuses to end the session, or an error if state or
+    /// runner resolution, Wine shutdown, storage release, or discovery cleanup
+    /// fails.
     #[tracing::instrument(skip_all, fields(prefix = %self.id()))]
-    pub async fn stop(&self) -> Result<()> {
-        let _control = self.0.control.lock().await;
-        self.stop_locked().await?;
-        tracing::info!("prefix stopped");
-        Ok(())
+    pub fn stop(&self) -> Operation<()> {
+        let prefix = self.clone();
+        Operation::new(move |job| async move {
+            let _control = prefix.0.control.lock().await;
+            job.progress().stage(Stage::Stopping);
+            match job.cancellable(prefix.end_session()).await {
+                Ok(Err(error @ Error::Prefix(PrefixError::StopRefused))) => return Err(error),
+                Ok(asked) => {
+                    asked.log_info();
+                }
+                Err(_) => tracing::info!("stop forced"),
+            }
+            prefix.stop_locked().await?;
+            tracing::info!("prefix stopped");
+            Ok(())
+        })
+    }
+
+    /// Asks the running programs to end their session through `WineBridge`.
+    ///
+    /// A stopped runtime is a successful no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrefixError::StopRefused`] if a program or the user refuses,
+    /// or an error if discovery or the `WineBridge` request fails.
+    async fn end_session(&self) -> Result<()> {
+        let Some(bridge) = self.bridge().await? else {
+            return Ok(());
+        };
+        match bridge.wineboot(WinebootMode::Shutdown).await {
+            Err(Error::Status(status)) if status.code() == tonic::Code::Aborted => {
+                Err(PrefixError::StopRefused.into())
+            }
+            asked => asked,
+        }
     }
 
     /// Stops Wine and releases storage while the caller retains coordination.

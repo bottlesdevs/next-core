@@ -26,6 +26,14 @@ pub enum PrefixError {
         source: Box<crate::error::Error>,
     },
 
+    /// A program or the user refused to end the session, so the prefix keeps
+    /// running.
+    ///
+    /// Programs asked before the refusal may already have been closed. A
+    /// refusing program may ask the user afterwards whether to close; the
+    /// stop is not resumed when it does.
+    #[error("a program refused to close; answer its prompt, then stop the prefix again")]
+    StopRefused,
     /// Software selections cannot be changed while the prefix is running.
     #[error("stop the prefix before changing its settings")]
     MustBeStopped,
