@@ -47,7 +47,6 @@ smol-tar.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
 tokio-util.workspace = true
 regdiff-rs = { workspace = true, optional = true }
-semver.workspace = true
 strum.workspace = true
 url = { workspace = true, features = ["serde"] }
 uuid = { workspace = true, features = ["serde", "v5"] }

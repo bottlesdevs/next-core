@@ -6,8 +6,8 @@
 use super::Storage;
 use crate::{
     Addon, AddonError, Addons, Component, Dependency, Job, PrefixState, Runner, RunnerFlavor,
-    addons::{InstallInputs, execute},
-    error::{Result, ResultExt},
+    addons::{InstallInputs, compare_versions, execute},
+    error::Result,
     prefix::runtime,
     virgo::{Fvs, LayerStore, VirgoError, VirgoLayer},
     winebridge::WineBridgeClient,
@@ -168,7 +168,7 @@ impl Virgo {
 
     /// Reuses the pinned base or builds it from the newest valid local Soda runner.
     ///
-    /// Semantic version determines recency and UUID breaks version ties. Missing
+    /// [`compare_versions`] determines recency and UUID breaks version ties. Missing
     /// inputs fail without downloading or selecting a different runner family.
     ///
     /// # Errors
@@ -288,14 +288,9 @@ impl Virgo {
     }
 }
 
-/// Selects the greatest valid semantic version, using UUID as a stable tie-breaker.
+/// Selects the greatest version, using UUID as a stable tie-breaker.
 fn latest_addon<K>(addons: impl Iterator<Item = Addon<K>>) -> Option<Addon<K>> {
-    addons
-        .filter_map(|addon| {
-            semver::Version::parse(addon.version())
-                .log_warn()
-                .map(|version| (version, addon))
-        })
-        .max_by(|(a, left), (b, right)| a.cmp(b).then_with(|| left.id().cmp(&right.id())))
-        .map(|(_, addon)| addon)
+    addons.max_by(|left, right| {
+        compare_versions(left.version(), right.version()).then_with(|| left.id().cmp(&right.id()))
+    })
 }

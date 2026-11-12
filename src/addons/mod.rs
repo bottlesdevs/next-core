@@ -33,6 +33,7 @@ mod installer;
 mod recipe;
 mod settings;
 mod store;
+mod version;
 
 pub use addon::{
     Addon, AddonRole, Component, Dependency, Requirement, RoleMarker, Runner, RunnerFlavor, Slot,
@@ -49,3 +50,4 @@ pub use settings::{
     SettingValue,
 };
 pub use store::{Addons, AddonsState};
+pub use version::compare_versions;
