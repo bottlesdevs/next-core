@@ -1,6 +1,6 @@
 //! Errors raised while loading, validating, or mutating prefixes.
 
-use crate::{Requirement, SettingValue, Slot, WineArch};
+use crate::{PrefixBackend, Requirement, SettingValue, Slot, WineArch};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -61,6 +61,9 @@ pub enum PrefixError {
         /// Rejected value.
         value: SettingValue,
     },
+    /// This build cannot create, start, or change prefixes of the backend.
+    #[error("the {0:?} backend is not available in this build")]
+    BackendUnavailable(PrefixBackend),
     /// Proton runners support only 64-bit prefixes.
     #[error("Proton runners do not support {0} prefixes")]
     UnsupportedArch(WineArch),

@@ -8,6 +8,8 @@ mod standard;
 #[cfg(feature = "fvs")]
 mod virgo;
 
+#[cfg(not(feature = "fvs"))]
+use crate::PrefixError;
 use crate::{Job, PrefixState, error::Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -52,7 +54,6 @@ pub(crate) trait Storage: Send + Sync {
 #[derive(Clone)]
 pub(crate) struct Storages {
     standard: Arc<dyn Storage>,
-    #[cfg(feature = "fvs")]
     virgo: Arc<dyn Storage>,
 }
 
@@ -63,6 +64,8 @@ impl Storages {
             standard: Arc::new(standard::Standard),
             #[cfg(feature = "fvs")]
             virgo: Arc::new(virgo::Virgo::new(addons, fvs)),
+            #[cfg(not(feature = "fvs"))]
+            virgo: Arc::new(Unavailable(PrefixBackend::Virgo)),
         }
     }
 
@@ -70,7 +73,6 @@ impl Storages {
     pub(crate) fn get(&self, backend: PrefixBackend) -> Arc<dyn Storage> {
         match backend {
             PrefixBackend::Standard => self.standard.clone(),
-            #[cfg(feature = "fvs")]
             PrefixBackend::Virgo => self.virgo.clone(),
         }
     }
@@ -79,15 +81,67 @@ impl Storages {
 /// Selects how a prefix stores and materializes its Wine prefix.
 ///
 /// This choice is persisted with the prefix and cannot be changed by an edit.
-/// Without the `fvs` feature, the `Virgo` variant is absent and persisted Virgo
-/// prefixes cannot be deserialized.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Serialize)]
+/// A build without the `fvs` feature still lists persisted Virgo prefixes and
+/// can delete them, but cannot create, start, or change the software of one.
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 pub enum PrefixBackend {
     /// Stores installed software and user data together in one mutable prefix.
     Standard,
     /// Composes immutable FVS layers over a private writable upper directory.
     ///
-    /// Available only with the `fvs` crate feature.
-    #[cfg(feature = "fvs")]
+    /// Available only with the `fvs` crate feature; see
+    /// [`is_available`](Self::is_available).
     Virgo,
+}
+
+impl PrefixBackend {
+    /// Returns whether this build can create and start prefixes of this backend.
+    pub fn is_available(self) -> bool {
+        match self {
+            Self::Standard => true,
+            Self::Virgo => cfg!(feature = "fvs"),
+        }
+    }
+}
+
+/// Stands in for a backend this build cannot provide.
+#[cfg(not(feature = "fvs"))]
+struct Unavailable(PrefixBackend);
+
+#[cfg(not(feature = "fvs"))]
+impl Unavailable {
+    fn error<T>(&self) -> Result<T> {
+        Err(PrefixError::BackendUnavailable(self.0).into())
+    }
+}
+
+#[cfg(not(feature = "fvs"))]
+#[async_trait]
+impl Storage for Unavailable {
+    async fn create(&self, _state: &PrefixState, _root: &Path, _job: &Job) -> Result<()> {
+        self.error()
+    }
+
+    fn changes(&self, before: &PrefixState, after: &PrefixState) -> bool {
+        before.software_differs(after)
+    }
+
+    async fn apply(
+        &self,
+        _before: &PrefixState,
+        _after: &PrefixState,
+        _root: &Path,
+        _job: &Job,
+    ) -> Result<()> {
+        self.error()
+    }
+
+    async fn mount(&self, _state: &PrefixState, _root: &Path) -> Result<()> {
+        self.error()
+    }
+
+    /// Succeeds, because this build never mounts the storage.
+    async fn release(&self, _root: &Path) -> Result<()> {
+        Ok(())
+    }
 }

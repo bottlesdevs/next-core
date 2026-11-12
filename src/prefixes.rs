@@ -193,8 +193,9 @@ impl Prefixes {
     /// fixed for the life of the prefix. The runner's support for it and addon
     /// coexistence requirements are checked before creating files; missing
     /// requirements fail without selecting or downloading other addons. Standard creation
-    /// initializes Wine without FVS. Virgo, available with the `fvs` feature,
-    /// builds missing shared layers before composing private storage.
+    /// initializes Wine without FVS. Virgo, where
+    /// [`PrefixBackend::is_available`] reports it, builds missing shared layers
+    /// before composing private storage.
     /// The prefix is added to this collection only after initialization and
     /// `state.toml` persistence succeed. Cancellation or persistence failure
     /// after backend initialization attempts best-effort removal; earlier
@@ -203,7 +204,8 @@ impl Prefixes {
     ///
     /// # Errors
     ///
-    /// Returns [`PrefixError::UnsupportedArch`] for a Proton runner with a
+    /// Returns [`PrefixError::BackendUnavailable`] for a backend this build
+    /// lacks, [`PrefixError::UnsupportedArch`] for a Proton runner with a
     /// 32-bit architecture, or [`PrefixError::RequiresAddon`] for missing
     /// coexistence requirements, before creating any files. Awaiting the operation can also
     /// fail during cancellation, service startup, I/O, prefix initialization, or
@@ -220,6 +222,9 @@ impl Prefixes {
         let prefixes = self.clone();
         Operation::new(move |job| async move {
             job.transition(Stage::Preparing)?;
+            if !backend.is_available() {
+                return Err(PrefixError::BackendUnavailable(backend).into());
+            }
             let state = PrefixState::new(backend, arch, runner, winebridge, umu);
             state.validate()?;
             let prefix = prefixes.member(Uuid::new_v4(), state);
