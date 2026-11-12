@@ -39,7 +39,7 @@ pub use addons::{
     Addon, AddonError, AddonRole, AddonSettings, AddonSettingsSchema, Addons, AddonsState,
     CatalogEntry, CatalogError, Catalogs, CatalogsState, Category, Component, Control, Dependency,
     InstalledAddon, InstallerError, Requirement, RoleMarker, Runner, RunnerFlavor, SchemaError,
-    SelectOption, Setting, SettingValue, Slot, Umu, WineBridge,
+    SelectOption, Setting, SettingValue, Slot, Umu, WineBridge, compare_versions,
 };
 pub use command::wrappers::{
     GamescopeConfig, GamescopeFilter, GamescopeScaler, MangoHudConfig, Wrappers,
