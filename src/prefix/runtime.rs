@@ -152,12 +152,13 @@ impl Prefix {
     /// Creates an operation that stops Wine and releases storage mounted for
     /// the prefix.
     ///
-    /// Running programs are first asked to end their session, with no time
-    /// limit. Cancelling the operation while they are asked forces the stop:
-    /// whatever is still running is killed and the operation completes
-    /// normally. When the programs cannot be asked, for example because
-    /// `WineBridge` is unreachable, they are killed straight away. Calling this
-    /// for an already stopped prefix is safe.
+    /// Unless `force` is set, running programs are first asked to end their
+    /// session, with no time limit. Cancelling the operation while they are
+    /// asked forces the stop: whatever is still running is killed and the
+    /// operation completes normally. When the programs cannot be asked, for
+    /// example because `WineBridge` is unreachable, they are killed straight
+    /// away. With `force`, every program is killed without being asked. Calling
+    /// this for an already stopped prefix is safe.
     ///
     /// # Errors
     ///
@@ -165,18 +166,20 @@ impl Prefix {
     /// program or the user refuses to end the session, or an error if state or
     /// runner resolution, Wine shutdown, storage release, or discovery cleanup
     /// fails.
-    #[tracing::instrument(skip_all, fields(prefix = %self.id()))]
-    pub fn stop(&self) -> Operation<()> {
+    #[tracing::instrument(skip_all, fields(prefix = %self.id(), force))]
+    pub fn stop(&self, force: bool) -> Operation<()> {
         let prefix = self.clone();
         Operation::new(move |job| async move {
             let _control = prefix.0.control.lock().await;
             job.progress().stage(Stage::Stopping);
-            match job.cancellable(prefix.end_session()).await {
-                Ok(Err(error @ Error::Prefix(PrefixError::StopRefused))) => return Err(error),
-                Ok(asked) => {
-                    asked.log_info();
+            if !force {
+                match job.cancellable(prefix.end_session()).await {
+                    Ok(Err(error @ Error::Prefix(PrefixError::StopRefused))) => return Err(error),
+                    Ok(asked) => {
+                        asked.log_info();
+                    }
+                    Err(_) => tracing::info!("stop forced"),
                 }
-                Err(_) => tracing::info!("stop forced"),
             }
             prefix.stop_locked().await?;
             tracing::info!("prefix stopped");
