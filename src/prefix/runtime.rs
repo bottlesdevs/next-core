@@ -5,7 +5,7 @@
 //! from the currently published configuration. Virgo mounts are created before
 //! startup and released only after Wine processes stop.
 
-use super::{Prefix, PrefixError, PrefixState};
+use super::{Prefix, PrefixError, PrefixState, WineArch};
 use crate::runner::Runner;
 use crate::{
     Job, Operation, ProgramSpec, Stage,
@@ -336,7 +336,7 @@ impl Prefix {
     }
 }
 
-/// Initializes a prefix and then stops all Wine processes.
+/// Initializes a prefix as `arch` and then stops all Wine processes.
 ///
 /// Shutdown is attempted even when `wineboot --init` fails; a shutdown failure
 /// takes precedence over the initialization result.
@@ -345,8 +345,12 @@ impl Prefix {
 ///
 /// Returns an error from `wineboot`, `WineBridge` shutdown, `wineserver`, or
 /// discovery cleanup.
-pub(super) async fn initialize(runner: &dyn Runner, wineprefix: &Path) -> Result<()> {
-    let initialized = runner.wineboot(wineprefix, "--init").await;
+pub(super) async fn initialize(
+    runner: &dyn Runner,
+    wineprefix: &Path,
+    arch: WineArch,
+) -> Result<()> {
+    let initialized = runner.wineboot(wineprefix, arch).await;
     stop(runner, wineprefix).await?;
     initialized
 }

@@ -178,11 +178,14 @@ impl<'a> Virgo<'a> {
                         && addon.name().eq_ignore_ascii_case("soda")
                 }))
                 .ok_or(VirgoError::SodaNotDownloaded)?;
-                let runner = soda.runner(None, WineArch::Win64)?;
+                let runner = soda.runner(None)?;
                 let workspace = self.layers().prepare_build(destination, None, job).await?;
                 let executed = async {
                     job.check_cancellation()?;
-                    runner.wineboot(&workspace.wineprefix, "--init").await
+                    // Virgo layers are 64-bit; see `WineArch::check`.
+                    runner
+                        .wineboot(&workspace.wineprefix, WineArch::Win64)
+                        .await
                 }
                 .await;
                 runtime::stop(runner.as_ref(), &workspace.wineprefix).await?;
@@ -222,7 +225,10 @@ impl<'a> Virgo<'a> {
                     .await?;
                 let executed = async {
                     job.check_cancellation()?;
-                    runner.wineboot(&workspace.wineprefix, "--init").await
+                    // Virgo layers are 64-bit; see `WineArch::check`.
+                    runner
+                        .wineboot(&workspace.wineprefix, WineArch::Win64)
+                        .await
                 }
                 .await;
                 runtime::stop(runner.as_ref(), &workspace.wineprefix).await?;
@@ -257,7 +263,7 @@ impl<'a> Virgo<'a> {
                 let soda = addons
                     .release::<Runner>(base.id)
                     .ok_or(AddonError::NotFound(base.id))?;
-                let runner = soda.runner(None, WineArch::Win64)?;
+                let runner = soda.runner(None)?;
                 let workspace = self
                     .layers()
                     .prepare_build(destination, Some(base), job)

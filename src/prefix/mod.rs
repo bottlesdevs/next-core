@@ -20,7 +20,7 @@ pub use error::{ArchLimit, PrefixError};
 pub use handle::Prefix;
 #[cfg(feature = "fvs")]
 pub use history::{Snapshot, SnapshotSummary};
-pub use state::PrefixState;
+pub use state::{PrefixState, WineArch};
 pub use storage::PrefixBackend;
 
 use crate::{

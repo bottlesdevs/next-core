@@ -6,7 +6,7 @@
 use super::{ArchLimit, PrefixBackend, PrefixError};
 use crate::{
     Addon, Component, Dependency, EnvVars, InstalledAddon, Requirement, Runner, RunnerFlavor, Slot,
-    Umu, WineArch, WineBridge, Wrappers, error::Result, runner::Runner as RunnerBackend,
+    Umu, WineBridge, Wrappers, error::Result, runner::Runner as RunnerBackend,
 };
 use next_config::Config;
 use serde::{Deserialize, Serialize};
@@ -127,13 +127,13 @@ impl PrefixState {
         releases(self) != releases(other)
     }
 
-    /// Returns the runner this prefix runs, with its UMU and architecture.
+    /// Returns the runner this prefix runs, with its UMU.
     ///
     /// # Errors
     ///
     /// Returns an error if the runner is Proton and no UMU is selected.
     pub(crate) fn runner(&self) -> Result<Box<dyn RunnerBackend>> {
-        self.runner.runner(self.umu.as_ref(), self.arch)
+        self.runner.runner(self.umu.as_ref())
     }
 
     /// Verifies that the runner and backend support the architecture and that
@@ -165,6 +165,33 @@ impl PrefixState {
 
 impl Config for PrefixState {
     const VERSION: u32 = 1;
+}
+
+/// Selects the Windows architecture of a Wine prefix.
+///
+/// Wine fixes the architecture when it first initializes a prefix, so it is
+/// chosen at creation and cannot be changed afterwards.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    serde::Deserialize,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    strum::Display,
+    strum::IntoStaticStr,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum WineArch {
+    /// A 64-bit prefix, which also runs 32-bit programs.
+    #[default]
+    Win64,
+    /// A 32-bit prefix. Proton runners and Virgo storage do not support it;
+    /// see [`check`](Self::check).
+    Win32,
 }
 
 impl WineArch {
