@@ -136,12 +136,13 @@ impl Prefixes {
     /// Loads UUID-named prefixes found below `root`.
     ///
     /// A missing root produces an empty collection. Entries not named by a UUID,
-    /// entries without `state.toml`, and non-directory entries are ignored;
-    /// malformed persisted state aborts the entire load.
+    /// entries without `state.toml`, and non-directory entries are ignored. A
+    /// prefix whose state cannot be read is skipped and logged, so the others
+    /// still load.
     ///
     /// # Errors
     ///
-    /// Returns an error when directory enumeration or state loading fails.
+    /// Returns an error when the prefixes directory cannot be enumerated.
     pub(crate) async fn load(
         root: PathBuf,
         addons: crate::Addons,
@@ -180,7 +181,11 @@ impl Prefixes {
                     tracing::warn!(%id, "skipping prefix directory without a state file");
                     continue;
                 }
-                Err(error) => return Err(error.into()),
+                // One unreadable prefix must not keep the others from loading.
+                Err(error) => {
+                    tracing::warn!(%id, %error, "skipping prefix whose state cannot be read");
+                    continue;
+                }
             };
             members.insert(id, prefixes.member(id, state));
         }
