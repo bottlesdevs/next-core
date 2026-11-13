@@ -224,9 +224,9 @@ impl Prefix {
             stop(runner.as_ref(), &wineprefix).await?;
         }
         // A prefix this build has no storage for was never mounted by it.
-        match self.0.storage.as_deref() {
-            Some(storage) => storage.release(&self.0.root).await,
-            None => Ok(()),
+        match self.storage() {
+            Ok(storage) => storage.release(&self.0.root).await,
+            Err(_) => Ok(()),
         }
     }
 
@@ -306,7 +306,7 @@ impl Prefix {
         if let Some(bridge) = self.bridge().await? {
             return Ok(bridge);
         }
-        let storage = self.storage(state)?;
+        let storage = self.storage()?;
         let wineprefix = self.0.root.join("prefix");
         let env = state.env();
         self.stop_locked().await?;
