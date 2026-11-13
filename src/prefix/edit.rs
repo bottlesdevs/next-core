@@ -203,13 +203,13 @@ impl Prefix {
             }
             let before = previous.as_ref();
             let after = &draft;
-            // Without this build's storage, only edits that leave the
-            // software alone can go through.
-            let storage_changed = match prefix.storage() {
-                Ok(storage) => storage.changes(before, after),
-                Err(error) if before.software_differs(after) => return Err(error),
-                Err(_) => false,
-            };
+            // Only a change to stored files needs this build's storage.
+            let storage = before
+                .backend
+                .changes(before, after)
+                .then(|| prefix.storage())
+                .transpose()?;
+            let storage_changed = storage.is_some();
             let runner_changed = before.runner.addon != after.runner.addon;
             let umu_changed = before.umu != after.umu;
             let runtime_changed =
@@ -222,13 +222,10 @@ impl Prefix {
                 prefix.stop_locked().await?;
             }
             // Once application succeeds, finish saving even if cancellation arrives.
-            if storage_changed {
+            if let Some(storage) = storage {
                 prefix
                     .checkpointed(&job, async {
-                        prefix
-                            .storage()?
-                            .apply(before, after, &prefix.0.root, &job)
-                            .await?;
+                        storage.apply(before, after, &prefix.0.root, &job).await?;
                         prefix.save(&draft).await
                     })
                     .await?;

@@ -78,10 +78,6 @@ impl Storage for Virgo<'_> {
             .await
     }
 
-    fn changes(&self, before: &PrefixState, after: &PrefixState) -> bool {
-        before.software_differs(after) || before.runner.addon != after.runner.addon
-    }
-
     /// Builds missing layers and recomposes the private workspace.
     async fn apply(
         &self,
