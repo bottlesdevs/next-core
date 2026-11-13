@@ -205,8 +205,8 @@ impl Prefixes {
     /// # Errors
     ///
     /// Returns [`PrefixError::BackendUnavailable`] for a backend this build
-    /// lacks, [`PrefixError::UnsupportedArch`] for a Proton runner with a
-    /// 32-bit architecture, or [`PrefixError::RequiresAddon`] for missing
+    /// lacks, [`PrefixError::UnsupportedArch`] for an architecture the runner
+    /// or backend cannot hold (see [`WineArch::check`]), or [`PrefixError::RequiresAddon`] for missing
     /// coexistence requirements, before creating any files. Awaiting the operation can also
     /// fail during cancellation, service startup, I/O, prefix initialization, or
     /// state persistence.

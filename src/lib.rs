@@ -46,7 +46,7 @@ pub use command::wrappers::{
 };
 pub use core::{Core, CoreBuilder};
 pub use operation::{Job, Operation, Progress, Stage, Transfer};
-pub use prefix::{Edit, Inventory, Prefix, PrefixBackend, PrefixError, PrefixState};
+pub use prefix::{ArchLimit, Edit, Inventory, Prefix, PrefixBackend, PrefixError, PrefixState};
 #[cfg(feature = "fvs")]
 pub use prefix::{Snapshot, SnapshotSummary};
 pub use prefixes::Prefixes;

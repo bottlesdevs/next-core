@@ -3,10 +3,10 @@
 //! [`PrefixState`] records the prefix backend, the frozen addon selections
 //! applied to the prefix, and the settings used to start its runtime.
 
-use super::{PrefixBackend, PrefixError};
+use super::{ArchLimit, PrefixBackend, PrefixError};
 use crate::{
     Addon, Component, Dependency, EnvVars, InstalledAddon, Requirement, Runner, RunnerFlavor, Slot,
-    Umu, WineArch, WineBridge, Wrappers, error::Result,
+    Umu, WineArch, WineBridge, Wrappers, error::Result, runner::Runner as RunnerBackend,
 };
 use next_config::Config;
 use serde::{Deserialize, Serialize};
@@ -128,18 +128,24 @@ impl PrefixState {
         releases(self) != releases(other)
     }
 
-    /// Verifies that the runner supports the architecture and that every
-    /// selected addon's requirements are satisfied.
+    /// Returns the runner this prefix runs, with its UMU and architecture.
     ///
     /// # Errors
     ///
-    /// Returns [`PrefixError::UnsupportedArch`] for a Proton runner in a prefix
-    /// that is not 64-bit, or [`PrefixError::RequiresAddon`] for any unsatisfied
-    /// requirement.
+    /// Returns an error if the runner is Proton and no UMU is selected.
+    pub(crate) fn runner(&self) -> Result<Box<dyn RunnerBackend>> {
+        self.runner.runner(self.umu.as_ref(), self.arch)
+    }
+
+    /// Verifies that the runner and backend support the architecture and that
+    /// every selected addon's requirements are satisfied.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrefixError::UnsupportedArch`] as [`WineArch::check`] does, or
+    /// [`PrefixError::RequiresAddon`] for any unsatisfied requirement.
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.runner.flavor() == RunnerFlavor::Proton && self.arch != WineArch::Win64 {
-            return Err(PrefixError::UnsupportedArch(self.arch).into());
-        }
+        self.arch.check(self.backend, self.runner.flavor())?;
         for (id, _, requirements) in self.addon_metadata() {
             let missing = requirements
                 .iter()
@@ -160,4 +166,27 @@ impl PrefixState {
 
 impl Config for PrefixState {
     const VERSION: u32 = 1;
+}
+
+impl WineArch {
+    /// Checks that a prefix of `backend` running a `flavor` runner can use this
+    /// architecture.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrefixError::UnsupportedArch`] for a 32-bit prefix with a
+    /// Proton runner or Virgo storage.
+    pub fn check(
+        self,
+        backend: PrefixBackend,
+        flavor: RunnerFlavor,
+    ) -> std::result::Result<(), PrefixError> {
+        let by = match (self, backend, flavor) {
+            (Self::Win64, _, _) => return Ok(()),
+            (Self::Win32, _, RunnerFlavor::Proton) => ArchLimit::Proton,
+            (Self::Win32, PrefixBackend::Virgo, _) => ArchLimit::Virgo,
+            (Self::Win32, PrefixBackend::Standard, RunnerFlavor::Wine) => return Ok(()),
+        };
+        Err(PrefixError::UnsupportedArch { arch: self, by })
+    }
 }

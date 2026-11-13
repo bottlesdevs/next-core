@@ -64,9 +64,14 @@ pub enum PrefixError {
     /// This build cannot create, start, or change prefixes of the backend.
     #[error("the {0:?} backend is not available in this build")]
     BackendUnavailable(PrefixBackend),
-    /// Proton runners support only 64-bit prefixes.
-    #[error("Proton runners do not support {0} prefixes")]
-    UnsupportedArch(WineArch),
+    /// The runner or backend cannot hold a prefix of this architecture.
+    #[error("{by} does not support {arch} prefixes")]
+    UnsupportedArch {
+        /// Rejected architecture.
+        arch: WineArch,
+        /// What rejects it.
+        by: ArchLimit,
+    },
     /// One or more addon requirements are absent from the proposed configuration.
     #[error("addon requirements are not satisfied: {requirements:?}")]
     RequiresAddon {
@@ -75,4 +80,15 @@ pub enum PrefixError {
         /// Requirements not satisfied by any selected addon.
         requirements: Vec<Requirement>,
     },
+}
+
+/// What limits the architectures a prefix can use.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, strum::Display)]
+pub enum ArchLimit {
+    /// Proton runners, which run only 64-bit prefixes.
+    #[strum(serialize = "Proton")]
+    Proton,
+    /// Virgo storage, whose shared layers are built as 64-bit prefixes.
+    #[strum(serialize = "Virgo storage")]
+    Virgo,
 }
