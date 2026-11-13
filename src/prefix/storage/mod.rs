@@ -11,14 +11,14 @@ mod virgo;
 use crate::{Job, PrefixState, error::Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::{path::Path, sync::Arc};
+use std::path::Path;
 
 /// Materializes and maintains the Wine prefix below a prefix root.
 ///
 /// The prefix must be stopped for every method except [`mount`](Self::mount),
 /// which prepares a stopped prefix for startup.
 #[async_trait]
-pub(crate) trait Storage: Send + Sync {
+pub(super) trait Storage: Send + Sync {
     /// Creates storage for a new prefix described by `state`.
     ///
     /// Leaves no Wine processes running.
@@ -48,33 +48,27 @@ pub(crate) trait Storage: Send + Sync {
     async fn release(&self, root: &Path) -> Result<()>;
 }
 
-/// The storage of every backend this build provides, shared by the prefixes
-/// of one core.
-#[derive(Clone)]
-pub(crate) struct Storages {
-    standard: Arc<dyn Storage>,
-    /// Absent without the `fvs` feature.
-    virgo: Option<Arc<dyn Storage>>,
-}
-
-impl Storages {
-    #[cfg_attr(not(feature = "fvs"), allow(unused_variables))]
-    pub(crate) fn new(addons: crate::Addons, fvs: Arc<crate::virgo::Fvs>) -> Self {
-        Self {
-            standard: Arc::new(standard::Standard),
-            #[cfg(feature = "fvs")]
-            virgo: Some(Arc::new(virgo::Virgo::new(addons, fvs))),
-            #[cfg(not(feature = "fvs"))]
-            virgo: None,
-        }
-    }
-
-    /// Returns the storage implementing `backend`, if this build provides it.
-    pub(crate) fn get(&self, backend: PrefixBackend) -> Option<Arc<dyn Storage>> {
-        match backend {
-            PrefixBackend::Standard => Some(self.standard.clone()),
-            PrefixBackend::Virgo => self.virgo.clone(),
-        }
+/// Returns this build's storage for `backend`.
+///
+/// Storage holds no state of its own: it works through the shared `addons`
+/// and `fvs` services, so it is made where it is needed.
+///
+/// # Errors
+///
+/// Returns [`PrefixError::BackendUnavailable`](crate::PrefixError::BackendUnavailable)
+/// when this build lacks `backend`.
+#[cfg_attr(not(feature = "fvs"), allow(unused_variables))]
+pub(super) fn storage<'a>(
+    backend: PrefixBackend,
+    addons: &'a crate::Addons,
+    fvs: &'a crate::virgo::Fvs,
+) -> Result<Box<dyn Storage + 'a>> {
+    match backend {
+        PrefixBackend::Standard => Ok(Box::new(standard::Standard)),
+        #[cfg(feature = "fvs")]
+        PrefixBackend::Virgo => Ok(Box::new(virgo::Virgo::new(addons, fvs))),
+        #[cfg(not(feature = "fvs"))]
+        PrefixBackend::Virgo => Err(crate::PrefixError::BackendUnavailable(backend).into()),
     }
 }
 

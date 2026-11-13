@@ -205,12 +205,10 @@ impl Prefix {
             let after = &draft;
             // Without this build's storage, only edits that leave the
             // software alone can go through.
-            let storage_changed = match prefix.0.storage.as_deref() {
-                Some(storage) => storage.changes(before, after),
-                None if before.software_differs(after) => {
-                    return Err(PrefixError::BackendUnavailable(before.backend).into());
-                }
-                None => false,
+            let storage_changed = match prefix.storage() {
+                Ok(storage) => storage.changes(before, after),
+                Err(error) if before.software_differs(after) => return Err(error),
+                Err(_) => false,
             };
             let runner_changed = before.runner.addon != after.runner.addon;
             let umu_changed = before.umu != after.umu;
@@ -228,7 +226,7 @@ impl Prefix {
                 prefix
                     .checkpointed(&job, async {
                         prefix
-                            .storage(before)?
+                            .storage()?
                             .apply(before, after, &prefix.0.root, &job)
                             .await?;
                         prefix.save(&draft).await
