@@ -46,7 +46,8 @@ pub(crate) struct Inner {
     /// Notified each time this prefix starts `WineBridge`.
     pub(crate) bridge_started: watch::Sender<()>,
     pub(crate) root: PathBuf,
-    storage: Arc<dyn Storage>,
+    /// Absent when this build lacks the prefix's backend.
+    storage: Option<Arc<dyn Storage>>,
     /// FVS services used by prefix history.
     #[cfg_attr(not(feature = "fvs"), allow(dead_code))]
     fvs: Arc<crate::virgo::Fvs>,
@@ -58,7 +59,7 @@ impl Inner {
         id: Uuid,
         state: PrefixState,
         root: PathBuf,
-        storage: Arc<dyn Storage>,
+        storage: Option<Arc<dyn Storage>>,
         fvs: Arc<crate::virgo::Fvs>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -74,6 +75,19 @@ impl Inner {
 }
 
 impl Prefix {
+    /// Returns this build's storage for the prefix's backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PrefixError::BackendUnavailable`] when this build lacks the
+    /// backend.
+    fn storage(&self, state: &PrefixState) -> Result<&dyn Storage> {
+        self.0
+            .storage
+            .as_deref()
+            .ok_or_else(|| PrefixError::BackendUnavailable(state.backend).into())
+    }
+
     /// Initializes storage for the constructed state and persists it.
     ///
     /// Failure during backend initialization can leave a partial prefix
@@ -94,7 +108,9 @@ impl Prefix {
         let state = state.as_ref();
         job.transition(Stage::CreatingPrefix)?;
         // Initialization owns shutdown. Retain storage when it cannot finish safely.
-        self.0.storage.create(state, &self.0.root, job).await?;
+        self.storage(state)?
+            .create(state, &self.0.root, job)
+            .await?;
         let result = async {
             job.transition(Stage::Configuring)?;
             self.save(state).await
