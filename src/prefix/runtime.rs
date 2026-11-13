@@ -220,7 +220,7 @@ impl Prefix {
         let state = self.state()?;
         let wineprefix = self.0.root.join("prefix");
         if crate::utils::fs::exists(&wineprefix).await? {
-            let runner = state.runner.runner(state.umu.as_ref(), state.arch)?;
+            let runner = state.runner()?;
             stop(runner.as_ref(), &wineprefix).await?;
         }
         // A prefix this build has no storage for was never mounted by it.
@@ -310,7 +310,7 @@ impl Prefix {
         let wineprefix = self.0.root.join("prefix");
         let env = state.env();
         self.stop_locked().await?;
-        let runner = state.runner.runner(state.umu.as_ref(), state.arch)?;
+        let runner = state.runner()?;
         let command = state.wrappers.apply(WineBridgeClient::command(
             runner.as_ref(),
             &wineprefix,

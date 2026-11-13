@@ -236,7 +236,7 @@ impl Prefix {
                     .await?;
             } else {
                 if runner_changed || umu_changed {
-                    after.runner.runner(after.umu.as_ref(), after.arch)?;
+                    after.runner()?;
                 }
                 prefix.save(&draft).await?;
             }

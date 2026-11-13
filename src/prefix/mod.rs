@@ -16,7 +16,7 @@ mod state;
 mod storage;
 
 pub use edit::Edit;
-pub use error::PrefixError;
+pub use error::{ArchLimit, PrefixError};
 pub use handle::Prefix;
 #[cfg(feature = "fvs")]
 pub use history::{Snapshot, SnapshotSummary};

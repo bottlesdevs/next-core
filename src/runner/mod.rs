@@ -63,7 +63,8 @@ pub enum WineArch {
     /// A 64-bit prefix, which also runs 32-bit programs.
     #[default]
     Win64,
-    /// A 32-bit prefix. Proton runners do not support it.
+    /// A 32-bit prefix. Proton runners and Virgo storage do not support it;
+    /// see [`check`](Self::check).
     Win32,
 }
 

@@ -185,7 +185,7 @@ impl Virgo {
                         && addon.name().eq_ignore_ascii_case("soda")
                 }))
                 .ok_or(VirgoError::SodaNotDownloaded)?;
-                let runner = soda.runner(None, WineArch::default())?;
+                let runner = soda.runner(None, WineArch::Win64)?;
                 let workspace = self.layers().prepare_build(destination, None, job).await?;
                 let executed = async {
                     job.check_cancellation()?;
@@ -222,7 +222,7 @@ impl Virgo {
     ) -> Result<VirgoLayer> {
         self.layers()
             .get_or_build(destination, Some(id), job, || async {
-                let runner = config.runner.runner(config.umu.as_ref(), config.arch)?;
+                let runner = config.runner()?;
                 let workspace = self
                     .layers()
                     .prepare_build(destination, Some(base), job)
@@ -264,7 +264,7 @@ impl Virgo {
                 let soda = addons
                     .release::<Runner>(base.id)
                     .ok_or(AddonError::NotFound(base.id))?;
-                let runner = soda.runner(None, WineArch::default())?;
+                let runner = soda.runner(None, WineArch::Win64)?;
                 let workspace = self
                     .layers()
                     .prepare_build(destination, Some(base), job)
