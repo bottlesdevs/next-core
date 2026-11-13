@@ -14,10 +14,7 @@ use crate::{
     winebridge::WineBridgeClient,
 };
 use async_trait::async_trait;
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// Cache key of the base layer shared by every composition.
@@ -63,13 +60,13 @@ fn overlays(config: &PrefixState) -> impl Iterator<Item = Overlay<'_>> {
 /// Stores a prefix as a workspace composed from immutable layers.
 ///
 /// Builds layers from the locally acquired releases in `addons`.
-pub(super) struct Virgo {
-    addons: Addons,
-    fvs: Arc<Fvs>,
+pub(super) struct Virgo<'a> {
+    addons: &'a Addons,
+    fvs: &'a Fvs,
 }
 
 #[async_trait]
-impl Storage for Virgo {
+impl Storage for Virgo<'_> {
     /// Builds missing layers and composes the private workspace.
     ///
     /// Failure can leave a partial prefix root and any layers already
@@ -110,8 +107,8 @@ impl Storage for Virgo {
     }
 }
 
-impl Virgo {
-    pub(super) fn new(addons: Addons, fvs: Arc<Fvs>) -> Self {
+impl<'a> Virgo<'a> {
+    pub(super) fn new(addons: &'a Addons, fvs: &'a Fvs) -> Self {
         Self { addons, fvs }
     }
 

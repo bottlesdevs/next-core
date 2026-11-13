@@ -4,7 +4,7 @@
 //! edit, rollback, and delete operations. It does not poll the filesystem for
 //! changes made outside this crate.
 
-use crate::prefix::{Inner, Inventory, Storages};
+use crate::prefix::{Inner, Inventory};
 use crate::{
     Addon, Operation, Prefix, PrefixBackend, PrefixError, PrefixState, Runner, Stage, Umu,
     WineArch, WineBridge, error::Result,
@@ -42,8 +42,9 @@ type Events = Pin<Box<dyn Stream<Item = Option<Event>> + Send>>;
 #[derive(Clone)]
 pub struct Prefixes {
     root: PathBuf,
-    storages: Storages,
-    /// FVS services used by prefix history.
+    /// Releases each prefix's storage builds from.
+    addons: crate::Addons,
+    /// FVS services used by prefix storage and history.
     fvs: Arc<crate::virgo::Fvs>,
     members: watch::Sender<Members>,
 }
@@ -143,12 +144,12 @@ impl Prefixes {
     /// Returns an error when directory enumeration or state loading fails.
     pub(crate) async fn load(
         root: PathBuf,
-        storages: Storages,
+        addons: crate::Addons,
         fvs: Arc<crate::virgo::Fvs>,
     ) -> Result<Self> {
         let prefixes = Self {
             root,
-            storages,
+            addons,
             fvs,
             members: watch::channel(Arc::default()).0,
         };
@@ -272,8 +273,13 @@ impl Prefixes {
     /// Constructs the handle of prefix `id` without touching storage.
     fn member(&self, id: Uuid, state: PrefixState) -> Prefix {
         let root = self.root.join(id.to_string());
-        let storage = self.storages.get(state.backend);
-        Prefix(Inner::new(id, state, root, storage, self.fvs.clone()))
+        Prefix(Inner::new(
+            id,
+            state,
+            root,
+            self.addons.clone(),
+            self.fvs.clone(),
+        ))
     }
 }
 

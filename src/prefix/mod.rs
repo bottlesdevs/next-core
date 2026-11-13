@@ -31,7 +31,6 @@ use crate::{
 use futures_core::Stream;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use storage::Storage;
-pub(crate) use storage::Storages;
 use tokio::sync::{Mutex, watch};
 use tokio_stream::{StreamExt, wrappers::WatchStream};
 use uuid::Uuid;
@@ -46,10 +45,11 @@ pub(crate) struct Inner {
     /// Notified each time this prefix starts `WineBridge`.
     pub(crate) bridge_started: watch::Sender<()>,
     pub(crate) root: PathBuf,
-    /// Absent when this build lacks the prefix's backend.
-    storage: Option<Arc<dyn Storage>>,
-    /// FVS services used by prefix history.
-    #[cfg_attr(not(feature = "fvs"), allow(dead_code))]
+    /// Storage strategy chosen at creation; it never changes.
+    backend: PrefixBackend,
+    /// Releases that storage builds from.
+    addons: crate::Addons,
+    /// FVS services used by storage and prefix history.
     fvs: Arc<crate::virgo::Fvs>,
 }
 
@@ -59,12 +59,13 @@ impl Inner {
         id: Uuid,
         state: PrefixState,
         root: PathBuf,
-        storage: Option<Arc<dyn Storage>>,
+        addons: crate::Addons,
         fvs: Arc<crate::virgo::Fvs>,
     ) -> Arc<Self> {
         Arc::new(Self {
             id,
-            storage,
+            backend: state.backend,
+            addons,
             state: watch::channel(Some(Arc::new(state))).0,
             control: Mutex::new(()),
             bridge_started: watch::channel(()).0,
@@ -81,11 +82,8 @@ impl Prefix {
     ///
     /// Returns [`PrefixError::BackendUnavailable`] when this build lacks the
     /// backend.
-    fn storage(&self, state: &PrefixState) -> Result<&dyn Storage> {
-        self.0
-            .storage
-            .as_deref()
-            .ok_or_else(|| PrefixError::BackendUnavailable(state.backend).into())
+    fn storage(&self) -> Result<Box<dyn Storage + '_>> {
+        storage::storage(self.0.backend, &self.0.addons, &self.0.fvs)
     }
 
     /// Initializes storage for the constructed state and persists it.
@@ -108,9 +106,7 @@ impl Prefix {
         let state = state.as_ref();
         job.transition(Stage::CreatingPrefix)?;
         // Initialization owns shutdown. Retain storage when it cannot finish safely.
-        self.storage(state)?
-            .create(state, &self.0.root, job)
-            .await?;
+        self.storage()?.create(state, &self.0.root, job).await?;
         let result = async {
             job.transition(Stage::Configuring)?;
             self.save(state).await
