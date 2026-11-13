@@ -33,10 +33,6 @@ impl Storage for Standard {
         runtime::initialize(runner.as_ref(), &wineprefix).await
     }
 
-    fn changes(&self, before: &PrefixState, after: &PrefixState) -> bool {
-        before.software_differs(after)
-    }
-
     /// Applies the difference between two frozen selections to a stopped prefix.
     ///
     /// Removed prefix components use the previous selection's embedded recipe and prefix

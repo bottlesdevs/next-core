@@ -24,12 +24,9 @@ pub(super) trait Storage: Send + Sync {
     /// Leaves no Wine processes running.
     async fn create(&self, state: &PrefixState, root: &Path, job: &Job) -> Result<()>;
 
-    /// Returns whether moving from `before` to `after` changes stored contents.
-    fn changes(&self, before: &PrefixState, after: &PrefixState) -> bool;
-
     /// Moves storage from `before` to `after`, leaving no Wine processes running.
     ///
-    /// Called only when [`changes`](Self::changes) is true. A failure can leave
+    /// Called only when [`PrefixBackend::changes`] is true. A failure can leave
     /// storage partially changed; the caller is responsible for recovery.
     async fn apply(
         &self,
@@ -89,6 +86,17 @@ pub enum PrefixBackend {
 }
 
 impl PrefixBackend {
+    /// Returns whether moving from `before` to `after` changes this backend's
+    /// stored files.
+    ///
+    /// Both backends store the selected components and dependencies. Virgo
+    /// also stores a layer built by the runner, so changing the runner changes
+    /// its files too.
+    pub(crate) fn changes(self, before: &PrefixState, after: &PrefixState) -> bool {
+        before.software_differs(after)
+            || (self == Self::Virgo && before.runner.addon != after.runner.addon)
+    }
+
     /// Returns whether this build can create and start prefixes of this backend.
     pub fn is_available(self) -> bool {
         match self {
