@@ -17,7 +17,7 @@ use url::Url;
 use uuid::{NonNilUuid, Uuid};
 
 use super::recipe::InstallStep;
-use super::{AddonRole, AddonSettingsSchema, Requirement};
+use super::{AddonRole, AddonSettingsSchema, Requirement, Version};
 
 const CATALOG_VERSION: u32 = 1;
 
@@ -163,7 +163,7 @@ impl Catalog {
 pub struct CatalogEntry {
     id: NonNilUuid,
     name: String,
-    version: String,
+    version: Version,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
     #[serde(flatten)]
@@ -184,8 +184,8 @@ impl CatalogEntry {
         &self.name
     }
 
-    /// Returns the catalog-provided version string.
-    pub fn version(&self) -> &str {
+    /// Returns the catalog-provided version.
+    pub fn version(&self) -> &Version {
         &self.version
     }
 

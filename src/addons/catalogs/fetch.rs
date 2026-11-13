@@ -66,7 +66,7 @@ impl Catalogs {
             let record = Addon::new(
                 entry.id(),
                 entry.name().into(),
-                entry.version().into(),
+                entry.version().clone(),
                 entry.requirements().to_vec(),
                 resources,
                 role,

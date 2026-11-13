@@ -6,7 +6,8 @@
 //! snapshot.
 
 use super::{
-    Addon, AddonError, AddonRole, AddonSettingsSchema, Requirement, RoleMarker, recipe::resources,
+    Addon, AddonError, AddonRole, AddonSettingsSchema, Requirement, RoleMarker, Version,
+    recipe::resources,
 };
 use crate::{
     Job, Operation, Stage,
@@ -122,7 +123,7 @@ impl Addons {
         let record = Addon::new(
             Uuid::new_v4(),
             name.into(),
-            version.into(),
+            Version::new(version),
             requirements,
             resources,
             role,
@@ -208,7 +209,7 @@ impl Addons {
         async_fs::rename(prepared, destination).await?;
         next.releases.insert(id, stored);
         self.publish(next);
-        tracing::info!(%id, name = record.name(), version = record.version(), "release stored");
+        tracing::info!(%id, name = record.name(), version = %record.version(), "release stored");
         Ok(record)
     }
 }

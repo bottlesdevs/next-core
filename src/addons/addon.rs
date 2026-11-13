@@ -19,7 +19,7 @@ use crate::{
 };
 
 use super::{
-    AddonSettingsSchema,
+    AddonSettingsSchema, Version,
     recipe::{InstallResource, InstallStep},
 };
 
@@ -39,7 +39,7 @@ use super::{
 pub struct Addon<R> {
     id: Uuid,
     name: String,
-    version: String,
+    version: Version,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     requirements: Vec<Requirement>,
     #[serde(flatten)]
@@ -54,7 +54,7 @@ impl<R> Addon<R> {
     pub(crate) fn new(
         id: Uuid,
         name: String,
-        version: String,
+        version: Version,
         requirements: Vec<Requirement>,
         resources: Vec<InstallResource>,
         role: R,
@@ -86,8 +86,8 @@ impl<R> Addon<R> {
         &self.name
     }
 
-    /// Returns the catalog-provided version string.
-    pub fn version(&self) -> &str {
+    /// Returns the catalog-provided version.
+    pub fn version(&self) -> &Version {
         &self.version
     }
 
