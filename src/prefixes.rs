@@ -222,9 +222,6 @@ impl Prefixes {
         let prefixes = self.clone();
         Operation::new(move |job| async move {
             job.transition(Stage::Preparing)?;
-            if !backend.is_available() {
-                return Err(PrefixError::BackendUnavailable(backend).into());
-            }
             let state = PrefixState::new(backend, arch, runner, winebridge, umu);
             state.validate()?;
             let prefix = prefixes.member(Uuid::new_v4(), state);

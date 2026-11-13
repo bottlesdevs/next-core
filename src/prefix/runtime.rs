@@ -223,7 +223,11 @@ impl Prefix {
             let runner = state.runner.runner(state.umu.as_ref(), state.arch)?;
             stop(runner.as_ref(), &wineprefix).await?;
         }
-        self.0.storage.release(&self.0.root).await
+        // A prefix this build has no storage for was never mounted by it.
+        match self.0.storage.as_deref() {
+            Some(storage) => storage.release(&self.0.root).await,
+            None => Ok(()),
+        }
     }
 
     /// Creates an operation that lists configured DLL overrides.
@@ -302,6 +306,7 @@ impl Prefix {
         if let Some(bridge) = self.bridge().await? {
             return Ok(bridge);
         }
+        let storage = self.storage(state)?;
         let wineprefix = self.0.root.join("prefix");
         let env = state.env();
         self.stop_locked().await?;
@@ -313,7 +318,7 @@ impl Prefix {
             env.iter(),
         ));
         let result = async {
-            self.0.storage.mount(state, &self.0.root).await?;
+            storage.mount(state, &self.0.root).await?;
             job.check_cancellation()?;
             let bridge = WineBridgeClient::connect_or_spawn(&wineprefix, command).await?;
             state.write_registry(&bridge).await?;
@@ -322,7 +327,7 @@ impl Prefix {
         .await;
         if result.is_err() {
             stop(runner.as_ref(), &wineprefix).await?;
-            self.0.storage.release(&self.0.root).await?;
+            storage.release(&self.0.root).await?;
         } else {
             self.0.bridge_started.send_replace(());
             tracing::info!("WineBridge started");
