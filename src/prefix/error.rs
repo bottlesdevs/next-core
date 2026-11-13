@@ -62,7 +62,7 @@ pub enum PrefixError {
         value: SettingValue,
     },
     /// This build cannot create, start, or change prefixes of the backend.
-    #[error("the {0:?} backend is not available in this build")]
+    #[error("the {0} backend is not available in this build")]
     BackendUnavailable(PrefixBackend),
     /// The runner or backend cannot hold a prefix of this architecture.
     #[error("{by} does not support {arch} prefixes")]

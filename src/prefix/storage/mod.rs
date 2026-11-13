@@ -83,7 +83,7 @@ impl Storages {
 /// This choice is persisted with the prefix and cannot be changed by an edit.
 /// A build without the `fvs` feature still lists persisted Virgo prefixes and
 /// can delete them, but cannot create, start, or change the software of one.
-#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize, strum::Display)]
 pub enum PrefixBackend {
     /// Stores installed software and user data together in one mutable prefix.
     Standard,
