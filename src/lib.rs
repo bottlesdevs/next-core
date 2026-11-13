@@ -46,12 +46,13 @@ pub use command::wrappers::{
 };
 pub use core::{Core, CoreBuilder};
 pub use operation::{Job, Operation, Progress, Stage, Transfer};
-pub use prefix::{ArchLimit, Edit, Inventory, Prefix, PrefixBackend, PrefixError, PrefixState};
+pub use prefix::{
+    ArchLimit, Edit, Inventory, Prefix, PrefixBackend, PrefixError, PrefixState, WineArch,
+};
 #[cfg(feature = "fvs")]
 pub use prefix::{Snapshot, SnapshotSummary};
 pub use prefixes::Prefixes;
 pub use proto::{DllOverride, DllOverrideMode, Process, RegistryHive};
-pub use runner::WineArch;
 pub use utils::env_vars::EnvVars;
 
 pub(crate) use next_proto::winebridge as proto;

@@ -1,7 +1,7 @@
 //! Lowers Proton commands through UMU.
 //!
 //! Every guest command receives the selected Proton directory as `PROTONPATH`,
-//! the target prefix as `WINEPREFIX`, and `WINEARCH=win64`. Server control also
+//! and the target prefix as `WINEPREFIX`. Server control also
 //! runs through UMU because Proton's `wineserver` depends on its runtime.
 
 use async_trait::async_trait;
@@ -34,7 +34,6 @@ impl Runner for Proton {
         RunnerCommand(
             command
                 .env("WINEPREFIX", prefix)
-                .env("WINEARCH", "win64")
                 .env("PROTONPATH", &self.proton_path),
         )
     }
@@ -59,7 +58,6 @@ impl Runner for Proton {
                 .arg(self.proton_path.join("files/bin/wineserver"))
                 .arg(arg)
                 .env("WINEPREFIX", prefix)
-                .env("WINEARCH", "win64")
                 .env("PROTONPATH", "umu-sniper"),
         )
         .spawn()?
@@ -76,6 +74,7 @@ impl Runner for Proton {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use crate::WineArch;
     use std::{fs, os::unix::fs::PermissionsExt};
 
     use super::*;
@@ -92,7 +91,7 @@ mod tests {
             fs::write(
                 &umu,
                 format!(
-                "#!/bin/sh\nlog='{}'\nprintf '%s|%s|%s|' \"$PROTONPATH\" \"$WINEPREFIX\" \"$WINEARCH\" >> \"$log\"\nprintf '<%s>' \"$@\" >> \"$log\"\nprintf '\\n' >> \"$log\"\n[ \"$2\" = -k ] && exit 1\n[ \"$2\" != --fail ]\n",
+                "#!/bin/sh\nlog='{}'\nprintf '%s|%s|%s|' \"$PROTONPATH\" \"$WINEPREFIX\" \"$WINEARCH\" >> \"$log\"\nprintf '<%s>' \"$@\" >> \"$log\"\nprintf '\\n' >> \"$log\"\n[ \"$2\" = -k ] && exit 1\n[ \"$2\" != --fail ] && [ \"$WINEARCH\" != win32 ]\n",
                 log.display()
             ),
             )
@@ -101,7 +100,7 @@ mod tests {
 
             let runner = Proton::new(&proton_path, &umu);
             let prefix = root.join("prefix");
-            runner.wineboot(&prefix, "--init").await.unwrap();
+            runner.wineboot(&prefix, WineArch::Win64).await.unwrap();
             runner
                 .command(&prefix, Command::new("game.exe").arg("--flag"))
                 .wrapped_by(Command::new("env"))
@@ -113,7 +112,7 @@ mod tests {
             runner.wineserver(&prefix, "-k").await.unwrap();
             runner.wineserver(&prefix, "-w").await.unwrap();
             assert!(matches!(
-                runner.wineboot(&prefix, "--fail").await,
+                runner.wineboot(&prefix, WineArch::Win32).await,
                 Err(crate::error::Error::Runner(RunnerError::WinebootFailed(_)))
             ));
             assert!(matches!(
@@ -123,12 +122,19 @@ mod tests {
                 )))
             ));
 
-            let environment = format!("{}|{}|win64|", proton_path.display(), prefix.display());
-            let wineserver_environment = format!("umu-sniper|{}|win64|", prefix.display());
+            let environment = format!("{}|{}||", proton_path.display(), prefix.display());
+            let init = |arch| {
+                format!(
+                    "{}|{}|{arch}|<wineboot><--init>\n",
+                    proton_path.display(),
+                    prefix.display()
+                )
+            };
+            let wineserver_environment = format!("umu-sniper|{}||", prefix.display());
             assert_eq!(
                 fs::read_to_string(&log).unwrap(),
                 [
-                    format!("{environment}<wineboot><--init>\n"),
+                    init("win64"),
                     format!("{environment}<game.exe><--flag>\n"),
                     format!(
                         "{wineserver_environment}<{}><-k>\n",
@@ -138,7 +144,7 @@ mod tests {
                         "{wineserver_environment}<{}><-w>\n",
                         proton_path.join("files/bin/wineserver").display()
                     ),
-                    format!("{environment}<wineboot><--fail>\n"),
+                    init("win32"),
                     format!(
                         "{wineserver_environment}<{}><--fail>\n",
                         proton_path.join("files/bin/wineserver").display()

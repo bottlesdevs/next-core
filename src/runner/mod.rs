@@ -12,7 +12,7 @@ use crate::command::{Command, Spawnable, Wrapper};
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::error::Result;
+use crate::{WineArch, error::Result};
 pub(crate) use proton::Proton;
 pub(crate) use wine::Wine;
 
@@ -41,33 +41,6 @@ pub enum RunnerError {
     RunnerExecutableNotFound(PathBuf),
 }
 
-/// Selects the Windows architecture of a Wine prefix.
-///
-/// Wine fixes the architecture when it first initializes a prefix, so it is
-/// chosen at creation and cannot be changed afterwards.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    serde::Deserialize,
-    Eq,
-    PartialEq,
-    serde::Serialize,
-    strum::Display,
-    strum::IntoStaticStr,
-)]
-#[serde(rename_all = "lowercase")]
-#[strum(serialize_all = "lowercase")]
-pub enum WineArch {
-    /// A 64-bit prefix, which also runs 32-bit programs.
-    #[default]
-    Win64,
-    /// A 32-bit prefix. Proton runners and Virgo storage do not support it;
-    /// see [`check`](Self::check).
-    Win32,
-}
-
 /// Wraps a host command that has already been lowered through a [`Runner`].
 #[derive(Debug, derive_more::Into)]
 pub(crate) struct RunnerCommand(Command);
@@ -87,15 +60,18 @@ pub(crate) trait Runner: Send + Sync {
     /// Lowers a guest `inner` command into a host command targeting `prefix`.
     fn command(&self, prefix: &Path, inner: Command) -> RunnerCommand;
 
-    /// Runs `wineboot` through this runner and requires a successful exit status.
+    /// Runs `wineboot --init` to initialize the Wine prefix at `prefix` as `arch`.
+    ///
+    /// The architecture is passed only here: Wine records it when it creates a
+    /// prefix and reads it from the prefix afterwards.
     ///
     /// # Errors
     ///
     /// Returns an I/O error when the process cannot be spawned or waited for, or
     /// [`RunnerError::WinebootFailed`] when it exits unsuccessfully.
-    async fn wineboot(&self, prefix: &Path, arg: &str) -> Result<()> {
-        let status = self
-            .command(prefix, Command::new("wineboot").arg(arg))
+    async fn wineboot(&self, prefix: &Path, arch: WineArch) -> Result<()> {
+        let RunnerCommand(command) = self.command(prefix, Command::new("wineboot").arg("--init"));
+        let status = RunnerCommand(command.env("WINEARCH", <&str>::from(arch)))
             .spawn()?
             .status()
             .await?;

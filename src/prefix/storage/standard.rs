@@ -30,7 +30,7 @@ impl Storage for Standard {
         let wineprefix = root.join("prefix");
         async_fs::create_dir_all(&wineprefix).await?;
         let runner = state.runner()?;
-        runtime::initialize(runner.as_ref(), &wineprefix).await
+        runtime::initialize(runner.as_ref(), &wineprefix, state.arch).await
     }
 
     /// Applies the difference between two frozen selections to a stopped prefix.
