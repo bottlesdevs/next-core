@@ -24,7 +24,6 @@ pub struct PrefixState {
     /// Storage strategy chosen when the prefix was created.
     pub backend: PrefixBackend,
     /// Windows architecture chosen when the prefix was created.
-    #[serde(default)]
     pub arch: WineArch,
     /// Wine or Proton runtime selected for this prefix.
     pub runner: InstalledAddon<Runner>,
