@@ -50,4 +50,4 @@ pub use settings::{
     SettingValue,
 };
 pub use store::{Addons, AddonsState};
-pub use version::compare_versions;
+pub use version::Version;

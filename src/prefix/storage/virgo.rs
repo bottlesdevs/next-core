@@ -7,7 +7,7 @@ use super::Storage;
 use crate::{
     Addon, AddonError, Addons, Component, Dependency, Job, PrefixState, Runner, RunnerFlavor,
     WineArch,
-    addons::{InstallInputs, compare_versions, execute},
+    addons::{InstallInputs, execute},
     error::Result,
     prefix::runtime,
     virgo::{Fvs, LayerStore, VirgoError, VirgoLayer},
@@ -169,7 +169,7 @@ impl Virgo {
 
     /// Reuses the pinned base or builds it from the newest valid local Soda runner.
     ///
-    /// [`compare_versions`] determines recency and UUID breaks version ties. Missing
+    /// [`Version`](crate::Version) ordering determines recency and UUID breaks version ties. Missing
     /// inputs fail without downloading or selecting a different runner family.
     ///
     /// # Errors
@@ -292,6 +292,8 @@ impl Virgo {
 /// Selects the greatest version, using UUID as a stable tie-breaker.
 fn latest_addon<K>(addons: impl Iterator<Item = Addon<K>>) -> Option<Addon<K>> {
     addons.max_by(|left, right| {
-        compare_versions(left.version(), right.version()).then_with(|| left.id().cmp(&right.id()))
+        left.version()
+            .cmp(right.version())
+            .then_with(|| left.id().cmp(&right.id()))
     })
 }
